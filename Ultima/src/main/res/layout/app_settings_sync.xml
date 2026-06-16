@@ -1,0 +1,581 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:layoutDirection="ltr">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="?android:attr/listPreferredItemPaddingStart"
+        android:paddingEnd="?android:attr/listPreferredItemPaddingEnd"
+        android:paddingBottom="20dp"
+        tools:background="@color/cardview_dark_background">
+
+        <!-- Header Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="5dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="App Settings &amp; Data Sync"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/save"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="5dp"
+                android:contentDescription="Save"
+                android:focusable="true" />
+        </LinearLayout>
+
+        <!-- Divider -->
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginVertical="10dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:scaleType="fitXY"
+            android:src="@android:drawable/divider_horizontal_dark" />
+
+        <!-- Credentials Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="10dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Configure Credentials"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/app_settings_sync_creds_btn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="5dp"
+                android:contentDescription="Edit"
+                android:focusable="true" />
+        </LinearLayout>
+
+        <!-- Divider -->
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginVertical="10dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:scaleType="fitXY"
+            android:src="@android:drawable/divider_horizontal_dark" />
+
+        <!-- Sync Switch 1: Backup Device -->
+        <Switch
+            android:id="@+id/backup_device"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Push changes to the cloud"
+            android:textSize="17sp"
+            android:padding="5dp"
+            android:layout_marginVertical="5dp" />
+
+        <!-- Sync Switch 2: Restore Device -->
+        <Switch
+            android:id="@+id/restore_device"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Pull changes from the cloud"
+            android:textSize="17sp"
+            android:padding="5dp"
+            android:layout_marginVertical="5dp" />
+
+        <!-- Sync Now Button -->
+        <Button
+            android:id="@+id/sync_now_btn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Sync Now (Force Sync)"
+            android:textSize="16sp"
+            android:layout_marginVertical="5dp"
+            android:focusable="true" />
+
+        <!-- Last sync info -->
+        <TextView
+            android:id="@+id/last_sync_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="13sp"
+            android:textColor="?android:textColorSecondary"
+            android:padding="5dp" />
+
+        <!-- Divider -->
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginVertical="10dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:scaleType="fitXY"
+            android:src="@android:drawable/divider_horizontal_dark" />
+
+        <!-- Selective Sync Section Header -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Select What to Sync"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginTop="5dp"
+            android:layout_marginBottom="5dp" />
+
+        <!-- Table Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="5dp"
+            android:layout_marginBottom="5dp">
+            
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Sync Items"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+            
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Backup"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:gravity="center" />
+            
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Restore"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- Row 1: Extensions -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Extensions &amp; Repos"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_extensions"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_extensions"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 2: Bookmarks -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Bookmarks"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_bookmarks"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_bookmarks"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 3: Resume Watching -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Resume Watching"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_resume_watching"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_resume_watching"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 4: Search History -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Search History"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_search_history"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_search_history"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 5: Player Settings -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Player Settings"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_player"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_player"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 6: Subtitles Settings -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Subtitles Settings"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_subtitles"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_subtitles"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 7: Theme Settings -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Theme Settings"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_theme"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_theme"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 8: Layout Settings -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Layout Settings"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_layout"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_layout"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 9: Downloads Settings -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Downloads Settings"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_downloads"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_downloads"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Row 10: General Settings -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginVertical="2dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="General Settings"
+                android:textSize="14sp" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/backup_general"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+                <CheckBox
+                    android:id="@+id/restore_general"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:focusable="true" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Divider -->
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginVertical="10dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:scaleType="fitXY"
+            android:src="@android:drawable/divider_horizontal_dark" />
+
+        <!-- Device List Header -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Devices"
+            android:textSize="18sp"
+            android:layout_marginBottom="5dp" />
+
+        <!-- Devices List -->
+        <LinearLayout
+            android:id="@+id/devices_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="10dp" />
+
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>
