@@ -22,7 +22,7 @@ class Trakt(val plugin: UltimaPlugin) : TraktProvider() {
     override val hasMainPage = true
     override val hasQuickSearch = false
 
-    private val traktClientId =
+    private val myTraktClientId =
             base64Decode(
                     "N2YzODYwYWQzNGI4ZTZmOTdmN2I5MTA0ZWQzMzEwOGI0MmQ3MTdlMTM0MmM2NGMxMTg5NGE1MjUyYTQ3NjE3Zg=="
             )

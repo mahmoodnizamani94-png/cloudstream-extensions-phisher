@@ -44,12 +44,26 @@ fun Project.android(configuration: LibraryExtension.() -> Unit) {
 }
 
 subprojects {
+    val resDir = file("src/main/res")
+    val isDummyRes = !resDir.exists()
+    if (isDummyRes) {
+        resDir.mkdirs()
+    }
+
     apply(plugin = "com.android.library")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     cloudstream {
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/phisher98/cloudstream-extensions-phisher")
         authors = listOf("Phisher98")
+    }
+
+    afterEvaluate {
+        extensions.findByType<CloudstreamExtension>()?.apply {
+            if (isDummyRes) {
+                requiresResources = false
+            }
+        }
     }
 
     android {
