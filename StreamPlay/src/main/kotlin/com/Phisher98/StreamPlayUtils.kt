@@ -221,31 +221,33 @@ suspend fun loadSourceNameExtractor(
     val sizePart = size.trim().takeIf { it.isNotBlank() }
 
     loadExtractor(url, referer, subtitleCallback) { link ->
-        val label = buildString {
-            provider?.let { append(it) }
-            if (link.name.isNotEmpty()) {
-                if (isNotEmpty()) append(' ')
-                append(link.name)
+        extractorCallbackScope.launch {
+            val label = buildString {
+                provider?.let { append(it) }
+                if (link.name.isNotEmpty()) {
+                    if (isNotEmpty()) append(' ')
+                    append(link.name)
+                }
+                sizePart?.let {
+                    if (isNotEmpty()) append(' ')
+                    append(it)
+                }
             }
-            sizePart?.let {
-                if (isNotEmpty()) append(' ')
-                append(it)
-            }
-        }
 
-        callback(
-            newExtractorLink(
-                link.source,
-                label,
-                link.url
-            ) {
-                this.quality = quality ?: link.quality
-                this.type = link.type
-                this.referer = link.referer
-                this.headers = link.headers
-                this.extractorData = link.extractorData
-            }
-        )
+            callback(
+                newExtractorLink(
+                    link.source,
+                    label,
+                    link.url
+                ) {
+                    this.quality = quality ?: link.quality
+                    this.type = link.type
+                    this.referer = link.referer
+                    this.headers = link.headers
+                    this.extractorData = link.extractorData
+                }
+            )
+        }
     }
 }
 
@@ -260,19 +262,21 @@ suspend fun loadDisplaySourceNameExtractor(
     quality: Int? = null,
 ) {
     loadExtractor(url, referer, subtitleCallback) { link ->
-        callback.invoke(
-            newExtractorLink(
-                sourceName ?: "",
-                displayName ?: "",
-                link.url,
-            ) {
-                this.quality = quality ?: link.quality
-                this.type = link.type
-                this.referer = link.referer
-                this.headers = link.headers
-                this.extractorData = link.extractorData
-            }
-        )
+        extractorCallbackScope.launch {
+            callback.invoke(
+                newExtractorLink(
+                    sourceName ?: "",
+                    displayName ?: "",
+                    link.url,
+                ) {
+                    this.quality = quality ?: link.quality
+                    this.type = link.type
+                    this.referer = link.referer
+                    this.headers = link.headers
+                    this.extractorData = link.extractorData
+                }
+            )
+        }
     }
 }
 
