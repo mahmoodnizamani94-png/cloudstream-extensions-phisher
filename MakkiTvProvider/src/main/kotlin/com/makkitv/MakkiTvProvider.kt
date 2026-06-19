@@ -17,6 +17,7 @@ import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -68,8 +69,6 @@ class MakkiTvProvider : MainAPI() {
             .distinctBy { it.url }
             .toNewSearchResponseList()
     }
-
-    override suspend fun search(query: String): List<SearchResponse> = search(query, 1)
 
     override suspend fun load(url: String): LoadResponse {
         val document = fastDocument(url)
