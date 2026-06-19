@@ -693,8 +693,22 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             allProviders.filterNot { disabledProviderIds.contains(it.id) }
         }
 
+        // Assumption: direct API providers should win cold starts because they usually avoid HTML scraping, redirects, and mirror pages.
+        val fastProviderBoost = mapOf(
+            "vidsrcxyz" to 60f,
+            "rivestream" to 55f,
+            "vidlink" to 52f,
+            "vidfast" to 50f,
+            "moviesapi" to 48f,
+            "HexaSU" to 42f,
+            "superstream" to 40f,
+            "moviebox" to 35f,
+            "vidzeeapi" to 32f,
+            "2Embed" to 28f
+        )
+
         val prioritizedProviders = activeProviders.sortedByDescending { provider ->
-            StreamPlayCache.getProviderPriorityScore(provider.id)
+            StreamPlayCache.getProviderPriorityScore(provider.id) + (fastProviderBoost[provider.id] ?: 0f)
         }
 
         val brokenCount = activeProviders.count {
@@ -707,47 +721,97 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         if (prioritizedProviders.isEmpty() && stremioAddons.isEmpty()) return@coroutineScope true
 
         val authToken = token.orEmpty()
-        val requestedConcurrency = sharedPref?.getInt("provider_concurrency", 15) ?: 20
-        val concurrency = requestedConcurrency.coerceIn(8, 50)
+        val requestedConcurrency = sharedPref?.getInt("provider_concurrency", 40) ?: 40
+        val concurrency = requestedConcurrency.coerceIn(12, 96)
 
         val totalProviders = prioritizedProviders.size + stremioAddons.size
         val linksFound = java.util.concurrent.atomic.AtomicInteger(0)
         val providersCompleted = java.util.concurrent.atomic.AtomicInteger(0)
+        val emittedLinks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         Log.d(TAG, "🚀 Starting $totalProviders providers (concurrency: $concurrency, prioritized by success rate)")
 
-        val wrappedCallback: (ExtractorLink) -> Unit = { link ->
-            linksFound.incrementAndGet()
-            callback(link)
+        fun emitLink(link: ExtractorLink): Boolean {
+            val dedupeKey = buildString {
+                append(link.url.trim())
+                append('|')
+                append(link.name.trim())
+                append('|')
+                append(link.quality)
+            }
+
+            return if (emittedLinks.add(dedupeKey)) {
+                linksFound.incrementAndGet()
+                callback(link)
+                true
+            } else {
+                Log.d(TAG, "Skipped duplicate link from ${link.name}")
+                false
+            }
+        }
+
+        fun emitSubtitle(subtitle: SubtitleFile): Boolean {
+            val url = subtitle.url.trim().takeIf { it.startsWith("http", ignoreCase = true) } ?: return false
+            val lang = subtitle.lang.trim().ifBlank { "Unknown" }
+            val dedupeKey = "${lang.lowercase()}|$url"
+
+            return if (emittedSubtitles.add(dedupeKey)) {
+                subtitleCallback(subtitle)
+                true
+            } else {
+                Log.d(TAG, "Skipped duplicate subtitle: $lang")
+                false
+            }
         }
 
         val executionList: List<suspend () -> Unit> = prioritizedProviders.map { provider ->
             suspend {
                 val startTime = System.currentTimeMillis()
                 var success = false
+                val localLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
+                val localSubtitlesFound = java.util.concurrent.atomic.AtomicInteger(0)
+                val providerCallback: (ExtractorLink) -> Unit = { link ->
+                    if (emitLink(link)) localLinksFound.incrementAndGet()
+                }
+                val providerSubtitleCallback: (SubtitleFile) -> Unit = { subtitle ->
+                    if (emitSubtitle(subtitle)) localSubtitlesFound.incrementAndGet()
+                }
 
                 val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
 
                 runCatching {
                     val completed = withTimeoutOrNull(providerTimeout.milliseconds) {
-                        provider.invoke(res, subtitleCallback, wrappedCallback, authToken, dahmerMoviesAPI)
+                        provider.invoke(res, providerSubtitleCallback, providerCallback, authToken, dahmerMoviesAPI)
                         true
                     } ?: false
-                    success = completed
+                    success = completed && when (provider.kind) {
+                        ProviderKind.VIDEO -> localLinksFound.get() > 0
+                        ProviderKind.SUBTITLE -> localSubtitlesFound.get() > 0
+                        ProviderKind.MIXED -> localLinksFound.get() > 0 || localSubtitlesFound.get() > 0
+                    }
                     if (!completed) Log.w(TAG, "Provider ${provider.id} timed out after ${providerTimeout}ms")
                 }.onFailure { e ->
-                    val retryDelayMs = if (linksFound.get() == 0) 350L else 900L
-                    Log.w(TAG, "Provider ${provider.id} failed, fast retry in ${retryDelayMs}ms: ${e.message}")
-                    kotlinx.coroutines.delay(retryDelayMs.milliseconds)
-                    runCatching {
-                        val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(4_000L).milliseconds) {
-                            provider.invoke(res, subtitleCallback, wrappedCallback, authToken, dahmerMoviesAPI)
-                            true
-                        } ?: false
-                        success = completed
-                        if (success) Log.d(TAG, "✅ Retry succeeded: ${provider.id}")
-                    }.onFailure { retryError ->
-                        Log.e(TAG, "Provider ${provider.id} failed after retry: ${retryError.message}")
+                    if (linksFound.get() > 0) {
+                        Log.w(TAG, "Provider ${provider.id} failed after links were available; skipping retry: ${e.message}")
+                    } else {
+                        val retryDelayMs = 300L
+                        Log.w(TAG, "Provider ${provider.id} failed before any links, fast retry in ${retryDelayMs}ms: ${e.message}")
+                        kotlinx.coroutines.delay(retryDelayMs.milliseconds)
+                        runCatching {
+                            val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(4_000L).milliseconds) {
+                                provider.invoke(res, providerSubtitleCallback, providerCallback, authToken, dahmerMoviesAPI)
+                                true
+                            } ?: false
+                            success = completed && when (provider.kind) {
+                                ProviderKind.VIDEO -> localLinksFound.get() > 0
+                                ProviderKind.SUBTITLE -> localSubtitlesFound.get() > 0
+                                ProviderKind.MIXED -> localLinksFound.get() > 0 || localSubtitlesFound.get() > 0
+                            }
+                            if (success) Log.d(TAG, "✅ Retry succeeded: ${provider.id}")
+                        }.onFailure { retryError ->
+                            Log.e(TAG, "Provider ${provider.id} failed after retry: ${retryError.message}")
+                        }
                     }
                 }
 
@@ -782,6 +846,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             *executionList.toTypedArray()
         )
 
+        StreamPlayCache.saveProviderStats(sharedPref ?: companionSharedPref)
         Log.d(TAG, "✅ Finished: $totalProviders providers checked, ${linksFound.get()} links found")
         true
     }

@@ -77,9 +77,8 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.math.min
 
 val sharedPref: SharedPreferences? = null
-val appGlobalSemaphore = Semaphore(
-    sharedPref?.getInt("provider_concurrency", 15)?.coerceIn(8, 50) ?: 20
-)
+private const val SAFE_GET_MAX_CONCURRENCY = 48
+val appGlobalSemaphore = Semaphore(SAFE_GET_MAX_CONCURRENCY)
 private val extractorCallbackScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 private val sharedObjectMapper by lazy { ObjectMapper() }
 private val sharedGson by lazy { Gson() }
@@ -222,33 +221,31 @@ suspend fun loadSourceNameExtractor(
     val sizePart = size.trim().takeIf { it.isNotBlank() }
 
     loadExtractor(url, referer, subtitleCallback) { link ->
-        extractorCallbackScope.launch {
-            val label = buildString {
-                provider?.let { append(it) }
-                if (link.name.isNotEmpty()) {
-                    if (isNotEmpty()) append(' ')
-                    append(link.name)
-                }
-                sizePart?.let {
-                    if (isNotEmpty()) append(' ')
-                    append(it)
-                }
+        val label = buildString {
+            provider?.let { append(it) }
+            if (link.name.isNotEmpty()) {
+                if (isNotEmpty()) append(' ')
+                append(link.name)
             }
-
-            callback(
-                newExtractorLink(
-                    link.source,
-                    label,
-                    link.url
-                ) {
-                    this.quality = quality ?: link.quality
-                    this.type = link.type
-                    this.referer = link.referer
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                }
-            )
+            sizePart?.let {
+                if (isNotEmpty()) append(' ')
+                append(it)
+            }
         }
+
+        callback(
+            newExtractorLink(
+                link.source,
+                label,
+                link.url
+            ) {
+                this.quality = quality ?: link.quality
+                this.type = link.type
+                this.referer = link.referer
+                this.headers = link.headers
+                this.extractorData = link.extractorData
+            }
+        )
     }
 }
 
@@ -263,21 +260,19 @@ suspend fun loadDisplaySourceNameExtractor(
     quality: Int? = null,
 ) {
     loadExtractor(url, referer, subtitleCallback) { link ->
-        extractorCallbackScope.launch {
-            callback.invoke(
-                newExtractorLink(
-                    sourceName ?: "",
-                    displayName ?: "",
-                    link.url,
-                ) {
-                    this.quality = quality ?: link.quality
-                    this.type = link.type
-                    this.referer = link.referer
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                }
-            )
-        }
+        callback.invoke(
+            newExtractorLink(
+                sourceName ?: "",
+                displayName ?: "",
+                link.url,
+            ) {
+                this.quality = quality ?: link.quality
+                this.type = link.type
+                this.referer = link.referer
+                this.headers = link.headers
+                this.extractorData = link.extractorData
+            }
+        )
     }
 }
 
