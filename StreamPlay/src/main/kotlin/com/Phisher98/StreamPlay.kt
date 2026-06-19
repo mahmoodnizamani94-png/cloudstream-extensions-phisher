@@ -692,6 +692,66 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         } else {
             allProviders.filterNot { disabledProviderIds.contains(it.id) }
         }
+        val authToken = token.orEmpty()
+
+        val animeOnlyProviders = setOf(
+            "hianime",
+            "animetosho",
+            "ReAnime",
+            "Animex",
+            "kickass",
+            "animepahe",
+            "anichi",
+            "anikage",
+            "anineko",
+            "tokyoinsider",
+            "anizone"
+        )
+        val nonAnimeProviders = setOf(
+            "uhdmovies",
+            "topmovies",
+            "moviesmod",
+            "bollyflix",
+            "watchsomuch",
+            "ninetv",
+            "allmovieland",
+            "multimovies",
+            "zshow",
+            "nepu",
+            "vidsrcxyz",
+            "vidzeeapi",
+            "hdhub4u",
+            "rivestream",
+            "vidrock",
+            "vidlink",
+            "kisskh",
+            "dahmermovies",
+            "HexaSU",
+            "Hindmoviez",
+            "M4uhd",
+            "MappleTV",
+            "CineVood",
+            "2Embed",
+            "DooFlix",
+            "Xpass",
+            "Dudefilms",
+            "Zinkmovies",
+            "Peachify"
+        )
+
+        fun Provider.isApplicableTo(res: LinkData): Boolean {
+            return when {
+                id in animeOnlyProviders -> res.isAnime
+                id in nonAnimeProviders -> !res.isAnime
+                id == "superstream" -> res.imdbId != null && authToken.isNotEmpty() && (!res.isAnime || !res.isDub)
+                id == "Rogmovies" -> res.isBollywood
+                id == "vegamovies" -> !res.isBollywood
+                id == "Filmyfiy" -> !res.isAnime && res.season == null
+                else -> true
+            }
+        }
+
+        val applicableProviders = activeProviders.filter { it.isApplicableTo(res) }
 
         // Assumption: direct API providers should win cold starts because they usually avoid HTML scraping, redirects, and mirror pages.
         val fastProviderBoost = mapOf(
@@ -707,11 +767,11 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             "2Embed" to 28f
         )
 
-        val prioritizedProviders = activeProviders.sortedByDescending { provider ->
+        val prioritizedProviders = applicableProviders.sortedByDescending { provider ->
             StreamPlayCache.getProviderPriorityScore(provider.id) + (fastProviderBoost[provider.id] ?: 0f)
         }
 
-        val brokenCount = activeProviders.count {
+        val brokenCount = applicableProviders.count {
             StreamPlayCache.getProviderStats(it.id).isCircuitBroken
         }
         if (brokenCount > 0) {
@@ -720,7 +780,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         if (prioritizedProviders.isEmpty() && stremioAddons.isEmpty()) return@coroutineScope true
 
-        val authToken = token.orEmpty()
         val requestedConcurrency = sharedPref?.getInt("provider_concurrency", 40) ?: 40
         val concurrency = requestedConcurrency.coerceIn(12, 96)
 

@@ -92,39 +92,32 @@ private fun getDubStatus(res: StreamPlay.LinkData): String {
 
 private val animeIdResolveMutex = Mutex()
 
+private fun StreamPlayCache.AnimeIdMapping.toResolvedAnimeIds(): StreamPlayExtractor.AnimeResolvedIds {
+    return StreamPlayExtractor.AnimeResolvedIds(
+        malId = malId?.toIntOrNull(),
+        anilistId = anilistId?.toIntOrNull(),
+        anidbEid = anidbEid,
+        zoroIds = zoroId?.split(",")?.filter { it.isNotBlank() },
+        zoroTitle = zoroTitle,
+        aniXL = aniXL,
+        kaasSlug = kaasSlug,
+        animepaheUrl = animepaheUrl,
+        animekaiId = animekaiId,
+        tmdbYear = tmdbYear
+    )
+}
+
 private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.AnimeResolvedIds {
     val cacheKey = "${res.title}_${res.date ?: res.airedDate}_${res.season ?: 0}"
 
     val cached = StreamPlayCache.getCachedAnimeIds(cacheKey)
     if (cached != null) {
-        return StreamPlayExtractor.AnimeResolvedIds(
-            malId = cached.malId?.toIntOrNull(),
-            anilistId = cached.anilistId?.toIntOrNull(),
-            anidbEid = 0,
-            zoroIds = cached.zoroId?.split(",")?.filter { it.isNotBlank() },
-            zoroTitle = null,
-            aniXL = null,
-            kaasSlug = null,
-            animepaheUrl = null,
-            animekaiId = cached.animekaiId,
-            tmdbYear = null
-        )
+        return cached.toResolvedAnimeIds()
     }
 
     val ids = animeIdResolveMutex.withLock {
         StreamPlayCache.getCachedAnimeIds(cacheKey)?.let { cachedAfterWait ->
-            return@withLock StreamPlayExtractor.AnimeResolvedIds(
-                malId = cachedAfterWait.malId?.toIntOrNull(),
-                anilistId = cachedAfterWait.anilistId?.toIntOrNull(),
-                anidbEid = 0,
-                zoroIds = cachedAfterWait.zoroId?.split(",")?.filter { it.isNotBlank() },
-                zoroTitle = null,
-                aniXL = null,
-                kaasSlug = null,
-                animepaheUrl = null,
-                animekaiId = cachedAfterWait.animekaiId,
-                tmdbYear = null
-            )
+            return@withLock cachedAfterWait.toResolvedAnimeIds()
         }
 
         resolveAnimeIds(res.title, res.date, res.airedDate, res.season, res.episode)
@@ -137,7 +130,13 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
             malId = ids.malId?.toString(),
             kitsuId = null,
             zoroId = ids.zoroIds?.joinToString(","),
-            animekaiId = ids.animekaiId
+            anidbEid = ids.anidbEid,
+            zoroTitle = ids.zoroTitle,
+            aniXL = ids.aniXL,
+            kaasSlug = ids.kaasSlug,
+            animepaheUrl = ids.animepaheUrl,
+            animekaiId = ids.animekaiId,
+            tmdbYear = ids.tmdbYear
         )
     )
 
