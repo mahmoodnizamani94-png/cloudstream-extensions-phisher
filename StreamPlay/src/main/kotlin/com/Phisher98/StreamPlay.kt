@@ -92,6 +92,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         private val apiMutex = Mutex() // Prevents race conditions
         private const val TAG = "StreamPlay"
+        private const val MAX_PROXY_CANDIDATES = 12
+        private const val PROXY_CHECK_BATCH_SIZE = 4
         suspend fun getApiBase(): String {
             StreamPlayCache.getCachedApiBase()?.let {
                 currentBaseUrl = it
@@ -116,14 +118,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     return OFFICIAL_TMDB_URL
                 }
 
-                val workingProxy = coroutineScope {
-                    val deferredChecks = proxies.map { proxy ->
-                        async {
-                            if (checkConnectivity(proxy)) proxy else null
-                        }
-                    }
-                    deferredChecks.awaitAll().firstOrNull { it != null }
-                }
+                val workingProxy = findFirstWorkingProxy(proxies)
 
                 if (workingProxy != null) {
                     Log.d(TAG, "✅ Switched to proxy: $workingProxy")
@@ -137,6 +132,28 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 StreamPlayCache.cacheApiBase(OFFICIAL_TMDB_URL, success = false)
                 OFFICIAL_TMDB_URL
             }
+        }
+
+        private suspend fun findFirstWorkingProxy(proxies: List<String>): String? {
+            val candidates = proxies
+                .asSequence()
+                .map { it.trim().removeSuffix("/") }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .take(MAX_PROXY_CANDIDATES)
+                .toList()
+
+            for (batch in candidates.chunked(PROXY_CHECK_BATCH_SIZE)) {
+                val workingProxy = coroutineScope {
+                    batch.map { proxy ->
+                        async { if (checkConnectivity(proxy)) proxy else null }
+                    }.awaitAll().firstOrNull { it != null }
+                }
+
+                if (workingProxy != null) return workingProxy
+            }
+
+            return null
         }
 
         private suspend fun checkConnectivity(url: String): Boolean {
@@ -690,7 +707,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         if (prioritizedProviders.isEmpty() && stremioAddons.isEmpty()) return@coroutineScope true
 
         val authToken = token.orEmpty()
-        val concurrency = sharedPref?.getInt("provider_concurrency", 15)?.coerceIn(8, 50) ?: 20
+        val requestedConcurrency = sharedPref?.getInt("provider_concurrency", 15) ?: 20
+        val concurrency = requestedConcurrency.coerceIn(8, 50)
 
         val totalProviders = prioritizedProviders.size + stremioAddons.size
         val linksFound = java.util.concurrent.atomic.AtomicInteger(0)
@@ -699,6 +717,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         Log.d(TAG, "🚀 Starting $totalProviders providers (concurrency: $concurrency, prioritized by success rate)")
 
         val wrappedCallback: (ExtractorLink) -> Unit = { link ->
+            linksFound.incrementAndGet()
             callback(link)
         }
 
@@ -707,16 +726,26 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 val startTime = System.currentTimeMillis()
                 var success = false
 
+                val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
+
                 runCatching {
-                    provider.invoke(res, subtitleCallback, wrappedCallback, authToken, dahmerMoviesAPI)
-                    success = true
-                }.onFailure { e ->
-                    Log.w(TAG, "Provider ${provider.id} failed, retrying: ${e.message}")
-                    kotlinx.coroutines.delay(2000.milliseconds)
-                    runCatching {
+                    val completed = withTimeoutOrNull(providerTimeout.milliseconds) {
                         provider.invoke(res, subtitleCallback, wrappedCallback, authToken, dahmerMoviesAPI)
-                        success = true
-                        Log.d(TAG, "✅ Retry succeeded: ${provider.id}")
+                        true
+                    } ?: false
+                    success = completed
+                    if (!completed) Log.w(TAG, "Provider ${provider.id} timed out after ${providerTimeout}ms")
+                }.onFailure { e ->
+                    val retryDelayMs = if (linksFound.get() == 0) 350L else 900L
+                    Log.w(TAG, "Provider ${provider.id} failed, fast retry in ${retryDelayMs}ms: ${e.message}")
+                    kotlinx.coroutines.delay(retryDelayMs.milliseconds)
+                    runCatching {
+                        val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(4_000L).milliseconds) {
+                            provider.invoke(res, subtitleCallback, wrappedCallback, authToken, dahmerMoviesAPI)
+                            true
+                        } ?: false
+                        success = completed
+                        if (success) Log.d(TAG, "✅ Retry succeeded: ${provider.id}")
                     }.onFailure { retryError ->
                         Log.e(TAG, "Provider ${provider.id} failed after retry: ${retryError.message}")
                     }
@@ -733,9 +762,13 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
         } + stremioAddons.map { addon ->
             suspend {
-                runCatching {
-                    addon()
-                }
+                withTimeoutOrNull(15_000L.milliseconds) {
+                    runCatching {
+                        addon()
+                    }.onFailure { e ->
+                        Log.w(TAG, "Stremio addon failed: ${e.message}")
+                    }
+                } ?: Log.w(TAG, "Stremio addon timed out")
                 val completed = providersCompleted.incrementAndGet()
                 if (completed % 10 == 0 || completed == totalProviders) {
                     Log.d(TAG, "⏳ Progress: $completed/$totalProviders providers")
@@ -745,6 +778,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         runLimitedAsync(
             concurrency = concurrency,
+            taskTimeoutMs = 40_000L,
             *executionList.toTypedArray()
         )
 

@@ -1269,14 +1269,15 @@ fun importKey(rawKey: ByteArray): SecretKeySpec {
  */
 suspend fun runLimitedAsync(
     concurrency: Int = 5,
+    taskTimeoutMs: Long = 25_000L,
     vararg tasks: suspend () -> Unit
 ) = coroutineScope {
     // Use enhanced concurrency system if available
     try {
-        StreamPlayConcurrency.runLimitedAsync(concurrency, *tasks)
+        StreamPlayConcurrency.runLimitedAsync(concurrency, taskTimeoutMs, *tasks)
     } catch (e: Exception) {
         // Fallback to original implementation if StreamPlayConcurrency not available
-        val semaphore = Semaphore(concurrency)
+        val semaphore = Semaphore(concurrency.coerceAtLeast(1))
 
         tasks.map { task ->
             async(Dispatchers.IO) {
@@ -1875,7 +1876,7 @@ suspend inline fun <A, B> Iterable<A>.safeAmap(
     crossinline f: suspend (A) -> B?
 ): Result<List<B>> = runCatching {
     coroutineScope {
-        val semaphore = Semaphore(concurrency)
+        val semaphore = Semaphore(concurrency.coerceAtLeast(1))
 
         map { item ->
             async(Dispatchers.IO) {

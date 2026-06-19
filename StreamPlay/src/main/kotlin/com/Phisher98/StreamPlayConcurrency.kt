@@ -7,10 +7,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Enhanced concurrency management for StreamPlay
@@ -32,9 +34,9 @@ object StreamPlayConcurrency {
 
         val recommendedConcurrency: Int
             get() = when (this) {
-                LOW_END -> 8
-                MID_RANGE -> 20
-                HIGH_END -> 40
+                LOW_END -> 12
+                MID_RANGE -> 32
+                HIGH_END -> 64
             }
 
     }
@@ -72,17 +74,22 @@ object StreamPlayConcurrency {
      */
     suspend fun runLimitedAsync(
         concurrency: Int = 5,
+        taskTimeoutMs: Long = 25_000L,
         vararg tasks: suspend () -> Unit
     ) = coroutineScope {
         if (tasks.isEmpty()) return@coroutineScope
 
-        val semaphore = Semaphore(concurrency)
+        val semaphore = Semaphore(concurrency.coerceIn(1, tasks.size))
 
         tasks.map { task ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     try {
-                        task()
+                        val completed = withTimeoutOrNull(taskTimeoutMs.milliseconds) {
+                            task()
+                            true
+                        } ?: false
+                        if (!completed) Log.w(TAG, "Task timed out after ${taskTimeoutMs}ms")
                     } catch (e: Exception) {
                         Log.e(TAG, "Task failed: ${e.message}")
                     }
@@ -104,9 +111,25 @@ object StreamPlayConcurrency {
         val avgTime = stats.avgTimeMs
         return when {
             avgTime == 0L -> baseTimeoutMs
-            avgTime < 3000 -> max(avgTime + 2000, 5000)
-            avgTime < 10000 -> avgTime + 5000
-            else -> min(avgTime + 5000, baseTimeoutMs * 2)
+            avgTime < 1500 -> max(avgTime + 1500, 3500)
+            avgTime < 6000 -> avgTime + 3500
+            avgTime < 15000 -> avgTime + 6000
+            else -> min(avgTime + 8000, baseTimeoutMs * 2)
         }
+    }
+
+    fun getProviderExecutionTimeout(providerId: String): Long {
+        val stats = StreamPlayCache.getProviderStats(providerId)
+        if (stats.isCircuitBroken) return 6_000L
+        if (stats.successCount + stats.failureCount == 0) return 22_000L
+
+        val historyBasedTimeout = when {
+            stats.avgTimeMs <= 0L -> 22_000L
+            stats.avgTimeMs < 2_000L -> 8_000L
+            stats.avgTimeMs < 8_000L -> stats.avgTimeMs + 8_000L
+            else -> stats.avgTimeMs + 12_000L
+        }
+
+        return historyBasedTimeout.coerceIn(6_000L, 35_000L)
     }
 }
