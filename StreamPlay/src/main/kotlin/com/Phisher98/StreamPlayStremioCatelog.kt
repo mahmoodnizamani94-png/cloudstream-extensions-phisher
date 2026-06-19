@@ -146,15 +146,17 @@ class StreamPlayStremioCatelog(
             callback
         ).values
         val authToken = token
-        runLimitedAsync( concurrency = 10,
-            {
+        runLimitedAsync(
+            concurrency = 10,
+            taskTimeoutMs = 25_000L,
+            suspend {
                 try {
                     invokeSubtitleAPI(imdb, resolved.season, resolved.episode, subtitleCallback)
                 } catch (_: Throwable) {
                     // ignore failure but do not cancel the rest
                 }
             },
-            {
+            suspend {
                 try {
                     invokeWYZIESubs(imdb, res.season, res.episode, subtitleCallback)
                 } catch (_: Throwable) {
