@@ -532,10 +532,12 @@ object StreamPlayExtractor : StreamPlay() {
         )
 
         var anijson: String? = null
-        try {
-            anijson = safeGet("https://api.ani.zip/mappings?mal_id=$malId").toString()
-        } catch (e: Exception) {
-            println("Error fetching mapping: ${e.message}")
+        if (malId != null) {
+            try {
+                anijson = safeGet("https://api.ani.zip/mappings?mal_id=$malId", timeout = 5_000L).text
+            } catch (e: Exception) {
+                println("Error fetching mapping: ${e.message}")
+            }
         }
 
         val anidbEid = getAnidbEid(anijson ?: "{}", episode ?: 1) ?: 0
@@ -2704,7 +2706,7 @@ object StreamPlayExtractor : StreamPlay() {
         } else {
             "$dahmerMoviesAPI/tvs/${title?.replace(":", " -")}/Season $season/"
         }
-        val request = safeGet(url, timeout = 60L)
+        val request = safeGet(url, timeout = 6_000L)
         if (!request.isSuccessful) return
         val paths = request.document.select("a").map {
             it.text() to it.attr("href")
@@ -2969,7 +2971,7 @@ object StreamPlayExtractor : StreamPlay() {
         val sourceList = retry { safeGet(sourceApiUrl, headers).parsedSafe<RiveStreamSource>() }
 
         val document =
-            retry { safeGet(RiveStreamAPI, headers, timeout = 20).document } ?: return
+            retry { safeGet(RiveStreamAPI, headers, timeout = 6_000L).document } ?: return
         val appScript = document.select("script")
             .firstOrNull { it.attr("src").contains("_app") }?.attr("src") ?: return
 
@@ -2995,7 +2997,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
 
                 val responseString = retry {
-                    safeGet(streamUrl, headers, timeout = 10).text
+                    safeGet(streamUrl, headers, timeout = 5_000L).text
                 } ?: return@safeAmap
 
                 try {

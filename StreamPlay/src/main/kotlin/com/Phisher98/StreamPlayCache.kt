@@ -78,7 +78,13 @@ object StreamPlayCache {
         val malId: String? = null,
         val kitsuId: String? = null,
         val zoroId: String? = null,
+        val anidbEid: Int = 0,
+        val zoroTitle: String? = null,
+        val aniXL: String? = null,
+        val kaasSlug: String? = null,
+        val animepaheUrl: String? = null,
         val animekaiId: String? = null,
+        val tmdbYear: Int? = null,
         val timestamp: Long = System.currentTimeMillis()
     )
 

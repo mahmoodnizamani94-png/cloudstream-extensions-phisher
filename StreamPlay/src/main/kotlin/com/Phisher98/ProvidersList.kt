@@ -60,10 +60,19 @@ import com.phisher98.StreamPlayExtractor.invokehdhub4u
 import com.phisher98.StreamPlayExtractor.invokevaplayer
 import com.phisher98.StreamPlayExtractor.invokevidrock
 import com.phisher98.StreamPlayExtractor.resolveAnimeIds
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+enum class ProviderKind {
+    VIDEO,
+    SUBTITLE,
+    MIXED
+}
 
 data class Provider(
     val id: String,
     val name: String,
+    val kind: ProviderKind = ProviderKind.VIDEO,
     val invoke: suspend (
         res: StreamPlay.LinkData,
         subtitleCallback: (SubtitleFile) -> Unit,
@@ -81,34 +90,53 @@ private fun getDubStatus(res: StreamPlay.LinkData): String {
     }
 }
 
+private val animeIdResolveMutex = Mutex()
+
+private fun StreamPlayCache.AnimeIdMapping.toResolvedAnimeIds(): StreamPlayExtractor.AnimeResolvedIds {
+    return StreamPlayExtractor.AnimeResolvedIds(
+        malId = malId?.toIntOrNull(),
+        anilistId = anilistId?.toIntOrNull(),
+        anidbEid = anidbEid,
+        zoroIds = zoroId?.split(",")?.filter { it.isNotBlank() },
+        zoroTitle = zoroTitle,
+        aniXL = aniXL,
+        kaasSlug = kaasSlug,
+        animepaheUrl = animepaheUrl,
+        animekaiId = animekaiId,
+        tmdbYear = tmdbYear
+    )
+}
+
 private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.AnimeResolvedIds {
     val cacheKey = "${res.title}_${res.date ?: res.airedDate}_${res.season ?: 0}"
 
     val cached = StreamPlayCache.getCachedAnimeIds(cacheKey)
     if (cached != null) {
-        return StreamPlayExtractor.AnimeResolvedIds(
-            malId = cached.malId?.toIntOrNull(),
-            anilistId = cached.anilistId?.toIntOrNull(),
-            anidbEid = 0,
-            zoroIds = cached.zoroId?.split(",")?.filter { it.isNotBlank() },
-            zoroTitle = null,
-            aniXL = null,
-            kaasSlug = null,
-            animepaheUrl = null,
-            animekaiId = cached.animekaiId,
-            tmdbYear = null
-        )
+        return cached.toResolvedAnimeIds()
     }
 
-    val ids = resolveAnimeIds(res.title, res.date, res.airedDate, res.season, res.episode)
+    val ids = animeIdResolveMutex.withLock {
+        StreamPlayCache.getCachedAnimeIds(cacheKey)?.let { cachedAfterWait ->
+            return@withLock cachedAfterWait.toResolvedAnimeIds()
+        }
+
+        resolveAnimeIds(res.title, res.date, res.airedDate, res.season, res.episode)
+    }
 
     StreamPlayCache.cacheAnimeIds(
         cacheKey,
         StreamPlayCache.AnimeIdMapping(
-            anilistId = null,
+            anilistId = ids.anilistId?.toString(),
             malId = ids.malId?.toString(),
             kitsuId = null,
-            zoroId = ids.zoroIds?.joinToString(",")
+            zoroId = ids.zoroIds?.joinToString(","),
+            anidbEid = ids.anidbEid,
+            zoroTitle = ids.zoroTitle,
+            aniXL = ids.aniXL,
+            kaasSlug = ids.kaasSlug,
+            animepaheUrl = ids.animepaheUrl,
+            animekaiId = ids.animekaiId,
+            tmdbYear = ids.tmdbYear
         )
     )
 
@@ -197,7 +225,7 @@ private val providers by lazy {
         Provider("bollyflix", "Bollyflix") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeBollyflix(res.imdbId, res.season, res.episode, subtitleCallback, callback)
         },
-        Provider("watchsomuch", "WatchSoMuch") { res, subtitleCallback, _, _, _ ->
+        Provider("watchsomuch", "WatchSoMuch", ProviderKind.SUBTITLE) { res, subtitleCallback, _, _, _ ->
             if (!res.isAnime) invokeWatchsomuch(res.imdbId, res.season, res.episode, subtitleCallback)
         },
         Provider("ninetv", "NineTV") { res, subtitleCallback, callback, _, _ ->
@@ -302,10 +330,10 @@ private val providers by lazy {
         Provider("MappleTV", "MappleTV") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeMapple(res.id, res.season, res.episode ,callback)
         },
-        Provider("WyZIESUB", "WyZIESUB (Subtitles)") { res, subtitleCallback, _, _, _ ->
+        Provider("WyZIESUB", "WyZIESUB (Subtitles)", ProviderKind.SUBTITLE) { res, subtitleCallback, _, _, _ ->
             invokeWYZIESubs(res.imdbId, res.season, res.episode, subtitleCallback)
         },
-        Provider("SubtitleAPI", "SubtitleAPI (Subtitles)") { res, subtitleCallback, _, _, _ ->
+        Provider("SubtitleAPI", "SubtitleAPI (Subtitles)", ProviderKind.SUBTITLE) { res, subtitleCallback, _, _, _ ->
             invokeSubtitleAPI(res.imdbId, res.season, res.episode, subtitleCallback)
         },
         Provider("CineVood", "CineVood (Movies Only)") { res, subtitleCallback, callback, _, _ ->
@@ -323,7 +351,7 @@ private val providers by lazy {
         Provider("Xpass", "Xpass") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeXpass(res.id, res.season, res.episode, callback, )
         },
-        Provider("vaplayer", "Vaplayer") { res, subtitleCallback, callback, _, _ ->
+        Provider("vaplayer", "Vaplayer", ProviderKind.MIXED) { res, subtitleCallback, callback, _, _ ->
             invokevaplayer(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("Dudefilms", "Dudefilms") { res, subtitleCallback, callback, _, _ ->
