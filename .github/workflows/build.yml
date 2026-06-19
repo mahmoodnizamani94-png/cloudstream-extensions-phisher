@@ -165,7 +165,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew makePluginsJson
+          ./gradlew makePluginsJson --rerun-tasks
           mkdir -p $GITHUB_WORKSPACE/builds
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp **/build/*.jar $GITHUB_WORKSPACE/builds
