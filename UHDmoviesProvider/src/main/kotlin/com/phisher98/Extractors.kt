@@ -130,7 +130,7 @@ open class Driveseed : ExtractorApi() {
             if (size.isNotEmpty()) append("[$size]")
         }
 
-        document.select("div.text-center > a").forEach { element ->
+        document.select("div.text-center > a").amap { element ->
             val text = element.text()
             val href = element.attr("href")
             Log.d("Driveseed", "Link: $href")

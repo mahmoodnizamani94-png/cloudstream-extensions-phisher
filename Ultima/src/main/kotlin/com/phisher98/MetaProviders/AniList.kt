@@ -5,7 +5,6 @@ import com.phisher98.UltimaMediaProvidersUtils.invokeExtractors
 import com.phisher98.UltimaUtils.Category
 import com.phisher98.UltimaUtils.LinkData
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
@@ -358,8 +357,7 @@ class AniList(val plugin: UltimaPlugin) : MainAPI() {
 }
 
 fun parseAnimeData(jsonString: String): MetaAnimeData {
-    val objectMapper = ObjectMapper()
-    return objectMapper.readValue(jsonString, MetaAnimeData::class.java)
+    return AppUtils.tryParseJson<MetaAnimeData>(jsonString) ?: MetaAnimeData()
 }
 
 

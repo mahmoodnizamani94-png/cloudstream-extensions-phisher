@@ -18,6 +18,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -121,7 +122,17 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
             year,
             type == TvType.TvSeries
         )
-        val meta = if (!ids.imdbId.isNullOrBlank()) fetchMetaData(ids.imdbId, type) else null
+        val (meta, simklId) = coroutineScope {
+            val metaDeferred = if (!ids.imdbId.isNullOrBlank()) {
+                async { fetchMetaData(ids.imdbId, type) }
+            } else null
+            val simklDeferred = if (!ids.imdbId.isNullOrBlank()) {
+                async { fetchSimklId(ids.imdbId, isSeries = type == TvType.TvSeries) }
+            } else null
+
+            Pair(metaDeferred?.await(), simklDeferred?.await())
+        }
+
         val metaVideos = meta?.get("videos")?.toList() ?: emptyList()
 
         val Background = meta?.get("background")?.asText() ?: poster
@@ -129,10 +140,6 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
         val IMDBRating = meta?.get("imdbRating")?.asText()
         val trailer = doc.select("p iframe").attr("src")
         val logoUrl = meta?.get("logo")?.asText()
-
-        val simklId = ids.imdbId?.let {
-            fetchSimklId(it, isSeries = type == TvType.TvSeries)
-        }
 
         return if (type == TvType.TvSeries) {
             val tvSeriesEpisodes = mutableListOf<Episode>()

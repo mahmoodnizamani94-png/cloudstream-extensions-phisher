@@ -1,7 +1,7 @@
 package com.idlix
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
 data class ApiResponse(
     val data: List<ApiItem> = emptyList(),
@@ -64,49 +64,36 @@ data class Meta(
     val sort: String? = null
 )
 
-@Serializable
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class DetailResponse(
     val id: String? = null,
     val title: String? = null,
     val slug: String? = null,
-    @SerialName("imdb_id")
-    val imdbId: String? = null,
-    @SerialName("tmdb_id")
-    val tmdbId: String? = null,
+    @param:JsonProperty("imdb_id") val imdbId: String? = null,
+    @param:JsonProperty("tmdb_id") val tmdbId: String? = null,
     val overview: String? = null,
     val tagline: String? = null,
-    @SerialName("poster_path")
-    val posterPath: String? = null,
-    @SerialName("backdrop_path")
-    val backdropPath: String? = null,
-    @SerialName("logo_path")
-    val logoPath: String? = null,
+    @param:JsonProperty("poster_path") val posterPath: String? = null,
+    @param:JsonProperty("backdrop_path") val backdropPath: String? = null,
+    @param:JsonProperty("logo_path") val logoPath: String? = null,
     val backdrops: List<String>? = null,
-    @SerialName("release_date")
-    val releaseDate: String? = null,
-    @SerialName("first_air_date")
-    val firstAirDate: String? = null,
+    @param:JsonProperty("release_date") val releaseDate: String? = null,
+    @param:JsonProperty("first_air_date") val firstAirDate: String? = null,
     val runtime: Int? = null,
-    @SerialName("vote_average")
-    val voteAverage: Any? = null,
+    @param:JsonProperty("vote_average") val voteAverage: Any? = null,
     val popularity: Any? = null,
-    @SerialName("original_language")
-    val originalLanguage: String? = null,
+    @param:JsonProperty("original_language") val originalLanguage: String? = null,
     val country: String? = null,
     val status: String? = null,
-    @SerialName("trailer_url")
-    val trailerUrl: String? = null,
+    @param:JsonProperty("trailer_url") val trailerUrl: String? = null,
     val quality: String? = null,
     val director: String? = null,
     val genres: List<Genre>? = null,
     val cast: List<Cast>? = null,
     val seasons: List<Season>? = null,
-    @SerialName("first_season")
-    val firstSeason: Season? = null,
-    @SerialName("view_count")
-    val viewCount: Any? = null,
-    @SerialName("is_published")
-    val isPublished: Boolean? = null
+    @param:JsonProperty("first_season") val firstSeason: Season? = null,
+    @param:JsonProperty("view_count") val viewCount: Any? = null,
+    @param:JsonProperty("is_published") val isPublished: Boolean? = null
 )
 
 data class Genre(

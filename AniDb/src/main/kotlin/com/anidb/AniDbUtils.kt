@@ -1,15 +1,10 @@
 package com.anidb
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 
 fun parseAnimeData(jsonString: String): MetaAnimeData? {
-    return try {
-        val objectMapper = ObjectMapper()
-        objectMapper.readValue(jsonString, MetaAnimeData::class.java)
-    } catch (_: Exception) {
-        null
-    }
+    return tryParseJson<MetaAnimeData>(jsonString)
 }
 
 @JsonIgnoreProperties(ignoreUnknown = true)

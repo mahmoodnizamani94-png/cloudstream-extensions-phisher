@@ -78,6 +78,16 @@ subprojects {
             targetSdk = 36
         }
 
+        buildTypes {
+            release {
+                isMinifyEnabled = true
+                proguardFiles(
+                    getDefaultProguardFile("proguard-android-optimize.txt"),
+                    project.rootProject.file("proguard-rules.pro")
+                )
+            }
+        }
+
         compileOptions {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
@@ -91,6 +101,7 @@ subprojects {
                     "-Xno-call-assertions",
                     "-Xno-param-assertions",
                     "-Xno-receiver-assertions",
+                    "-Xbackend-threads=0",
                 )
             }
         }
@@ -99,23 +110,19 @@ subprojects {
     dependencies {
         val implementation by configurations
         val cloudstream by configurations
+        val compileOnly by configurations
         cloudstream("com.lagradost:cloudstream3:pre-release")
 
-        // Other dependencies
-        implementation(kotlin("stdlib"))
-        implementation("com.github.Blatzar:NiceHttp:0.4.18")
-        implementation("org.jsoup:jsoup:1.22.2")
-        implementation("androidx.annotation:annotation:1.10.0")
+        // Other dependencies provided by host app
+        compileOnly(kotlin("stdlib"))
+        compileOnly("com.github.Blatzar:NiceHttp:0.4.18")
+        compileOnly("org.jsoup:jsoup:1.22.2")
+        compileOnly("androidx.annotation:annotation:1.10.0")
         // Do not bump above 2.13.1
-        implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")
-        implementation("com.fasterxml.jackson.core:jackson-databind:2.13.1")
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-        // Do not bump above 1.8.1
-        implementation("org.mozilla:rhino:1.8.1")
-        implementation("me.xdrop:fuzzywuzzy:1.4.0")
-        implementation("com.google.code.gson:gson:2.14.0")
-        implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-        implementation("org.bouncycastle:bcpkix-jdk18on:1.84")
+        compileOnly("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")
+        compileOnly("com.fasterxml.jackson.core:jackson-databind:2.13.1")
+        compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+        compileOnly("com.google.code.gson:gson:2.14.0")
     }
 }
 

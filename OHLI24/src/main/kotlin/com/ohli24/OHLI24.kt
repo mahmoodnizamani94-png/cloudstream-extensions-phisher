@@ -91,7 +91,14 @@ class OHLI24 : MainAPI() {
         val poster = fixUrlNull(doc.selectFirst("div.image img")?.attr("src") ?: doc.selectFirst("meta[property=og:image]")?.attr("content"))
         val genres = doc.select("p:contains(장르)").first()?.select("span:nth-of-type(2)")?.text()?.split(",")?.map { it.trim() } ?: emptyList()
         val year = title.substringAfterLast("(").substringBefore(")").toIntOrNull()
-        val descript = doc.select("div.view-stocon,div.view-cont").html().split("<br>").map { Jsoup.parse(it).text().trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+        val rawHtml = doc.select("div.view-stocon,div.view-cont").html()
+        val descript = rawHtml
+            .replace(Regex("(?i)<br\\s*/?>"), "\n")
+            .replace(Regex("<[^>]+>"), "")
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
 
         val items = doc.select("li.list-item a")
 

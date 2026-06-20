@@ -176,12 +176,7 @@ object AnichiUtils {
 
 
 fun parseAnimeData(jsonString: String): MetaAnimeData? {
-    return try {
-        val objectMapper = ObjectMapper()
-        objectMapper.readValue(jsonString, MetaAnimeData::class.java)
-    } catch (_: Exception) {
-        null // Return null for invalid JSON instead of crashing
-    }
+    return AppUtils.tryParseJson<MetaAnimeData>(jsonString)
 }
 
 suspend fun fetchTmdbLogoUrl(

@@ -4,8 +4,8 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.ShowStatus
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import java.net.URLEncoder
 import java.util.Base64
 
@@ -90,12 +90,7 @@ fun generateEpisodeVrf(episodeId: String): String {
 }
 
 fun parseAnimeData(jsonString: String): MetaAnimeData? {
-    return try {
-        val objectMapper = ObjectMapper()
-        objectMapper.readValue(jsonString, MetaAnimeData::class.java)
-    } catch (_: Exception) {
-        null // Return null for invalid JSON instead of crashing
-    }
+    return tryParseJson<MetaAnimeData>(jsonString)
 }
 
 

@@ -210,9 +210,7 @@ class Goojara : MainAPI() {
         return if (type == TvType.TvSeries) {
             val href = document.select("#sesh a.ste").attr("href")
             val totalSeasons = href.substringAfter("?s=").toIntOrNull() ?: 1
-            val episodes = mutableListOf<Episode>()
-
-            for (seasonIndex in 1..totalSeasons) {
+            val episodes = (1..totalSeasons).toList().amap { seasonIndex ->
                 val seasonHref = href.substringBefore("?s=") + "?s=$seasonIndex"
                 val seasonDoc = app.get(seasonHref).document
                 seasonDoc.select("div.seho")
@@ -229,7 +227,7 @@ class Goojara : MainAPI() {
                         val epPosterFromMeta = epMeta?.optString("thumbnail")?.takeIf { it.isNotBlank() }?.let { fixUrl(it) }
                         val released = epMeta?.optString("released")?.takeIf { it.isNotBlank() }
                         val epOverview = epMeta?.optString("overview")?.takeIf { it.isNotBlank() }
-                        episodes+=newEpisode(hrefEp) {
+                        newEpisode(hrefEp) {
                             this.name = epTitle
                             this.season = seasonIndex
                             this.episode = epno
@@ -238,7 +236,7 @@ class Goojara : MainAPI() {
                             addDate(released)
                         }
                     }
-            }
+            }.flatten()
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = metaPoster

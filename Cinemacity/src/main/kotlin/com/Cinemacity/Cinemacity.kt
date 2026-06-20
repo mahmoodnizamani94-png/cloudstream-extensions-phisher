@@ -38,6 +38,8 @@ import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONArray
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -189,41 +191,55 @@ class Cinemacity : MainAPI() {
             .mapNotNull { it.attr("onclick") }
             .firstNotNullOfOrNull { Regex("tt\\d+").find(it)?.value }
 
-        val tmdbId = imdbId?.let { id ->
-            runCatching {
-                val obj = JSONObject(
-                    app.get(
-                        "https://api.themoviedb.org/3/find/$id" +
-                                "?api_key=1865f43a0549ca50d341dd9ab8b29f49" +
-                                "&external_source=imdb_id"
-                    ).text
-                )
+        val typeset = if (tvtype == TvType.TvSeries) "series" else "movie"
 
-                obj.optJSONArray("movie_results")?.optJSONObject(0)?.optInt("id")?.takeIf { it != 0 }
-                    ?: obj.optJSONArray("tv_results")?.optJSONObject(0)?.optInt("id")?.takeIf { it != 0 }
-            }.getOrNull()?.toString()
+        val (tmdbId, creditsJson, responseData) = coroutineScope {
+            val responseDataDeferred = imdbId?.takeIf { it.isNotBlank() }?.let {
+                async {
+                    runCatching {
+                        val text = app.get("$cinemeta_url/$typeset/$it.json").text
+                        if (text.startsWith("{")) Gson().fromJson(text, ResponseData::class.java) else null
+                    }.getOrNull()
+                }
+            }
+
+            val tmdbIdDeferred = imdbId?.let { id ->
+                async {
+                    runCatching {
+                        val obj = JSONObject(
+                            app.get(
+                                "https://api.themoviedb.org/3/find/$id" +
+                                        "?api_key=1865f43a0549ca50d341dd9ab8b29f49" +
+                                        "&external_source=imdb_id"
+                            ).text
+                        )
+
+                        obj.optJSONArray("movie_results")?.optJSONObject(0)?.optInt("id")?.takeIf { it != 0 }
+                            ?: obj.optJSONArray("tv_results")?.optJSONObject(0)?.optInt("id")?.takeIf { it != 0 }
+                    }.getOrNull()?.toString()
+                }
+            }
+
+            val tId = tmdbIdDeferred?.await()
+            val creditsDeferred = tId?.let {
+                async {
+                    runCatching {
+                        app.get(
+                            "https://api.themoviedb.org/3/$tmdbmetatype/$it/credits" +
+                                    "?api_key=1865f43a0549ca50d341dd9ab8b29f49&language=en-US"
+                        ).text
+                    }.getOrNull()
+                }
+            }
+
+            Triple(tId, creditsDeferred?.await(), responseDataDeferred?.await())
         }
 
         val logoPath = imdbId?.let {
             "https://live.metahub.space/logo/medium/$it/img"
         }
 
-        val creditsJson = tmdbId?.let {
-            runCatching {
-                app.get(
-                    "https://api.themoviedb.org/3/$tmdbmetatype/$it/credits" +
-                            "?api_key=1865f43a0549ca50d341dd9ab8b29f49&language=en-US"
-                ).text
-            }.getOrNull()
-        }
-
         val castList = parseCredits(creditsJson)
-        val typeset = if (tvtype == TvType.TvSeries) "series" else "movie"
-
-        val responseData = imdbId?.takeIf { it.isNotBlank() }?.let {
-            val text = app.get("$cinemeta_url/$typeset/$it.json").text
-            if (text.startsWith("{")) Gson().fromJson(text, ResponseData::class.java) else null
-        }
 
         responseData?.meta?.let {
             description = it.description ?: descriptions

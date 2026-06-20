@@ -2,13 +2,13 @@ package com.phisher98
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.APIHolder.unixTimeMS
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.json.JSONObject
 
 import java.net.URLEncoder
@@ -214,12 +214,7 @@ fun normalizeId(id: String?): String {
 }
 
 fun parseAnimeData(jsonString: String): MetaAnimeData? {
-    return try {
-        val objectMapper = ObjectMapper()
-        objectMapper.readValue(jsonString, MetaAnimeData::class.java)
-    } catch (_: Exception) {
-        null // Return null for invalid JSON instead of crashing
-    }
+    return tryParseJson<MetaAnimeData>(jsonString)
 }
 
 

@@ -24,7 +24,7 @@ class DoraBash : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl/${request.data}").document
-        val home = document.select("article").mapNotNull { it.toSearchResult() }
+        val home = document.select("article").amap { it.toSearchResult() }.filterNotNull()
 
         return newHomePageResponse(
             list = HomePageList(
@@ -36,13 +36,17 @@ class DoraBash : MainAPI() {
         )
     }
 
-    private suspend fun Element.toSearchResult(): SearchResponse {
-        val title = this.select("h3 a").attr("title").substringAfter("Doraemon")
-        val href = fixUrl(this.select("h3 > a").attr("href"))
-        val sourceURL = app.get(href).document.select("div.anime-data h4 a").attr("href")
-        val posterUrl = fixUrlNull(this.select("img").attr("src"))
-        return newMovieSearchResponse(title.capitalize(), sourceURL, TvType.Movie) {
-            this.posterUrl = posterUrl
+    private suspend fun Element.toSearchResult(): SearchResponse? {
+        return try {
+            val title = this.select("h3 a").attr("title").substringAfter("Doraemon")
+            val href = fixUrl(this.select("h3 > a").attr("href"))
+            val sourceURL = app.get(href).document.select("div.anime-data h4 a").attr("href")
+            val posterUrl = fixUrlNull(this.select("img").attr("src"))
+            newMovieSearchResponse(title.capitalize(), sourceURL, TvType.Movie) {
+                this.posterUrl = posterUrl
+            }
+        } catch (_: Throwable) {
+            null
         }
     }
 

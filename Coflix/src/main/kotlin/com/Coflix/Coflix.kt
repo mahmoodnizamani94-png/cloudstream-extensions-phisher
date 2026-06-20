@@ -60,10 +60,10 @@ class Coflix : MainAPI() {
         }
     }
 
+    private val srcRegex = Regex("""src\s*=\s*["']?([^"'\s>]+)["']?""", RegexOption.IGNORE_CASE)
+
     private fun fetchImageUrl(html: String): String? {
-        val document: Document = Jsoup.parse(html)
-        val imgElement = document.selectFirst("img")
-        val src = imgElement?.attr("src")
+        val src = srcRegex.find(html)?.groupValues?.getOrNull(1)
         return if (src?.startsWith("//") == true) {
             "https:$src"
         } else {
@@ -106,11 +106,11 @@ class Coflix : MainAPI() {
         {
             val episodes = mutableListOf<Episode>()
             document.select("section.sc-seasons ul li input")
-                .mapNotNull { input ->
+                .amap { input ->
                     val dataseason = input.attr("data-season")
                     val dataid = input.attr("post-id")
 
-                    if (dataseason.isBlank() || dataid.isBlank()) return@mapNotNull null
+                    if (dataseason.isBlank() || dataid.isBlank()) return@amap null
 
                     val epRes = try {
                         app.get("$coflixAPI/series/$dataid/$dataseason").parsedSafe<EpRes>()
@@ -132,7 +132,7 @@ class Coflix : MainAPI() {
                             this.posterUrl = epposter
                         }
                     }
-                }.flatten().let { episodes.addAll(it) }
+                }.filterNotNull().flatten().let { episodes.addAll(it) }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster

@@ -36,6 +36,7 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.runAllAsync
 import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -386,7 +387,7 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
 
         if (type == TvType.TvSeries) {
             val lastSeason = res.last_episode_to_air?.season_number
-            val episodes = res.seasons?.mapNotNull { season ->
+            val episodes = res.seasons?.amap { season ->
                 app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
                     .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
                         newEpisode(
@@ -426,7 +427,7 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
                             this.addDate(eps.airDate)
                         }
                     }
-            }?.flatten() ?: listOf()
+            }?.filterNotNull()?.flatten() ?: listOf()
             if (isAnime) {
                 val gson = Gson()
                 val animeType = if (data.type?.contains("tv", ignoreCase = true) == true) "series" else "movie"

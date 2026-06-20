@@ -44,6 +44,8 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.SubsExtractors.invokeOpenSubs
 import com.phisher98.SubsExtractors.invokeWatchsomuch
 import com.lagradost.cloudstream3.amap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 class StremioX(override var mainUrl: String, override var name: String) : TmdbProvider() {
     override val hasMainPage = true
@@ -173,20 +175,33 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
             res.videos?.results?.map { "https://www.youtube.com/watch?v=${it.key}" }?.randomOrNull()
 
 
-        val logoUrl = fetchTmdbLogoUrl(
-            tmdbAPI = "https://api.themoviedb.org/3",
-            apiKey = "98ae14df2b8d8f8f8136499daf79f0e0",
-            type = type,
-            tmdbId = res.id,
-            appLangCode = "en"
-        )
-
         val animeType = if (data.type?.contains("tv", ignoreCase = true) == true) "series" else "movie"
         val imdbId = res.external_ids?.imdb_id.orEmpty()
-        val cineRes = app.get("$Cinemeta/meta/$animeType/$imdbId.json").parsedSafe<CinemetaRes>()
+
+        val (logoUrl, cineRes, syncMetaData) = coroutineScope {
+            val logoDeferred = async {
+                fetchTmdbLogoUrl(
+                    tmdbAPI = "https://api.themoviedb.org/3",
+                    apiKey = "98ae14df2b8d8f8f8136499daf79f0e0",
+                    type = type,
+                    tmdbId = res.id,
+                    appLangCode = "en"
+                )
+            }
+            val cineDeferred = async {
+                app.get("$Cinemeta/meta/$animeType/$imdbId.json").parsedSafe<CinemetaRes>()
+            }
+            val syncDeferred = if (isAnime) {
+                async {
+                    app.get("https://api.ani.zip/mappings?imdb_id=$imdbId").toString()
+                }
+            } else null
+
+            Triple(logoDeferred.await(), cineDeferred.await(), syncDeferred?.await())
+        }
 
         return if (type == TvType.TvSeries) {
-            val episodes = res.seasons?.mapNotNull { season ->
+            val episodes = res.seasons?.amap { season ->
                 app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
                     .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
                         newEpisode(LoadData(
@@ -204,14 +219,13 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                             this.addDate(eps.airDate)
                         }
                     }
-            }?.flatten() ?: listOf()
+            }?.filterNotNull()?.flatten() ?: listOf()
 
             if (isAnime) {
                 val animeVideos = cineRes?.meta?.videos?.filter { it.season != 0 } ?: emptyList()
                 val jpTitle = res.alternative_titles?.results?.find { it.iso_3166_1 == "JP" }?.title
                     ?: cineRes?.meta?.name
-                val syncMetaData = app.get("https://api.ani.zip/mappings?imdb_id=$imdbId").toString()
-                val animeMetaData = parseAnimeData(syncMetaData)
+                val animeMetaData = syncMetaData?.let { parseAnimeData(it) }
                 val kitsuid = animeMetaData?.mappings?.kitsuid
                 fun buildEpisodeList(isDub: Boolean) = animeVideos.map { video ->
                     val videoYear = video.released?.split("-")?.firstOrNull()?.toIntOrNull()
