@@ -26,8 +26,8 @@ class ConcurrencyBottomSheet(
 
     // Single source of truth with proper clamp
     private var currentValue = sharedPref
-        .getInt("provider_concurrency", 20)
-        .coerceIn(8, 50)
+        .getInt("provider_concurrency", StreamPlayConcurrency.DeviceProfile.MID_RANGE.recommendedConcurrency)
+        .let(StreamPlayConcurrency::normalizeConcurrency)
 
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
@@ -77,6 +77,7 @@ class ConcurrencyBottomSheet(
         val btnDecrease = view.findView<Button>("btn_decrease")
         val btnIncrease = view.findView<Button>("btn_increase")
         val btnClose = view.findView<Button>("btn_close")
+        val tvMode = view.findView<TextView>("tv_mode")
 
         btnDecrease.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#D32F2F"))
         btnDecrease.setTextColor(android.graphics.Color.WHITE)
@@ -91,21 +92,22 @@ class ConcurrencyBottomSheet(
         btnClose.makeTvCompatible()
         fun updateUI() {
             tvValue.text = currentValue.toString()
-            btnDecrease.isEnabled = currentValue > 1
-            btnIncrease.isEnabled = currentValue < 50
+            tvMode.text = StreamPlayConcurrency.concurrencyLabel(currentValue)
+            btnDecrease.isEnabled = currentValue > StreamPlayConcurrency.MIN_PROVIDER_CONCURRENCY
+            btnIncrease.isEnabled = currentValue < StreamPlayConcurrency.MAX_PROVIDER_CONCURRENCY
         }
 
         btnDecrease.setOnClickListener {
-            if (currentValue > 1) {
-                currentValue--
+            if (currentValue > StreamPlayConcurrency.MIN_PROVIDER_CONCURRENCY) {
+                currentValue = (currentValue - 4).coerceAtLeast(StreamPlayConcurrency.MIN_PROVIDER_CONCURRENCY)
                 saveValue()
                 updateUI()
             }
         }
 
         btnIncrease.setOnClickListener {
-            if (currentValue < 50) {
-                currentValue++
+            if (currentValue < StreamPlayConcurrency.MAX_PROVIDER_CONCURRENCY) {
+                currentValue = (currentValue + 4).coerceAtMost(StreamPlayConcurrency.MAX_PROVIDER_CONCURRENCY)
                 saveValue()
                 updateUI()
             }

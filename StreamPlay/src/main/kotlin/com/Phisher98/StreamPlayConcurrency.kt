@@ -27,6 +27,9 @@ object StreamPlayConcurrency {
 
     // ==================== Device Profile Detection ====================
 
+    const val MIN_PROVIDER_CONCURRENCY = 8
+    const val MAX_PROVIDER_CONCURRENCY = 96
+
     enum class DeviceProfile {
         LOW_END,    // < 2GB RAM, < 4 cores
         MID_RANGE,  // 2-4GB RAM, 4-6 cores
@@ -120,7 +123,8 @@ object StreamPlayConcurrency {
 
     fun getProviderExecutionTimeout(providerId: String): Long {
         val stats = StreamPlayCache.getProviderStats(providerId)
-        if (stats.isCircuitBroken) return 6_000L
+        if (stats.isCircuitBroken) return 5_000L
+        if (stats.isRecovering) return 12_000L
         if (stats.successCount + stats.failureCount == 0) return 22_000L
 
         val historyBasedTimeout = when {
@@ -131,5 +135,15 @@ object StreamPlayConcurrency {
         }
 
         return historyBasedTimeout.coerceIn(6_000L, 35_000L)
+    }
+
+    fun normalizeConcurrency(value: Int): Int =
+        value.coerceIn(MIN_PROVIDER_CONCURRENCY, MAX_PROVIDER_CONCURRENCY)
+
+    fun concurrencyLabel(value: Int): String = when {
+        value <= 12 -> "Slow internet saver"
+        value <= 32 -> "Balanced"
+        value <= 64 -> "Fast"
+        else -> "Max speed"
     }
 }

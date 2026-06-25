@@ -675,15 +675,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
     ): Boolean = coroutineScope {
         val res = parseJson<LinkData>(data)
 
-        val stremioAddons = StreamPlayStremioAddonSettings.getDynamicStremioMap(
-            sharedPref,
-            res.imdbId,
-            res.season,
-            res.episode,
-            subtitleCallback,
-            callback
-        ).values
-
         val allProviders = buildProviders()
         val disabledProviderIds = sharedPref?.getStringSet("disabled_providers", null)
 
@@ -778,18 +769,15 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             Log.d(TAG, "📉 $brokenCount slow/failing providers moved to end of queue")
         }
 
-        if (prioritizedProviders.isEmpty() && stremioAddons.isEmpty()) return@coroutineScope true
-
         val requestedConcurrency = sharedPref?.getInt("provider_concurrency", 40) ?: 40
-        val concurrency = requestedConcurrency.coerceIn(12, 96)
+        val concurrency = StreamPlayConcurrency.normalizeConcurrency(requestedConcurrency)
+        val slowInternetMode = concurrency <= 12
 
-        val totalProviders = prioritizedProviders.size + stremioAddons.size
         val linksFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val subtitlesFound = java.util.concurrent.atomic.AtomicInteger(0)
         val providersCompleted = java.util.concurrent.atomic.AtomicInteger(0)
         val emittedLinks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-
-        Log.d(TAG, "🚀 Starting $totalProviders providers (concurrency: $concurrency, prioritized by success rate)")
 
         fun emitLink(link: ExtractorLink): Boolean {
             val dedupeKey = buildString {
@@ -816,6 +804,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             val dedupeKey = "${lang.lowercase()}|$url"
 
             return if (emittedSubtitles.add(dedupeKey)) {
+                subtitlesFound.incrementAndGet()
                 subtitleCallback(subtitle)
                 true
             } else {
@@ -823,6 +812,25 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 false
             }
         }
+
+        val stremioAddons = StreamPlayStremioAddonSettings.getDynamicStremioMap(
+            sharedPref,
+            res.imdbId,
+            res.season,
+            res.episode,
+            { subtitle -> emitSubtitle(subtitle) },
+            { link -> emitLink(link) }
+        )
+
+        if (prioritizedProviders.isEmpty() && stremioAddons.isEmpty()) {
+            Log.w(TAG, "No StreamPlay sources enabled or applicable for this title")
+            return@coroutineScope false
+        }
+
+        val totalProviders = prioritizedProviders.size + stremioAddons.size
+        Log.d(TAG, "🚀 Starting $totalProviders providers (concurrency: $concurrency, mode: ${StreamPlayConcurrency.concurrencyLabel(concurrency)}, prioritized by success rate)")
+
+        fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
         val executionList: List<suspend () -> Unit> = prioritizedProviders.map { provider ->
             suspend {
@@ -838,6 +846,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 }
 
                 val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
+                    .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }
 
                 runCatching {
                     val completed = withTimeoutOrNull(providerTimeout.milliseconds) {
@@ -851,11 +860,11 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     }
                     if (!completed) Log.w(TAG, "Provider ${provider.id} timed out after ${providerTimeout}ms")
                 }.onFailure { e ->
-                    if (linksFound.get() > 0) {
-                        Log.w(TAG, "Provider ${provider.id} failed after links were available; skipping retry: ${e.message}")
+                    if (totalResultsFound() > 0) {
+                        Log.w(TAG, "Provider ${provider.id} failed after results were available; skipping retry: ${e.message}")
                     } else {
                         val retryDelayMs = 300L
-                        Log.w(TAG, "Provider ${provider.id} failed before any links, fast retry in ${retryDelayMs}ms: ${e.message}")
+                        Log.w(TAG, "Provider ${provider.id} failed before any results, fast retry in ${retryDelayMs}ms: ${e.message}")
                         kotlinx.coroutines.delay(retryDelayMs.milliseconds)
                         runCatching {
                             val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(4_000L).milliseconds) {
@@ -883,15 +892,23 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 }
                 Unit
             }
-        } + stremioAddons.map { addon ->
+        } + stremioAddons.map { (addonId, addon) ->
             suspend {
-                withTimeoutOrNull(15_000L.milliseconds) {
+                val startTime = System.currentTimeMillis()
+                val beforeResults = totalResultsFound()
+                val completedInTime = withTimeoutOrNull(15_000L.milliseconds) {
                     runCatching {
                         addon()
                     }.onFailure { e ->
-                        Log.w(TAG, "Stremio addon failed: ${e.message}")
-                    }
-                } ?: Log.w(TAG, "Stremio addon timed out")
+                        Log.w(TAG, "Stremio addon $addonId failed: ${e.message}")
+                    }.isSuccess
+                } ?: false
+                StreamPlayCache.recordProviderExecution(
+                    addonId,
+                    completedInTime && totalResultsFound() > beforeResults,
+                    System.currentTimeMillis() - startTime
+                )
+                if (!completedInTime) Log.w(TAG, "Stremio addon $addonId timed out")
                 val completed = providersCompleted.incrementAndGet()
                 if (completed % 10 == 0 || completed == totalProviders) {
                     Log.d(TAG, "⏳ Progress: $completed/$totalProviders providers")
@@ -901,13 +918,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         runLimitedAsync(
             concurrency = concurrency,
-            taskTimeoutMs = 40_000L,
+            taskTimeoutMs = if (slowInternetMode) 50_000L else 40_000L,
             *executionList.toTypedArray()
         )
 
         StreamPlayCache.saveProviderStats(sharedPref ?: companionSharedPref)
-        Log.d(TAG, "✅ Finished: $totalProviders providers checked, ${linksFound.get()} links found")
-        true
+        val foundAnyResults = totalResultsFound() > 0
+        Log.d(TAG, "✅ Finished: $totalProviders providers checked, ${linksFound.get()} links and ${subtitlesFound.get()} subtitles found")
+        foundAnyResults
     }
 
     data class LinkData(
