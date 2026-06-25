@@ -137,7 +137,8 @@ object StreamPlayCache {
         val failureCount: Int = 0,
         val totalTimeMs: Long = 0,
         val lastExecutionMs: Long = 0,
-        val consecutiveFailures: Int = 0
+        val consecutiveFailures: Int = 0,
+        val lastFailureAtMs: Long = 0L
     ) {
         val successRate: Float
             get() = if (successCount + failureCount == 0) 0f
@@ -147,9 +148,15 @@ object StreamPlayCache {
             get() = if (successCount == 0) 0L else totalTimeMs / successCount
 
         val isCircuitBroken: Boolean
-            get() = consecutiveFailures >= 5
+            get() = consecutiveFailures >= 5 &&
+                System.currentTimeMillis() - lastFailureAtMs < CIRCUIT_BREAKER_COOLDOWN_MS
+
+        val isRecovering: Boolean
+            get() = consecutiveFailures >= 5 && !isCircuitBroken
     }
 
+    private const val CIRCUIT_BREAKER_COOLDOWN_MS = 15 * 60 * 1000L
+    private const val PROVIDER_STATS_MAX_SIZE = 300
     private val providerStatsMap = ConcurrentHashMap<String, ProviderStats>()
 
     /**
@@ -163,28 +170,40 @@ object StreamPlayCache {
      * Record provider execution result
      */
     fun recordProviderExecution(providerId: String, success: Boolean, durationMs: Long) {
-        val current = providerStatsMap[providerId] ?: ProviderStats()
+        var previous = ProviderStats()
+        var updated = ProviderStats()
 
-        val updated = if (success) {
-            current.copy(
-                successCount = current.successCount + 1,
-                totalTimeMs = current.totalTimeMs + durationMs,
-                lastExecutionMs = durationMs,
-                consecutiveFailures = 0
-            )
-        } else {
-            current.copy(
-                failureCount = current.failureCount + 1,
-                lastExecutionMs = durationMs,
-                consecutiveFailures = current.consecutiveFailures + 1
-            )
+        providerStatsMap.compute(providerId) { _, currentStats ->
+            val current = currentStats ?: ProviderStats()
+            previous = current
+            updated = if (success) {
+                current.copy(
+                    successCount = current.successCount + 1,
+                    totalTimeMs = current.totalTimeMs + durationMs,
+                    lastExecutionMs = durationMs,
+                    consecutiveFailures = 0,
+                    lastFailureAtMs = 0L
+                )
+            } else {
+                current.copy(
+                    failureCount = current.failureCount + 1,
+                    lastExecutionMs = durationMs,
+                    consecutiveFailures = current.consecutiveFailures + 1,
+                    lastFailureAtMs = System.currentTimeMillis()
+                )
+            }
+            updated
         }
 
-        providerStatsMap[providerId] = updated
+        if (providerStatsMap.size > PROVIDER_STATS_MAX_SIZE) {
+            providerStatsMap.entries.minByOrNull { (_, stats) ->
+                stats.lastFailureAtMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+            }?.key?.takeIf { it != providerId }?.let(providerStatsMap::remove)
+        }
 
-        if (updated.isCircuitBroken && !current.isCircuitBroken) {
+        if (updated.isCircuitBroken && !previous.isCircuitBroken) {
             Log.w(TAG, "📉 Provider moved to low priority: $providerId (${updated.consecutiveFailures} consecutive failures)")
-        } else if (!updated.isCircuitBroken && current.isCircuitBroken) {
+        } else if (!updated.isCircuitBroken && previous.isCircuitBroken) {
             Log.d(TAG, "✅ Provider recovered: $providerId")
         }
     }
@@ -193,6 +212,7 @@ object StreamPlayCache {
         val stats = getProviderStats(providerId)
 
         if (stats.isCircuitBroken) return -1000f
+        if (stats.isRecovering) return -25f
 
         if (stats.successCount + stats.failureCount == 0) return 0f
 
@@ -255,7 +275,7 @@ object StreamPlayCache {
         prefs?.edit()?.apply {
             providerStatsMap.forEach { (providerId, stats) ->
                 putString("provider_stats_$providerId",
-                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures}")
+                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures},${stats.lastFailureAtMs}")
             }
             apply()
         }
@@ -275,7 +295,8 @@ object StreamPlayCache {
                             successCount = parts[0].toInt(),
                             failureCount = parts[1].toInt(),
                             totalTimeMs = parts[2].toLong(),
-                            consecutiveFailures = parts[3].toInt()
+                            consecutiveFailures = parts[3].toInt(),
+                            lastFailureAtMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L
                         )
                         providerStatsMap[providerId] = stats
                     } catch (e: Exception) {

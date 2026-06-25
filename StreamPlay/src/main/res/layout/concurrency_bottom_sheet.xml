@@ -26,7 +26,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="How many providers load simultaneously"
+        android:text="How many providers race at the same time"
         android:textSize="12sp"
         android:textColor="#AAAAAA"
         android:gravity="center"
@@ -52,14 +52,30 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"/>
 
-        <TextView
-            android:id="@+id/tv_value"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="40"
-            android:textSize="56sp"
-            android:textStyle="bold"
-            android:textColor="#1F6FEB"/>
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/tv_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="32"
+                android:textSize="56sp"
+                android:textStyle="bold"
+                android:textColor="#1F6FEB"/>
+
+            <TextView
+                android:id="@+id/tv_mode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Balanced"
+                android:textSize="12sp"
+                android:textColor="#B7C7FF"
+                android:gravity="center"/>
+        </LinearLayout>
 
         <Space
             android:layout_width="0dp"
@@ -83,7 +99,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Lower = Slower but less resource usage\nHigher = Faster but more resource usage"
+        android:text="8-12 keeps slow connections stable with longer waits. 32 is balanced. 64+ aggressively races providers for fastest first links."
         android:textSize="11sp"
         android:textColor="#999999"
         android:gravity="center"
