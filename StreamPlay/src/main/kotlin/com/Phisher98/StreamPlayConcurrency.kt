@@ -27,7 +27,7 @@ object StreamPlayConcurrency {
 
     // ==================== Device Profile Detection ====================
 
-    const val MIN_PROVIDER_CONCURRENCY = 8
+    const val MIN_PROVIDER_CONCURRENCY = 4
     const val MAX_PROVIDER_CONCURRENCY = 96
 
     enum class DeviceProfile {
@@ -37,7 +37,7 @@ object StreamPlayConcurrency {
 
         val recommendedConcurrency: Int
             get() = when (this) {
-                LOW_END -> 12
+                LOW_END -> 8
                 MID_RANGE -> 32
                 HIGH_END -> 64
             }
@@ -145,5 +145,16 @@ object StreamPlayConcurrency {
         value <= 32 -> "Balanced"
         value <= 64 -> "Fast"
         else -> "Max speed"
+    }
+
+    fun shouldStopSlowInternetSearch(
+        linksFound: Int,
+        subtitlesFound: Int,
+        providersCompleted: Int,
+        totalProviders: Int
+    ): Boolean {
+        if (linksFound < 8) return false
+        if (providersCompleted < min(totalProviders, 12)) return false
+        return subtitlesFound >= 2 || providersCompleted >= min(totalProviders, 20)
     }
 }

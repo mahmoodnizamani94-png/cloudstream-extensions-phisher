@@ -158,6 +158,7 @@ object StreamPlayCache {
     private const val CIRCUIT_BREAKER_COOLDOWN_MS = 15 * 60 * 1000L
     private const val PROVIDER_STATS_MAX_SIZE = 300
     private val providerStatsMap = ConcurrentHashMap<String, ProviderStats>()
+    private val loadedPrefs = java.util.Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
 
     /**
      * Get provider statistics
@@ -275,9 +276,17 @@ object StreamPlayCache {
         prefs?.edit()?.apply {
             providerStatsMap.forEach { (providerId, stats) ->
                 putString("provider_stats_$providerId",
-                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures},${stats.lastFailureAtMs}")
+                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures},${stats.lastFailureAtMs},${stats.lastExecutionMs}")
             }
             apply()
+        }
+    }
+
+    fun loadProviderStatsOnce(prefs: SharedPreferences?) {
+        if (prefs == null) return
+        val identity = System.identityHashCode(prefs)
+        if (loadedPrefs.add(identity)) {
+            loadProviderStats(prefs)
         }
     }
 
@@ -296,7 +305,8 @@ object StreamPlayCache {
                             failureCount = parts[1].toInt(),
                             totalTimeMs = parts[2].toLong(),
                             consecutiveFailures = parts[3].toInt(),
-                            lastFailureAtMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L
+                            lastFailureAtMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L,
+                            lastExecutionMs = parts.getOrNull(5)?.toLongOrNull() ?: 0L
                         )
                         providerStatsMap[providerId] = stats
                     } catch (e: Exception) {

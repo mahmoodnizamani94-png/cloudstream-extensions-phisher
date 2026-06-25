@@ -63,6 +63,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
     init {
         if (sharedPref != null) {
             companionSharedPref = sharedPref
+            StreamPlayCache.loadProviderStatsOnce(sharedPref)
+        } else {
+            StreamPlayCache.loadProviderStatsOnce(companionSharedPref)
         }
     }
 
@@ -832,8 +835,22 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
+        fun shouldSkipRemainingSlowInternetWork(): Boolean =
+            slowInternetMode && StreamPlayConcurrency.shouldStopSlowInternetSearch(
+                linksFound = linksFound.get(),
+                subtitlesFound = subtitlesFound.get(),
+                providersCompleted = providersCompleted.get(),
+                totalProviders = totalProviders
+            )
+
         val executionList: List<suspend () -> Unit> = prioritizedProviders.map { provider ->
-            suspend {
+            providerTask@ suspend {
+                if (shouldSkipRemainingSlowInternetWork()) {
+                    providersCompleted.incrementAndGet()
+                    Log.d(TAG, "Slow internet saver: skipped ${provider.id} after enough playable results were found")
+                    return@providerTask
+                }
+
                 val startTime = System.currentTimeMillis()
                 var success = false
                 val localLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
@@ -893,7 +910,13 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 Unit
             }
         } + stremioAddons.map { (addonId, addon) ->
-            suspend {
+            addonTask@ suspend {
+                if (shouldSkipRemainingSlowInternetWork()) {
+                    providersCompleted.incrementAndGet()
+                    Log.d(TAG, "Slow internet saver: skipped Stremio addon $addonId after enough playable results were found")
+                    return@addonTask
+                }
+
                 val startTime = System.currentTimeMillis()
                 val beforeResults = totalResultsFound()
                 val completedInTime = withTimeoutOrNull(15_000L.milliseconds) {
