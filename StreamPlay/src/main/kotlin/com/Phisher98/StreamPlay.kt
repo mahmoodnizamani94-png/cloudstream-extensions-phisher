@@ -774,6 +774,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val slowInternetMode = concurrency <= 12
 
         val linksFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val subtitlesFound = java.util.concurrent.atomic.AtomicInteger(0)
         val providersCompleted = java.util.concurrent.atomic.AtomicInteger(0)
         val emittedLinks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -803,6 +804,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             val dedupeKey = "${lang.lowercase()}|$url"
 
             return if (emittedSubtitles.add(dedupeKey)) {
+                subtitlesFound.incrementAndGet()
                 subtitleCallback(subtitle)
                 true
             } else {
@@ -827,6 +829,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val totalProviders = prioritizedProviders.size + stremioAddons.size
         Log.d(TAG, "🚀 Starting $totalProviders providers (concurrency: $concurrency, mode: ${StreamPlayConcurrency.concurrencyLabel(concurrency)}, prioritized by success rate)")
+
+        fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
         val executionList: List<suspend () -> Unit> = prioritizedProviders.map { provider ->
             suspend {
@@ -856,11 +860,11 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     }
                     if (!completed) Log.w(TAG, "Provider ${provider.id} timed out after ${providerTimeout}ms")
                 }.onFailure { e ->
-                    if (linksFound.get() > 0) {
-                        Log.w(TAG, "Provider ${provider.id} failed after links were available; skipping retry: ${e.message}")
+                    if (totalResultsFound() > 0) {
+                        Log.w(TAG, "Provider ${provider.id} failed after results were available; skipping retry: ${e.message}")
                     } else {
                         val retryDelayMs = 300L
-                        Log.w(TAG, "Provider ${provider.id} failed before any links, fast retry in ${retryDelayMs}ms: ${e.message}")
+                        Log.w(TAG, "Provider ${provider.id} failed before any results, fast retry in ${retryDelayMs}ms: ${e.message}")
                         kotlinx.coroutines.delay(retryDelayMs.milliseconds)
                         runCatching {
                             val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(4_000L).milliseconds) {
@@ -891,7 +895,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         } + stremioAddons.map { (addonId, addon) ->
             suspend {
                 val startTime = System.currentTimeMillis()
-                val beforeLinks = linksFound.get()
+                val beforeResults = totalResultsFound()
                 val completedInTime = withTimeoutOrNull(15_000L.milliseconds) {
                     runCatching {
                         addon()
@@ -901,7 +905,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 } ?: false
                 StreamPlayCache.recordProviderExecution(
                     addonId,
-                    completedInTime && linksFound.get() > beforeLinks,
+                    completedInTime && totalResultsFound() > beforeResults,
                     System.currentTimeMillis() - startTime
                 )
                 if (!completedInTime) Log.w(TAG, "Stremio addon $addonId timed out")
@@ -919,9 +923,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         )
 
         StreamPlayCache.saveProviderStats(sharedPref ?: companionSharedPref)
-        val foundAnyLinks = linksFound.get() > 0
-        Log.d(TAG, "✅ Finished: $totalProviders providers checked, ${linksFound.get()} links found")
-        foundAnyLinks
+        val foundAnyResults = totalResultsFound() > 0
+        Log.d(TAG, "✅ Finished: $totalProviders providers checked, ${linksFound.get()} links and ${subtitlesFound.get()} subtitles found")
+        foundAnyResults
     }
 
     data class LinkData(
