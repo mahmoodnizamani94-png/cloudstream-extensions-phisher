@@ -844,7 +844,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             )
 
         val executionList: List<suspend () -> Unit> = prioritizedProviders.map { provider ->
-            providerTask@ suspend {
+            suspend providerTask@{
                 if (shouldSkipRemainingSlowInternetWork()) {
                     providersCompleted.incrementAndGet()
                     Log.d(TAG, "Slow internet saver: skipped ${provider.id} after enough playable results were found")
@@ -910,7 +910,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 Unit
             }
         } + stremioAddons.map { (addonId, addon) ->
-            addonTask@ suspend {
+            suspend addonTask@{
                 if (shouldSkipRemainingSlowInternetWork()) {
                     providersCompleted.incrementAndGet()
                     Log.d(TAG, "Slow internet saver: skipped Stremio addon $addonId after enough playable results were found")
