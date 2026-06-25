@@ -1270,28 +1270,7 @@ suspend fun runLimitedAsync(
     concurrency: Int = 5,
     taskTimeoutMs: Long = 25_000L,
     vararg tasks: suspend () -> Unit
-) = coroutineScope {
-    // Use enhanced concurrency system if available
-    try {
-        StreamPlayConcurrency.runLimitedAsync(concurrency, taskTimeoutMs, *tasks)
-    } catch (e: Exception) {
-        // Fallback to original implementation if StreamPlayConcurrency not available
-        val semaphore = Semaphore(concurrency.coerceAtLeast(1))
-
-        tasks.map { task ->
-            async(Dispatchers.IO) {
-                semaphore.withPermit {
-                    try {
-                        task()
-                    } catch (e: Exception) {
-                        // Log error but continue
-                        Log.e("runLimitedAsync", "Task failed: ${e.message}")
-                    }
-                }
-            }
-        }.awaitAll()
-    }
-}
+) = StreamPlayConcurrency.runLimitedAsync(concurrency, taskTimeoutMs, *tasks)
 
 
 fun decryptVidzeeUrl(encrypted: String, key: ByteArray): String {

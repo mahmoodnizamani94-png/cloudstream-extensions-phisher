@@ -41,7 +41,7 @@ class StreamPlayPlugin: Plugin() {
         Log.d("StreamPlay", "🚀 Initializing StreamPlay optimizations...")
 
         // Load provider stats from SharedPreferences
-        StreamPlayCache.loadProviderStats(sharedPref)
+        StreamPlayCache.loadProviderStatsOnce(sharedPref)
 
         // Detect device profile and adjust concurrency
         val deviceProfile = StreamPlayConcurrency.detectDeviceProfile(context)
