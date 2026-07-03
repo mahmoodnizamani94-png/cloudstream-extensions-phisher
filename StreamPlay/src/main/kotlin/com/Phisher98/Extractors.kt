@@ -1488,8 +1488,11 @@ class Pahe : ExtractorApi() {
             .get()
             .build()
 
-        val kwikUrl = "https://" + noRedirects.newCall(initialRequest).execute()
-            .header("location")!!.substringAfterLast("https://")
+        val kwikUrl = noRedirects.newCall(initialRequest).execute().use { response ->
+            response.header("location")?.let { location ->
+                if (location.startsWith("http")) location else "https://${location.substringAfterLast("https://")}"
+            } ?: return
+        }
 
         val fContentRequest = Request.Builder()
             .url(kwikUrl)
@@ -1497,14 +1500,20 @@ class Pahe : ExtractorApi() {
             .get()
             .build()
 
-        val fContent = client.newCall(fContentRequest).execute()
-        val fContentString = fContent.body.toString()
+        var kwikCookie = ""
+        var kwikReferer = kwikUrl
+        val fContentString = client.newCall(fContentRequest).execute().use { response ->
+            if (!response.isSuccessful) return
+            kwikReferer = response.request.url.toString()
+            kwikCookie = response.headers("set-cookie").firstOrNull().orEmpty()
+            response.body?.string() ?: return
+        }
 
-        val (fullString, key, v1, v2) = kwikParamsRegex.find(fContentString)!!.destructured
+        val (fullString, key, v1, v2) = kwikParamsRegex.find(fContentString)?.destructured ?: return
         val decrypted = decrypt(fullString, key, v1.toInt(), v2.toInt())
 
-        val uri = kwikDUrl.find(decrypted)!!.destructured.component1()
-        val tok = kwikDToken.find(decrypted)!!.destructured.component1()
+        val uri = kwikDUrl.find(decrypted)?.destructured?.component1() ?: return
+        val tok = kwikDToken.find(decrypted)?.destructured?.component1() ?: return
 
         val noRedirectClient = OkHttpClient().newBuilder()
             .followRedirects(false)
@@ -1524,18 +1533,18 @@ class Pahe : ExtractorApi() {
             val postRequest = Request.Builder()
                 .url(uri)
                 .header("user-agent", " Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-                .header("referer", fContent.request.url.toString())
-                .header("cookie",  fContent.headers("set-cookie").firstOrNull().toString())
+                .header("referer", kwikReferer)
+                .header("cookie", kwikCookie)
                 .post(formBody)
                 .build()
 
+            content?.close()
             content = noRedirectClient.newCall(postRequest).execute()
             code = content.code
             tries++
         }
 
-        val location = content?.header("location").toString()
-        content?.close()
+        val location = content?.use { response -> response.header("location") } ?: return
 
         callback(
             newExtractorLink(
