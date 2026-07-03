@@ -19,8 +19,8 @@ import org.jsoup.nodes.Element
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.ConcurrentHashMap
 
 class UHDmoviesProvider : MainAPI() { // all providers must be an instance of MainAPI
     override var mainUrl: String = runBlocking {
@@ -48,8 +48,10 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
     )
 
     private suspend fun cfKiller(url: String): NiceResponse {
-        var doc = app.get(url)
+        val useCloudflareKiller = CloudflareChallengeCache.shouldUse(url)
+        var doc = if (useCloudflareKiller) app.get(url, interceptor = CloudflareKiller()) else app.get(url)
         if (doc.document.select("title").text() == "Just a moment") {
+            CloudflareChallengeCache.markChallenged(url)
             doc = app.get(url, interceptor = CloudflareKiller())
         }
         return doc
@@ -92,7 +94,7 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = cfKiller("$mainUrl?s=$query ").document
+        val document = cfKiller("$mainUrl?s=${query.urlEncode()}").document
 
         return document.select("article.gridlove-post").mapNotNull {
             it.toSearchResult()
@@ -143,21 +145,27 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
 
         return if (type == TvType.TvSeries) {
             val tvSeriesEpisodes = mutableListOf<Episode>()
-            val episodesMap: MutableMap<Pair<Int, Int>, List<String>> = mutableMapOf()
+            val episodesMap: MutableMap<Pair<Int, Int>, MutableList<String>> = mutableMapOf()
+            val metaVideoByEpisode = metaVideos.associateBy {
+                Pair(it["season"]?.asInt(), it["episode"]?.asInt())
+            }
+            val seasonRegex = Regex("""(?i)(?:season\s*|S)(\d+)""")
+            val episodeRegex = Regex("""(?i)Episode\s*(\d+)""")
 
             var currentSeason = 1
 
             doc.select("pre, p, a:contains(Episode)").forEach { el ->
-                val seasonMatch = Regex("""(?i)(?:season\s*|S)(\d+)""").find(el.text())
+                val text = el.text()
+                val seasonMatch = seasonRegex.find(text)
                 if (seasonMatch != null) {
                     currentSeason = seasonMatch.groupValues[1].toIntOrNull() ?: currentSeason
                 }
 
-                if (el.tagName() == "a" && el.text().contains("Episode",ignoreCase = true)) {
-                    if (el.text().contains("Zip", true)) return@forEach
+                if (el.tagName() == "a" && text.contains("Episode",ignoreCase = true)) {
+                    if (text.contains("Zip", true)) return@forEach
 
-                    val realEp = Regex("""(?i)Episode\s*(\d+)""")
-                        .find(el.text())
+                    val realEp = episodeRegex
+                        .find(text)
                         ?.groupValues?.get(1)
                         ?.toIntOrNull() ?: return@forEach
 
@@ -166,24 +174,14 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
 
                     val key = Pair(currentSeason, realEp)
 
-                    if (episodesMap.containsKey(key)) {
-                        val currentList = episodesMap[key] ?: emptyList()
-                        val newList = currentList.toMutableList()
-                        newList.add(epUrl)
-                        episodesMap[key] = newList
-                    } else {
-                        episodesMap[key] = mutableListOf(epUrl)
-                    }
+                    episodesMap.getOrPut(key) { mutableListOf() }.add(epUrl)
                 }
             }
 
             for ((key, value) in episodesMap) {
                 if(key.first == 0 || key.second == 0) continue
 
-                val epMeta = metaVideos.firstOrNull {
-                    it["season"]?.asInt() == key.first &&
-                        it["episode"]?.asInt() == key.second
-                }
+                val epMeta = metaVideoByEpisode[key]
 
                 val data = value.map { source->
                     UHDLinks(
@@ -228,10 +226,10 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
             }
         } else {
             val iframeRegex = Regex("""\[.*]""")
-            val iframe = doc.select("""div.entry-content > p""").amap { it }.filter {
+            val iframe = doc.select("""div.entry-content > p""").filter {
                 iframeRegex.find(it.toString()) != null
             }
-            val data = iframe.amap {
+            val data = iframe.map {
                 UHDLinks(
                     it.text().substringBefore("Download"),
                     it.nextElementSibling()?.select("a.maxbutton-1")?.attr("href") ?: ""
@@ -271,23 +269,38 @@ class UHDmoviesProvider : MainAPI() { // all providers must be an instance of Ma
             loadExtractor(finalLink, subtitleCallback, callback)
         } else {
             val sources = parseJson<ArrayList<UHDLinks>>(data)
+                .distinctBy { it.sourceLink }
+                .filter { it.sourceLink.isNotBlank() }
 
             sources.amap { me ->
-                launch {
-                    runCatching {
-                        val link = me.sourceLink
-                        val finalLink = if (link.contains("unblockedgames")) {
-                            bypassHrefli(link) ?: return@runCatching
-                        } else {
-                            link
-                        }
-                        loadExtractor(finalLink, subtitleCallback, callback)
-                    }.onFailure {
+                runCatching {
+                    val link = me.sourceLink
+                    val finalLink = if (link.contains("unblockedgames")) {
+                        bypassHrefli(link) ?: return@runCatching
+                    } else {
+                        link
                     }
+                    loadExtractor(finalLink, subtitleCallback, callback)
+                }.onFailure {
                 }
             }
         }
         return@coroutineScope true
+    }
+}
+
+private object CloudflareChallengeCache {
+    private const val TTL_MS = 10 * 60 * 1000L
+    private val challengedUntil = ConcurrentHashMap<String, Long>()
+
+    fun shouldUse(url: String): Boolean {
+        val host = runCatching { getBaseUrl(url) }.getOrDefault(url)
+        return (challengedUntil[host] ?: 0L) > System.currentTimeMillis()
+    }
+
+    fun markChallenged(url: String) {
+        val host = runCatching { getBaseUrl(url) }.getOrDefault(url)
+        challengedUntil[host] = System.currentTimeMillis() + TTL_MS
     }
 }
 
@@ -300,30 +313,33 @@ suspend fun fetchIds(
     val TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49"
 
     val type = if (isSeries) "tv" else "movie"
+    val cacheKey = "tmdb:$type:${title.lowercase()}:${year ?: "any"}"
 
-    val searchUrl = buildString {
-        append("$TMDB_API/search/$type")
-        append("?api_key=$TMDB_API_KEY")
-        append("&query=${title.urlEncode()}")
-        if (year != null) {
-            append(if (isSeries) "&first_air_date_year=$year" else "&year=$year")
+    return ExpiringCache.getOrPut(cacheKey, ttlMs = 6 * 60 * 60 * 1000L) {
+        val searchUrl = buildString {
+            append("$TMDB_API/search/$type")
+            append("?api_key=$TMDB_API_KEY")
+            append("&query=${title.urlEncode()}")
+            if (year != null) {
+                append(if (isSeries) "&first_air_date_year=$year" else "&year=$year")
+            }
         }
-    }
 
-    val searchJson = JSONObject(app.get(searchUrl).text)
-    val results = searchJson.optJSONArray("results")
-    val tmdbId = results?.optJSONObject(0)?.optInt("id")
+        val searchJson = JSONObject(app.get(searchUrl).text)
+        val results = searchJson.optJSONArray("results")
+        val tmdbId = results?.optJSONObject(0)?.optInt("id")
 
-    val imdbId = tmdbId?.let { id ->
-        val extUrl = "$TMDB_API/$type/$id/external_ids?api_key=$TMDB_API_KEY"
-        val extJson = JSONObject(app.get(extUrl).text)
-        extJson.optString("imdb_id").takeIf { it.isNotBlank() }
-    }
+        val imdbId = tmdbId?.let { id ->
+            val extUrl = "$TMDB_API/$type/$id/external_ids?api_key=$TMDB_API_KEY"
+            val extJson = JSONObject(app.get(extUrl).text)
+            extJson.optString("imdb_id").takeIf { it.isNotBlank() }
+        }
 
-    return IdResult(
-        tmdbId = tmdbId,
-        imdbId = imdbId
-    )
+        IdResult(
+            tmdbId = tmdbId,
+            imdbId = imdbId
+        )
+    } ?: IdResult(tmdbId = null, imdbId = null)
 }
 
 data class IdResult(
@@ -339,23 +355,23 @@ private suspend fun fetchMetaData(imdbId: String?, type: TvType): JsonNode? {
     val metaType = if (type == TvType.TvSeries) "series" else "movie"
     val url = "https://v3-cinemeta.strem.io/meta/$metaType/$imdbId.json"
 
-    return try {
+    return runCatching { ExpiringCache.getOrPut("cinemeta:$metaType:$imdbId", ttlMs = 6 * 60 * 60 * 1000L) {
         val resp = app.get(url).text
         mapper.readTree(resp)["meta"]
-    } catch (_: Exception) {
-        null
-    }
+    } }.getOrNull()
 }
 
 private suspend fun fetchSimklId(
     imdbId: String,
     isSeries: Boolean
-): Int? = runCatching {
+): Int? {
     val type = if (isSeries) "tv" else "movies"
-    val url = "https://api.simkl.com/$type/$imdbId?client_id=${BuildConfig.SIMKL_CLIENT_ID}"
+    return runCatching { ExpiringCache.getOrPut("simkl:$type:$imdbId", ttlMs = 6 * 60 * 60 * 1000L) {
+        val url = "https://api.simkl.com/$type/$imdbId?client_id=${BuildConfig.SIMKL_CLIENT_ID}"
 
-    JSONObject(app.get(url).text)
-        .optJSONObject("ids")
-        ?.optInt("simkl")
-        ?.takeIf { it != 0 }
-}.getOrNull()
+        JSONObject(app.get(url).text)
+            .optJSONObject("ids")
+            ?.optInt("simkl")
+            ?.takeIf { it != 0 }
+    } }.getOrNull()
+}

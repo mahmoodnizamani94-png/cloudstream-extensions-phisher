@@ -10,7 +10,10 @@ android {
     }
     defaultConfig {
         val properties = Properties()
-        properties.load(project.rootProject.file("local.properties").inputStream())
+        project.rootProject.file("local.properties")
+            .takeIf { it.isFile }
+            ?.inputStream()
+            ?.use { properties.load(it) }
         android.buildFeatures.buildConfig=true
     }
 }

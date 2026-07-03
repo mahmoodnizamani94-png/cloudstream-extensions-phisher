@@ -18,6 +18,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 fun getIndexQuality(str: String?): Int {
     return Regex("(\\d{3,4})[pP]").find(str ?: "") ?. groupValues ?. getOrNull(1) ?. toIntOrNull()
@@ -316,17 +317,7 @@ suspend fun generateMagnetLink(
 ): String {
     require(hash?.isNotBlank() == true)
 
-    val trackers = mutableSetOf<String>()
-
-    trackerUrls.amap { url ->
-        runCatching {
-            app.get(url).text
-                .lineSequence()
-                .map { it.trim() }
-                .filter { it.isNotEmpty() && !it.startsWith("#") }
-                .toList()
-        }.getOrElse { emptyList() }
-    }.flatten().toMutableSet()
+    val trackers = TorrentTrackerCache.get(trackerUrls = trackerUrls)
 
     return buildString {
         append("magnet:?xt=urn:btih:").append(hash)
@@ -342,5 +333,41 @@ suspend fun generateMagnetLink(
                 append("&tr=")
                 append(URLEncoder.encode(tracker, StandardCharsets.UTF_8.name()))
             }
+    }
+}
+
+private object TorrentTrackerCache {
+    private const val TTL_MS = 12 * 60 * 60 * 1000L
+    private val cache = ConcurrentHashMap<String, CacheEntry>()
+
+    private data class CacheEntry(
+        val trackers: Set<String>,
+        val expiresAt: Long
+    )
+
+    suspend fun get(trackerUrls: List<String>): Set<String> {
+        val normalizedUrls = trackerUrls
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .sorted()
+        if (normalizedUrls.isEmpty()) return emptySet()
+
+        val key = normalizedUrls.joinToString("|")
+        val now = System.currentTimeMillis()
+        cache[key]?.takeIf { it.expiresAt > now }?.let { return it.trackers }
+
+        val trackers = normalizedUrls.amap { url ->
+            runCatching {
+                app.get(url).text
+                    .lineSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.startsWith("#") }
+                    .toList()
+            }.getOrElse { emptyList() }
+        }.flatten().toSet()
+
+        cache[key] = CacheEntry(trackers, now + TTL_MS)
+        return trackers
     }
 }
