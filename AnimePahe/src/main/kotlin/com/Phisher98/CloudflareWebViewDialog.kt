@@ -82,7 +82,7 @@ class CloudflareWebViewDialog(
     }
 
     // ── Polling runnable ─────────────────────────────────────────────────────
-    private val cookiePollRunnable = object : Runnable {
+    private val cookiePollRunnable: Runnable = object : Runnable {
         override fun run() {
             if (cookiesSaved || !isAdded) return
 
