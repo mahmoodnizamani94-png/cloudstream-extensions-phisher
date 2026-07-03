@@ -161,8 +161,10 @@ class Pahe : ExtractorApi() {
             .build()
 
         var kwikCookie = ""
+        var kwikReferer = kwikUrl
         val fContentString = client.newCall(fContentRequest).execute().use { response ->
             if (!response.isSuccessful) return
+            kwikReferer = response.request.url.toString()
             kwikCookie = response.headers("set-cookie").firstOrNull().orEmpty()
             response.body?.string() ?: return
         }
@@ -191,7 +193,7 @@ class Pahe : ExtractorApi() {
             val postRequest = Request.Builder()
                 .url(uri)
                 .header("user-agent", " Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-                .header("referer", kwikUrl)
+                .header("referer", kwikReferer)
                 .header("cookie", kwikCookie)
                 .post(formBody)
                 .build()
