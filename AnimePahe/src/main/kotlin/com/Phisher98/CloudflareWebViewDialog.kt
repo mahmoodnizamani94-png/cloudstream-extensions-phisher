@@ -122,10 +122,9 @@ class CloudflareWebViewDialog(
         pollElapsedMs += POLL_INTERVAL_MS
         updateStatus("⏳ Waiting for cookies… (${pollElapsedMs / 1000}s)")
 
-        // If the 0-click Turnstile hasn't solved after the first poll (2 s), it likely needs
+        // If the 0-click Turnstile hasn't solved after 8 seconds, it likely needs
         // a manual interaction. Expand the BottomSheet so the user can see and tap the CAPTCHA.
-        // (pollElapsedMs == 3500L could never be reached since steps are 2000 ms apart.)
-        if (pollElapsedMs >= POLL_INTERVAL_MS) {
+        if (pollElapsedMs >= 8_000L) {
             (dialog as? com.google.android.material.bottomsheet.BottomSheetDialog)?.behavior?.apply {
                 skipCollapsed = true
                 peekHeight = android.view.WindowManager.LayoutParams.MATCH_PARENT

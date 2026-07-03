@@ -92,11 +92,17 @@ suspend fun showCFBypassDialogAndWait(url: String): Boolean =
 class AnimePahe : MainAPI() {
     companion object {
         // Base headers – CFBypassInterceptor merges cf_clearance on top of these.
-        val headers = mapOf(
-            "Cookie"          to "__ddg2_=1234567890",
-            "User-Agent"      to "Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Accept-Language" to "en-US,en;q=0.9"
-        )
+        val headers: Map<String, String> get() {
+            val context = com.lagradost.api.getContext() as? android.content.Context
+            val ua = com.lagradost.cloudstream3.network.WebViewResolver.webViewUserAgent
+                ?: context?.let { runCatching { android.webkit.WebSettings.getDefaultUserAgent(it) }.getOrNull() }
+                ?: "Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.0.0 Mobile Safari/537.36"
+            return mapOf(
+                "Cookie"          to "__ddg2_=1234567890",
+                "User-Agent"      to ua,
+                "Accept-Language" to "en-US,en;q=0.9"
+            )
+        }
 
         /** Headers used for fetching images/posters (includes dynamic cf_clearance, referer, and exact UA) */
         val cfHeaders: Map<String, String> get() {
