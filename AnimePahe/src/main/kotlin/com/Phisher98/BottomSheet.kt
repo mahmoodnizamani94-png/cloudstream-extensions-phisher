@@ -94,57 +94,7 @@ class BottomFragment(private val plugin: AnimePaheProviderPlugin) : BottomSheetD
             }
         }
 
-        // ---- Cloudflare bypass button ----------------------------------------
-        val bypassBtn = view.findView<Button>("cf_bypass_btn")
-        bypassBtn.setOnClickListener {
-            val serverUrl = AnimePaheProviderPlugin.currentAnimepaheServer
-            val dialog = CloudflareWebViewDialog(
-                targetUrl = serverUrl,
-                onFinished = { saved ->
-                    if (saved) bypassBtn.text = "✅ CF Cookies Saved – Refresh"
-                }
-            )
-            dialog.show(parentFragmentManager, "cf_bypass")
-        }
-        // Update button label to show current cookie status
-        val cfCookies = AnimePaheProviderPlugin.cfCookies
-        if (cfCookies.isNotBlank()) {
-            bypassBtn.text = "✅ CF Cookies Saved – Refresh"
-        } else {
-            bypassBtn.text = "🛡️ Bypass Cloudflare"
-        }
-
-        // ---- Clear CF Cookies button -----------------------------------------
-        val clearBtn = view.findView<Button>("cf_clear_btn")
-        clearBtn.setOnClickListener {
-            context?.let { ctx ->
-                AlertDialog.Builder(ctx)
-                    .setTitle("Clear CF Cookies?")
-                    .setMessage("This will remove the saved Cloudflare cookies and User-Agent. You will need to bypass Cloudflare again before streaming.")
-                    .setPositiveButton("Clear") { _, _ ->
-                        // Remove from Android's CookieManager for the saved host
-                        val host = AnimePaheProviderPlugin.cfCookieHost
-                        if (host.isNotBlank()) {
-                            val cm = CookieManager.getInstance()
-                            // Remove individual CF cookies by setting them expired
-                            listOf("cf_clearance", "__ddg1_", "__ddg2_", "__cfruid").forEach { name ->
-                                cm.setCookie(host, "$name=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT")
-                            }
-                            cm.flush()
-                        }
-                        // Clear plugin store
-                        AnimePaheProviderPlugin.cfCookies    = ""
-                        AnimePaheProviderPlugin.cfUserAgent  = ""
-                        AnimePaheProviderPlugin.cfCookieHost = ""
-                        // Reset bypass button label
-                        bypassBtn.text = "🛡️ Bypass Cloudflare"
-                        Toast.makeText(ctx, "✅ CF Cookies cleared", Toast.LENGTH_SHORT).show()
-                    }
-                    .setNegativeButton("Cancel") { d, _ -> d.dismiss() }
-                    .show()
-            }
-        }
-        // -----------------------------------------------------------------------
+        // ---- Cloudflare bypass removed (handled headlessly) ----
 
         return view
     }

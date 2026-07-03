@@ -17,81 +17,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.suspendCancellableCoroutine
-import androidx.appcompat.app.AppCompatActivity
-import okhttp3.Interceptor
-import okhttp3.Response
-
-/**
- * OkHttp interceptor that perfectly mimics the exact Android WebView that solved
- * the CAPTCHA, making it possible to use fast OkHttp without triggering anomalies.
- */
-object CFBypassInterceptor : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val original = chain.request()
-        val builder = original.newBuilder()
-            // ─ remove bot-revealing header ───────────────────────────────────────
-            .removeHeader("X-Requested-With")
-            // ─ Chrome fingerprint headers ────────────────────────────────
-            .header("sec-ch-ua-mobile", "?1")
-            .header("sec-ch-ua-platform", "\"Android\"")
-
-        // ─ match the EXACT User-Agent the WebView used ───────────────────
-        val savedUa = AnimePaheProviderPlugin.cfUserAgent
-        if (savedUa.isNotEmpty()) {
-            builder.header("User-Agent", savedUa)
-        }
-
-        // ─ inject saved cf_clearance cookie ───────────────────────────────
-        val savedCookies = AnimePaheProviderPlugin.cfCookies
-        if (savedCookies.isNotEmpty()) {
-            val existingCookie = original.header("Cookie") ?: ""
-            // Merge, keeping saved cf_clearance; strip any stale one from existingCookie
-            val base = existingCookie.split(";").map { it.trim() }
-                .filter { it.isNotEmpty() && !it.startsWith("cf_clearance=") }
-            val fresh = savedCookies.split(";").map { it.trim() }.filter { it.isNotEmpty() }
-            builder.header("Cookie", (base + fresh).distinct().joinToString("; "))
-        }
-
-        return chain.proceed(builder.build())
-    }
-}
-/**
- * Shows [CloudflareWebViewDialog] for [url] on the UI thread and suspends the
- * calling coroutine until:
- *  - cookies are saved (returns true), or
- *  - user dismisses without solving / activity unavailable (returns false).
- *
- * Follows the same pattern as Vega-app’s wafResolver – provider detects the
- * WAF block, calls this, awaits the result, then retries the request.
- */
-suspend fun showCFBypassDialogAndWait(url: String): Boolean =
-    withContext(Dispatchers.Main) {
-        suspendCancellableCoroutine { cont ->
-            val activity = CommonActivity.activity as? AppCompatActivity
-            if (activity == null || activity.isFinishing || activity.isDestroyed) {
-                Log.e("CFBypass", "No activity available to show CF dialog")
-                cont.resume(false)
-                return@suspendCancellableCoroutine
-            }
-            var resumed = false
-            fun safeResume(success: Boolean) {
-                if (!resumed) { resumed = true; cont.resume(success) }
-            }
-            val dialog = CloudflareWebViewDialog(
-                targetUrl = url,
-                onFinished = { success -> safeResume(success) }
-            )
-            cont.invokeOnCancellation {
-                activity.runOnUiThread { runCatching { dialog.dismissAllowingStateLoss() } }
-            }
-            dialog.show(activity.supportFragmentManager, "cf_bypass_auto")
-        }
-    }
-
+import com.lagradost.cloudstream3.network.CloudflareKiller
 
 class AnimePahe : MainAPI() {
     companion object {
-        // Base headers – CFBypassInterceptor merges cf_clearance on top of these.
+        // Base headers – CloudflareKiller matches these.
         val headers: Map<String, String> get() {
             val context = com.lagradost.api.getContext() as? android.content.Context
             val ua = com.lagradost.cloudstream3.network.WebViewResolver.webViewUserAgent
@@ -106,35 +36,15 @@ class AnimePahe : MainAPI() {
 
         /** Headers used for fetching images/posters (includes dynamic cf_clearance, referer, and exact UA) */
         val cfHeaders: Map<String, String> get() {
-            val savedCookies = AnimePaheProviderPlugin.cfCookies
-            val savedUa = AnimePaheProviderPlugin.cfUserAgent
             val map = headers.toMutableMap()
-
-            // Cloudflare/Image server strictly requires referer for images
             map["referer"] = "${AnimePaheProviderPlugin.currentAnimepaheServer}/"
 
-            if (savedUa.isNotEmpty()) {
-                map["User-Agent"] = savedUa
-            }
-            if (savedCookies.isNotEmpty()) {
-                map["Cookie"] = "__ddg2_=1234567890; $savedCookies"
+            val cm = android.webkit.CookieManager.getInstance()
+            val cookies = cm.getCookie(AnimePaheProviderPlugin.currentAnimepaheServer) ?: ""
+            if (cookies.isNotEmpty()) {
+                map["Cookie"] = "__ddg2_=1234567890; $cookies"
             }
             return map
-        }
-
-        /** Phrases in a page body that indicate a Cloudflare challenge is active */
-        private val CF_BLOCKER_PHRASES = listOf(
-            "just a moment",
-            "checking your browser",
-            "ddos-guard",
-            "attention required",
-            "verify you are human",
-            "cloudflare"
-        )
-
-        fun isCloudflareBlocked(response: com.lagradost.nicehttp.NiceResponse): Boolean {
-            if (response.code == 403 || response.code == 503) return true
-            return CF_BLOCKER_PHRASES.any { response.text.lowercase().contains(it) }
         }
 
         private fun getType(t: String): TvType {
@@ -143,19 +53,10 @@ class AnimePahe : MainAPI() {
             else TvType.Anime
         }
 
+        private val cfKiller = CloudflareKiller()
+
         suspend fun appGet(url: String, customHeaders: Map<String, String> = headers): com.lagradost.nicehttp.NiceResponse {
-            val rawResponse = app.get(url, headers = customHeaders, interceptor = CFBypassInterceptor)
-            return if (isCloudflareBlocked(rawResponse)) {
-                Log.d("AnimePahe", "CF challenge detected on $url – showing WebView dialog for user")
-                val bypassSolved = showCFBypassDialogAndWait(AnimePaheProviderPlugin.currentAnimepaheServer)
-                if (bypassSolved) {
-                    app.get(url, headers = customHeaders, interceptor = CFBypassInterceptor)
-                } else {
-                    rawResponse
-                }
-            } else {
-                rawResponse
-            }
+            return app.get(url, headers = customHeaders, interceptor = cfKiller)
         }
     }
 

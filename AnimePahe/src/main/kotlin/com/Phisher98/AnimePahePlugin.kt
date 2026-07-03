@@ -34,26 +34,5 @@ class AnimePaheProviderPlugin: Plugin() {
             set(value) {
                 setKey("ANIMEPAHE_CURRENT_SERVER", value)
             }
-
-        /** Full cookie string saved after a successful WebView CF bypass (e.g. "cf_clearance=abc; __ddg2_=xyz") */
-        var cfCookies: String
-            get() = getKey("ANIMEPAHE_CF_COOKIES") ?: ""
-            set(value) {
-                setKey("ANIMEPAHE_CF_COOKIES", value)
-            }
-
-        /** The exact User-Agent string used by the WebView to solve the challenge. */
-        var cfUserAgent: String
-            get() = getKey("ANIMEPAHE_CF_USER_AGENT") ?: ""
-            set(value) {
-                setKey("ANIMEPAHE_CF_USER_AGENT", value)
-            }
-
-        /** The host for which cfCookies were captured (e.g. "https://animepahe.com") */
-        var cfCookieHost: String
-            get() = getKey("ANIMEPAHE_CF_COOKIE_HOST") ?: ""
-            set(value) {
-                setKey("ANIMEPAHE_CF_COOKIE_HOST", value)
-            }
     }
 }
