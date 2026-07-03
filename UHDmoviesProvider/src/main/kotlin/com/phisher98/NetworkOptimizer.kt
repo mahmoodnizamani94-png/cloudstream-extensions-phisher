@@ -9,8 +9,10 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 
 object NetworkOptimizer {
     private val initialized = AtomicBoolean(false)
@@ -43,27 +45,44 @@ object NetworkOptimizer {
 
 object DohDns : Dns {
     private val systemDns = Dns.SYSTEM
+    private const val CACHE_TTL_MS = 10 * 60 * 1000L
+    private val cache = ConcurrentHashMap<String, CacheEntry>()
+
+    private data class CacheEntry(
+        val addresses: List<InetAddress>,
+        val expiresAt: Long
+    )
 
     override fun lookup(hostname: String): List<InetAddress> {
         if (hostname == "1.1.1.1" || hostname == "8.8.8.8" || hostname == "localhost") {
             return systemDns.lookup(hostname)
         }
 
+        val now = System.currentTimeMillis()
+        cache[hostname]?.takeIf { it.expiresAt > now }?.let { return it.addresses }
+
         try {
-            val result = queryDoh("https://1.1.1.1/dns-query?name=$hostname&type=A")
-            if (result.isNotEmpty()) return result
+            val result = queryDoh("https://1.1.1.1/dns-query?name=${hostname.dnsEncode()}&type=A")
+            if (result.isNotEmpty()) return result.cacheFor(hostname, now)
         } catch (e: Exception) {
             // Silently fall back to next resolver
         }
 
         try {
-            val result = queryDoh("https://8.8.8.8/resolve?name=$hostname&type=A")
-            if (result.isNotEmpty()) return result
+            val result = queryDoh("https://8.8.8.8/resolve?name=${hostname.dnsEncode()}&type=A")
+            if (result.isNotEmpty()) return result.cacheFor(hostname, now)
         } catch (e: Exception) {
             // Silently fall back to system
         }
 
-        return systemDns.lookup(hostname)
+        return systemDns.lookup(hostname).cacheFor(hostname, now)
+    }
+
+    private fun String.dnsEncode(): String = URLEncoder.encode(this, "UTF-8")
+
+    private fun List<InetAddress>.cacheFor(hostname: String, now: Long): List<InetAddress> {
+        cache[hostname] = CacheEntry(this, now + CACHE_TTL_MS)
+        return this
     }
 
     private fun queryDoh(urlStr: String): List<InetAddress> {

@@ -2,9 +2,18 @@ rootProject.name = "CloudstreamPlugins"
 
 // This file sets what projects are included. All new projects should get automatically included unless specified in "disabled" variable.
 val disabled = listOf<String>()
+val requestedProjects = providers.gradleProperty("includePlugins")
+    .orNull
+    ?.split(',')
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?.toSet()
 
 File(rootDir, ".").eachDir { dir ->
-    if (!disabled.contains(dir.name) && File(dir, "build.gradle.kts").exists()) {
+    if (!disabled.contains(dir.name) &&
+        File(dir, "build.gradle.kts").exists() &&
+        (requestedProjects == null || dir.name in requestedProjects)
+    ) {
         include(dir.name)
     }
 }

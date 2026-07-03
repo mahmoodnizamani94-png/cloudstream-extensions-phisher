@@ -4,6 +4,8 @@ package com.phisher98
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import java.net.*
+import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONObject
 import org.jsoup.nodes.Document
 
 fun getBaseUrl(url: String): String {
@@ -32,6 +34,10 @@ fun fixUrl(url: String, domain: String): String {
 }
 
 suspend fun bypassHrefli(url: String): String? {
+    ExpiringCache.getOrPut<String>("hrefli:$url", ttlMs = 6 * 60 * 60 * 1000L) { null }?.let {
+        return it
+    }
+
     fun Document.getFormUrl(): String {
         return this.select("form#landing").attr("action")
     }
@@ -60,7 +66,41 @@ suspend fun bypassHrefli(url: String): String? {
     val path = app.get(driveUrl ?: return null).text.substringAfter("replace(\"")
         .substringBefore("\")")
     if (path == "/404") return null
-    return fixUrl(path, getBaseUrl(driveUrl))
+    val finalUrl = fixUrl(path, getBaseUrl(driveUrl))
+    ExpiringCache.put("hrefli:$url", finalUrl, ttlMs = 6 * 60 * 60 * 1000L)
+    return finalUrl
+}
+
+object ExpiringCache {
+    private const val DEFAULT_TTL_MS = 30 * 60 * 1000L
+    private val values = ConcurrentHashMap<String, Entry>()
+
+    private data class Entry(
+        val value: Any,
+        val expiresAt: Long
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    suspend fun <T : Any> getOrPut(
+        key: String,
+        ttlMs: Long = DEFAULT_TTL_MS,
+        producer: suspend () -> T?
+    ): T? {
+        val now = System.currentTimeMillis()
+        values[key]?.takeIf { it.expiresAt > now }?.let { return it.value as T }
+
+        val value = producer() ?: return null
+        values[key] = Entry(value, now + ttlMs)
+        return value
+    }
+
+    fun <T : Any> put(
+        key: String,
+        value: T,
+        ttlMs: Long = DEFAULT_TTL_MS
+    ) {
+        values[key] = Entry(value, System.currentTimeMillis() + ttlMs)
+    }
 }
 
 open class UHDMovies : ExtractorApi() {
@@ -87,10 +127,9 @@ open class UHDMovies : ExtractorApi() {
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"
             )
         )
-        val finaldownloadlink =
-            downloadlink.toString().substringAfter("url\":\"")
-                .substringBefore("\",\"name")
-                .replace("\\/", "/")
+        val finaldownloadlink = JSONObject(downloadlink.text).optString("url")
+            .takeIf { it.isNotBlank() }
+            ?: return
         val link = finaldownloadlink
         callback.invoke(
             newExtractorLink(
