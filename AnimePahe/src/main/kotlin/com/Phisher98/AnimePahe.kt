@@ -23,7 +23,7 @@ class AnimePahe : MainAPI() {
     companion object {
         // Base headers – CloudflareKiller matches these.
         val headers: Map<String, String> get() {
-            val context = com.lagradost.api.getContext() as? android.content.Context
+            val context = com.lagradost.cloudstream3.CloudStreamApp.context
             val ua = com.lagradost.cloudstream3.network.WebViewResolver.webViewUserAgent
                 ?: context?.let { runCatching { android.webkit.WebSettings.getDefaultUserAgent(it) }.getOrNull() }
                 ?: "Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.0.0 Mobile Safari/537.36"
