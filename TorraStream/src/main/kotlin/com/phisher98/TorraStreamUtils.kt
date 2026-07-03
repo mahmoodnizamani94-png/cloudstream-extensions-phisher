@@ -355,7 +355,8 @@ private object TorrentTrackerCache {
 
         val key = normalizedUrls.joinToString("|")
         val now = System.currentTimeMillis()
-        cache[key]?.takeIf { it.expiresAt > now }?.let { return it.trackers }
+        val previousEntry = cache[key]
+        previousEntry?.takeIf { it.expiresAt > now }?.let { return it.trackers }
 
         val trackers = normalizedUrls.amap { url ->
             runCatching {
@@ -367,7 +368,11 @@ private object TorrentTrackerCache {
             }.getOrElse { emptyList() }
         }.flatten().toSet()
 
-        cache[key] = CacheEntry(trackers, now + TTL_MS)
-        return trackers
+        if (trackers.isNotEmpty()) {
+            cache[key] = CacheEntry(trackers, now + TTL_MS)
+            return trackers
+        }
+
+        return previousEntry?.trackers.orEmpty()
     }
 }
