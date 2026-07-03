@@ -141,9 +141,12 @@ class AnimePahe : MainAPI() {
             val rawResponse = app.get(url, headers = customHeaders, interceptor = CFBypassInterceptor)
             return if (isCloudflareBlocked(rawResponse)) {
                 Log.d("AnimePahe", "CF challenge detected on $url – showing WebView dialog for user")
-                showCFBypassDialogAndWait(AnimePaheProviderPlugin.currentAnimepaheServer)
-                val retry = app.get(url, headers = customHeaders, interceptor = CFBypassInterceptor)
-                retry
+                val bypassSolved = showCFBypassDialogAndWait(AnimePaheProviderPlugin.currentAnimepaheServer)
+                if (bypassSolved) {
+                    app.get(url, headers = customHeaders, interceptor = CFBypassInterceptor)
+                } else {
+                    rawResponse
+                }
             } else {
                 rawResponse
             }

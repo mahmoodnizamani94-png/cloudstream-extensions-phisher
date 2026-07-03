@@ -68,6 +68,7 @@ class CloudflareWebViewDialog(
     // ── Polling state ────────────────────────────────────────────────────────
     private val handler = Handler(Looper.getMainLooper())
     private var cookiesSaved = false
+    private var callbackSent = false
     private var pollElapsedMs = 0L
 
     // The host origin from which we read cookies (derived from targetUrl)
@@ -106,8 +107,9 @@ class CloudflareWebViewDialog(
                     }
                 }
                 pollElapsedMs >= POLL_TIMEOUT_MS -> {
-                    // Timed out
+                    handler.removeCallbacks(cookiePollRunnable)
                     updateStatus("⏱️ Timed out. Try solving the CAPTCHA then tap Bypass again.")
+                    finish(false)
                 }
                 else -> {
                     scheduleNextPoll()
@@ -351,7 +353,7 @@ class CloudflareWebViewDialog(
         // Auto-dismiss after a brief moment so user can see the success message
         webView?.postDelayed({
             if (isAdded) {
-                onFinished?.invoke(true)
+                finish(true)
                 dismissAllowingStateLoss()
             }
         }, 1500)
@@ -360,9 +362,18 @@ class CloudflareWebViewDialog(
     /** Called when the dialog is dismissed without saving (user pressed Back / outside). */
     override fun onDismiss(dialog: android.content.DialogInterface) {
         super.onDismiss(dialog)
-        if (!cookiesSaved) {
+        if (!cookiesSaved && !callbackSent) {
             handler.removeCallbacks(cookiePollRunnable)
-            onFinished?.invoke(false)
+            finish(false)
+        }
+    }
+
+    private fun finish(success: Boolean) {
+        if (callbackSent) return
+        callbackSent = true
+        onFinished?.invoke(success)
+        if (!success) {
+            dismissAllowingStateLoss()
         }
     }
 
