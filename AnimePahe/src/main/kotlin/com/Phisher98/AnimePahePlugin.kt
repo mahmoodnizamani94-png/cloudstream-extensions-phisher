@@ -14,17 +14,11 @@ enum class ServerList(val link: Pair<String, Boolean>) {
 
     companion object {
         val defaultServer = RU.link.first
-        private val legacyServers = setOf("https://animepahe.si")
-        private val knownServers = entries.map { it.link.first }.toSet() + legacyServers
 
         fun normalize(value: String?): String {
-            val trimmed = value?.trim()?.removeSuffix("/")
-            return when {
-                trimmed == null -> defaultServer
-                trimmed !in knownServers -> defaultServer
-                entries.firstOrNull { it.link.first == trimmed }?.link?.second == false -> defaultServer
-                else -> trimmed
-            }
+            val trimmed = value?.trim()?.removeSuffix("/") ?: return defaultServer
+            val server = entries.firstOrNull { it.link.first == trimmed } ?: return defaultServer
+            return if (server.link.second) trimmed else defaultServer
         }
     }
 }
