@@ -882,6 +882,13 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    private fun normalizeAnimePaheUrl(url: String): String {
+        val legacyHosts = listOf("animepahe.si", "animepahe.com", "animepahe.org", "animepahe.pw")
+        return legacyHosts.fold(url) { normalized, host ->
+            normalized.replace(host, "animepahe.ru", ignoreCase = true)
+        }
+    }
+
     suspend fun invokeAnimepahe(
         url: String,
         episode: Int? = null,
@@ -892,7 +899,7 @@ object StreamPlayExtractor : StreamPlay() {
         val isMovie = dubtype == "Movie"
         val headers = mapOf("Cookie" to "__ddg2_=1234567890")
 
-        val id = safeGet(url.replace(".si",".com"), headers)
+        val id = safeGet(normalizeAnimePaheUrl(url), headers)
             .document.selectFirst("meta[property=og:url]")
             ?.attr("content").toString().substringAfterLast("/")
 

@@ -7,10 +7,20 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
 enum class ServerList(val link: Pair<String, Boolean>) {
-    BEST("https://animepahe.pw" to true),
-
+    RU("https://animepahe.ru" to true),
+    PW("https://animepahe.pw" to false),
     ORG("https://animepahe.org" to true),
-    SI("https://animepahe.com" to true)
+    COM("https://animepahe.com" to true);
+
+    companion object {
+        val defaultServer = RU.link.first
+
+        fun normalize(value: String?): String {
+            val trimmed = value?.trim()?.removeSuffix("/") ?: return defaultServer
+            val server = entries.firstOrNull { it.link.first == trimmed } ?: return defaultServer
+            return if (server.link.second) trimmed else defaultServer
+        }
+    }
 }
 
 @CloudstreamPlugin
@@ -30,9 +40,9 @@ class AnimePaheProviderPlugin: Plugin() {
 
     companion object {
         var currentAnimepaheServer: String
-            get() = getKey("ANIMEPAHE_CURRENT_SERVER") ?: ServerList.BEST.link.first
+            get() = ServerList.normalize(getKey("ANIMEPAHE_CURRENT_SERVER"))
             set(value) {
-                setKey("ANIMEPAHE_CURRENT_SERVER", value)
+                setKey("ANIMEPAHE_CURRENT_SERVER", ServerList.normalize(value))
             }
     }
 }
