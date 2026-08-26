@@ -32,6 +32,7 @@ import com.lagradost.nicehttp.Requests
 import com.lagradost.nicehttp.Session
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -4982,12 +4983,23 @@ object StreamPlayExtractor : StreamPlay() {
             )
         }
 
-        streamUrls.forEachIndexed { index, streamUrl ->
-            generateM3u8(
-                "Vaplayer Server ${index + 1}",
-                streamUrl,
-                refer
-            ).forEach(callback)
+        // The CDN tokens embedded in these playlist URLs are very short-lived and hang on
+        // expiry, so expand every server in parallel and never let one dead server abort
+        // the others.
+        coroutineScope {
+            streamUrls.mapIndexed { index, streamUrl ->
+                async(Dispatchers.IO) {
+                    runCatching<Unit> {
+                        generateM3u8(
+                            "Vaplayer Server ${index + 1}",
+                            streamUrl,
+                            refer
+                        ).forEach(callback)
+                    }.onFailure { e ->
+                        Log.d("StreamPlay", "Vaplayer server ${index + 1} unavailable: ${e.message}")
+                    }
+                }
+            }.awaitAll()
         }
     }
 
