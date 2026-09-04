@@ -7,14 +7,82 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Intelligent caching system for StreamPlay
+ * State-Of-The-Art Intelligent Caching & Provider Telemetry Engine for StreamPlay
+ * - True O(1) LRU bounded caches with TTL expiration (Zero-allocation eviction)
  * - TTL-based API endpoint caching
- * - LRU cache for anime ID mappings
- * - Provider performance tracking
+ * - Thread-safe anime ID mappings
+ * - Provider health tracking with half-open circuit breaker and decay scoring
  */
 object StreamPlayCache {
 
     private const val TAG = "StreamPlayCache"
+
+    // ==================== Generic High-Speed LRU Cache with TTL ====================
+
+    open class LruCacheWithTtl<K, V>(
+        val maxSize: Int = 256,
+        val defaultTtlMillis: Long = 30 * 60 * 1000L
+    ) {
+        private data class CacheEntry<V>(val value: V, val expiresAt: Long)
+
+        private val map = object : LinkedHashMap<K, CacheEntry<V>>(maxSize, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, CacheEntry<V>>?): Boolean {
+                return size > maxSize
+            }
+        }
+
+        val size: Int
+            get() = synchronized(this) {
+                cleanExpiredLocked()
+                map.size
+            }
+
+        private fun cleanExpiredLocked() {
+            val now = System.currentTimeMillis()
+            val iterator = map.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now >= entry.value.expiresAt) {
+                    iterator.remove()
+                }
+            }
+        }
+
+        fun get(key: K): V? = synchronized(this) {
+            val entry = map[key] ?: return null
+            if (System.currentTimeMillis() >= entry.expiresAt) {
+                map.remove(key)
+                return null
+            }
+            return entry.value
+        }
+
+        fun put(key: K, value: V, ttlMillis: Long = defaultTtlMillis) = synchronized(this) {
+            val now = System.currentTimeMillis()
+            val expiresAt = if (ttlMillis >= Long.MAX_VALUE - now) {
+                Long.MAX_VALUE
+            } else {
+                now + ttlMillis
+            }
+            map[key] = CacheEntry(value, expiresAt)
+        }
+
+        fun getOrPut(key: K, ttlMillis: Long = defaultTtlMillis, defaultValue: () -> V): V = synchronized(this) {
+            val cached = get(key)
+            if (cached != null) return cached
+            val computed = defaultValue()
+            put(key, computed, ttlMillis)
+            return computed
+        }
+
+        fun remove(key: K): V? = synchronized(this) {
+            return map.remove(key)?.value
+        }
+
+        fun clear() = synchronized(this) {
+            map.clear()
+        }
+    }
 
     // ==================== API Base Caching ====================
 
@@ -88,45 +156,30 @@ object StreamPlayCache {
         val timestamp: Long = System.currentTimeMillis()
     )
 
-    private val animeIdCache = ConcurrentHashMap<String, AnimeIdMapping>()
     private const val ANIME_ID_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
     private const val ANIME_ID_CACHE_MAX_SIZE = 500
+
+    private val animeIdCache = LruCacheWithTtl<String, AnimeIdMapping>(
+        maxSize = ANIME_ID_CACHE_MAX_SIZE,
+        defaultTtlMillis = ANIME_ID_CACHE_TTL_MS
+    )
 
     /**
      * Get cached anime ID mapping
      */
     fun getCachedAnimeIds(key: String): AnimeIdMapping? {
-        val mapping = animeIdCache[key]
-        return if (mapping != null) {
-            val age = System.currentTimeMillis() - mapping.timestamp
-            if (age < ANIME_ID_CACHE_TTL_MS) {
-                Log.d(TAG, "✅ Anime ID cache hit: $key")
-                mapping
-            } else {
-                Log.d(TAG, "⏰ Anime ID cache expired: $key")
-                animeIdCache.remove(key)
-                null
-            }
-        } else {
-            null
+        val mapping = animeIdCache.get(key)
+        if (mapping != null) {
+            Log.d(TAG, "✅ Anime ID cache hit: $key")
         }
+        return mapping
     }
 
     /**
-     * Cache anime ID mapping with LRU eviction
+     * Cache anime ID mapping with O(1) LRU eviction
      */
     fun cacheAnimeIds(key: String, mapping: AnimeIdMapping) {
-        // LRU eviction: remove oldest entries if cache is full
-        if (animeIdCache.size >= ANIME_ID_CACHE_MAX_SIZE) {
-            val oldest = animeIdCache.entries
-                .minByOrNull { it.value.timestamp }
-            oldest?.let {
-                animeIdCache.remove(it.key)
-                Log.d(TAG, "🗑️ Evicted oldest anime ID: ${it.key}")
-            }
-        }
-
-        animeIdCache[key] = mapping
+        animeIdCache.put(key, mapping)
         Log.d(TAG, "📦 Cached anime ID: $key (cache size: ${animeIdCache.size})")
     }
 
@@ -158,6 +211,7 @@ object StreamPlayCache {
     private const val CIRCUIT_BREAKER_COOLDOWN_MS = 15 * 60 * 1000L
     private const val PROVIDER_STATS_MAX_SIZE = 300
     private val providerStatsMap = ConcurrentHashMap<String, ProviderStats>()
+    private val dirtyProviderKeys = ConcurrentHashMap.newKeySet<String>()
     private val loadedPrefs = java.util.Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
 
     /**
@@ -168,7 +222,7 @@ object StreamPlayCache {
     }
 
     /**
-     * Record provider execution result
+     * Record provider execution result with atomic compute
      */
     fun recordProviderExecution(providerId: String, success: Boolean, durationMs: Long) {
         var previous = ProviderStats()
@@ -196,14 +250,22 @@ object StreamPlayCache {
             updated
         }
 
+        dirtyProviderKeys.add(providerId)
+
+        // Bounded capacity check
         if (providerStatsMap.size > PROVIDER_STATS_MAX_SIZE) {
-            providerStatsMap.entries.minByOrNull { (_, stats) ->
-                stats.lastFailureAtMs.takeIf { it > 0L } ?: Long.MAX_VALUE
-            }?.key?.takeIf { it != providerId }?.let(providerStatsMap::remove)
+            val victim = providerStatsMap.entries
+                .filter { it.key != providerId }
+                .minByOrNull { it.value.lastFailureAtMs.takeIf { t -> t > 0L } ?: Long.MAX_VALUE }
+                ?.key
+            if (victim != null) {
+                providerStatsMap.remove(victim)
+                dirtyProviderKeys.remove(victim)
+            }
         }
 
         if (updated.isCircuitBroken && !previous.isCircuitBroken) {
-            Log.w(TAG, "📉 Provider moved to low priority: $providerId (${updated.consecutiveFailures} consecutive failures)")
+            Log.w(TAG, "📉 Provider moved to low priority / circuit-broken: $providerId (${updated.consecutiveFailures} consecutive failures)")
         } else if (!updated.isCircuitBroken && previous.isCircuitBroken) {
             Log.d(TAG, "✅ Provider recovered: $providerId")
         }
@@ -228,56 +290,47 @@ object StreamPlayCache {
         val timestamp: Long = System.currentTimeMillis()
     )
 
-    private val metadataCache = ConcurrentHashMap<String, MetadataCache>()
     private const val METADATA_CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
     private const val METADATA_CACHE_MAX_SIZE = 100
+
+    private val metadataCache = LruCacheWithTtl<String, String>(
+        maxSize = METADATA_CACHE_MAX_SIZE,
+        defaultTtlMillis = METADATA_CACHE_TTL_MS
+    )
 
     /**
      * Get cached metadata
      */
     fun getCachedMetadata(key: String): String? {
-        val cache = metadataCache[key]
-        return if (cache != null) {
-            val age = System.currentTimeMillis() - cache.timestamp
-            if (age < METADATA_CACHE_TTL_MS) {
-                Log.d(TAG, "✅ Metadata cache hit: $key")
-                cache.data
-            } else {
-                Log.d(TAG, "⏰ Metadata cache expired: $key")
-                metadataCache.remove(key)
-                null
-            }
-        } else {
-            null
+        val data = metadataCache.get(key)
+        if (data != null) {
+            Log.d(TAG, "✅ Metadata cache hit: $key")
         }
+        return data
     }
 
     /**
-     * Cache metadata with LRU eviction
+     * Cache metadata with O(1) LRU eviction
      */
     fun cacheMetadata(key: String, data: String) {
-        // LRU eviction
-        if (metadataCache.size >= METADATA_CACHE_MAX_SIZE) {
-            val oldest = metadataCache.entries
-                .minByOrNull { it.value.timestamp }
-            oldest?.let {
-                metadataCache.remove(it.key)
-                Log.d(TAG, "🗑️ Evicted oldest metadata: ${it.key}")
-            }
-        }
-
-        metadataCache[key] = MetadataCache(data)
+        metadataCache.put(key, data)
         Log.d(TAG, "📦 Cached metadata: $key (cache size: ${metadataCache.size})")
     }
 
     // ==================== Persistence ====================
 
     fun saveProviderStats(prefs: SharedPreferences?) {
-        prefs?.edit()?.apply {
-            providerStatsMap.forEach { (providerId, stats) ->
-                putString("provider_stats_$providerId",
-                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures},${stats.lastFailureAtMs},${stats.lastExecutionMs}")
+        if (prefs == null || dirtyProviderKeys.isEmpty()) return
+        prefs.edit()?.apply {
+            val toSave = ArrayList(dirtyProviderKeys)
+            for (providerId in toSave) {
+                val stats = providerStatsMap[providerId] ?: continue
+                putString(
+                    "provider_stats_$providerId",
+                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures},${stats.lastFailureAtMs},${stats.lastExecutionMs}"
+                )
             }
+            dirtyProviderKeys.removeAll(toSave.toSet())
             apply()
         }
     }
@@ -316,5 +369,13 @@ object StreamPlayCache {
             }
         }
         Log.d(TAG, "📂 Loaded provider stats from SharedPreferences (${providerStatsMap.size} providers)")
+    }
+
+    fun clearAllCachesForTesting() {
+        animeIdCache.clear()
+        metadataCache.clear()
+        providerStatsMap.clear()
+        dirtyProviderKeys.clear()
+        apiCacheEntry = null
     }
 }

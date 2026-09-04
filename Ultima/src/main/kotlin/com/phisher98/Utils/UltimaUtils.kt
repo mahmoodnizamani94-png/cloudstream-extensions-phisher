@@ -8,8 +8,123 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
+/**
+ * Thread-safe generic LRU Cache with TTL expiration.
+ * Backed by LinkedHashMap in access-order mode with eviction on eldest entry.
+ */
+fun getHost(url: String): String? = runCatching {
+    java.net.URI(url).host ?: java.net.URL(url).host
+}.getOrNull()
+
+typealias LruCacheWithTtl<K, V> = UltimaUtils.LruCacheWithTtl<K, V>
+
 object UltimaUtils {
+    /**
+     * Thread-safe generic LRU Cache with TTL expiration.
+     * Backed by LinkedHashMap in access-order mode with eviction on eldest entry.
+     */
+    open class LruCacheWithTtl<K, V>(
+        val maxSize: Int = 128,
+        val defaultTtlMillis: Long = 30 * 60 * 1000L
+    ) {
+        private data class CacheEntry<V>(val value: V, val expiresAt: Long)
+
+        private val map = object : LinkedHashMap<K, CacheEntry<V>>(maxSize, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, CacheEntry<V>>?): Boolean {
+                return size > maxSize
+            }
+        }
+
+        val size: Int
+            get() = synchronized(this) {
+                cleanExpiredLocked()
+                map.size
+            }
+
+        private fun cleanExpiredLocked() {
+            val now = System.currentTimeMillis()
+            val iterator = map.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now >= entry.value.expiresAt) {
+                    iterator.remove()
+                }
+            }
+        }
+
+        fun get(key: K): V? = synchronized(this) {
+            val entry = map[key] ?: return null
+            if (System.currentTimeMillis() >= entry.expiresAt) {
+                map.remove(key)
+                return null
+            }
+            return entry.value
+        }
+
+        fun put(key: K, value: V, ttlMillis: Long = defaultTtlMillis) = synchronized(this) {
+            val now = System.currentTimeMillis()
+            val expiresAt = if (ttlMillis >= Long.MAX_VALUE - now) {
+                Long.MAX_VALUE
+            } else {
+                now + ttlMillis
+            }
+            map[key] = CacheEntry(value, expiresAt)
+        }
+
+        fun getOrPut(key: K, ttlMillis: Long = defaultTtlMillis, defaultValue: () -> V): V = synchronized(this) {
+            val cached = get(key)
+            if (cached != null) return cached
+            val computed = defaultValue()
+            put(key, computed, ttlMillis)
+            return computed
+        }
+
+        fun remove(key: K): V? = synchronized(this) {
+            return map.remove(key)?.value
+        }
+
+        fun clear() = synchronized(this) {
+            map.clear()
+        }
+    }
+
+    @Volatile
+    private var cachedProviders: List<com.lagradost.cloudstream3.MainAPI>? = null
+    @Volatile
+    private var providersCacheTimestamp: Long = 0L
+    private const val PROVIDERS_CACHE_TTL_MS = 60_000L // 1 minute TTL to auto-detect installed/uninstalled plugins
+
+    fun invalidateProvidersCache() {
+        cachedProviders = null
+        providersCacheTimestamp = 0L
+    }
+
+    fun getHost(url: String): String? = com.phisher98.getHost(url)
+
+    fun getAllProvidersCached(): List<com.lagradost.cloudstream3.MainAPI> = getAllProviders()
+
     fun getAllProviders(): List<com.lagradost.cloudstream3.MainAPI> {
+        val now = System.currentTimeMillis()
+        val current = cachedProviders
+        if (current != null && (now - providersCacheTimestamp) < PROVIDERS_CACHE_TTL_MS) {
+            return current
+        }
+        return synchronized(this) {
+            val secondCheck = cachedProviders
+            val secondNow = System.currentTimeMillis()
+            if (secondCheck != null && (secondNow - providersCacheTimestamp) < PROVIDERS_CACHE_TTL_MS) {
+                return secondCheck
+            }
+            val providers = loadAllProvidersReflective()
+            if (providers.isNotEmpty()) {
+                cachedProviders = providers
+                providersCacheTimestamp = secondNow
+            }
+            providers
+        }
+    }
+
+    private fun loadAllProvidersReflective(): List<com.lagradost.cloudstream3.MainAPI> {
         try {
             val clazz = Class.forName("com.lagradost.cloudstream3.APIHolder")
             

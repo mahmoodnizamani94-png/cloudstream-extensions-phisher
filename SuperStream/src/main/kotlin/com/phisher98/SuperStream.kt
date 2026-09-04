@@ -97,7 +97,7 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
                 val testUrl = "$OFFICIAL_TMDB_URL/configuration?api_key=$apiKey"
                 val response = app.get(
                     testUrl,
-                    timeout = 1000,
+                    timeout = 2L,
                     headers = mapOf(
                         "Cache-Control" to "no-cache",
                         "Pragma" to "no-cache"
@@ -219,7 +219,7 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
             val adultQuery =
                 if (settingsForProvider.enableAdult) "" else "&without_keywords=190370|13059|226161|195669"
             val type = if (request.data.contains("/movie")) "movie" else "tv"
-            val home = app.get("$tmdbAPI${request.data}$adultQuery&page=$page", timeout = 10000)
+            val home = app.get("$tmdbAPI${request.data}$adultQuery&page=$page", timeout = 10L)
                 .parsedSafe<Results>()?.results?.mapNotNull { media ->
                     media.toSearchResponse(type)
                 } ?: throw ErrorLoadingException("Invalid Json reponse")

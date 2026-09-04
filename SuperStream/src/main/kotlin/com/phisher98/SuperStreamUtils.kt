@@ -82,6 +82,29 @@ private val languageMap = mapOf(
 )
 
 
+private val QUALITY_REGEX = Regex("(\\d{3,4})[pP]")
+private val SLUG_WHITESPACE_REGEX = Regex("\\s+")
+
+private val TITLE_EXT_REGEX = Regex("\\.[a-zA-Z0-9]{2,4}$")
+private val WEB_DL_REGEX = Regex("WEB[-_. ]?DL", RegexOption.IGNORE_CASE)
+private val WEB_RIP_REGEX = Regex("WEB[-_. ]?RIP", RegexOption.IGNORE_CASE)
+private val H265_REGEX = Regex("H[ .]?265", RegexOption.IGNORE_CASE)
+private val H264_REGEX = Regex("H[ .]?264", RegexOption.IGNORE_CASE)
+private val DDP_REGEX = Regex("DDP[ .]?([0-9]\\.[0-9])", RegexOption.IGNORE_CASE)
+
+private val SOURCE_TAGS = setOf(
+    "WEB-DL", "WEBRIP", "BLURAY", "HDRIP",
+    "DVDRIP", "HDTV", "CAM", "TS", "BRRIP", "BDRIP"
+)
+
+private val CODEC_TAGS = setOf("H264", "H265", "X264", "X265", "HEVC", "AVC")
+
+private val AUDIO_TAGS = setOf("AAC", "AC3", "DTS", "MP3", "FLAC", "DD", "DDP", "EAC3")
+
+private val AUDIO_EXTRAS = setOf("ATMOS")
+
+private val HDR_TAGS = setOf("SDR", "HDR", "HDR10", "HDR10+", "DV", "DOLBYVISION")
+
 fun getEpisodeSlug(
     season: Int? = null,
     episode: Int? = null,
@@ -89,19 +112,21 @@ fun getEpisodeSlug(
     return if (season == null && episode == null) {
         "" to ""
     } else {
-        (if (season!! < 10) "0$season" else "$season") to (if (episode!! < 10) "0$episode" else "$episode")
+        val s = season ?: 0
+        val e = episode ?: 0
+        (if (s < 10) "0$s" else "$s") to (if (e < 10) "0$e" else "$e")
     }
 }
 
 fun getIndexQuality(str: String?): Int {
-    return Regex("(\\d{3,4})[pP]").find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+    return QUALITY_REGEX.find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
         ?: Qualities.Unknown.value
 }
 
 fun String?.createSlug(): String? {
     return this?.filter { it.isWhitespace() || it.isLetterOrDigit() }
         ?.trim()
-        ?.replace("\\s+".toRegex(), "-")
+        ?.replace(SLUG_WHITESPACE_REGEX, "-")
         ?.lowercase()
 }
 
@@ -136,40 +161,26 @@ fun CatdecryptHexWithKey(hex: String, key: String): String {
 }
 
 fun cleanTitle(title: String): String {
-
-    val name = title.replace(Regex("\\.[a-zA-Z0-9]{2,4}$"), "")
+    val name = title.replace(TITLE_EXT_REGEX, "")
 
     val normalized = name
-        .replace(Regex("WEB[-_. ]?DL", RegexOption.IGNORE_CASE), "WEB-DL")
-        .replace(Regex("WEB[-_. ]?RIP", RegexOption.IGNORE_CASE), "WEBRIP")
-        .replace(Regex("H[ .]?265", RegexOption.IGNORE_CASE), "H265")
-        .replace(Regex("H[ .]?264", RegexOption.IGNORE_CASE), "H264")
-        .replace(Regex("DDP[ .]?([0-9]\\.[0-9])", RegexOption.IGNORE_CASE), "DDP$1")
+        .replace(WEB_DL_REGEX, "WEB-DL")
+        .replace(WEB_RIP_REGEX, "WEBRIP")
+        .replace(H265_REGEX, "H265")
+        .replace(H264_REGEX, "H264")
+        .replace(DDP_REGEX, "DDP$1")
 
     val parts = normalized.split(" ", "_", ".")
-
-    val sourceTags = setOf(
-        "WEB-DL", "WEBRIP", "BLURAY", "HDRIP",
-        "DVDRIP", "HDTV", "CAM", "TS", "BRRIP", "BDRIP"
-    )
-
-    val codecTags = setOf("H264", "H265", "X264", "X265", "HEVC", "AVC")
-
-    val audioTags = setOf("AAC", "AC3", "DTS", "MP3", "FLAC", "DD", "DDP", "EAC3")
-
-    val audioExtras = setOf("ATMOS")
-
-    val hdrTags = setOf("SDR","HDR", "HDR10", "HDR10+", "DV", "DOLBYVISION")
 
     val filtered = parts.mapNotNull { part ->
         val p = part.uppercase()
 
         when {
-            sourceTags.contains(p) -> p
-            codecTags.contains(p) -> p
-            audioTags.any { p.startsWith(it) } -> p
-            audioExtras.contains(p) -> p
-            hdrTags.contains(p) -> {
+            SOURCE_TAGS.contains(p) -> p
+            CODEC_TAGS.contains(p) -> p
+            AUDIO_TAGS.any { p.startsWith(it) } -> p
+            AUDIO_EXTRAS.contains(p) -> p
+            HDR_TAGS.contains(p) -> {
                 when (p) {
                     "DV", "DOLBYVISION" -> "DOLBYVISION"
                     else -> p

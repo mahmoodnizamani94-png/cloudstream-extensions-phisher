@@ -70,7 +70,7 @@ class IdlixProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = if (request.data.contains("%d")) request.data.format(page) else request.data
-        val res = app.get(url, timeout = 10000L).parsedSafe<ApiResponse>() ?: return newHomePageResponse(request.name, emptyList())
+        val res = app.get(url, timeout = 10L).parsedSafe<ApiResponse>() ?: return newHomePageResponse(request.name, emptyList())
         val home = res.data.map { item ->
             val title = item.title ?: "UnKnown"
             val poster = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
@@ -135,7 +135,7 @@ class IdlixProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url, timeout = 10000L)
+        val response = app.get(url, timeout = 10L)
 
         val data = response.parsedSafe<DetailResponse>()
             ?: throw ErrorLoadingException("Invalid JSON")

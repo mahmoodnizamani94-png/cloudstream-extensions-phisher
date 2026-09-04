@@ -97,7 +97,7 @@ class BollyzoneProvider : DesicinemasProvider() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get("$proxy?url=$url", referer = mainUrl, timeout = 10000).document
+        val doc = app.get("$proxy?url=$url", referer = mainUrl, timeout = 10L).document
 
         // Handle single movie under "series"
         if (url.contains("/series/")) {
@@ -125,7 +125,7 @@ class BollyzoneProvider : DesicinemasProvider() {
 
         val episodes = (1..lastPageNumber).flatMap { page ->
             val pageUrl = "$proxy?url=$url/page/$page/"
-            val pageDoc = app.get(pageUrl, referer = mainUrl, timeout = 10000).document
+            val pageDoc = app.get(pageUrl, referer = mainUrl, timeout = 10L).document
 
             pageDoc.select("ul.MovieList li").mapNotNull { element ->
                 val epUrl = fixUrlNull(element.select("a").attr("href")) ?: return@mapNotNull null

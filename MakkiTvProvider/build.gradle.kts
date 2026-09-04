@@ -1,5 +1,5 @@
 // Use an integer for version numbers
-version = 1
+version = 2
 
 cloudstream {
     description = "Watch Turkish Series with Urdu Subtitles (MakkiTV)"

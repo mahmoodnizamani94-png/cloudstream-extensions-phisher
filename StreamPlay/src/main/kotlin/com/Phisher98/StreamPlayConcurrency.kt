@@ -3,23 +3,27 @@ package com.phisher98
 import android.app.ActivityManager
 import android.content.Context
 import com.lagradost.api.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * Enhanced concurrency management for StreamPlay
- * - Device-adaptive concurrency
- * - Priority-based execution
- * - Progressive result streaming
- * - Memory-aware throttling
+ * State-Of-The-Art Concurrency Management for StreamPlay
+ * - Adaptive supervisor with early satisfaction short-circuiting (zero latency hangs)
+ * - Dynamic device profiling (RAM & CPU core awareness)
+ * - Adaptive provider timeout decay
+ * - Fast graceful cancellation of lagging/dead scrapers
  */
 object StreamPlayConcurrency {
 
@@ -37,11 +41,10 @@ object StreamPlayConcurrency {
 
         val recommendedConcurrency: Int
             get() = when (this) {
-                LOW_END -> 8
-                MID_RANGE -> 32
+                LOW_END -> 12
+                MID_RANGE -> 36
                 HIGH_END -> 64
             }
-
     }
 
     private var detectedProfile: DeviceProfile? = null
@@ -70,35 +73,81 @@ object StreamPlayConcurrency {
         return profile
     }
 
-    // ==================== Enhanced runLimitedAsync ====================
+    // ==================== Supervised Concurrency Engine ====================
 
     /**
-     * Run tasks with limited concurrency
+     * Executes tasks with bounded concurrency and real-time satisfaction monitoring.
+     * When [isSatisfied] returns true (e.g. abundant high-quality links are found),
+     * pending and stalled tasks are cancelled immediately so the player never hangs.
      */
-    suspend fun runLimitedAsync(
-        concurrency: Int = 5,
+    suspend fun runSupervisedLimitedAsync(
+        concurrency: Int = 32,
         taskTimeoutMs: Long = 25_000L,
-        vararg tasks: suspend () -> Unit
-    ) = coroutineScope {
-        if (tasks.isEmpty()) return@coroutineScope
+        isSatisfied: (() -> Boolean)? = null,
+        tasks: List<suspend () -> Unit>
+    ) = kotlinx.coroutines.supervisorScope {
+        if (tasks.isEmpty()) return@supervisorScope
 
-        val semaphore = Semaphore(concurrency.coerceIn(1, tasks.size))
+        val activeConcurrency = normalizeConcurrency(concurrency).coerceAtMost(tasks.size)
+        val semaphore = Semaphore(activeConcurrency)
 
-        tasks.map { task ->
-            async(Dispatchers.IO) {
+        val jobs = tasks.map { task ->
+            launch(Dispatchers.IO) {
+                if (isSatisfied?.invoke() == true) return@launch
                 semaphore.withPermit {
+                    if (isSatisfied?.invoke() == true) return@launch
                     try {
-                        val completed = withTimeoutOrNull(taskTimeoutMs.milliseconds) {
+                        withTimeoutOrNull(taskTimeoutMs.milliseconds) {
                             task()
-                            true
-                        } ?: false
-                        if (!completed) Log.w(TAG, "Task timed out after ${taskTimeoutMs}ms")
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "Task failed: ${e.message}")
                     }
                 }
             }
-        }.awaitAll()
+        }
+
+        if (isSatisfied != null) {
+            val monitorJob = launch {
+                while (isActive) {
+                    delay(120.milliseconds)
+                    if (isSatisfied.invoke()) {
+                        Log.d(TAG, "⚡ Early completion condition satisfied; cancelling trailing stalled tasks.")
+                        jobs.forEach { job ->
+                            if (job.isActive) {
+                                job.cancel()
+                            }
+                        }
+                        break
+                    }
+                }
+            }
+            try {
+                jobs.forEach { it.join() }
+            } finally {
+                monitorJob.cancel()
+            }
+        } else {
+            jobs.forEach { it.join() }
+        }
+    }
+
+    /**
+     * Backwards-compatible runLimitedAsync using the supervised concurrency engine
+     */
+    suspend fun runLimitedAsync(
+        concurrency: Int = 5,
+        taskTimeoutMs: Long = 25_000L,
+        vararg tasks: suspend () -> Unit
+    ) {
+        runSupervisedLimitedAsync(
+            concurrency = concurrency,
+            taskTimeoutMs = taskTimeoutMs,
+            isSatisfied = null,
+            tasks = tasks.toList()
+        )
     }
 
     /**
@@ -108,33 +157,32 @@ object StreamPlayConcurrency {
         val stats = StreamPlayCache.getProviderStats(providerId)
 
         if (stats.successCount == 0) return baseTimeoutMs
-
-        if (stats.isCircuitBroken) return 5000L
+        if (stats.isCircuitBroken) return 4000L
 
         val avgTime = stats.avgTimeMs
         return when {
             avgTime == 0L -> baseTimeoutMs
             avgTime < 1500 -> max(avgTime + 1500, 3500)
-            avgTime < 6000 -> avgTime + 3500
-            avgTime < 15000 -> avgTime + 6000
-            else -> min(avgTime + 8000, baseTimeoutMs * 2)
+            avgTime < 6000 -> avgTime + 3000
+            avgTime < 15000 -> avgTime + 5000
+            else -> min(avgTime + 6000, baseTimeoutMs * 2)
         }
     }
 
     fun getProviderExecutionTimeout(providerId: String): Long {
         val stats = StreamPlayCache.getProviderStats(providerId)
-        if (stats.isCircuitBroken) return 5_000L
-        if (stats.isRecovering) return 12_000L
-        if (stats.successCount + stats.failureCount == 0) return 22_000L
+        if (stats.isCircuitBroken) return 4_000L
+        if (stats.isRecovering) return 10_000L
+        if (stats.successCount + stats.failureCount == 0) return 20_000L
 
         val historyBasedTimeout = when {
-            stats.avgTimeMs <= 0L -> 22_000L
-            stats.avgTimeMs < 2_000L -> 8_000L
-            stats.avgTimeMs < 8_000L -> stats.avgTimeMs + 8_000L
-            else -> stats.avgTimeMs + 12_000L
+            stats.avgTimeMs <= 0L -> 20_000L
+            stats.avgTimeMs < 2_000L -> 7_000L
+            stats.avgTimeMs < 8_000L -> stats.avgTimeMs + 6_000L
+            else -> stats.avgTimeMs + 8_000L
         }
 
-        return historyBasedTimeout.coerceIn(6_000L, 35_000L)
+        return historyBasedTimeout.coerceIn(5_000L, 28_000L)
     }
 
     fun normalizeConcurrency(value: Int): Int =
@@ -153,8 +201,8 @@ object StreamPlayConcurrency {
         providersCompleted: Int,
         totalProviders: Int
     ): Boolean {
-        if (linksFound < 8) return false
-        if (providersCompleted < min(totalProviders, 12)) return false
-        return subtitlesFound >= 2 || providersCompleted >= min(totalProviders, 20)
+        if (linksFound < 6) return false
+        if (providersCompleted < min(totalProviders, 8)) return false
+        return subtitlesFound >= 1 || providersCompleted >= min(totalProviders, 16)
     }
 }

@@ -44,6 +44,9 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.StreamPlay.Companion.animepaheAPI
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -80,6 +83,37 @@ private val extractorNormalizeH265Regex = Regex("H[ .]?265")
 private val extractorNormalizeH264Regex = Regex("H[ .]?264")
 private val extractorNormalizeDolbyVisionRegex = Regex("DOLBY[ .]?VISION")
 private val extractorQualityRegex = Regex("(\\d{3,4})[pP]")
+
+private val HUBCLOUD_VAR_URL_REGEX = Regex("var url = '([^']*)'")
+private val STREAMRUBY_ID_REGEX = Regex("/e/(\\w+)")
+private val STREAMRUBY_M3U8_REGEX = Regex("file:\\s*\"(.*?m3u8.*?)\"")
+private val RIDOO_M3U8_REGEX = Regex("((https:|http:)//.*\\.m3u8)")
+private val STREAMVID_M3U8_REGEX = Regex("file:\\s*\"(.*?m3u8.*?)\"")
+private val STREAMVID_QUALITY_REGEX = Regex("qualityLabels.*\"(\\d{3,4})[pP]\"")
+private val STREAMVID_SRC_REGEX = Regex("src:\\s*\"(.*?m3u8.*?)\"")
+private val PIXELDRAIN_ID_REGEX = Regex("/u/(.*)")
+private val GDFLIX_TOKEN_REGEX = Regex("formData\\.append\\('token', '([a-f0-9]+)'\\)")
+private val GDFLIX_PATH_REGEX = Regex("fetch\\('/download\\?id=([a-zA-Z0-9/+]+)'\\)")
+private val VEGAWATCH_SOURCE_REGEX = Regex("source=\\s*'(.*?m3u8.*?)'")
+private val GOFILE_ID_REGEX = Regex("/(?:\\?c=|d/)([\\da-zA-Z-]+)")
+private val UQLOADS_HLS_REGEX = Regex("""hls2":"(?<hls2>[^"]+)"|hls4":"(?<hls4>[^"]+)"""")
+private val VIDEOSTR_NONCE_REGEX = Regex("""\b[a-zA-Z0-9]{48}\b""")
+private val VIDEOSTR_HEX_REGEX = Regex("""\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b""")
+private val VIDEOSTR_FILE_REGEX = Regex("\"file\":\"(.*?)\"")
+private val MOLOP_BRACKET_REGEX = Regex("\\[.*?]")
+private val MOLOP_QUOTE_REGEX = Regex("\"(.*?)\"")
+private val FILESIM_M3U8_REGEX = Regex("""file:\s*"(.*?m3u8.*?)"""")
+private val FILESIM_RESOLVER_REGEX = Regex("""(m3u8|master\.txt)""")
+private val HUBCDN_R_REGEX = Regex("r=([A-Za-z0-9+/=]+)")
+private val KRAKEN_ID_REGEX = Regex("/(?:view|embed-video)/([\\da-zA-Z]+)")
+private val PPZJ_ID_REGEX = Regex("""const\s*id(?:User|file)_enc\s*=\s*"([^"]+)"""")
+private val HDM2_STREAM_URL_REGEX = Regex("""data-stream-url=["'](.*?)["']""")
+private val HDM2_TOK_REGEX = Regex("""[?&]tok=([^&]+)""")
+private val HDM2_SEED_REGEX = Regex("""obfuscation_seed:"([^"]+)"""")
+private val SUB_URL_REGEX = Regex(""""?url"?\s*:\s*"([^"]+)"""")
+private val SUB_LANG_REGEX = Regex(""""?language"?\s*:\s*"([^"]+)"""")
+private val BYSESX_VD_REGEX = Regex("""var\s+vd\s*=\s*["']([^"']+)["']""")
+private val BYSESX_TK_REGEX = Regex("""tk\s*=\s*["']([^"']+)["']""")
 
 private fun extractCleanTitle(title: String): String {
     val name = title.replace(extractorTitleExtensionRegex, "")
@@ -328,7 +362,7 @@ class VCloud : ExtractorApi() {
 
         val doc = runCatching { app.get(href).document }.getOrNull() ?: return
         val scriptTag = doc.selectFirst("script:containsData(url)")?.data() ?: ""
-        val urlValue = Regex("var url = '([^']*)'").find(scriptTag)?.groupValues?.getOrNull(1).orEmpty()
+        val urlValue = HUBCLOUD_VAR_URL_REGEX.find(scriptTag)?.groupValues?.getOrNull(1).orEmpty()
         if (urlValue.isEmpty()) return
 
         val document = runCatching { app.get(urlValue).document }.getOrNull() ?: return
@@ -486,7 +520,7 @@ open class Streamruby : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val id = "/e/(\\w+)".toRegex().find(url)?.groupValues?.get(1) ?: return
+        val id = STREAMRUBY_ID_REGEX.find(url)?.groupValues?.get(1) ?: return
         val response = app.post(
             "$mainUrl/dl", data = mapOf(
                 "op" to "embed",
@@ -500,7 +534,7 @@ open class Streamruby : ExtractorApi() {
         } else {
             response.document.selectFirst("script:containsData(sources:)")?.data()
         }
-        val m3u8 = Regex("file:\\s*\"(.*?m3u8.*?)\"").find(script ?: return)?.groupValues?.getOrNull(1)
+        val m3u8 = STREAMRUBY_M3U8_REGEX.find(script ?: return)?.groupValues?.getOrNull(1)
         generateM3u8(
             name,
             m3u8 ?: return,
@@ -571,7 +605,7 @@ open class Netembed : ExtractorApi() {
     ) {
         val response = app.get(url, referer = referer)
         val script = getAndUnpack(response.text)
-        val m3u8 = Regex("((https:|http:)//.*\\.m3u8)").find(script)?.groupValues?.getOrNull(1) ?: return
+        val m3u8 = RIDOO_M3U8_REGEX.find(script)?.groupValues?.getOrNull(1) ?: return
 
         generateM3u8(this.name, m3u8, "$mainUrl/").forEach(callback)
     }
@@ -595,8 +629,8 @@ open class Ridoo : ExtractorApi() {
         } else {
             response.document.selectFirst("script:containsData(sources:)")?.data()
         }
-        val m3u8 = Regex("file:\\s*\"(.*?m3u8.*?)\"").find(script ?: return)?.groupValues?.getOrNull(1)
-        val quality = "qualityLabels.*\"(\\d{3,4})[pP]\"".toRegex().find(script)?.groupValues?.get(1)
+        val m3u8 = STREAMVID_M3U8_REGEX.find(script ?: return)?.groupValues?.getOrNull(1)
+        val quality = STREAMVID_QUALITY_REGEX.find(script)?.groupValues?.get(1)
         callback.invoke(
             newExtractorLink(
                 this.name,
@@ -630,7 +664,7 @@ open class Streamvid : ExtractorApi() {
             response.document.selectFirst("script:containsData(sources:)")?.data()
         }
         val m3u8 =
-            Regex("src:\\s*\"(.*?m3u8.*?)\"").find(script ?: return)?.groupValues?.getOrNull(1)
+            STREAMVID_SRC_REGEX.find(script ?: return)?.groupValues?.getOrNull(1)
         generateM3u8(
             name,
             m3u8 ?: return,
@@ -949,34 +983,20 @@ class PixelServer : PixelDrain() {
 open class PixelDrain : ExtractorApi() {
     override val name            = "PixelDrain"
     override val mainUrl         = "https://pixeldrain.com"
-    override val requiresReferer = true
+    override val requiresReferer = false
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        val mId = Regex("/u/(.*)").find(url)?.groupValues?.get(1)
-        if (mId.isNullOrEmpty())
-        {
-            callback.invoke(
-                newExtractorLink(
-                    this.name,
-                    this.name,
-                    url = url
-                ) {
-                    this.referer = url
-                    this.quality = Qualities.Unknown.value
-                }
-            )
-        } else {
-            callback.invoke(
-                newExtractorLink(
-                    this.name,
-                    this.name,
-                    url = "$mainUrl/api/file/${mId}?download"
-                ) {
-                    this.referer = url
-                    this.quality = Qualities.Unknown.value
-                }
-            )
+        val mId = PIXELDRAIN_ID_REGEX.find(url)?.groupValues?.get(1)
+        val downloadUrl = if (mId.isNullOrEmpty()) url else "$mainUrl/api/file/${mId}?download"
+        val rawLink = newExtractorLink(
+            this.name,
+            this.name,
+            url = downloadUrl
+        ) {
+            this.referer = ""
+            this.quality = Qualities.Unknown.value
         }
+        callback.invoke(StreamPlayLinkOptimizer.optimize(rawLink))
     }
 }
 
@@ -992,9 +1012,7 @@ class Hubcloudone : HubCloud(){
 open class HubCloud : ExtractorApi() {
 
     override val name = "Hub-Cloud"
-    override var mainUrl: String = runBlocking {
-        StreamPlay.getDomains()?.hubcloud ?: "https://hubcloud.foo"
-    }
+    override var mainUrl: String = "https://hubcloud.foo"
     override val requiresReferer = false
 
     override suspend fun getUrl(
@@ -1253,8 +1271,8 @@ open class Driveseed : ExtractorApi() {
             val response = app.get(url)
             val docString = response.document.toString()
             val ssid = response.cookies["PHPSESSID"].orEmpty()
-            val token = Regex("formData\\.append\\('token', '([a-f0-9]+)'\\)").find(docString)?.groupValues?.getOrNull(1).orEmpty()
-            val path = Regex("fetch\\('/download\\?id=([a-zA-Z0-9/+]+)'").find(docString)?.groupValues?.getOrNull(1).orEmpty()
+            val token = GDFLIX_TOKEN_REGEX.find(docString)?.groupValues?.getOrNull(1).orEmpty()
+            val path = GDFLIX_PATH_REGEX.find(docString)?.groupValues?.getOrNull(1).orEmpty()
             val baseUrl = url.substringBefore("/download")
 
             if (token.isEmpty() || path.isEmpty()) return@runCatching null
@@ -1402,7 +1420,7 @@ class Kwik : ExtractorApi() {
             res.document.selectFirst("script:containsData(function(p,a,c,k,e,d))")?.data()
         val unpacked = getAndUnpack(script ?: return)
         val m3u8 =
-            Regex("source=\\s*'(.*?m3u8.*?)'").find(unpacked)?.groupValues?.getOrNull(1) ?: ""
+            VEGAWATCH_SOURCE_REGEX.find(unpacked)?.groupValues?.getOrNull(1) ?: ""
 
         val fileName = title.substringBeforeLast(".mp4") + ".mp4"
 
@@ -1445,14 +1463,23 @@ class Kwik : ExtractorApi() {
 
 
 //Credit Thanks to https://github.com/SaurabhKaperwan/CSX/blob/7256fe183966412b2323beb15d03331009bfb80f/CineStream/src/main/kotlin/com/megix/Extractors.kt#L108
-class Pahe : ExtractorApi() {
+open class Pahe : ExtractorApi() {
     override val name = "Pahe"
     override val mainUrl = "https://pahe.win"
     override val requiresReferer = true
     private val kwikParamsRegex = Regex("""\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)""")
     private val kwikDUrl = Regex("action=\"([^\"]+)\"")
     private val kwikDToken = Regex("value=\"([^\"]+)\"")
-    private val client = OkHttpClient()
+
+    companion object {
+        private val baseClient = OkHttpClient()
+        private val noRedirectsClient = baseClient.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
+
+    private val client = baseClient
 
     private fun decrypt(fullString: String, key: String, v1: Int, v2: Int): String {
         val keyIndexMap = key.withIndex().associate { it.value to it.index }
@@ -1478,17 +1505,12 @@ class Pahe : ExtractorApi() {
     }
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        val noRedirects = OkHttpClient.Builder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build()
-
         val initialRequest = Request.Builder()
             .url("$url/i")
             .get()
             .build()
 
-        val kwikUrl = noRedirects.newCall(initialRequest).execute().use { response ->
+        val kwikUrl = noRedirectsClient.newCall(initialRequest).execute().use { response ->
             response.header("location")?.let { location ->
                 if (location.startsWith("http")) location else "https://${location.substringAfterLast("https://")}"
             } ?: return
@@ -1515,12 +1537,6 @@ class Pahe : ExtractorApi() {
         val uri = kwikDUrl.find(decrypted)?.destructured?.component1() ?: return
         val tok = kwikDToken.find(decrypted)?.destructured?.component1() ?: return
 
-        val noRedirectClient = OkHttpClient().newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .cookieJar(client.cookieJar)
-            .build()
-
         var code = 419
         var tries = 0
         var content: Response? = null
@@ -1539,7 +1555,7 @@ class Pahe : ExtractorApi() {
                 .build()
 
             content?.close()
-            content = noRedirectClient.newCall(postRequest).execute()
+            content = noRedirectsClient.newCall(postRequest).execute()
             code = content.code
             tries++
         }
@@ -1883,7 +1899,7 @@ open class Gofile : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val id = Regex("/(?:\\?c=|d/)([\\da-zA-Z-]+)").find(url)?.groupValues?.get(1) ?: return
+        val id = GOFILE_ID_REGEX.find(url)?.groupValues?.get(1) ?: return
 
         val token = app.post(
             "$mainApi/accounts",
@@ -1930,7 +1946,7 @@ open class Gofile : ExtractorApi() {
     }
 
     private fun getQuality(str: String?): Int {
-        return Regex("(\\d{3,4})[pP]").find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return extractorQualityRegex.find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Qualities.Unknown.value
     }
 
@@ -1999,7 +2015,7 @@ class UqloadsXyz : ExtractorApi() {
         } else {
             response.document.selectFirst("script:containsData(sources:)")?.data()
         } ?: return
-        val regex = Regex("""hls2":"(?<hls2>[^"]+)"|hls4":"(?<hls4>[^"]+)"""")
+        val regex = UQLOADS_HLS_REGEX
         val links = regex.findAll(script)
             .mapNotNull { matchResult ->
                 val hls2 = matchResult.groups["hls2"]?.value
@@ -2021,6 +2037,45 @@ class UqloadsXyz : ExtractorApi() {
     }
 }
 
+
+data class MegacloudSharedKeys(
+    val mega: String? = null,
+    val rabbit: String = "e1e82845c48b6f3c5f49d21c3b281f69",
+    val vidstr: String = "pWB9V)[*4I`nJpp?ozyB~dbr9yt!_n4u"
+)
+
+object MegacloudKeyCache {
+    private var cachedKey: MegacloudSharedKeys? = null
+    private var lastFetchTime = 0L
+    private const val TTL_MS = 2 * 60 * 60 * 1000L // 2 hours
+    private val mutex = Mutex()
+
+    private val FALLBACK_KEYS = MegacloudSharedKeys()
+
+    suspend fun getKeys(): MegacloudSharedKeys {
+        val cached = cachedKey
+        val now = System.currentTimeMillis()
+        if (cached != null && now - lastFetchTime < TTL_MS) {
+            return cached
+        }
+        return mutex.withLock {
+            val doubleCheck = cachedKey
+            if (doubleCheck != null && System.currentTimeMillis() - lastFetchTime < TTL_MS) {
+                return@withLock doubleCheck
+            }
+            val fetched = runCatching {
+                withTimeoutOrNull(3500) {
+                    app.get("https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json", timeout = 5L)
+                        .parsedSafe<MegacloudSharedKeys>()
+                }
+            }.getOrNull()
+            val resolved = fetched ?: cachedKey ?: FALLBACK_KEYS
+            cachedKey = resolved
+            lastFetchTime = System.currentTimeMillis()
+            resolved
+        }
+    }
+}
 
 class Cdnstreame : ExtractorApi() {
     override val name = "Cdnstreame"
@@ -2047,14 +2102,15 @@ class Cdnstreame : ExtractorApi() {
         val response = app.get(apiUrl, headers = headers)
             .parsedSafe<MegacloudResponse>() ?: return
 
-        val key = app.get("https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json")
-            .parsedSafe<Megakey>()?.rabbit ?: return
+        val key = MegacloudKeyCache.getKeys().rabbit
 
         val decryptedJson = decryptOpenSSL(response.sources, key)
         val m3u8Url = parseSourceJson(decryptedJson).firstOrNull()?.file ?: return
 
         val m3u8Headers = mapOf("Referer" to mainUrl, "Origin" to mainUrl)
-        generateM3u8(name, m3u8Url, mainUrl, headers = m3u8Headers).forEach(callback)
+        generateM3u8(name, m3u8Url, mainUrl, headers = m3u8Headers).forEach { rawLink ->
+            callback(StreamPlayLinkOptimizer.optimize(rawLink))
+        }
 
         response.tracks
             .filter { it.kind in listOf("captions", "subtitles") }
@@ -2140,8 +2196,8 @@ class Videostr : ExtractorApi() {
         val id = url.substringAfterLast("/").substringBefore("?")
         val html = app.get(url, headers = headers).text
 
-        val nonce = Regex("""\b[a-zA-Z0-9]{48}\b""").find(html)?.value
-            ?: Regex("""\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b""")
+        val nonce = VIDEOSTR_NONCE_REGEX.find(html)?.value
+            ?: VIDEOSTR_HEX_REGEX
                 .find(html)?.let { it.groupValues[1] + it.groupValues[2] + it.groupValues[3] }
             ?: throw Exception("Nonce not found")
 
@@ -2157,10 +2213,7 @@ class Videostr : ExtractorApi() {
         val m3u8 = if (".m3u8" in encodedSource) {
             encodedSource
         } else {
-            val key = sharedGson.fromJson(
-                app.get("https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json").text,
-                Megakey::class.java
-            ).vidstr
+            val key = MegacloudKeyCache.getKeys().vidstr
 
             val decodeUrl =
                 "https://script.google.com/macros/s/AKfycbxHbYHbrGMXYD2-bC-C43D3njIbU-wGiYQuJL61H4vyy6YVXkybMNNEPJNPPuZrD1gRVA/exec"
@@ -2168,7 +2221,7 @@ class Videostr : ExtractorApi() {
             val fullUrl =
                 "$decodeUrl?encrypted_data=${URLEncoder.encode(encodedSource,"UTF-8")}&nonce=${URLEncoder.encode(nonce,"UTF-8")}&secret=${URLEncoder.encode(key,"UTF-8")}"
 
-            Regex("\"file\":\"(.*?)\"")
+            VIDEOSTR_FILE_REGEX
                 .find(app.get(fullUrl).text)
                 ?.groupValues?.get(1)
                 ?: throw Exception("Video URL not found")
@@ -2179,7 +2232,9 @@ class Videostr : ExtractorApi() {
             m3u8,
             mainUrl,
             headers = mapOf("Referer" to "$mainUrl/", "Origin" to mainUrl)
-        ).forEach(callback)
+        ).forEach { rawLink ->
+            callback(StreamPlayLinkOptimizer.optimize(rawLink))
+        }
 
         response.tracks.forEach {
             if (it.kind == "captions" || it.kind == "subtitles") {
@@ -2219,7 +2274,7 @@ class Hubdrive : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val href=app.get(url, timeout = 2000).document.select(".btn.btn-primary.btn-user.btn-success1.m-1").attr("href")
+        val href=app.get(url, timeout = 10L).document.select(".btn.btn-primary.btn-user.btn-success1.m-1").attr("href")
         if (href.contains("hubcloud",ignoreCase = true)) HubCloud().getUrl(href,"HubDrive",subtitleCallback,callback)
         else loadExtractor(href,"HubDrive",subtitleCallback, callback)
     }
@@ -2242,9 +2297,8 @@ internal class Molop : ExtractorApi() {
             ?.data()
             ?.substringAfter("sniff(")
             ?.substringBefore(");") ?: return
-        val cleaned = sniffScript.replace(Regex("\\[.*?]"), "")
-        val regex = Regex("\"(.*?)\"")
-        val args = regex.findAll(cleaned).map { it.groupValues[1].trim() }.toList()
+        val cleaned = sniffScript.replace(MOLOP_BRACKET_REGEX, "")
+        val args = MOLOP_QUOTE_REGEX.findAll(cleaned).map { it.groupValues[1].trim() }.toList()
         val token = args.lastOrNull().orEmpty()
         val m3u8 = "$mainUrl/m3u8/${args[1]}/${args[2]}/master.txt?s=1&cache=1&plt=$token"
         generateM3u8(name, m3u8, mainUrl, headers = headers).forEach(callback)
@@ -2385,7 +2439,7 @@ class Vidora : ExtractorApi() {
         }
 
         val m3u8Url = scriptData?.let {
-            Regex("""file:\s*"(.*?m3u8.*?)"""").find(it)?.groupValues?.getOrNull(1)
+            FILESIM_M3U8_REGEX.find(it)?.groupValues?.getOrNull(1)
         }
 
         if (!m3u8Url.isNullOrEmpty()) {
@@ -2398,8 +2452,8 @@ class Vidora : ExtractorApi() {
         } else {
             // Fallback using WebViewResolver
             val resolver = WebViewResolver(
-                interceptUrl = Regex("""(m3u8|master\.txt)"""),
-                additionalUrls = listOf(Regex("""(m3u8|master\.txt)""")),
+                interceptUrl = FILESIM_RESOLVER_REGEX,
+                additionalUrls = listOf(FILESIM_RESOLVER_REGEX),
                 useOkhttp = false,
                 timeout = 15_000L
             )
@@ -2494,7 +2548,7 @@ class HUBCDN : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         app.get(url).document.text().let {
-            val encoded = Regex("r=([A-Za-z0-9+/=]+)").find(it)?.groups?.get(1)?.value
+            val encoded = HUBCDN_R_REGEX.find(it)?.groups?.get(1)?.value
             if (!encoded.isNullOrEmpty()) {
                 val m3u8 = base64Decode(encoded).substringAfterLast("link=")
                 callback.invoke(
@@ -2530,7 +2584,7 @@ open class Krakenfiles : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val id = Regex("/(?:view|embed-video)/([\\da-zA-Z]+)")
+        val id = KRAKEN_ID_REGEX
             .find(url)
             ?.groupValues
             ?.get(1)
@@ -2578,7 +2632,7 @@ open class PpzjYoutube : ExtractorApi() {
             )
 
             val html = app.get(url, headers = headers).text
-            val matches = Regex("""const\s*id(?:User|file)_enc\s*=\s*"([^"]+)"""").findAll(html).map { it.groupValues[1] }.toList()
+            val matches = PPZJ_ID_REGEX.findAll(html).map { it.groupValues[1] }.toList()
             val encryptedFileId = matches[0]
             val encryptedUserId = matches[1]
             val fileId = decryptHexAES(encryptedFileId, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn")
@@ -2864,8 +2918,7 @@ class HDm2 : ExtractorApi() {
         val headers = mapOf("user-agent" to "okhttp/4.12.0")
 
         val res = app.get(url, referer = referer, headers = headers).text
-        val regex = Regex("""data-stream-url=["'](.*?)["']""")
-        val args = regex.find(res)?.groupValues?.get(1)?.trim()
+        val args = HDM2_STREAM_URL_REGEX.find(res)?.groupValues?.get(1)?.trim()
 
         if (!args.isNullOrEmpty()) {
             val m3u8 = if (args.startsWith("http")) {
@@ -2883,7 +2936,7 @@ class HDm2 : ExtractorApi() {
     private fun safeUrl(raw: String): String {
         val cleaned = raw.replace("&amp;", "&")
         val base = cleaned.substringBefore("?")
-        val tok = Regex("""[?&]tok=([^&]+)""").find(cleaned)?.groupValues?.get(1)
+        val tok = HDM2_TOK_REGEX.find(cleaned)?.groupValues?.get(1)
         return if (!tok.isNullOrEmpty()) "$base?tok=$tok" else base
     }
 }
@@ -2904,7 +2957,7 @@ class ZenCloudExtractor : ExtractorApi() {
         val html = app.get(url).text
         if (html.isBlank()) return
 
-        val seed = Regex("""obfuscation_seed:"([^"]+)"""")
+        val seed = HDM2_SEED_REGEX
             .find(html)?.groupValues?.get(1) ?: return
 
         val dataBlock = extractJsonBlock(html, "obfuscated_crypto_data") ?: return
@@ -2995,9 +3048,9 @@ class ZenCloudExtractor : ExtractorApi() {
         if (subtitlesBlock != null) {
             Regex("""\{[^{}]+\}""").findAll(subtitlesBlock).forEach { entry ->
                 val entryStr = entry.value
-                val subUrl = Regex(""""?url"?\s*:\s*"([^"]+)"""")
+                val subUrl = SUB_URL_REGEX
                     .find(entryStr)?.groupValues?.get(1)
-                val lang = Regex(""""?language"?\s*:\s*"([^"]+)"""")
+                val lang = SUB_LANG_REGEX
                     .find(entryStr)?.groupValues?.get(1) ?: "Unknown"
                 if (!subUrl.isNullOrBlank()) {
                     subtitleCallback.invoke(newSubtitleFile(lang, subUrl))
@@ -3352,7 +3405,7 @@ class FlixCloud : ExtractorApi() {
             requestBody = body.toRequestBody(
                 "application/json".toMediaType()
             ),
-            timeout = 10000L
+            timeout = 10L
         )
 
         val resolvedJson = JSONObject(resolvedRes.text)
@@ -3390,7 +3443,7 @@ class FlixCloud : ExtractorApi() {
             requestBody = decryptBody.toRequestBody(
                 "application/json".toMediaType()
             ),
-            timeout = 10000L
+            timeout = 10L
         ).parsedSafe<ReAnimeStream>()?.result ?: return
 
 

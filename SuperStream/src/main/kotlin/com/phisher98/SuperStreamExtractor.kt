@@ -17,7 +17,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.BuildConfig.SUPERSTREAM_FOURTH_API
 import com.phisher98.BuildConfig.SUPERSTREAM_THIRD_API
 import com.phisher98.BuildConfig.NuvFeb
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,6 +25,29 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLEncoder
 import java.util.Locale
+
+private val ORG_QUALITY_REGEX = Regex("""(\d{3,4}p)""", RegexOption.IGNORE_CASE)
+
+private val VIDEO_HEADERS = mapOf(
+    "Accept" to "*/*",
+    "Accept-Encoding" to "identity",
+    "Accept-Language" to "en-US,en;q=0.8",
+    "Connection" to "keep-alive",
+    "Referer" to SUPERSTREAM_THIRD_API,
+    "Sec-Fetch-Dest" to "video",
+    "Sec-Fetch-Mode" to "no-cors",
+    "Sec-Fetch-Site" to "cross-site",
+    "Sec-Fetch-Storage-Access" to "none",
+    "Sec-GPC" to "1",
+    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "sec-ch-ua" to "\"Not;A=Brand\";v=\"99\", \"Brave\";v=\"139\", \"Chromium\";v=\"139\"",
+    "sec-ch-ua-mobile" to "?0",
+    "sec-ch-ua-platform" to "\"Windows\""
+)
+private val LANG_HEADERS = mapOf("Accept-Language" to "en")
+private val SUBTITLE_HEADERS = mapOf(
+    "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+)
 
 object SuperStreamExtractor : SuperStream() {
 
@@ -36,10 +59,10 @@ object SuperStreamExtractor : SuperStream() {
         callback: (ExtractorLink) -> Unit
     ) {
         val searchUrl = "$SUPERSTREAM_FOURTH_API/search?keyword=$imdbId"
-        val href = app.get(searchUrl).document.selectFirst("h2.film-name a")?.attr("href")
+        val href = app.get(searchUrl, timeout = 10L).document.selectFirst("h2.film-name a")?.attr("href")
             ?.let { SUPERSTREAM_FOURTH_API + it }
         val mediaId = href?.let {
-            app.get(it).document.selectFirst("h2.heading-name a")?.attr("href")
+            app.get(it, timeout = 10L).document.selectFirst("h2.heading-name a")?.attr("href")
                 ?.substringAfterLast("/")?.toIntOrNull()
         }
         mediaId?.let {
@@ -58,30 +81,13 @@ object SuperStreamExtractor : SuperStream() {
         val thirdAPI = SUPERSTREAM_THIRD_API
         val fourthAPI = SUPERSTREAM_FOURTH_API
         val (seasonSlug, episodeSlug) = getEpisodeSlug(season, episode)
-        val headers = mapOf("Accept-Language" to "en")
-        val videoheaders = mapOf(
-            "Accept" to "*/*",
-            "Accept-Language" to "en-US,en;q=0.8",
-            "Connection" to "keep-alive",
-            "Range" to "bytes=0-",
-            "Referer" to thirdAPI,
-            "Sec-Fetch-Dest" to "video",
-            "Sec-Fetch-Mode" to "no-cors",
-            "Sec-Fetch-Site" to "cross-site",
-            "Sec-Fetch-Storage-Access" to "none",
-            "Sec-GPC" to "1",
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-            "sec-ch-ua" to "\"Not;A=Brand\";v=\"99\", \"Brave\";v=\"139\", \"Chromium\";v=\"139\"",
-            "sec-ch-ua-mobile" to "?0",
-            "sec-ch-ua-platform" to "\"Windows\""
-        )
 
         val shareKey =
-            app.get("$fourthAPI/index/share_link?id=${mediaId}&type=$type", headers = headers)
+            app.get("$fourthAPI/index/share_link?id=${mediaId}&type=$type", headers = LANG_HEADERS, timeout = 10L)
                 .parsedSafe<ER>()?.data?.link?.substringAfterLast("/") ?: return
 
         val shareRes =
-            app.get("$thirdAPI/file/file_share_list?share_key=$shareKey", headers = headers)
+            app.get("$thirdAPI/file/file_share_list?share_key=$shareKey", headers = LANG_HEADERS, timeout = 10L)
                 .parsedSafe<ExternalResponse>()?.data ?: return
         val fids = if (season == null) {
             shareRes.fileList
@@ -94,7 +100,8 @@ object SuperStreamExtractor : SuperStream() {
             }?.fid?.let { parentId ->
                 app.get(
                     "$thirdAPI/file/file_share_list?share_key=$shareKey&parent_id=$parentId&page=1",
-                    headers = headers
+                    headers = LANG_HEADERS,
+                    timeout = 10L
                 )
                     .parsedSafe<ExternalResponse>()?.data?.fileList?.filter {
                         it.fileName?.contains("s${seasonSlug}e${episodeSlug}", true) == true
@@ -102,72 +109,64 @@ object SuperStreamExtractor : SuperStream() {
             }
         } ?: return
 
-        fids.amapIndexed { index, fileList ->
-            val superToken = token?.let {
-                if (it.startsWith("ui=")) it else "ui=$it"
-            } ?: ""
-            val player = app.get(
-                "$thirdAPI/console/video_quality_list?fid=${fileList.fid}&share_key=$shareKey",
-                headers = mapOf("Cookie" to superToken)
-            ).text
-            val json = try {
-                JSONObject(player)
-            } catch (e: Exception) {
-                Log.e("Error:", "Invalid JSON response $e")
-                return@amapIndexed
-            }
-            val htmlContent = json.optString("html", "")
-            if (htmlContent.isEmpty()) return@amapIndexed
-
-            val document: Document = Jsoup.parse(htmlContent)
-            val sourcesWithQualities = mutableListOf<Triple<String, String, String>>() // url, quality, size
-
-            document.select("div.file_quality").forEach { element ->
-                val url = element.attr("data-url").takeIf { it.isNotEmpty() } ?: return@forEach
-                val qualityAttr = element.attr("data-quality").takeIf { it.isNotEmpty() }
-                val size = element.selectFirst(".size")?.text()?.takeIf { it.isNotEmpty() } ?: return@forEach
-
-                val quality = if (qualityAttr.equals("ORG", ignoreCase = true)) {
-                    Regex("""(\d{3,4}p)""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1) ?: "2160p"
-                } else {
-                    qualityAttr ?: return@forEach
-                }
-
-                sourcesWithQualities.add(Triple(url, quality, size))
-            }
-
-            val sourcesJsonArray = JSONArray().apply {
-                sourcesWithQualities.forEach { (url, quality, size) ->
-                    put(JSONObject().apply {
-                        put("file", url)
-                        put("label", quality)
-                        put("type", "video/mp4")
-                        put("size", size)
-                    })
-                }
-            }
-            val jsonObject = JSONObject().put("sources", sourcesJsonArray)
-            listOf(jsonObject.toString()).forEach {
-                val parsedSources =
-                    tryParseJson<ExternalSourcesWrapper>(it)?.sources ?: return@forEach
-                parsedSources.forEach org@{ source ->
-                    val format =
-                        if (source.type == "video/mp4") ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
-                    if (!(source.label == "AUTO" || format == ExtractorLinkType.VIDEO)) return@org
-                    callback.invoke(
-                        newExtractorLink(
-                            "⌜ SuperStream ⌟",
-                            "⌜ SuperStream ⌟ [Server ${index + 1}] ${source.size}",
-                            source.file?.replace("\\/", "/") ?: return@org,
-                            format
-                        )
-                        {
-                            this.quality = getIndexQuality(if (format == ExtractorLinkType.M3U8) fileList.fileName else source.label)
-                            this.headers = videoheaders
+        coroutineScope {
+            fids.mapIndexed { index, fileList ->
+                async {
+                    try {
+                        val superToken = token?.let {
+                            if (it.startsWith("ui=")) it else "ui=$it"
+                        } ?: ""
+                        val player = app.get(
+                            "$thirdAPI/console/video_quality_list?fid=${fileList.fid}&share_key=$shareKey",
+                            headers = mapOf("Cookie" to superToken),
+                            timeout = 10L
+                        ).text
+                        val json = try {
+                            JSONObject(player)
+                        } catch (e: Exception) {
+                            Log.e("Error:", "Invalid JSON response $e")
+                            return@async
                         }
-                    )
+                        val htmlContent = json.optString("html", "")
+                        if (htmlContent.isEmpty()) return@async
+
+                        val document: Document = Jsoup.parse(htmlContent)
+                        val sourcesWithQualities = mutableListOf<Triple<String, String, String>>()
+
+                        document.select("div.file_quality").forEach { element ->
+                            val url = element.attr("data-url").takeIf { it.isNotEmpty() } ?: return@forEach
+                            val qualityAttr = element.attr("data-quality").takeIf { it.isNotEmpty() }
+                            val size = element.selectFirst(".size")?.text()?.takeIf { it.isNotEmpty() } ?: return@forEach
+
+                            val quality = if (qualityAttr.equals("ORG", ignoreCase = true)) {
+                                ORG_QUALITY_REGEX.find(url)?.groupValues?.get(1) ?: "2160p"
+                            } else {
+                                qualityAttr ?: return@forEach
+                            }
+
+                            sourcesWithQualities.add(Triple(url, quality, size))
+                        }
+
+                        sourcesWithQualities.forEach { (url, label, size) ->
+                            val format = ExtractorLinkType.VIDEO
+                            callback.invoke(
+                                newExtractorLink(
+                                    "⌜ SuperStream ⌟",
+                                    "⌜ SuperStream ⌟ [Server ${index + 1}] $size",
+                                    url.replace("\\/", "/"),
+                                    format
+                                ) {
+                                    this.quality = getIndexQuality(label)
+                                    this.headers = VIDEO_HEADERS
+                                }
+                            )
+                        }
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.e("SuperStream", "invokeExternalSource failed: $e")
+                    }
                 }
-            }
+            }.awaitAll()
         }
     }
 
@@ -182,17 +181,14 @@ object SuperStreamExtractor : SuperStream() {
         } else {
             "https://opensubtitles-v3.strem.io/subtitles/series/$id:$season:$episode.json"
         }
-        val headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        )
-        app.get(url, headers = headers, timeout = 100L)
+        app.get(url, headers = SUBTITLE_HEADERS, timeout = 10L)
             .parsedSafe<SubtitlesAPI>()?.subtitles?.amap {
                 val lan = getLanguage(it.lang) ?: "Unknown"
                 val suburl = it.url
                 subtitleCallback.invoke(
                     newSubtitleFile(
-                        lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },  // Use label for the name
-                        suburl     // Use extracted URL
+                        lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                        suburl
                     )
                 )
             }
@@ -212,7 +208,7 @@ object SuperStreamExtractor : SuperStream() {
             "$WyZIESUBAPI/search?id=$id&season=$season&episode=$episode"
         }
 
-        val res = app.get(url).toString()
+        val res = app.get(url, timeout = 10L).text
         val gson = Gson()
         val listType = object : TypeToken<List<WyZIESUB>>() {}.type
         val subtitles: List<WyZIESUB> = gson.fromJson(res, listType)
@@ -221,8 +217,8 @@ object SuperStreamExtractor : SuperStream() {
             val suburl = it.url
             subtitleCallback.invoke(
                 newSubtitleFile(
-                    lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },  // Use label for the name
-                    suburl     // Use extracted URL
+                    lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                    suburl
                 )
             )
         }
@@ -246,15 +242,20 @@ object SuperStreamExtractor : SuperStream() {
 
         var parsed: FebResponse? = null
 
-        repeat(3) { _ ->
-            val response = app.get(url, timeout = 10000L)
-
-            if (response.code == 500) {
-                delay(2500L)
-            } else {
-                parsed = response.parsedSafe<FebResponse>()
-                return@repeat
+        try {
+            for (attempt in 0..1) {
+                val response = app.get(url, timeout = 10L)
+                if (response.code == 500 && attempt == 0) {
+                    delay(1000L)
+                } else {
+                    parsed = response.parsedSafe<FebResponse>()
+                    break
+                }
             }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e("SuperStream", "invokeSuperstreamFeb failed: $e")
+            return
         }
 
         parsed ?: return

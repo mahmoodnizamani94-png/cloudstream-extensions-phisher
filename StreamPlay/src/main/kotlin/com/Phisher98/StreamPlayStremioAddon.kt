@@ -152,21 +152,20 @@ suspend fun invokeStreamioStreamsGlobal(
             val proxyReq = s.behaviorHints?.proxyHeaders?.request
             val stdHeaders = s.behaviorHints?.headers
 
-            callback.invoke(
-                newExtractorLink(
-                    sourceName,
-                    "[$sourceName] $title",
-                    streamUrl,
-                    type
-                ) {
-                    this.quality = getIndexQuality(title)
-                    this.headers = mapOf(
-                        "User-Agent" to (proxyReq.getHeader("User-Agent") ?: stdHeaders.getHeader("User-Agent") ?: USER_AGENT),
-                        "Referer" to (proxyReq.getHeader("Referer") ?: stdHeaders.getHeader("Referer") ?: ""),
-                        "Origin" to (proxyReq.getHeader("Origin") ?: stdHeaders.getHeader("Origin") ?: "")
-                    ).filterValues { it.isNotBlank() }
-                }
-            )
+            val rawLink = newExtractorLink(
+                sourceName,
+                "[$sourceName] $title",
+                streamUrl,
+                type
+            ) {
+                this.quality = getIndexQuality(title)
+                this.headers = mapOf(
+                    "User-Agent" to (proxyReq.getHeader("User-Agent") ?: stdHeaders.getHeader("User-Agent") ?: USER_AGENT),
+                    "Referer" to (proxyReq.getHeader("Referer") ?: stdHeaders.getHeader("Referer") ?: ""),
+                    "Origin" to (proxyReq.getHeader("Origin") ?: stdHeaders.getHeader("Origin") ?: "")
+                ).filterValues { it.isNotBlank() }
+            }
+            callback.invoke(StreamPlayLinkOptimizer.optimize(rawLink))
         }
 
         s.externalUrl?.takeIf { it.isNotBlank() }?.let { loadExtractor(it, sourceName, subtitleCallback, callback) }

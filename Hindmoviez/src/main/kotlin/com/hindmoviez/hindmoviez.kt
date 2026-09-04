@@ -69,12 +69,12 @@ class Hindmoviez : MainAPI() {
             "$mainUrl/${request.data}/page/$page"
         }
 
-        var response = app.get(url, timeout = 5000L)
+        var response = app.get(url, timeout = 10L)
         if (response.text.contains("Just a moment", ignoreCase = true)) {
             // Retry using CloudflareKiller interceptor
             response = app.get(
                 url,
-                timeout = 5000L,
+                timeout = 10L,
                 interceptor = CloudflareKiller()
             )
         }
@@ -106,14 +106,14 @@ class Hindmoviez : MainAPI() {
 
 
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url, timeout = 10000L)
+        val response = app.get(url, timeout = 10L)
 
         val finalResponse = if (
             response.text.contains("Just a moment", ignoreCase = true)
         ) {
             app.get(
                 url,
-                timeout = 10000L,
+                timeout = 10L,
                 interceptor = CloudflareKiller()
             )
         } else {
@@ -332,7 +332,7 @@ class Hindmoviez : MainAPI() {
     ): Boolean {
         val links: List<String> = tryParseJson<List<String>>(data) ?: return true
         val allRequests = links.amap { pageUrl ->
-            val pageDoc = app.get(pageUrl, timeout = 10000L).document
+            val pageDoc = app.get(pageUrl, timeout = 10L).document
 
             val name: String = pageDoc.selectFirst("div.container p:contains(Name:)")
                 ?.text()
@@ -362,7 +362,7 @@ class Hindmoviez : MainAPI() {
                 loadExtractor(btnUrl,"$extractedSpecs[$fileSize]",subtitleCallback,callback)
             }
             try {
-                val doc = app.get(btnUrl, timeout = 10000L).document
+                val doc = app.get(btnUrl, timeout = 10L).document
                 val quality: Int = getIndexQuality(
                     doc.selectFirst("div.container h2")?.text() ?: ""
                 )

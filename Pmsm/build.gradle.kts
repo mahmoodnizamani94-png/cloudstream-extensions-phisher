@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 cloudstream {
     description = "PMSM (Pencuri Movie Sub Malay)"

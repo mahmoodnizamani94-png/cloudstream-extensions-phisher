@@ -20,6 +20,9 @@ import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.utils.AppUtils
 import com.phisher98.UltimaUtils.SectionInfo
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 class Ultima(val plugin: UltimaPlugin) : MainAPI() {
     override var name = "Ultima"
@@ -28,6 +31,8 @@ class Ultima(val plugin: UltimaPlugin) : MainAPI() {
     override val hasMainPage = true
     override val hasQuickSearch = false
     private val sm = UltimaStorageManager
+
+    private val sectionInfoCache = UltimaUtils.LruCacheWithTtl<String, SectionInfo>(maxSize = 128)
 
     private val mapper = jacksonObjectMapper()
     private var sectionNamesList: List<String> = emptyList()
@@ -116,7 +121,7 @@ class Ultima(val plugin: UltimaPlugin) : MainAPI() {
 
                 newHomePageResponse(homeSections, false)
             } else {
-                val section = AppUtils.parseJson<SectionInfo>(request.data)
+                val section = sectionInfoCache.getOrPut(request.data) { AppUtils.parseJson(request.data) }
                 val provider = UltimaUtils.getAllProviders().find { it.name == section.pluginName }
                     ?: throw ErrorLoadingException("Provider '${section.pluginName}' is not available.")
 
@@ -150,22 +155,13 @@ class Ultima(val plugin: UltimaPlugin) : MainAPI() {
 
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val enabledSections = mainPage
-            .filter { !it.name.equals("watch_sync", ignoreCase = true) }
-            .mapNotNull {
-                try {
-                    val section = AppUtils.parseJson<SectionInfo>(it.data)
-                    section.pluginName to section
-                } catch (_: Exception) {
-                    null
-                }
-            }
+        val enabledPlugins = sm.getEnabledPluginNames()
+        val providersToSearch = UltimaUtils.getAllProviders().filter { it.name in enabledPlugins }
 
         val tasks = mutableListOf<suspend () -> List<SearchResponse>>()
 
-        for ((pluginName, _) in enabledSections) {
-            val provider = UltimaUtils.getAllProviders().find { it.name == pluginName } ?: continue
-
+        for (provider in providersToSearch) {
+            val pluginName = provider.name
             tasks += suspend {
                 try {
                     when (val result = provider.search(query)) {
@@ -188,40 +184,111 @@ class Ultima(val plugin: UltimaPlugin) : MainAPI() {
             }
         }
 
-
         return runLimitedParallel(limit = 4, tasks).flatten()
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val enabledPlugins = mainPage
-            .filter { !it.name.equals("watch_sync", ignoreCase = true) }
-            .mapNotNull {
-                try {
-                    AppUtils.parseJson<SectionInfo>(it.data).pluginName
-                } catch (_: Exception) {
-                    null
-                }
-            }
-
+        val enabledPlugins = sm.getEnabledPluginNames()
         val providersToTry = UltimaUtils.getAllProviders().filter { it.name in enabledPlugins }
 
-        for (provider in providersToTry) {
-            try {
-                val response = provider.load(url)
+        if (providersToTry.isEmpty()) {
+            return newMovieLoadResponse("Welcome to Ultima", "", TvType.Others, "")
+        }
 
+        // Tier 1: Host Affinity
+        val targetHost = UltimaUtils.getHost(url)
+        var affinityProvider: MainAPI? = null
+        if (!targetHost.isNullOrBlank()) {
+            affinityProvider = providersToTry.find { provider ->
+                val providerHost = UltimaUtils.getHost(provider.mainUrl)
+                if (providerHost.isNullOrBlank()) {
+                    false
+                } else {
+                    providerHost.equals(targetHost, ignoreCase = true) ||
+                        providerHost.removePrefix("www.").equals(targetHost.removePrefix("www."), ignoreCase = true)
+                }
+            }
+        }
+
+        if (affinityProvider != null) {
+            try {
+                val response = withTimeoutOrNull(3000L) {
+                    affinityProvider.load(url)
+                }
                 if (response != null &&
                     response.name.isNotBlank() &&
                     !response.posterUrl.isNullOrBlank()
                 ) {
                     return response
                 }
-            } catch (_: Throwable) {
-                // Optional: Log specific provider failure if debugging
-                Log.e("Ultima load", "Failed loading from ${provider.name}")
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.e("Ultima load", "Tier 1 affinity failed for ${affinityProvider.name}: ${e.message}")
+            }
+        }
+
+        // Tier 2: Bounded Speculative Racing
+        val remainingProviders = if (affinityProvider != null) {
+            providersToTry.filter { it != affinityProvider }
+        } else {
+            providersToTry
+        }
+
+        if (remainingProviders.isNotEmpty()) {
+            val racedResponse = speculativeRaceLoad(remainingProviders, url)
+            if (racedResponse != null) {
+                return racedResponse
             }
         }
 
         return newMovieLoadResponse("Welcome to Ultima", "", TvType.Others, "")
+    }
+
+    private suspend fun speculativeRaceLoad(
+        providers: List<MainAPI>,
+        url: String
+    ): LoadResponse? = supervisorScope {
+        val semaphore = Semaphore(4)
+        val winnerDeferred = CompletableDeferred<LoadResponse>()
+
+        val jobs = providers.map { provider ->
+            launch(Dispatchers.IO) {
+                semaphore.withPermit {
+                    if (winnerDeferred.isCompleted) return@withPermit
+                    try {
+                        val response = provider.load(url)
+                        if (response != null &&
+                            response.name.isNotBlank() &&
+                            !response.posterUrl.isNullOrBlank()
+                        ) {
+                            winnerDeferred.complete(response)
+                        }
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        Log.e("Ultima load", "Speculative load failed for ${provider.name}: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        val joinerJob = launch {
+            jobs.joinAll()
+            if (!winnerDeferred.isCompleted) {
+                winnerDeferred.cancel()
+            }
+        }
+
+        val result = try {
+            winnerDeferred.await()
+        } catch (_: Throwable) {
+            null
+        }
+
+        // Early cancellation of sibling coroutines upon finding first valid result
+        jobs.forEach { it.cancel() }
+        joinerJob.cancel()
+
+        result
     }
 
 

@@ -36,6 +36,41 @@ import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 
+private val QUALITY_REGEX = Regex("(\\d{3,4})[pP]")
+private val FULL_TAG_REGEX = Regex("(?i)(.*)\\.(?:mkv|mp4|avi)")
+private val TAG_QUALITY_REGEX = Regex("(?i)\\d{3,4}[pP]\\.?(.*?)\\.(mkv|mp4|avi)")
+private val SLUG_WHITESPACE_REGEX = Regex("\\s+")
+
+private val DRIVEBOT_TOKEN_REGEX = Regex("""formData\.append\('token', '([a-f0-9]+)'\)""")
+private val DRIVEBOT_POST_ID_REGEX = Regex("""fetch\('/download\?id=([a-zA-Z0-9/+]+)'""")
+private val DRIVEBOT_URL_REGEX = Regex("""url":"(.*?)"""")
+
+private val GOFILE_ID_REGEX = Regex("""/(?:\?c=|d/)([\da-zA-Z-]+)""")
+private val GOFILE_WT_REGEX = Regex("""appdata\.wt\s*=\s*["']([^"']+)["']""")
+
+private val MEGAUP_M3U8_REGEX = Regex("""\.m3u8""")
+private val MEGAUP_VTT_REGEX = Regex("""eng_\d+\.vtt""")
+
+private val VAR_URL_REGEX = Regex("var url = '([^']*)'")
+
+private val CLEAN_QUALITY_TAGS = setOf(
+    "WEBRip", "WEB-DL", "WEB", "BluRay", "HDRip", "DVDRip", "HDTV",
+    "CAM", "TS", "R5", "DVDScr", "BRRip", "BDRip", "DVD", "PDTV",
+    "HD"
+)
+
+private val CLEAN_AUDIO_TAGS = setOf(
+    "AAC", "AC3", "DTS", "MP3", "FLAC", "DD5", "EAC3", "Atmos"
+)
+
+private val CLEAN_SUB_TAGS = setOf(
+    "ESub", "ESubs", "Subs", "MultiSub", "NoSub", "EnglishSub", "HindiSub"
+)
+
+private val CLEAN_CODEC_TAGS = setOf(
+    "x264", "x265", "H264", "HEVC", "AVC"
+)
+
 abstract class MediaProvider {
     abstract val name: String
     abstract val domain: String
@@ -138,16 +173,16 @@ object UltimaMediaProvidersUtils {
     }
 
     fun getIndexQuality(str: String?): Int {
-        return Regex("(\\d{3,4})[pP]").find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return QUALITY_REGEX.find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: Qualities.Unknown.value
     }
 
     fun getIndexQualityTags(str: String?, fullTag: Boolean = false): String {
         return if (fullTag)
-                Regex("(?i)(.*)\\.(?:mkv|mp4|avi)").find(str ?: "")?.groupValues?.get(1)?.trim()
+                FULL_TAG_REGEX.find(str ?: "")?.groupValues?.get(1)?.trim()
                         ?: str ?: ""
         else
-                Regex("(?i)\\d{3,4}[pP]\\.?(.*?)\\.(mkv|mp4|avi)")
+                TAG_QUALITY_REGEX
                         .find(str ?: "")
                         ?.groupValues
                         ?.getOrNull(1)
@@ -165,7 +200,7 @@ object UltimaMediaProvidersUtils {
     fun String?.createSlug(): String? {
         return this?.filter { it.isWhitespace() || it.isLetterOrDigit() }
                 ?.trim()
-                ?.replace("\\s+".toRegex(), "-")
+                ?.replace(SLUG_WHITESPACE_REGEX, "-")
                 ?.lowercase()
     }
 
@@ -490,7 +525,7 @@ class AnyHubCloud(provider: String?, dubType: String?, domain: String = "") : Ex
         }
 
         private fun getIndexQuality(str: String?): Int {
-            return Regex("(\\d{3,4})[pP]").find(str.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
+            return QUALITY_REGEX.find(str.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: Qualities.P2160.value
         }
 
@@ -505,32 +540,14 @@ class AnyHubCloud(provider: String?, dubType: String?, domain: String = "") : Ex
     private fun cleanTitle(title: String): String {
         val parts = title.split(".", "-", "_")
 
-        val qualityTags = listOf(
-            "WEBRip", "WEB-DL", "WEB", "BluRay", "HDRip", "DVDRip", "HDTV",
-            "CAM", "TS", "R5", "DVDScr", "BRRip", "BDRip", "DVD", "PDTV",
-            "HD"
-        )
-
-        val audioTags = listOf(
-            "AAC", "AC3", "DTS", "MP3", "FLAC", "DD5", "EAC3", "Atmos"
-        )
-
-        val subTags = listOf(
-            "ESub", "ESubs", "Subs", "MultiSub", "NoSub", "EnglishSub", "HindiSub"
-        )
-
-        val codecTags = listOf(
-            "x264", "x265", "H264", "HEVC", "AVC"
-        )
-
         val startIndex = parts.indexOfFirst { part ->
-            qualityTags.any { tag -> part.contains(tag, ignoreCase = true) }
+            CLEAN_QUALITY_TAGS.any { tag -> part.contains(tag, ignoreCase = true) }
         }
 
         val endIndex = parts.indexOfLast { part ->
-            subTags.any { tag -> part.contains(tag, ignoreCase = true) } ||
-                    audioTags.any { tag -> part.contains(tag, ignoreCase = true) } ||
-                    codecTags.any { tag -> part.contains(tag, ignoreCase = true) }
+            CLEAN_SUB_TAGS.any { tag -> part.contains(tag, ignoreCase = true) } ||
+                    CLEAN_AUDIO_TAGS.any { tag -> part.contains(tag, ignoreCase = true) } ||
+                    CLEAN_CODEC_TAGS.any { tag -> part.contains(tag, ignoreCase = true) }
         }
 
         return if (startIndex != -1 && endIndex != -1 && endIndex >= startIndex) {
@@ -686,17 +703,17 @@ class AnyGDFlix(provider: String?, dubType: String?, domain: String = "") : Extr
 
                         baseUrls.amap { baseUrl ->
                             val indexbotLink = "$baseUrl/download?id=$id&do=$doId"
-                            val indexbotResponse = app.get(indexbotLink, timeout = 100L)
+                            val indexbotResponse = app.get(indexbotLink, timeout = 10L)
 
                             if (indexbotResponse.isSuccessful) {
                                 val cookiesSSID = indexbotResponse.cookies["PHPSESSID"]
-                                val indexbotDoc = indexbotResponse.document
+                                val docStr = indexbotResponse.document.toString()
 
-                                val token = Regex("""formData\.append\('token', '([a-f0-9]+)'\)""")
-                                    .find(indexbotDoc.toString())?.groupValues?.get(1).orEmpty()
+                                val token = DRIVEBOT_TOKEN_REGEX
+                                    .find(docStr)?.groupValues?.get(1).orEmpty()
 
-                                val postId = Regex("""fetch\('/download\?id=([a-zA-Z0-9/+]+)'""")
-                                    .find(indexbotDoc.toString())?.groupValues?.get(1).orEmpty()
+                                val postId = DRIVEBOT_POST_ID_REGEX
+                                    .find(docStr)?.groupValues?.get(1).orEmpty()
 
                                 val requestBody = FormBody.Builder()
                                     .add("token", token)
@@ -710,9 +727,9 @@ class AnyGDFlix(provider: String?, dubType: String?, domain: String = "") : Extr
                                     requestBody = requestBody,
                                     headers = headers,
                                     cookies = cookies,
-                                    timeout = 100L
+                                    timeout = 10L
                                 ).text.let {
-                                    Regex("url\":\"(.*?)\"").find(it)?.groupValues?.get(1)?.replace("\\", "").orEmpty()
+                                    DRIVEBOT_URL_REGEX.find(it)?.groupValues?.get(1)?.replace("\\", "").orEmpty()
                                 }
 
                                 callback.invoke(
@@ -828,13 +845,13 @@ class AnyGofile(provider: String?, dubType: String?, domain: String = "") : Extr
     ) {
 
         try {
-            val id = Regex("/(?:\\?c=|d/)([\\da-zA-Z-]+)").find(url)?.groupValues?.get(1) ?: return
+            val id = GOFILE_ID_REGEX.find(url)?.groupValues?.get(1) ?: return
             val responseText = app.post("$mainApi/accounts").text
             val json = JSONObject(responseText)
             val token = json.getJSONObject("data").getString("token")
 
             val globalJs = app.get("$mainUrl/dist/js/global.js").text
-            val wt = Regex("""appdata\.wt\s*=\s*["']([^"']+)["']""")
+            val wt = GOFILE_WT_REGEX
                 .find(globalJs)?.groupValues?.getOrNull(1) ?: return
 
             val responseTextfile = app.get(
@@ -875,7 +892,7 @@ class AnyGofile(provider: String?, dubType: String?, domain: String = "") : Extr
     }
 
     private fun getQuality(fileName: String?): Int {
-        return Regex("(\\d{3,4})[pP]").find(fileName ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return QUALITY_REGEX.find(fileName ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Qualities.Unknown.value
     }
 }
@@ -935,8 +952,8 @@ class AnyMegacc(provider: String?, dubType: String?, domain: String = "") : Extr
 
         // First: Get .m3u8
         val m3u8Resolver = WebViewResolver(
-            interceptUrl = Regex("""\.m3u8"""),
-            additionalUrls = listOf(Regex("""\.m3u8""")),
+            interceptUrl = MEGAUP_M3U8_REGEX,
+            additionalUrls = listOf(MEGAUP_M3U8_REGEX),
             script = jsToClickPlay,
             scriptCallback = { result -> Log.d("MegaUp", "JS Result: $result") },
             useOkhttp = false,
@@ -964,8 +981,8 @@ class AnyMegacc(provider: String?, dubType: String?, domain: String = "") : Extr
 
         // Second: Get .vtt subtitles
         val vttResolver = WebViewResolver(
-            interceptUrl = Regex("""eng_\d+\.vtt"""),
-            additionalUrls = listOf(Regex("""eng_\d+\.vtt""")),
+            interceptUrl = MEGAUP_VTT_REGEX,
+            additionalUrls = listOf(MEGAUP_VTT_REGEX),
             script = jsToClickPlay,
             scriptCallback = { result -> Log.d("MegaUp", "JS Result: $result") },
             useOkhttp = false,
@@ -1018,7 +1035,7 @@ class AnyVcloud(provider: String?, dubType: String?, domain: String = "") : Extr
 
         val doc = runCatching { app.get(href).document }.getOrNull() ?: return
         val scriptTag = doc.selectFirst("script:containsData(url)")?.data() ?: ""
-        val urlValue = Regex("var url = '([^']*)'").find(scriptTag)?.groupValues?.getOrNull(1).orEmpty()
+        val urlValue = VAR_URL_REGEX.find(scriptTag)?.groupValues?.getOrNull(1).orEmpty()
         if (urlValue.isEmpty()) return
 
         val document = runCatching { app.get(urlValue).document }.getOrNull() ?: return
@@ -1129,7 +1146,7 @@ class AnyVcloud(provider: String?, dubType: String?, domain: String = "") : Extr
     }
 
     private fun getIndexQuality(str: String?): Int {
-        return Regex("(\\d{3,4})[pP]").find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return QUALITY_REGEX.find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Qualities.Unknown.value
     }
 }

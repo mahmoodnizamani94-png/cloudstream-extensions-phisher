@@ -1,4 +1,4 @@
-﻿package com.phisher98
+package com.phisher98
 
 import android.content.Context
 import androidx.appcompat.app.AppCompatActivity
@@ -26,6 +26,10 @@ import com.lagradost.cloudstream3.MainActivity
 import com.lagradost.cloudstream3.extractors.FilemoonV2
 import com.lagradost.cloudstream3.plugins.PluginData
 import com.lagradost.cloudstream3.plugins.PluginManager
+import com.lagradost.cloudstream3.app
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 
 @CloudstreamPlugin
@@ -39,6 +43,23 @@ class StreamPlayPlugin: Plugin() {
 
         // Initialize StreamPlay optimizations
         Log.d("StreamPlay", "🚀 Initializing StreamPlay optimizations...")
+
+        // Optimize OkHttp connection pool and dispatcher for max throughput & multi-chunk downloads
+        try {
+            val dispatcher = Dispatcher().apply {
+                maxRequests = 128
+                maxRequestsPerHost = 32
+            }
+            app.baseClient = app.baseClient.newBuilder()
+                .dispatcher(dispatcher)
+                .connectionPool(ConnectionPool(64, 5, TimeUnit.MINUTES))
+                .connectTimeout(6, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build()
+            Log.d("StreamPlay", "⚡ StreamPlay network engine optimized (pool: 64, maxRequests: 128, maxPerHost: 32)")
+        } catch (e: Exception) {
+            Log.e("StreamPlay", "Failed tuning network client: ${e.message}")
+        }
 
         // Load provider stats from SharedPreferences
         StreamPlayCache.loadProviderStatsOnce(sharedPref)

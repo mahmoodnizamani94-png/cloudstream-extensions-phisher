@@ -112,7 +112,16 @@ class Pahe : ExtractorApi() {
     private val kwikParamsRegex = Regex("""\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)""")
     private val kwikDUrl = Regex("action=\"([^\"]+)\"")
     private val kwikDToken = Regex("value=\"([^\"]+)\"")
-    private val client = OkHttpClient()
+
+    companion object {
+        private val baseClient = OkHttpClient()
+        private val noRedirectsClient = baseClient.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
+
+    private val client = baseClient
 
     private fun decrypt(fullString: String, key: String, v1: Int, v2: Int): String {
         val keyIndexMap = key.withIndex().associate { it.value to it.index }
@@ -138,17 +147,12 @@ class Pahe : ExtractorApi() {
     }
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        val noRedirects = OkHttpClient.Builder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build()
-
         val initialRequest = Request.Builder()
             .url("$url/i")
             .get()
             .build()
 
-        val kwikUrl = noRedirects.newCall(initialRequest).execute().use { response ->
+        val kwikUrl = noRedirectsClient.newCall(initialRequest).execute().use { response ->
             response.header("location")?.let { location ->
                 if (location.startsWith("http")) location else "https://${location.substringAfterLast("https://")}"
             } ?: return
@@ -175,12 +179,6 @@ class Pahe : ExtractorApi() {
         val uri = kwikDUrl.find(decrypted)?.destructured?.component1() ?: return
         val tok = kwikDToken.find(decrypted)?.destructured?.component1() ?: return
 
-        val noRedirectClient = OkHttpClient().newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .cookieJar(client.cookieJar)
-            .build()
-
         var code = 419
         var tries = 0
         var content: Response? = null
@@ -199,7 +197,7 @@ class Pahe : ExtractorApi() {
                 .build()
 
             content?.close()
-            content = noRedirectClient.newCall(postRequest).execute()
+            content = noRedirectsClient.newCall(postRequest).execute()
             code = content.code
             tries++
         }

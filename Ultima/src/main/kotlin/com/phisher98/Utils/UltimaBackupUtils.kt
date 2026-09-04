@@ -19,6 +19,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.suspendCancellableCoroutine
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.ui.settings.extensions.REPOSITORIES_KEY
 import com.lagradost.cloudstream3.ui.settings.extensions.RepositoryData
@@ -480,6 +481,114 @@ object UltimaBackupUtils {
         }
     }
 
+    data class DiscoveredPlugin(
+        val repoIdentifier: String,
+        val internalName: String,
+        val url: String?
+    )
+
+    private suspend fun fetchPluginsFromRepoSafely(repo: Any): List<DiscoveredPlugin> {
+        val repoUrl = try {
+            repo.javaClass.getMethod("getUrl").invoke(repo) as? String
+                ?: repo.javaClass.getField("url").get(repo) as? String
+                ?: repo.toString()
+        } catch (_: Throwable) {
+            repo.toString()
+        }
+
+        return try {
+            val method = RepositoryManager::class.java.methods.find { it.name == "getRepoPlugins" }
+                ?: return emptyList()
+
+            val paramTypes = method.parameterTypes
+            if (paramTypes.isEmpty()) return emptyList()
+
+            val rawResult: Any? = suspendCancellableCoroutine { cont ->
+                try {
+                    val firstParam = if (paramTypes[0].isAssignableFrom(repo.javaClass)) {
+                        repo
+                    } else if (paramTypes[0] == String::class.java) {
+                        repoUrl
+                    } else {
+                        repo
+                    }
+                    val invoked = method.invoke(RepositoryManager, firstParam, cont)
+                    if (invoked != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) {
+                        cont.resumeWith(Result.success(invoked))
+                    }
+                } catch (e: Throwable) {
+                    val cause = if (e is java.lang.reflect.InvocationTargetException) e.targetException ?: e else e
+                    cont.resumeWith(Result.failure(cause))
+                }
+            }
+
+            val list = rawResult as? Iterable<*> ?: return emptyList()
+            list.mapNotNull { item ->
+                if (item == null) return@mapNotNull null
+                if (item is Pair<*, *>) {
+                    val repoId = item.first as? String ?: repoUrl
+                    val sitePlugin = item.second as? SitePlugin
+                    if (sitePlugin != null) {
+                        DiscoveredPlugin(
+                            repoIdentifier = repoId,
+                            internalName = sitePlugin.internalName,
+                            url = sitePlugin.url
+                        )
+                    } else null
+                } else {
+                    try {
+                        val itemClass = item.javaClass
+                        val pluginObj = try {
+                            itemClass.getMethod("getPlugin").invoke(item)
+                        } catch (_: Throwable) {
+                            try {
+                                itemClass.getField("plugin").get(item)
+                            } catch (_: Throwable) {
+                                item
+                            }
+                        }
+
+                        val sitePlugin = pluginObj as? SitePlugin
+                        val internalName = sitePlugin?.internalName ?: run {
+                            try {
+                                pluginObj.javaClass.getMethod("getInternalName").invoke(pluginObj) as? String
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        }
+
+                        val targetUrl = sitePlugin?.url ?: run {
+                            try {
+                                pluginObj.javaClass.getMethod("getUrl").invoke(pluginObj) as? String
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        }
+
+                        val repoId = try {
+                            itemClass.getMethod("getRepositoryUrl").invoke(item) as? String ?: repoUrl
+                        } catch (_: Throwable) {
+                            repoUrl
+                        }
+
+                        if (internalName != null) {
+                            DiscoveredPlugin(
+                                repoIdentifier = repoId,
+                                internalName = internalName,
+                                url = targetUrl
+                            )
+                        } else null
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch plugins for repo $repoUrl: ${e.message}")
+            emptyList()
+        }
+    }
+
     private suspend fun downloadAndLoadPlugins(context: Context, backupFile: BackupFile) {
         val pluginsJson = backupFile.datastore.string?.entries?.find { it.key.equals("PLUGINS_KEY", ignoreCase = true) }?.value
             ?: backupFile.settings.string?.entries?.find { it.key.equals("PLUGINS_KEY", ignoreCase = true) }?.value
@@ -494,21 +603,16 @@ object UltimaBackupUtils {
         }
 
         // Fetch all online plugins from configured repos (in parallel)
-        val allOnlinePlugins = mutableListOf<Pair<String, SitePlugin>>()
+        val allOnlinePlugins = mutableListOf<DiscoveredPlugin>()
         val repositories = RepositoryManager.getRepositories()
         coroutineScope {
             val deferreds = repositories.map { repo ->
                 async(Dispatchers.IO) {
-                    try {
-                        RepositoryManager.getRepoPlugins(repo.url)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to fetch plugins for repo ${repo.url}: ${e.message}")
-                        null
-                    }
+                    fetchPluginsFromRepoSafely(repo)
                 }
             }
             deferreds.awaitAll().forEach { result ->
-                if (result != null) allOnlinePlugins.addAll(result)
+                allOnlinePlugins.addAll(result)
             }
         }
 
@@ -535,10 +639,10 @@ object UltimaBackupUtils {
             }.map { plugin ->
                 async(Dispatchers.IO) {
                     downloadSemaphore.withPermit {
-                        val match = allOnlinePlugins.find { it.second.internalName.equals(plugin.internalName, ignoreCase = true) }
+                        val match = allOnlinePlugins.find { it.internalName.equals(plugin.internalName, ignoreCase = true) }
 
                         val localFile = if (match != null) {
-                            PluginManager.getPluginPath(context, plugin.internalName, match.first)
+                            PluginManager.getPluginPath(context, plugin.internalName, match.repoIdentifier)
                         } else {
                             val cleanPath = plugin.filePath.replace('\\', '/')
                             val relativePath = if (cleanPath.contains("Extensions/")) {
@@ -549,7 +653,7 @@ object UltimaBackupUtils {
                             File(context.filesDir, relativePath)
                         }
 
-                        val targetUrl = match?.second?.url ?: plugin.url
+                        val targetUrl = match?.url ?: plugin.url
 
                         if (localFile.exists() && localFile.length() > 0) {
                             Triple(plugin.copy(filePath = localFile.absolutePath), false, false)

@@ -30,6 +30,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.Requests
 import com.lagradost.nicehttp.Session
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -57,6 +58,10 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.milliseconds
+
+private val RIVESTREAM_KEY_ARRAY_REGEX = Regex("""let\s+c\s*=\s*(\[[^]]*])""")
+private val RIVESTREAM_QUOTED_STR_REGEX = Regex("\"([^\"]+)\"")
+private val DAHMER_QUALITY_REGEX = Regex("(?i)(1080p|2160p)")
 
 
 val session = Session(Requests().baseClient)
@@ -421,7 +426,7 @@ object StreamPlayExtractor : StreamPlay() {
         val (kkey, kkey1) = coroutineScope {
             val videoKeyDeferred = async {
                 try {
-                    safeGet("${BuildConfig.KissKh}$epsId&version=2.8.10", timeout = 10000)
+                    safeGet("${BuildConfig.KissKh}$epsId&version=2.8.10", timeout = 10L)
                         .parsedSafe<KisskhKey>()?.key
                 } catch (_: Exception) {
                     null
@@ -430,7 +435,7 @@ object StreamPlayExtractor : StreamPlay() {
 
             val subtitleKeyDeferred = async {
                 try {
-                    safeGet("${BuildConfig.KisskhSub}$epsId&version=2.8.10", timeout = 10000)
+                    safeGet("${BuildConfig.KisskhSub}$epsId&version=2.8.10", timeout = 10L)
                         .parsedSafe<KisskhKey>()?.key
                 } catch (_: Exception) {
                     null
@@ -532,22 +537,25 @@ object StreamPlayExtractor : StreamPlay() {
             title, date, airedDate, if (season == null) TvType.AnimeMovie else TvType.Anime
         )
 
-        var anijson: String? = null
-        if (malId != null) {
-            try {
-                anijson = safeGet("https://api.ani.zip/mappings?mal_id=$malId", timeout = 5_000L).text
-            } catch (e: Exception) {
-                println("Error fetching mapping: ${e.message}")
+        val (anijson, malsync) = coroutineScope {
+            val aniZipDeferred = async(Dispatchers.IO) {
+                if (malId != null) {
+                    runCatching {
+                        safeGet("https://api.ani.zip/mappings?mal_id=$malId", timeout = 5L).text
+                    }.getOrNull()
+                } else null
             }
+            val malSyncDeferred = async(Dispatchers.IO) {
+                if (malId != null) {
+                    runCatching {
+                        safeGet("$malsyncAPI/mal/anime/$malId", timeout = 5L).parsedSafe<MALSyncResponses>()?.sites
+                    }.getOrNull()
+                } else null
+            }
+            aniZipDeferred.await() to malSyncDeferred.await()
         }
 
         val anidbEid = getAnidbEid(anijson ?: "{}", episode ?: 1) ?: 0
-
-        val malsync = malId?.let {
-            runCatching {
-                safeGet("$malsyncAPI/mal/anime/$it").parsedSafe<MALSyncResponses>()?.sites
-            }.getOrNull()
-        }
 
         return AnimeResolvedIds(
             malId = malId,
@@ -1360,7 +1368,7 @@ object StreamPlayExtractor : StreamPlay() {
         val megaUrl = "$megaBase/stream/mal/$malId/$episode/$type"
 
         val doc = try {
-            app.get(megaUrl, referer = megaUrl).document
+            app.get(megaUrl, referer = megaUrl, timeout = 10L).document
         } catch (_: Exception) {
             return
         }
@@ -1390,7 +1398,8 @@ object StreamPlayExtractor : StreamPlay() {
                 val json = app.get(
                     apiUrl,
                     referer = referer,
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                    headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
+                    timeout = 10L
                 ).parsedSafe<HiAnimeSourcesResponse>() ?: return
 
                 val file = json.sources?.file
@@ -1418,67 +1427,79 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-            } catch (_: Exception) {
-                // isolated failure
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
             }
         }
 
-        // -------- MegaPlay --------
-        dataId?.let {
-            process(
-                displayName = "[$name] MegaPlay",
-                apiUrl = "$megaBase/stream/getSources?id=$it&id=$it",
-                referer = megaUrl,
-                origin = "$megaBase/"
-            )
-        }
-
-        // -------- Vidwish --------
-        realId?.let { rid ->
-            val vidPage = "$vidwishBase/stream/s-2/$rid/$type"
-
-            try {
-                val vidDoc = app.get(vidPage, referer = megaUrl).document
-
-                val vidPlayer = vidDoc.selectFirst("div.fix-area#megaplay-player")
-                val vidDataId = vidPlayer?.attr("data-id")?.takeIf(String::isNotBlank)
-
-                vidDataId?.let { vidId ->
+        coroutineScope {
+            // -------- MegaPlay --------
+            val megaDeferred = async {
+                dataId?.let {
                     process(
-                        displayName = "[$name] Vidwish",
-                        apiUrl = "$vidwishBase/stream/getSources?id=$vidId&id=$vidId",
-                        referer = vidPage,
-                        origin = "$vidwishBase/"
+                        displayName = "[$name] MegaPlay",
+                        apiUrl = "$megaBase/stream/getSources?id=$it&id=$it",
+                        referer = megaUrl,
+                        origin = "$megaBase/"
                     )
                 }
-
-            } catch (_: Exception) {
-                // ignore
             }
-        }
 
-        // -------- Megacloudbloggy --------
-        realId?.let { rid ->
-            val megacloudPage = "$megacloudbloggy/stream/s-3/$rid/$type"
+            // -------- Vidwish --------
+            val vidwishDeferred = async {
+                realId?.let { rid ->
+                    val vidPage = "$vidwishBase/stream/s-2/$rid/$type"
 
-            try {
-                val megacloudDoc = app.get(megacloudPage, referer = megaUrl).document
+                    try {
+                        val vidDoc = app.get(vidPage, referer = megaUrl, timeout = 10L).document
 
-                val megacloudPlayer = megacloudDoc.selectFirst("div.fix-area#megaplay-player")
-                val megacloudDataId = megacloudPlayer?.attr("data-id")?.takeIf(String::isNotBlank)
+                        val vidPlayer = vidDoc.selectFirst("div.fix-area#megaplay-player")
+                        val vidDataId = vidPlayer?.attr("data-id")?.takeIf(String::isNotBlank)
 
-                megacloudDataId?.let { vidId ->
-                    process(
-                        displayName = "[$name] MegaCloud",
-                        apiUrl = "$megacloudbloggy/stream/getSources?id=$vidId&id=$vidId",
-                        referer = megacloudbloggy,
-                        origin = "$megacloudbloggy/"
-                    )
+                        vidDataId?.let { vidId ->
+                            process(
+                                displayName = "[$name] Vidwish",
+                                apiUrl = "$vidwishBase/stream/getSources?id=$vidId&id=$vidId",
+                                referer = vidPage,
+                                origin = "$vidwishBase/"
+                            )
+                        }
+
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                    }
                 }
-
-            } catch (_: Exception) {
-                // ignore
             }
+
+            // -------- Megacloudbloggy --------
+            val megacloudDeferred = async {
+                realId?.let { rid ->
+                    val megacloudPage = "$megacloudbloggy/stream/s-3/$rid/$type"
+
+                    try {
+                        val megacloudDoc = app.get(megacloudPage, referer = megaUrl, timeout = 10L).document
+
+                        val megacloudPlayer = megacloudDoc.selectFirst("div.fix-area#megaplay-player")
+                        val megacloudDataId = megacloudPlayer?.attr("data-id")?.takeIf(String::isNotBlank)
+
+                        megacloudDataId?.let { vidId ->
+                            process(
+                                displayName = "[$name] MegaCloud",
+                                apiUrl = "$megacloudbloggy/stream/getSources?id=$vidId&id=$vidId",
+                                referer = megacloudbloggy,
+                                origin = "$megacloudbloggy/"
+                            )
+                        }
+
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                    }
+                }
+            }
+
+            megaDeferred.await()
+            vidwishDeferred.await()
+            megacloudDeferred.await()
         }
     }
 
@@ -1540,7 +1561,7 @@ object StreamPlayExtractor : StreamPlay() {
         locales.safeAmap { locale ->
             val json = safeGet(
                 "$KickassAPI/api/show/$slug/episodes?ep=1&lang=$locale",
-                timeout = 5000L
+                timeout = 5L
             ).toString()
 
             val jsonresponse = parseJsonToEpisodes(json)
@@ -1790,7 +1811,7 @@ object StreamPlayExtractor : StreamPlay() {
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         )
-        val response = safeGet(url, headers = headers, timeout = 10000L)
+        val response = safeGet(url, headers = headers, timeout = 10L)
         if (response.code != 200) return
         response.parsedSafe<SubtitlesAPI>()?.subtitles?.safeAmap { it ->
             val lan = getLanguage(it.lang)
@@ -1821,7 +1842,7 @@ object StreamPlayExtractor : StreamPlay() {
 
         val data = app.get(
             url,
-            timeout = 10000
+            timeout = 10L
         ).parsedSafe<Array<WYZIESubtitle>>() ?: return
 
         data.forEach { sub ->
@@ -2714,13 +2735,13 @@ object StreamPlayExtractor : StreamPlay() {
         } else {
             "$dahmerMoviesAPI/tvs/${title?.replace(":", " -")}/Season $season/"
         }
-        val request = safeGet(url, timeout = 6_000L)
+        val request = safeGet(url, timeout = 6L)
         if (!request.isSuccessful) return
         val paths = request.document.select("a").map {
             it.text() to it.attr("href")
         }.filter {
             if (season == null) {
-                it.first.contains(Regex("(?i)(1080p|2160p)"))
+                it.first.contains(DAHMER_QUALITY_REGEX)
             } else {
                 val (seasonSlug, episodeSlug) = getEpisodeSlug(season, episode)
                 it.first.contains(Regex("(?i)S${seasonSlug}E${episodeSlug}"))
@@ -2916,7 +2937,7 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit,
     ) {
         val bollyflixAPI = getDomains()?.bollyflix ?: return
-        val res1 = safeGet("$bollyflixAPI/search/$id", timeout = 10000).document
+        val res1 = safeGet("$bollyflixAPI/search/$id", timeout = 10L).document
 
         res1.select("div > article > a").forEach {
             val url = it.attr("href")
@@ -2964,37 +2985,50 @@ object StreamPlayExtractor : StreamPlay() {
             repeat(times - 1) {
                 try {
                     return block()
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                 }
             }
             return try {
                 block()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 null
             }
         }
 
-        val sourceApiUrl =
-            "$RiveStreamAPI/api/backendfetch?requestID=VideoProviderServices&secretKey=rive"
-        val sourceList = retry { safeGet(sourceApiUrl, headers).parsedSafe<RiveStreamSource>() }
+        val (sourceList, secretKey) = coroutineScope {
+            val sourceListDef = async {
+                val sourceApiUrl =
+                    "$RiveStreamAPI/api/backendfetch?requestID=VideoProviderServices&secretKey=rive"
+                retry { safeGet(sourceApiUrl, headers, timeout = 10L).parsedSafe<RiveStreamSource>() }
+            }
 
-        val document =
-            retry { safeGet(RiveStreamAPI, headers, timeout = 6_000L).document } ?: return
-        val appScript = document.select("script")
-            .firstOrNull { it.attr("src").contains("_app") }?.attr("src") ?: return
+            val secretKeyDef = async {
+                val document =
+                    retry { safeGet(RiveStreamAPI, headers, timeout = 6L).document } ?: return@async null
+                val appScript = document.select("script")
+                    .firstOrNull { it.attr("src").contains("_app") }?.attr("src") ?: return@async null
 
-        val js = retry { safeGet("$RiveStreamAPI$appScript").text } ?: return
-        val keyList = Regex("""let\s+c\s*=\s*(\[[^]]*])""")
-            .findAll(js).firstOrNull { it.groupValues[1].length > 2 }?.groupValues?.get(1)
-            ?.let { array ->
-                Regex("\"([^\"]+)\"").findAll(array).map { it.groupValues[1] }.toList()
-            } ?: emptyList()
+                val js = retry { safeGet("$RiveStreamAPI$appScript", timeout = 10L).text } ?: return@async null
+                val keyList = RIVESTREAM_KEY_ARRAY_REGEX
+                    .findAll(js).firstOrNull { it.groupValues[1].length > 2 }?.groupValues?.get(1)
+                    ?.let { array ->
+                        RIVESTREAM_QUOTED_STR_REGEX.findAll(array).map { it.groupValues[1] }.toList()
+                    } ?: emptyList()
 
-        val secretKey = retry {
-            safeGet(
-                "https://rivestream.supe2372.workers.dev/?input=$id&cList=${keyList.joinToString(",")}"
-            ).text
-        } ?: return
+                retry {
+                    safeGet(
+                        "https://rivestream.supe2372.workers.dev/?input=$id&cList=${keyList.joinToString(",")}",
+                        timeout = 10L
+                    ).text
+                }
+            }
+
+            sourceListDef.await() to secretKeyDef.await()
+        }
+
+        if (secretKey.isNullOrBlank()) return
 
         sourceList?.data?.safeAmap { source ->
             try {
@@ -3005,7 +3039,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
 
                 val responseString = retry {
-                    safeGet(streamUrl, headers, timeout = 5_000L).text
+                    safeGet(streamUrl, headers, timeout = 5L).text
                 } ?: return@safeAmap
 
                 try {
@@ -3286,14 +3320,18 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
     private suspend fun retryFetch(url: String): FebResponse? {
-        repeat(3) { _ ->
-            val res = safeGet(url, timeout = 10000L)
+        try {
+            for (attempt in 0..1) {
+                val res = safeGet(url, timeout = 10L)
 
-            if (res.code == 500) {
-                delay(2500L.milliseconds)
-            } else {
-                return res.parsedSafe()
+                if (res.code == 500 && attempt == 0) {
+                    delay(1000L.milliseconds)
+                } else {
+                    return res.parsedSafe()
+                }
             }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
         }
         return null
     }
@@ -3742,165 +3780,172 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     subjectIds.add(0, Pair(id, originalLanguageName))
 
-                    for ((subjectId, language) in subjectIds) {
-                        val playUrl =
-                            "$movieBox/wefeed-mobile-bff/subject-api/play-info?subjectId=$subjectId&se=${season ?: 0}&ep=${episode ?: 0}"
-                        val token = generateXClientToken()
-                        val sign = generateXTrSignature(
-                            "GET",
-                            "application/json",
-                            "application/json",
-                            playUrl
-                        )
-                        val playHeaders = headers + mapOf("x-client-token" to token, "x-tr-signature" to sign)
-
-                        val playRes = safeGet(playUrl, headers = playHeaders)
-                        if (playRes.code != 200) continue
-
-                        val playRoot = mapper.readTree(playRes.text)
-                        val streams = playRoot["data"]?.get("streams") ?: continue
-                        if (!streams.isArray) continue
-
-                        for (stream in streams) {
-                            val streamId = stream["id"]?.asText() ?: "$subjectId|$season|$episode"
-                            //val subjectTitle = subjectData?.get("title")?.asText() ?: "Unknown Title"
-                            val format = stream["format"]?.asText() ?: ""
-                            val signCookie =
-                                stream["signCookie"]?.asText()?.takeIf { it.isNotEmpty() }
-
-                            val resolutionNodes = stream["resolutionList"] ?: stream["resolutions"]
-
-                            if (resolutionNodes != null && resolutionNodes.isArray) {
-                                for (resNode in resolutionNodes) {
-                                    val resUrl = resNode["resourceLink"]?.asText() ?: continue
-                                    val quality = resNode["resolution"]?.asInt() ?: 0
-
-                                    callback.invoke(
-                                        newExtractorLink(
-                                            source = "MovieBox ${language.replace("dub", "Audio")}",
-                                            name = "MovieBox (${language.replace("dub", "Audio")})",
-                                            url = resUrl,
-                                            type = when {
-                                                resUrl.startsWith(
-                                                    "magnet:",
-                                                    true
-                                                ) -> ExtractorLinkType.MAGNET
-
-                                                resUrl.endsWith(
-                                                    ".mpd",
-                                                    true
-                                                ) -> ExtractorLinkType.DASH
-
-                                                resUrl.endsWith(
-                                                    ".torrent",
-                                                    true
-                                                ) -> ExtractorLinkType.TORRENT
-
-                                                format.equals(
-                                                    "HLS",
-                                                    true
-                                                ) || resUrl.endsWith(
-                                                    ".m3u8",
-                                                    true
-                                                ) -> ExtractorLinkType.M3U8
-
-                                                else -> INFER_TYPE
-                                            }
-                                        ) {
-                                            this.headers = mapOf("Referer" to movieBox) +
-                                                    (if (signCookie != null) mapOf("Cookie" to signCookie) else emptyMap())
-                                            this.quality = getQualityFromName("$quality")
-                                        }
+                    coroutineScope {
+                        subjectIds.map { (subjectId, language) ->
+                            async {
+                                try {
+                                    val playUrl =
+                                        "$movieBox/wefeed-mobile-bff/subject-api/play-info?subjectId=$subjectId&se=${season ?: 0}&ep=${episode ?: 0}"
+                                    val token = generateXClientToken()
+                                    val sign = generateXTrSignature(
+                                        "GET",
+                                        "application/json",
+                                        "application/json",
+                                        playUrl
                                     )
-                                    foundLinks = true
-                                }
-                            } else {
-                                // fallback single url
-                                val singleUrl = stream["url"]?.asText() ?: continue
-                                val resText = stream["resolutions"]?.asText() ?: ""
+                                    val playHeaders = headers + mapOf("x-client-token" to token, "x-tr-signature" to sign)
 
-                                callback.invoke(
-                                    newExtractorLink(
-                                        source = "MovieBox ${language.replace("dub", "Audio")}",
-                                        name = "MovieBox (${language.replace("dub", "Audio")})",
-                                        url = singleUrl,
-                                        type = when {
-                                            singleUrl.startsWith(
-                                                "magnet:",
-                                                true
-                                            ) -> ExtractorLinkType.MAGNET
+                                    val playRes = safeGet(playUrl, headers = playHeaders, timeout = 10L)
+                                    if (playRes.code != 200) return@async
 
-                                            singleUrl.endsWith(
-                                                ".mpd",
-                                                true
-                                            ) -> ExtractorLinkType.DASH
+                                    val playRoot = mapper.readTree(playRes.text)
+                                    val streams = playRoot["data"]?.get("streams") ?: return@async
+                                    if (!streams.isArray) return@async
 
-                                            singleUrl.endsWith(
-                                                ".torrent",
-                                                true
-                                            ) -> ExtractorLinkType.TORRENT
+                                    for (stream in streams) {
+                                        val streamId = stream["id"]?.asText() ?: "$subjectId|$season|$episode"
+                                        val format = stream["format"]?.asText() ?: ""
+                                        val signCookie =
+                                            stream["signCookie"]?.asText()?.takeIf { it.isNotEmpty() }
 
-                                            format.equals(
-                                                "HLS",
-                                                true
-                                            ) || singleUrl.endsWith(
-                                                ".m3u8",
-                                                true
-                                            ) -> ExtractorLinkType.M3U8
+                                        val playList = stream["playList"]
+                                        if (playList != null && playList.isArray) {
+                                            for (play in playList) {
+                                                val playUrl = play["url"]?.asText() ?: continue
+                                                val quality = play["quality"]?.asText() ?: ""
+                                                val playFormat = play["format"]?.asText() ?: ""
 
-                                            else -> INFER_TYPE
-                                        }
-                                    ) {
-                                        this.headers = mapOf("Referer" to movieBox) +
-                                                (if (signCookie != null) mapOf("Cookie" to signCookie) else emptyMap())
-                                        this.quality = getQualityFromName(resText)
-                                    }
-                                )
-                                foundLinks = true
-                            }
+                                                callback.invoke(
+                                                    newExtractorLink(
+                                                        source = "MovieBox ${language.replace("dub", "Audio")}",
+                                                        name = "MovieBox (${language.replace("dub", "Audio")})",
+                                                        url = playUrl,
+                                                        type = when {
+                                                            playUrl.startsWith(
+                                                                "magnet:",
+                                                                true
+                                                            ) -> ExtractorLinkType.MAGNET
 
-                            // subtitles
-                            val subLinks = listOf(
-                                "$movieBox/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=$subjectId&streamId=$streamId",
-                                "$movieBox/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId=$subjectId&resourceId=$streamId&episode=${episode ?: 0}"
-                            )
+                                                            playUrl.endsWith(
+                                                                ".mpd",
+                                                                true
+                                                            ) -> ExtractorLinkType.DASH
 
-                            for (subLink in subLinks) {
-                                val subToken = generateXClientToken()
-                                val subSign = generateXTrSignature("GET", "", "", subLink)
+                                                            playUrl.endsWith(
+                                                                ".torrent",
+                                                                true
+                                                            ) -> ExtractorLinkType.TORRENT
 
-                                val subHeaders = mapOf(
-                                    "User-Agent" to "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)",
-                                    "Accept" to "",
-                                    "Content-Type" to "",
-                                    "X-Client-Info" to """{"package_name":"com.community.mbox.in","version_name":"3.0.03.0529.03","version_code":50020042,"os":"android","os_version":"16","device_id":"da2b99c821e6ea023e4be55b54d5f7d8","install_store":"ps","gaid":"d7578036d13336cc","brand":"google","model":"sdk_gphone64_x86_64","system_language":"en","net":"NETWORK_WIFI","sp_code":""}""",
-                                    "X-Client-Status" to "0",
-                                    "x-client-token" to subToken,
-                                    "x-tr-signature" to subSign
-                                )
+                                                            playFormat.equals(
+                                                                "HLS",
+                                                                true
+                                                            ) || playUrl.endsWith(
+                                                                ".m3u8",
+                                                                true
+                                                            ) -> ExtractorLinkType.M3U8
 
-                                val subRes = safeGet(subLink, headers = subHeaders)
-                                if (subRes.code != 200) continue
+                                                            else -> INFER_TYPE
+                                                        }
+                                                    ) {
+                                                        this.headers = mapOf("Referer" to movieBox) +
+                                                                (if (signCookie != null) mapOf("Cookie" to signCookie) else emptyMap())
+                                                        this.quality = getQualityFromName("$quality")
+                                                    }
+                                                )
+                                                foundLinks = true
+                                            }
+                                        } else {
+                                            // fallback single url
+                                            val singleUrl = stream["url"]?.asText() ?: continue
+                                            val resText = stream["resolutions"]?.asText() ?: ""
 
-                                val subRoot = mapper.readTree(subRes.text)
-                                val captions = subRoot["data"]?.get("extCaptions")
-                                if (captions != null && captions.isArray) {
-                                    for (caption in captions) {
-                                        val captionUrl = caption["url"]?.asText() ?: continue
-                                        val lang = caption["language"]?.asText()
-                                            ?: caption["lanName"]?.asText()
-                                            ?: caption["lan"]?.asText()
-                                            ?: "Unknown"
-                                        subtitleCallback.invoke(
-                                            newSubtitleFile(
-                                                url = captionUrl,
-                                                lang = "$lang (${language.replace("dub", "Audio")})"
+                                            callback.invoke(
+                                                newExtractorLink(
+                                                    source = "MovieBox ${language.replace("dub", "Audio")}",
+                                                    name = "MovieBox (${language.replace("dub", "Audio")})",
+                                                    url = singleUrl,
+                                                    type = when {
+                                                        singleUrl.startsWith(
+                                                            "magnet:",
+                                                            true
+                                                        ) -> ExtractorLinkType.MAGNET
+
+                                                        singleUrl.endsWith(
+                                                            ".mpd",
+                                                            true
+                                                        ) -> ExtractorLinkType.DASH
+
+                                                        singleUrl.endsWith(
+                                                            ".torrent",
+                                                            true
+                                                        ) -> ExtractorLinkType.TORRENT
+
+                                                        format.equals(
+                                                            "HLS",
+                                                            true
+                                                        ) || singleUrl.endsWith(
+                                                            ".m3u8",
+                                                            true
+                                                        ) -> ExtractorLinkType.M3U8
+
+                                                        else -> INFER_TYPE
+                                                    }
+                                                ) {
+                                                    this.headers = mapOf("Referer" to movieBox) +
+                                                            (if (signCookie != null) mapOf("Cookie" to signCookie) else emptyMap())
+                                                    this.quality = getQualityFromName(resText)
+                                                }
                                             )
+                                            foundLinks = true
+                                        }
+
+                                        // subtitles
+                                        val subLinks = listOf(
+                                            "$movieBox/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=$subjectId&streamId=$streamId",
+                                            "$movieBox/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId=$subjectId&resourceId=$streamId&episode=${episode ?: 0}"
                                         )
+
+                                        for (subLink in subLinks) {
+                                            val subToken = generateXClientToken()
+                                            val subSign = generateXTrSignature("GET", "", "", subLink)
+
+                                            val subHeaders = mapOf(
+                                                "User-Agent" to "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)",
+                                                "Accept" to "",
+                                                "Content-Type" to "",
+                                                "X-Client-Info" to """{"package_name":"com.community.mbox.in","version_name":"3.0.03.0529.03","version_code":50020042,"os":"android","os_version":"16","device_id":"da2b99c821e6ea023e4be55b54d5f7d8","install_store":"ps","gaid":"d7578036d13336cc","brand":"google","model":"sdk_gphone64_x86_64","system_language":"en","net":"NETWORK_WIFI","sp_code":""}""",
+                                                "X-Client-Status" to "0",
+                                                "x-client-token" to subToken,
+                                                "x-tr-signature" to subSign
+                                            )
+
+                                            val subRes = safeGet(subLink, headers = subHeaders, timeout = 10L)
+                                            if (subRes.code != 200) continue
+
+                                            val subRoot = mapper.readTree(subRes.text)
+                                            val captions = subRoot["data"]?.get("extCaptions")
+                                            if (captions != null && captions.isArray) {
+                                                for (caption in captions) {
+                                                    val captionUrl = caption["url"]?.asText() ?: continue
+                                                    val lang = caption["language"]?.asText()
+                                                        ?: caption["lanName"]?.asText()
+                                                        ?: caption["lan"]?.asText()
+                                                        ?: "Unknown"
+                                                    subtitleCallback.invoke(
+                                                        newSubtitleFile(
+                                                            url = captionUrl,
+                                                            lang = "$lang (${language.replace("dub", "Audio")})"
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
+                                } catch (e: Exception) {
+                                    if (e is CancellationException) throw e
                                 }
                             }
-                        }
+                        }.awaitAll()
                     }
                 } catch (_: Exception) {
                     return@safeAmap
@@ -4415,21 +4460,29 @@ object StreamPlayExtractor : StreamPlay() {
 
         val sources = decryptRes.result?.sources ?: return
 
-        for (src in sources) {
-            val server = src.server ?: continue
-            val link = src.url ?: continue
+        coroutineScope {
+            sources.map { src ->
+                async {
+                    try {
+                        val server = src.server ?: return@async
+                        val link = src.url ?: return@async
 
-            if (link.isEmpty()) continue
+                        if (link.isEmpty()) return@async
 
-            val name = server.replaceFirstChar {
-                if (it.isLowerCase()) it.titlecase() else it.toString()
-            }
+                        val name = server.replaceFirstChar {
+                            if (it.isLowerCase()) it.titlecase() else it.toString()
+                        }
 
-            generateM3u8(
-                "HexaSU $name",
-                link,
-                "https://hexa.su/"
-            ).forEach(callback)
+                        generateM3u8(
+                            "HexaSU $name",
+                            link,
+                            "https://hexa.su/"
+                        ).forEach(callback)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -4443,12 +4496,12 @@ object StreamPlayExtractor : StreamPlay() {
         val api = getDomains()?.hindmoviez ?: return
         if (id.isNullOrBlank()) return
         val url = "$api/?s=$id"
-        var response = safeGet(url, timeout = 5000L)
+        var response = safeGet(url, timeout = 5L)
         if (response.text.contains("Just a moment", true)) {
             response = webMutex.withLock {
                 safeGet(
                     url,
-                    timeout = 5000L,
+                    timeout = 5L,
                     interceptor = cloudflareKiller
                 )
             }
@@ -4458,13 +4511,13 @@ object StreamPlayExtractor : StreamPlay() {
         val entries = searchDoc.select("h2.entry-title > a")
 
         entries.safeAmap { entry ->
-            val pageDoc = safeGet(entry.attr("href"), timeout = 5000L).document
+            val pageDoc = safeGet(entry.attr("href"), timeout = 5L).document
             val buttons = pageDoc.select("a.maxbutton")
 
             if (episode == null) {
                 // Movie
                 buttons.safeAmap { btn ->
-                    val intermediateDoc = safeGet(btn.attr("href"), timeout = 5000L).document
+                    val intermediateDoc = safeGet(btn.attr("href"), timeout = 5L).document
                     val link = intermediateDoc.selectFirst("a.get-link-btn")
                         ?.attr("href")
                         ?.takeIf { it.isNotBlank() }
@@ -4488,7 +4541,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                     if (!headerText.contains("Season $season", ignoreCase = true)) return@safeAmap
 
-                    val episodeDoc = safeGet(btn.attr("href"), timeout = 5000L).document
+                    val episodeDoc = safeGet(btn.attr("href"), timeout = 5L).document
                     val episodeLink = episodeDoc
                         .select("h3 > a")
                         .getOrNull(episode - 1)
@@ -4593,7 +4646,7 @@ object StreamPlayExtractor : StreamPlay() {
 
             val res = safeGet(
                 "$m4uhdAPI/search/$safeTitle",
-                timeout = 5000L
+                timeout = 5L
             ).document
 
             val scriptData = res.select("div.item").mapNotNull { element ->

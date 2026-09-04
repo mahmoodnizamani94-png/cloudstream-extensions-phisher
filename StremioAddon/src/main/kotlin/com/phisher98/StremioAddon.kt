@@ -44,6 +44,9 @@ import com.phisher98.SubsExtractors.invokeOpenSubs
 import com.phisher98.SubsExtractors.invokeWatchsomuch
 import java.util.Calendar
 import com.lagradost.cloudstream3.amap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
     override var mainUrl = "https://example.com"
@@ -285,28 +288,33 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
             }
         }
 
-        for (addonPref in addonList) {
-            val fixMainUrl = sharedPref.getString(addonPref, "")?.fixSourceUrl()
+        coroutineScope {
+            addonList.map { addonPref ->
+                async {
+                    val fixMainUrl = sharedPref.getString(addonPref, "")?.fixSourceUrl()
 
-            if (fixMainUrl.isNullOrBlank()) continue
+                    if (!fixMainUrl.isNullOrBlank()) {
+                        val url = if (season == null) {
+                            "$fixMainUrl/stream/movie/$imdbId.json"
+                        } else {
+                            "$fixMainUrl/stream/series/$imdbId:$season:$episode.json"
+                        }
 
-            val url = if (season == null) {
-                "$fixMainUrl/stream/movie/$imdbId.json"
-            } else {
-                "$fixMainUrl/stream/series/$imdbId:$season:$episode.json"
-            }
-
-            if (!URLUtil.isValidUrl(url)) continue
-
-            runCatching {
-                app.get(url, timeout = 10L).parsedSafe<StreamsResponse>()
-            }.onSuccess { res ->
-                res?.streams?.amap { stream ->
-                    stream.runCallback(subtitleCallback, callback)
+                        if (URLUtil.isValidUrl(url)) {
+                            runCatching {
+                                app.get(url, timeout = 10L).parsedSafe<StreamsResponse>()
+                            }.onSuccess { res ->
+                                res?.streams?.amap { stream ->
+                                    stream.runCallback(subtitleCallback, callback)
+                                }
+                            }.onFailure { e ->
+                                if (e is kotlinx.coroutines.CancellationException) throw e
+                                Log.e(name, "Error loading from $addonPref")
+                            }
+                        }
+                    }
                 }
-            }.onFailure { _ ->
-                Log.e(name, "Error loading from $addonPref")
-            }
+            }.awaitAll()
         }
 
     }
@@ -373,11 +381,7 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                 loadExtractor(externalUrl, subtitleCallback, callback)
             }
             if (infoHash != null) {
-                val resp = app.get(TRACKER_LIST_URL).text
-                val otherTrackers = resp
-                    .split("\n")
-                    .filterIndexed { i, _ -> i % 2 == 0 }
-                    .filter { s -> s.isNotEmpty() }.joinToString("") { "&tr=$it" }
+                val otherTrackers = TrackerManager.getFormattedTrackers()
 
                 val sourceTrackers = sources
                     .filter { it.startsWith("tracker:") }
@@ -392,7 +396,7 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                         magnet,
                     )
                     {
-                        this.quality=Qualities.Unknown.value
+                        this.quality = getQuality(listOf(name, title, description))
                     }
                 )
             }

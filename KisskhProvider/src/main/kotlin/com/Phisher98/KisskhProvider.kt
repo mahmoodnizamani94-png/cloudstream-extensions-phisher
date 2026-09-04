@@ -267,7 +267,7 @@ class KisskhProvider : MainAPI() {
         val KisskhAPI = BuildConfig.KissKh
         val KisskhSub = BuildConfig.KisskhSub
         val loadData = parseJson<Data>(data)
-        val kkey = app.get("$KisskhAPI${loadData.epsId}&version=2.8.10", timeout = 10000).parsedSafe<Key>()?.key ?:""
+        val kkey = app.get("$KisskhAPI${loadData.epsId}&version=2.8.10", timeout = 10L).parsedSafe<Key>()?.key ?:""
         app.get(
             "$mainUrl/api/DramaList/Episode/${loadData.epsId}.png?err=false&ts=&time=&kkey=$kkey",
             referer = "$mainUrl/Drama/${getTitle("${loadData.title}")}/Episode-${loadData.eps}?id=${loadData.id}&ep=${loadData.epsId}&page=0&pageSize=100"
@@ -306,22 +306,15 @@ class KisskhProvider : MainAPI() {
             }
         }
 
-        val kkey1=app.get("$KisskhSub${loadData.epsId}&version=2.8.10", timeout = 10000).parsedSafe<Key>()?.key ?:""
+        val kkey1 = app.get("$KisskhSub${loadData.epsId}&version=2.8.10", timeout = 10L).parsedSafe<Key>()?.key ?:""
         app.get("$mainUrl/api/Sub/${loadData.epsId}?kkey=$kkey1").text.let { res ->
             tryParseJson<List<Subtitle>>(res)?.map { sub ->
-                if (sub.src!!.contains(".txt")) {
-                    subtitleCallback.invoke(
-                        newSubtitleFile(
-                            getLanguage(sub.label ?: return@map),
-                            sub.src
-                        )
-                    )
-                }
-                else
+                val src = sub.src ?: return@map
+                val label = sub.label ?: return@map
                 subtitleCallback.invoke(
                     newSubtitleFile(
-                        getLanguage(sub.label ?: return@map),
-                        sub.src
+                        getLanguage(label),
+                        src
                     )
                 )
             }

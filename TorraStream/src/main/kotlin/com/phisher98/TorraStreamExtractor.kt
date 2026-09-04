@@ -80,7 +80,7 @@ suspend fun invokeTorrentioDebian(
     } else {
         "$mainUrl/stream/series/$id:$season:$episode.json"
     }
-    val res = app.get(url, timeout = 10000L).parsedSafe<DebianRoot>()
+    val res = app.get(url, timeout = 10L).parsedSafe<DebianRoot>()
     res?.streams?.forEach { stream ->
         val fileUrl = stream.url
         val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
@@ -386,7 +386,7 @@ suspend fun invokeAIOStreamsDebian(
         "$base/stream/series/$id:$season:$episode.json"
     }
 
-    val res = app.get(url, timeout = 5000L).parsedSafe<AIODebian>() ?: return
+    val res = app.get(url, timeout = 10L).parsedSafe<AIODebian>() ?: return
 
     val qualityRegex = Regex(
         """\b(4K|2160p|1080p|720p|WEB[-\s]?DL|BluRay|HDRip|DVDRip)\b""",
@@ -713,7 +713,7 @@ suspend fun invokeMeteorDebian(
         "$mainUrl/stream/series/$id:$season:$episode.json"
     }
 
-    val res = app.get(url, timeout = 10000L).parsedSafe<MeteorRoot>()
+    val res = app.get(url, timeout = 10L).parsedSafe<MeteorRoot>()
 
     res?.streams?.forEach { stream ->
 

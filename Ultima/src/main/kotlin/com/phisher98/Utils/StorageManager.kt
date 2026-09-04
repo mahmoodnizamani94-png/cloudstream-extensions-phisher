@@ -5,58 +5,130 @@ package com.phisher98
 import com.phisher98.UltimaUtils.ExtensionInfo
 import com.phisher98.UltimaUtils.MediaProviderState
 import com.phisher98.UltimaUtils.SectionInfo
-import com.lagradost.cloudstream3.CloudStreamApp.Companion.getKey
+import com.lagradost.cloudstream3.CloudStreamApp
 import com.lagradost.cloudstream3.CloudStreamApp.Companion.setKey
 
 object UltimaStorageManager {
 
+    private fun <T : Any> getKeySafe(key: String, clazz: Class<T>): T? {
+        return try {
+            CloudStreamApp.getKeyClass(key, clazz)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     // #region - custom data variables
 
     var extNameOnHome: Boolean
-        get() = getKey("ULTIMA_EXT_NAME_ON_HOME") ?: true
+        get() = getKeySafe("ULTIMA_EXT_NAME_ON_HOME", Boolean::class.javaObjectType) ?: true
         set(value) {
             setKey("ULTIMA_EXT_NAME_ON_HOME", value)
         }
 
+    @Volatile
+    private var cachedExtensions: Array<ExtensionInfo>? = null
+
+    @Volatile
+    private var cachedMetaProviders: Array<Pair<String, Boolean>>? = null
+
+    @Volatile
+    private var cachedMediaProviders: Array<MediaProviderState>? = null
+
+    private val storageLock = Any()
+
+    fun invalidateCache() {
+        synchronized(storageLock) {
+            cachedExtensions = null
+            cachedMetaProviders = null
+            cachedMediaProviders = null
+        }
+    }
+
+    internal fun setCachedExtensionsForTesting(extensions: Array<ExtensionInfo>?) {
+        synchronized(storageLock) {
+            cachedExtensions = extensions
+        }
+    }
+
+    fun getEnabledPluginNames(): Set<String> {
+        return currentExtensions
+            .flatMap { it.sections?.asIterable() ?: emptyList() }
+            .filter { it.enabled && it.pluginName.isNotBlank() }
+            .map { it.pluginName }
+            .toSet()
+    }
+
     var currentExtensions: Array<ExtensionInfo>
-        get() = getKey("ULTIMA_EXTENSIONS_LIST") ?: emptyArray<ExtensionInfo>()
+        get() {
+            cachedExtensions?.let { return it }
+            return synchronized(storageLock) {
+                cachedExtensions?.let { return it }
+                val stored = getKeySafe("ULTIMA_EXTENSIONS_LIST", Array<ExtensionInfo>::class.java) ?: emptyArray()
+                cachedExtensions = stored
+                stored
+            }
+        }
         set(value) {
             setKey("ULTIMA_EXTENSIONS_LIST", value)
+            invalidateCache()
         }
 
     var currentMetaProviders: Array<Pair<String, Boolean>>
-        get() = listMetaProviders()
+        get() {
+            cachedMetaProviders?.let { return it }
+            return synchronized(storageLock) {
+                cachedMetaProviders?.let { return it }
+                val loaded = listMetaProviders()
+                cachedMetaProviders = loaded
+                loaded
+            }
+        }
         set(value) {
-            setKey("ULTIMA_CURRENT_META_PROVIDERS", value)
+            synchronized(storageLock) {
+                setKey("ULTIMA_CURRENT_META_PROVIDERS", value)
+                cachedMetaProviders = null
+            }
         }
 
     var currentMediaProviders: Array<MediaProviderState>
-        get() = listMediaProviders()
+        get() {
+            cachedMediaProviders?.let { return it }
+            return synchronized(storageLock) {
+                cachedMediaProviders?.let { return it }
+                val loaded = listMediaProviders()
+                cachedMediaProviders = loaded
+                loaded
+            }
+        }
         set(value) {
-            setKey("ULTIMA_CURRENT_MEDIA_PROVIDERS", value)
+            synchronized(storageLock) {
+                setKey("ULTIMA_CURRENT_MEDIA_PROVIDERS", value)
+                cachedMediaProviders = null
+            }
         }
 
 
     var appSettingsSyncCreds: AppSettingsSyncCreds?
-        get() = getKey("ULTIMA_APP_SETTINGS_SYNC_CREDS")
+        get() = getKeySafe("ULTIMA_APP_SETTINGS_SYNC_CREDS", AppSettingsSyncCreds::class.java)
         set(value) {
             setKey("ULTIMA_APP_SETTINGS_SYNC_CREDS", value)
         }
 
     var lastLocalSyncTime: Long
-        get() = getKey("ULTIMA_LAST_LOCAL_SYNC_TIME") ?: 0L
+        get() = getKeySafe("ULTIMA_LAST_LOCAL_SYNC_TIME", Long::class.javaObjectType) ?: 0L
         set(value) {
             setKey("ULTIMA_LAST_LOCAL_SYNC_TIME", value)
         }
 
     var syncV2Migrated: Boolean
-        get() = getKey("ULTIMA_SYNC_V2_MIGRATED") ?: false
+        get() = getKeySafe("ULTIMA_SYNC_V2_MIGRATED", Boolean::class.javaObjectType) ?: false
         set(value) {
             setKey("ULTIMA_SYNC_V2_MIGRATED", value)
         }
 
     fun getCategoryTimestamp(category: SyncCategory): Long {
-        return getKey("ULTIMA_SYNC_TS_${category.key}") ?: 0L
+        return getKeySafe("ULTIMA_SYNC_TS_${category.key}", Long::class.javaObjectType) ?: 0L
     }
 
     fun setCategoryTimestamp(category: SyncCategory, ts: Long) {
@@ -64,7 +136,7 @@ object UltimaStorageManager {
     }
 
     fun getCategoryHash(category: SyncCategory): String {
-        return getKey("ULTIMA_SYNC_HASH_${category.key}") ?: ""
+        return getKeySafe("ULTIMA_SYNC_HASH_${category.key}", String::class.java) ?: ""
     }
 
     fun setCategoryHash(category: SyncCategory, hash: String) {
@@ -72,7 +144,7 @@ object UltimaStorageManager {
     }
 
     fun getCategorySyncedKeys(category: SyncCategory): Set<String> {
-        return getKey<Array<String>>("ULTIMA_SYNCED_KEYS_${category.key}")?.toSet() ?: emptySet()
+        return getKeySafe("ULTIMA_SYNCED_KEYS_${category.key}", Array<String>::class.java)?.toSet() ?: emptySet()
     }
 
     fun setCategorySyncedKeys(category: SyncCategory, keys: Set<String>) {
@@ -82,6 +154,7 @@ object UltimaStorageManager {
     // #endregion - custom data variables
 
     fun deleteAllData() {
+        invalidateCache()
         listOf(
                         "ULTIMA_PROVIDER_LIST", // old key
                         "ULTIMA_EXT_NAME_ON_HOME",
@@ -105,7 +178,7 @@ object UltimaStorageManager {
     fun fetchExtensions(): Array<ExtensionInfo> {
         val providers = UltimaUtils.getAllProviders()
         return synchronized(providers) {
-            val cachedExtensions = getKey<Array<ExtensionInfo>>("ULTIMA_EXTENSIONS_LIST")
+            val cachedExtensions = getKeySafe("ULTIMA_EXTENSIONS_LIST", Array<ExtensionInfo>::class.java)
             val filtered = providers.filter { it.name != "Ultima" }
 
             filtered.map { provider ->
@@ -126,10 +199,13 @@ object UltimaStorageManager {
     }
 
 
+    @Suppress("UNCHECKED_CAST")
     private fun listMetaProviders(): Array<Pair<String, Boolean>> {
         val currentProviders = UltimaMetaProviderUtils.metaProviders
-        val storedProviders = getKey<Array<Pair<String, Boolean>>>("ULTIMA_CURRENT_META_PROVIDERS")
-            ?: return currentProviders
+        val storedProviders = getKeySafe(
+            "ULTIMA_CURRENT_META_PROVIDERS",
+            emptyArray<Pair<String, Boolean>>().javaClass
+        ) ?: return currentProviders
 
         val currentNames = currentProviders.map { it.first }.sorted()
         val storedNames = storedProviders.map { it.first }.sorted()
@@ -146,7 +222,7 @@ object UltimaStorageManager {
 
     private fun listMediaProviders(): Array<MediaProviderState> {
         val currentProviderNames = UltimaMediaProvidersUtils.mediaProviders.map { it.name }
-        val stored = getKey<Array<MediaProviderState>>("ULTIMA_CURRENT_MEDIA_PROVIDERS")
+        val stored = getKeySafe("ULTIMA_CURRENT_MEDIA_PROVIDERS", Array<MediaProviderState>::class.java)
             ?: return currentProviderNames.map { MediaProviderState(it, enabled = true, null) }.toTypedArray()
 
         val storedNames = stored.map { it.name }.sorted()

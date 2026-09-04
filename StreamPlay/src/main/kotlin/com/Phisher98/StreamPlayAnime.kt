@@ -315,11 +315,45 @@ class StreamPlayAnime : MainAPI() {
         val anititle = mediaData.title
         val anidbEid = mediaData.anidbEid
         val aniid = mediaData.aniId
-        //val season= jpTitle?.let { extractSeason(it) }
-        val year=mediaData.year
-        val malsync = app.get("$malsyncAPI/mal/anime/$malId").parsedSafe<MALSyncResponses>()?.sites
-        //val zoro = malsync?.zoro
-        //val zorotitle = zoro?.values?.firstNotNullOfOrNull { it["title"] }?.replace(":", " ")
+        val year = mediaData.year
+
+        val emittedLinks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+        val optimizedCallback: (ExtractorLink) -> Unit = { link ->
+            val optimized = StreamPlayLinkOptimizer.optimize(link)
+            val key = StreamPlayLinkOptimizer.canonicalStreamKey(optimized)
+            if (emittedLinks.add(key)) {
+                callback(optimized)
+            }
+        }
+
+        val optimizedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
+            val url = sub.url.trim()
+            if (url.startsWith("http", ignoreCase = true)) {
+                val key = "${sub.lang.lowercase()}|$url"
+                if (emittedSubtitles.add(key)) {
+                    subtitleCallback(sub)
+                }
+            }
+        }
+
+        val malsync = if (malId != null) {
+            val cacheKey = "malsync_$malId"
+            val cached = StreamPlayCache.getCachedMetadata(cacheKey)
+            if (cached != null) {
+                AppUtils.tryParseJson<MALSyncResponses>(cached)?.sites
+            } else {
+                runCatching {
+                    val raw = app.get("$malsyncAPI/mal/anime/$malId", timeout = 6L).text
+                    if (raw.isNotBlank() && raw.startsWith("{")) {
+                        StreamPlayCache.cacheMetadata(cacheKey, raw)
+                        AppUtils.tryParseJson<MALSyncResponses>(raw)?.sites
+                    } else null
+                }.getOrNull()
+            }
+        } else null
+
         val kaasSlug = malsync?.KickAssAnime?.values?.firstNotNullOfOrNull { it["identifier"] }
 
         val dubStatus: String? =
@@ -328,33 +362,32 @@ class StreamPlayAnime : MainAPI() {
             else "SUB"
 
         runAllAsync(
-            { invokeHianime(malId, episode, subtitleCallback, callback, dubStatus) },
+            { invokeHianime(malId, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
             {
                 malsync?.animepahe?.values?.firstNotNullOfOrNull { it["url"] }?.let {
-                    invokeAnimepahe(it, episode, subtitleCallback, callback, dubStatus)
+                    invokeAnimepahe(it, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus)
                 }
             },
-
-            { invokeAnizone(jpTitle, episode, subtitleCallback, callback, dubStatus) },
-            { invokeAnikage(aniid, anititle ?: jpTitle, episode, subtitleCallback, callback, dubStatus) },
-            { invokeAnichi(jpTitle, anititle, year, episode, subtitleCallback, callback, dubStatus) },
-            { invokeKickAssAnime(jpTitle,kaasSlug, episode, subtitleCallback, callback, dubStatus) },
-            { invokeAnimex(malId, aniid, jpTitle, episode, subtitleCallback, callback, dubStatus) },
+            { invokeAnizone(jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
+            { invokeAnikage(aniid, anititle ?: jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
+            { invokeAnichi(jpTitle, anititle, year, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
+            { invokeKickAssAnime(jpTitle, kaasSlug, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
+            { invokeAnimex(malId, aniid, jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
             {
                 malId?.let {
                     invokeAnimetosho(
-                        subtitleCallback,
-                        callback,
+                        optimizedSubtitleCallback,
+                        optimizedCallback,
                         dubStatus,
                         anidbEid
                     )
                 }
             },
             {
-                invokeReAnime(aniid, episode, subtitleCallback, callback, dubStatus)
+                invokeReAnime(aniid, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus)
             },
             {
-                invokeAnineko(anititle, jpTitle, episode, subtitleCallback, callback, dubStatus)
+                invokeAnineko(anititle, jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus)
             }
         )
         return true

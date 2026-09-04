@@ -48,7 +48,7 @@ class YTSMX : YTS(){
         {
             url="$mainUrl/${request.data}?page=$page"
         }
-        val document = app.get(url, timeout = 10000L).document
+        val document = app.get(url, timeout = 10L).document
         val home     = document.select("div.row div.browse-movie-wrap").mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(

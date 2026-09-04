@@ -36,6 +36,7 @@ import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -92,11 +93,16 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         private const val apiKey = BuildConfig.TMDB_API
         private var currentBaseUrl: String? = null
 
-
         private val apiMutex = Mutex() // Prevents race conditions
         private const val TAG = "StreamPlay"
         private const val MAX_PROXY_CANDIDATES = 12
-        private const val PROXY_CHECK_BATCH_SIZE = 4
+
+        private val STATIC_TMDB_PROXIES = listOf(
+            "https://api.tmdb.org/3",
+            "https://tmdb.api.0101100.workers.dev/3",
+            "https://tmdb-proxy.workers.dev/3"
+        )
+
         suspend fun getApiBase(): String {
             StreamPlayCache.getCachedApiBase()?.let {
                 currentBaseUrl = it
@@ -114,12 +120,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     return OFFICIAL_TMDB_URL
                 }
 
-                val proxies = fetchProxyList()
-                if (proxies.isEmpty()) {
-                    Log.e(TAG, "❌ No proxies found, falling back to official")
-                    StreamPlayCache.cacheApiBase(OFFICIAL_TMDB_URL, success = false)
-                    return OFFICIAL_TMDB_URL
-                }
+                val remoteProxies = fetchProxyList()
+                val proxies = (remoteProxies + STATIC_TMDB_PROXIES).distinct()
 
                 val workingProxy = findFirstWorkingProxy(proxies)
 
@@ -146,17 +148,16 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 .take(MAX_PROXY_CANDIDATES)
                 .toList()
 
-            for (batch in candidates.chunked(PROXY_CHECK_BATCH_SIZE)) {
-                val workingProxy = coroutineScope {
-                    batch.map { proxy ->
-                        async { if (checkConnectivity(proxy)) proxy else null }
-                    }.awaitAll().firstOrNull { it != null }
+            if (candidates.isEmpty()) return null
+
+            return coroutineScope {
+                val jobs = candidates.map { proxy ->
+                    async(Dispatchers.IO) {
+                        if (checkConnectivity(proxy)) proxy else null
+                    }
                 }
-
-                if (workingProxy != null) return workingProxy
+                jobs.awaitAll().firstOrNull { it != null }
             }
-
-            return null
         }
 
         private suspend fun checkConnectivity(url: String): Boolean {
@@ -166,7 +167,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 try {
                     val response = app.get(
                         testUrl,
-                        timeout = 1500, // Fast socket timeout
+                        timeout = 2L, // Fast socket timeout in seconds
                         headers = mapOf("Cache-Control" to "no-cache")
                     )
                     response.code == 200 || response.code == 304
@@ -177,7 +178,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         }
 
         private suspend fun fetchProxyList(): List<String> = try {
-            val response = app.get(REMOTE_PROXY_LIST, timeout = 5000).text
+            val response = app.get(REMOTE_PROXY_LIST, timeout = 4L).text
             val json = JSONObject(response)
             val arr = json.getJSONArray("proxies")
 
@@ -192,16 +193,62 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         private const val DOMAINS_URL =
             "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json"
         private var cachedDomains: DomainsParser? = null
+        private val domainsMutex = Mutex()
 
-        suspend fun getDomains(forceRefresh: Boolean = false): DomainsParser? {
-            if (cachedDomains == null || forceRefresh) {
-                try {
-                    cachedDomains = app.get(DOMAINS_URL).parsedSafe<DomainsParser>()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+        val DEFAULT_DOMAINS = DomainsParser(
+            moviesdrive = "https://moviesdrive.dad",
+            hdhub4u = "https://hdhub4u.ms",
+            n4khdhub = "https://4khdhub.dad",
+            multiMovies = "https://multimovies.online",
+            bollyflix = "https://bollyflix.dad",
+            uhdmovies = "https://uhdmovies.fyi",
+            moviesmod = "https://moviesmod.dad",
+            topMovies = "https://topmovies.dad",
+            hdmovie2 = "https://hdmovie2.dad",
+            vegamovies = "https://vegamovies.ist",
+            rogmovies = "https://rogmovies.dad",
+            luxmovies = "https://luxmovies.dad",
+            movierulzhd = "https://movierulzhd.lol",
+            extramovies = "https://extramovies.dad",
+            banglaplex = "https://banglaplex.cam",
+            toonstream = "https://toonstream.dad",
+            telugumv = "https://telugumv.dad",
+            filmycab = "https://filmycab.dad",
+            tellyhd = "https://tellyhd.dad",
+            filmyfiy = "https://filmyfiy.dad",
+            hindmoviez = "https://hindmoviez.website",
+            tamilblasters = "https://tamilblasters.dad",
+            hubcloud = "https://hubcloud.foo",
+            movienestbd = "https://movienestbd.dad",
+            movies4u = "https://movies4u.fit",
+            cinevood = "https://cinevood.dad",
+            dudefilms = "https://dudefilms.click",
+            fibwatch = "https://fibwatch.com",
+            fibtoon = "https://fibtoon.com",
+            fibdrama = "https://fibdrama.com",
+            xprimehub = "https://xprimehub.dad",
+            m4ufree = "https://play.playm4u.xyz",
+            zinkmovies = "https://zinkmovies.com"
+        )
+
+        suspend fun getDomains(forceRefresh: Boolean = false): DomainsParser {
+            if (cachedDomains != null && !forceRefresh) {
+                return cachedDomains!!
             }
-            return cachedDomains
+            return domainsMutex.withLock {
+                if (cachedDomains != null && !forceRefresh) {
+                    return@withLock cachedDomains!!
+                }
+                val fetched = runCatching {
+                    withTimeoutOrNull(3500) {
+                        app.get(DOMAINS_URL, timeout = 4L).parsedSafe<DomainsParser>()
+                    }
+                }.getOrNull()
+
+                val resolved = fetched ?: cachedDomains ?: DEFAULT_DOMAINS
+                cachedDomains = resolved
+                resolved
+            }
         }
 
         const val anilistAPI = "https://graphql.anilist.co"
@@ -324,7 +371,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val home = app.get(
             url = "$tmdbAPI${request.data}$adultQuery&language=$langCode&page=$page",
-            timeout = 10000,
+            timeout = 10L,
         ).parsed<Results>().results?.mapNotNull {
             it.toSearchResponse(type)
         } ?: emptyList()
@@ -747,8 +794,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val applicableProviders = activeProviders.filter { it.isApplicableTo(res) }
 
-        // Assumption: direct API providers should win cold starts because they usually avoid HTML scraping, redirects, and mirror pages.
+        // Assumption: direct API providers and subtitle providers should win cold starts because they are fast and prevent subtitle starvation.
         val fastProviderBoost = mapOf(
+            "WyZIESUB" to 65f,
+            "SubtitleAPI" to 65f,
             "vidsrcxyz" to 60f,
             "rivestream" to 55f,
             "vidlink" to 52f,
@@ -783,17 +832,12 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         fun emitLink(link: ExtractorLink): Boolean {
-            val dedupeKey = buildString {
-                append(link.url.trim())
-                append('|')
-                append(link.name.trim())
-                append('|')
-                append(link.quality)
-            }
+            val optimizedLink = StreamPlayLinkOptimizer.optimize(link)
+            val dedupeKey = StreamPlayLinkOptimizer.canonicalStreamKey(optimizedLink)
 
             return if (emittedLinks.add(dedupeKey)) {
                 linksFound.incrementAndGet()
-                callback(link)
+                callback(optimizedLink)
                 true
             } else {
                 Log.d(TAG, "Skipped duplicate link from ${link.name}")
@@ -835,19 +879,37 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        fun shouldSkipRemainingSlowInternetWork(): Boolean =
-            slowInternetMode && StreamPlayConcurrency.shouldStopSlowInternetSearch(
-                linksFound = linksFound.get(),
-                subtitlesFound = subtitlesFound.get(),
-                providersCompleted = providersCompleted.get(),
-                totalProviders = totalProviders
-            )
+        val isSatisfied: () -> Boolean = {
+            val currentLinks = linksFound.get()
+            val currentSubs = subtitlesFound.get()
+            val completed = providersCompleted.get()
+
+            when {
+                slowInternetMode -> StreamPlayConcurrency.shouldStopSlowInternetSearch(
+                    linksFound = currentLinks,
+                    subtitlesFound = currentSubs,
+                    providersCompleted = completed,
+                    totalProviders = totalProviders
+                )
+                // In normal mode: ensure subtitles are not starved before early termination
+                currentLinks >= 24 && (currentSubs >= 1 || completed >= (totalProviders * 0.75).toInt()) -> true
+                currentLinks >= 14 && (currentSubs >= 1 || completed >= (totalProviders * 0.85).toInt()) -> true
+                completed >= totalProviders -> true
+                else -> false
+            }
+        }
 
         val executionList: List<suspend () -> Unit> = prioritizedProviders.map { provider ->
             suspend providerTask@{
-                if (shouldSkipRemainingSlowInternetWork()) {
+                if (isSatisfied()) {
                     providersCompleted.incrementAndGet()
-                    Log.d(TAG, "Slow internet saver: skipped ${provider.id} after enough playable results were found")
+                    return@providerTask
+                }
+
+                val stats = StreamPlayCache.getProviderStats(provider.id)
+                if (stats.isCircuitBroken && !stats.isRecovering) {
+                    providersCompleted.incrementAndGet()
+                    Log.d(TAG, "Circuit breaker: skipping broken provider ${provider.id}")
                     return@providerTask
                 }
 
@@ -865,7 +927,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                     .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }
 
-                runCatching {
+                var wasCancelled = false
+                try {
                     val completed = withTimeoutOrNull(providerTimeout.milliseconds) {
                         provider.invoke(res, providerSubtitleCallback, providerCallback, authToken, dahmerMoviesAPI)
                         true
@@ -876,15 +939,18 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         ProviderKind.MIXED -> localLinksFound.get() > 0 || localSubtitlesFound.get() > 0
                     }
                     if (!completed) Log.w(TAG, "Provider ${provider.id} timed out after ${providerTimeout}ms")
-                }.onFailure { e ->
-                    if (totalResultsFound() > 0) {
-                        Log.w(TAG, "Provider ${provider.id} failed after results were available; skipping retry: ${e.message}")
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    wasCancelled = true
+                    throw e
+                } catch (e: Throwable) {
+                    if (totalResultsFound() > 0 || stats.isCircuitBroken) {
+                        Log.w(TAG, "Provider ${provider.id} failed; skipping retry: ${e.message}")
                     } else {
-                        val retryDelayMs = 300L
+                        val retryDelayMs = 250L
                         Log.w(TAG, "Provider ${provider.id} failed before any results, fast retry in ${retryDelayMs}ms: ${e.message}")
                         kotlinx.coroutines.delay(retryDelayMs.milliseconds)
-                        runCatching {
-                            val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(4_000L).milliseconds) {
+                        try {
+                            val completed = withTimeoutOrNull((providerTimeout / 2).coerceAtLeast(3_500L).milliseconds) {
                                 provider.invoke(res, providerSubtitleCallback, providerCallback, authToken, dahmerMoviesAPI)
                                 true
                             } ?: false
@@ -894,55 +960,67 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                 ProviderKind.MIXED -> localLinksFound.get() > 0 || localSubtitlesFound.get() > 0
                             }
                             if (success) Log.d(TAG, "✅ Retry succeeded: ${provider.id}")
-                        }.onFailure { retryError ->
+                        } catch (retryCancelled: kotlinx.coroutines.CancellationException) {
+                            wasCancelled = true
+                            throw retryCancelled
+                        } catch (retryError: Throwable) {
                             Log.e(TAG, "Provider ${provider.id} failed after retry: ${retryError.message}")
                         }
                     }
+                } finally {
+                    if (!wasCancelled) {
+                        val duration = System.currentTimeMillis() - startTime
+                        StreamPlayCache.recordProviderExecution(provider.id, success, duration)
+                    }
+                    val completed = providersCompleted.incrementAndGet()
+                    if (completed % 10 == 0 || completed == totalProviders) {
+                        Log.d(TAG, "⏳ Progress: $completed/$totalProviders providers")
+                    }
                 }
-
-                val duration = System.currentTimeMillis() - startTime
-                StreamPlayCache.recordProviderExecution(provider.id, success, duration)
-
-                val completed = providersCompleted.incrementAndGet()
-                if (completed % 10 == 0 || completed == totalProviders) {
-                    Log.d(TAG, "⏳ Progress: $completed/$totalProviders providers")
-                }
-                Unit
             }
         } + stremioAddons.map { (addonId, addon) ->
             suspend addonTask@{
-                if (shouldSkipRemainingSlowInternetWork()) {
+                if (isSatisfied()) {
                     providersCompleted.incrementAndGet()
-                    Log.d(TAG, "Slow internet saver: skipped Stremio addon $addonId after enough playable results were found")
                     return@addonTask
                 }
 
                 val startTime = System.currentTimeMillis()
                 val beforeResults = totalResultsFound()
-                val completedInTime = withTimeoutOrNull(15_000L.milliseconds) {
-                    runCatching {
+                var wasCancelled = false
+                var completedInTime = false
+                try {
+                    completedInTime = withTimeoutOrNull(12_000L.milliseconds) {
                         addon()
-                    }.onFailure { e ->
-                        Log.w(TAG, "Stremio addon $addonId failed: ${e.message}")
-                    }.isSuccess
-                } ?: false
-                StreamPlayCache.recordProviderExecution(
-                    addonId,
-                    completedInTime && totalResultsFound() > beforeResults,
-                    System.currentTimeMillis() - startTime
-                )
-                if (!completedInTime) Log.w(TAG, "Stremio addon $addonId timed out")
-                val completed = providersCompleted.incrementAndGet()
-                if (completed % 10 == 0 || completed == totalProviders) {
-                    Log.d(TAG, "⏳ Progress: $completed/$totalProviders providers")
+                        true
+                    } ?: false
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    wasCancelled = true
+                    throw e
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Stremio addon $addonId failed: ${e.message}")
+                } finally {
+                    if (!wasCancelled) {
+                        StreamPlayCache.recordProviderExecution(
+                            addonId,
+                            completedInTime && totalResultsFound() > beforeResults,
+                            System.currentTimeMillis() - startTime
+                        )
+                    }
+                    if (!completedInTime && !wasCancelled) Log.w(TAG, "Stremio addon $addonId timed out")
+                    val completed = providersCompleted.incrementAndGet()
+                    if (completed % 10 == 0 || completed == totalProviders) {
+                        Log.d(TAG, "⏳ Progress: $completed/$totalProviders providers")
+                    }
                 }
             }
         }
 
-        runLimitedAsync(
+        StreamPlayConcurrency.runSupervisedLimitedAsync(
             concurrency = concurrency,
-            taskTimeoutMs = if (slowInternetMode) 50_000L else 40_000L,
-            *executionList.toTypedArray()
+            taskTimeoutMs = if (slowInternetMode) 35_000L else 25_000L,
+            isSatisfied = isSatisfied,
+            tasks = executionList
         )
 
         StreamPlayCache.saveProviderStats(sharedPref ?: companionSharedPref)

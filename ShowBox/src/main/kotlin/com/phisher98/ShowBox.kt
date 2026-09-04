@@ -43,12 +43,14 @@ import com.phisher98.ShowBoxExtractor.invokeExternalSource
 import com.phisher98.ShowBoxExtractor.invokeInternalSource
 import com.phisher98.ShowBoxExtractor.invokeOpenSubs
 import com.phisher98.ShowBoxExtractor.invokeWatchsomuch
+import okhttp3.ConnectionPool
 import okhttp3.FormBody
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import java.util.concurrent.TimeUnit
 import java.nio.charset.StandardCharsets
 import java.security.KeyFactory
 import java.security.KeyStore
@@ -296,7 +298,7 @@ oFuZne+lYcCPMNDXdku6wKdf9gSnOSHOGMu8TvHcud4uIDYmFH5qabJL5GDoQi7Q
         return KeyFactory.getInstance("RSA").generatePrivate(keySpec)
     }
 
-    fun buildClientWithCert(): OkHttpClient {
+    val showBoxClient: OkHttpClient by lazy {
         val cert = loadCertificateFromPem(CLIENT_CERT_PEM)
         val key = loadPrivateKeyFromPem(CLIENT_KEY_PEM)
 
@@ -315,11 +317,17 @@ oFuZne+lYcCPMNDXdku6wKdf9gSnOSHOGMu8TvHcud4uIDYmFH5qabJL5GDoQi7Q
 
         val trustManager = tmf.trustManagers[0] as X509TrustManager
 
-        return OkHttpClient.Builder()
+        OkHttpClient.Builder()
             .sslSocketFactory(sslContext.socketFactory, trustManager)
+            .connectionPool(ConnectionPool(32, 5, TimeUnit.MINUTES))
+            .addInterceptor(UserAgentInterceptor())
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
             .build()
     }
 
+    fun buildClientWithCert(): OkHttpClient = showBoxClient
 
     fun queryApi(query: String, useAlternativeApi: Boolean): String {
         val encryptedQuery = CipherUtils.encrypt(query, key, iv)!!
@@ -339,12 +347,6 @@ oFuZne+lYcCPMNDXdku6wKdf9gSnOSHOGMu8TvHcud4uIDYmFH5qabJL5GDoQi7Q
 
         val url = if (useAlternativeApi) secondAPI else firstAPI
 
-        val client = buildClientWithCert().newBuilder()
-            .addInterceptor(UserAgentInterceptor())
-            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
         val formBody = FormBody.Builder().apply {
             data.forEach { (k, v) -> add(k, v) }
         }.build()
@@ -355,7 +357,7 @@ oFuZne+lYcCPMNDXdku6wKdf9gSnOSHOGMu8TvHcud4uIDYmFH5qabJL5GDoQi7Q
             .post(formBody)
             .build()
 
-        client.newCall(request).execute().use { resp ->
+        showBoxClient.newCall(request).execute().use { resp ->
             return resp.body.string()
         }
     }
@@ -665,7 +667,7 @@ oFuZne+lYcCPMNDXdku6wKdf9gSnOSHOGMu8TvHcud4uIDYmFH5qabJL5GDoQi7Q
 
         suspend fun fetchCinemeta(type: String, imdbId: String?) =
             imdbId?.takeIf { it.isNotEmpty() }?.let {
-                val res = app.get("$cinemeta_url/$type/$it.json", timeout = 10000L).text
+                val res = app.get("$cinemeta_url/$type/$it.json", timeout = 10L).text
                 if (res.isNotEmpty() && res.startsWith("{")) Gson().fromJson(res, ResponseData::class.java) else null
             }
 

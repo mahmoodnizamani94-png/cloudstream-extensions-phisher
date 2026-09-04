@@ -63,6 +63,10 @@ subprojects {
             if (isDummyRes) {
                 requiresResources = false
             }
+            val csJar = apkinfo?.jarFile ?: file("${gradle.gradleUserHomeDir}/caches/cloudstream/cloudstream/cloudstream.jar")
+            if (csJar.exists()) {
+                dependencies.add("testImplementation", files(csJar))
+            }
         }
     }
 
@@ -93,6 +97,10 @@ subprojects {
             targetCompatibility = JavaVersion.VERSION_1_8
         }
 
+        testOptions {
+            unitTests.isReturnDefaultValues = true
+        }
+
         //noinspection WrongGradleMethod
         tasks.withType<KotlinJvmCompile> {
             compilerOptions {
@@ -101,7 +109,6 @@ subprojects {
                     "-Xno-call-assertions",
                     "-Xno-param-assertions",
                     "-Xno-receiver-assertions",
-                    "-Xbackend-threads=0",
                 )
             }
         }
@@ -111,6 +118,7 @@ subprojects {
         val implementation by configurations
         val cloudstream by configurations
         val compileOnly by configurations
+        val testImplementation by configurations
         cloudstream("com.lagradost:cloudstream3:pre-release")
 
         // Other dependencies provided by host app
@@ -123,6 +131,14 @@ subprojects {
         compileOnly("com.fasterxml.jackson.core:jackson-databind:2.13.1")
         compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
         compileOnly("com.google.code.gson:gson:2.14.0")
+
+        testImplementation("junit:junit:4.13.2")
+        testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+        testImplementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")
+        testImplementation("com.fasterxml.jackson.core:jackson-databind:2.13.1")
+        testImplementation("com.google.code.gson:gson:2.14.0")
+        testImplementation("org.jsoup:jsoup:1.22.2")
+        testImplementation("com.github.Blatzar:NiceHttp:0.4.18")
     }
 }
 

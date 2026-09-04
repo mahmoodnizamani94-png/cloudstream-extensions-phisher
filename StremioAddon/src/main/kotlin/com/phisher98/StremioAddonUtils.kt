@@ -1,16 +1,96 @@
 package com.phisher98
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.APIHolder.unixTimeMS
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.getQualityFromName
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+object TrackerManager {
+    const val TRACKER_TTL_MS = 12 * 60 * 60 * 1000L // 12 hours
+
+    val FALLBACK_TRACKERS = listOf(
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://explodie.org:6969/announce",
+        "udp://tracker.moeking.me:6969/announce",
+        "udp://p4p.arenabg.com:1337/announce",
+        "udp://tracker.tiny-vps.com:6969/announce",
+        "udp://open.demonii.com:1337/announce"
+    )
+
+    @Volatile
+    private var cachedFormattedTrackers: String? = null
+
+    @Volatile
+    private var cacheTimestamp: Long = 0L
+
+    private val mutex = Mutex()
+
+    fun getFallbackTrackersFormatted(): String {
+        return FALLBACK_TRACKERS.joinToString("") { "&tr=$it" }
+    }
+
+    fun parseAndFormatTrackers(rawText: String): String {
+        return rawText
+            .split("\n")
+            .map { it.trim() }
+            .filterIndexed { i, _ -> i % 2 == 0 }
+            .filter { it.isNotEmpty() }
+            .joinToString("") { "&tr=$it" }
+    }
+
+    fun clearCache() {
+        cachedFormattedTrackers = null
+        cacheTimestamp = 0L
+    }
+
+    internal fun setCacheForTesting(formatted: String?, timestamp: Long) {
+        cachedFormattedTrackers = formatted
+        cacheTimestamp = timestamp
+    }
+
+    suspend fun getFormattedTrackers(): String {
+        val now = System.currentTimeMillis()
+        val current = cachedFormattedTrackers
+        if (current != null && (now - cacheTimestamp) < TRACKER_TTL_MS) {
+            return current
+        }
+
+        return mutex.withLock {
+            val secondCheck = cachedFormattedTrackers
+            val secondNow = System.currentTimeMillis()
+            if (secondCheck != null && (secondNow - cacheTimestamp) < TRACKER_TTL_MS) {
+                return@withLock secondCheck
+            }
+
+            val fetched = try {
+                val resp = app.get(StremioAddon.TRACKER_LIST_URL, timeout = 10L).text
+                val formatted = parseAndFormatTrackers(resp)
+                if (formatted.isNotEmpty()) formatted else getFallbackTrackersFormatted()
+            } catch (e: Throwable) {
+                Log.e("TrackerManager", "Failed fetching trackers from remote, using fallback: ${e.message}")
+                getFallbackTrackersFormatted()
+            }
+
+            cachedFormattedTrackers = fetched
+            cacheTimestamp = System.currentTimeMillis()
+            fetched
+        }
+    }
+}
 
 fun String.fixSourceUrl(): String {
     return this.replace("/manifest.json", "").replace("stremio://", "https://")
@@ -27,14 +107,20 @@ fun fixSourceName(name: String?, title: String?, description: String?): String {
     }
 }
 
-fun getQuality(qualities: List<String?>): Int {
+private val QUALITY_REGEX = Regex("(\\d{3,4}[pP])")
+
+fun extractQualityString(qualities: List<String?>): String? {
     fun String.getQuality(): String? {
-        val has = Regex("(\\d{3,4}[pP])").find(this)?.groupValues?.getOrNull(1)
+        val has = QUALITY_REGEX.find(this)?.groupValues?.getOrNull(1)
         if (has != null) return has
         if (contains("4k", ignoreCase = true)) return "2160p"
         return null
     }
-    val quality = qualities.firstNotNullOfOrNull { it?.getQuality() }
+    return qualities.firstNotNullOfOrNull { it?.getQuality() }
+}
+
+fun getQuality(qualities: List<String?>): Int {
+    val quality = extractQualityString(qualities)
     return getQualityFromName(quality)
 }
 

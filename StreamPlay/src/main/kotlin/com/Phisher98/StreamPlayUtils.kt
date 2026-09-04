@@ -31,10 +31,11 @@ import com.lagradost.nicehttp.RequestBodyTypes
 import com.phisher98.StreamPlay.Companion.anilistAPI
 import com.phisher98.StreamPlay.Companion.fourthAPI
 import com.phisher98.StreamPlay.Companion.thrirdAPI
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -77,9 +78,8 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.math.min
 
 val sharedPref: SharedPreferences? = null
-private const val SAFE_GET_MAX_CONCURRENCY = 48
+private const val SAFE_GET_MAX_CONCURRENCY = 64
 val appGlobalSemaphore = Semaphore(SAFE_GET_MAX_CONCURRENCY)
-private val extractorCallbackScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 private val sharedObjectMapper by lazy { ObjectMapper() }
 private val sharedGson by lazy { Gson() }
 private val tmdbDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
@@ -221,33 +221,30 @@ suspend fun loadSourceNameExtractor(
     val sizePart = size.trim().takeIf { it.isNotBlank() }
 
     loadExtractor(url, referer, subtitleCallback) { link ->
-        extractorCallbackScope.launch {
-            val label = buildString {
-                provider?.let { append(it) }
-                if (link.name.isNotEmpty()) {
-                    if (isNotEmpty()) append(' ')
-                    append(link.name)
-                }
-                sizePart?.let {
-                    if (isNotEmpty()) append(' ')
-                    append(it)
-                }
+        val label = buildString {
+            provider?.let { append(it) }
+            if (link.name.isNotEmpty()) {
+                if (isNotEmpty()) append(' ')
+                append(link.name)
             }
-
-            callback(
-                newExtractorLink(
-                    link.source,
-                    label,
-                    link.url
-                ) {
-                    this.quality = quality ?: link.quality
-                    this.type = link.type
-                    this.referer = link.referer
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                }
-            )
+            sizePart?.let {
+                if (isNotEmpty()) append(' ')
+                append(it)
+            }
         }
+
+        @Suppress("DEPRECATION")
+        val rawLink = ExtractorLink(
+            source = link.source,
+            name = label,
+            url = link.url,
+            referer = link.referer,
+            quality = quality ?: link.quality,
+            type = link.type,
+            headers = link.headers,
+            extractorData = link.extractorData
+        )
+        callback(StreamPlayLinkOptimizer.optimize(rawLink))
     }
 }
 
@@ -262,21 +259,18 @@ suspend fun loadDisplaySourceNameExtractor(
     quality: Int? = null,
 ) {
     loadExtractor(url, referer, subtitleCallback) { link ->
-        extractorCallbackScope.launch {
-            callback.invoke(
-                newExtractorLink(
-                    sourceName ?: "",
-                    displayName ?: "",
-                    link.url,
-                ) {
-                    this.quality = quality ?: link.quality
-                    this.type = link.type
-                    this.referer = link.referer
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                }
-            )
-        }
+        @Suppress("DEPRECATION")
+        val rawLink = ExtractorLink(
+            source = sourceName ?: link.source,
+            name = displayName ?: link.name,
+            url = link.url,
+            referer = link.referer,
+            quality = quality ?: link.quality,
+            type = link.type,
+            headers = link.headers,
+            extractorData = link.extractorData
+        )
+        callback(StreamPlayLinkOptimizer.optimize(rawLink))
     }
 }
 
@@ -348,14 +342,18 @@ suspend fun extractMdrive(url: String): List<String> {
 }
 
 fun getBaseUrl(url: String): String {
-    return URI(url).let {
-        "${it.scheme}://${it.host}"
-    }
+    return runCatching {
+        URI(url).let {
+            "${it.scheme}://${it.host}"
+        }
+    }.getOrDefault(url.substringBefore("/", ""))
 }
 
 
 fun String.getHost(): String {
-    return fixTitle(URI(this).host.substringBeforeLast(".").substringAfterLast("."))
+    return runCatching {
+        fixTitle(URI(this).host.substringBeforeLast(".").substringAfterLast("."))
+    }.getOrDefault("Source")
 }
 
 fun isUpcoming(dateString: String?): Boolean {
@@ -1417,7 +1415,7 @@ suspend fun getHindMoviezLinks(
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ) {
-    val response = app.get(url, timeout = 10000L)
+    val response = app.get(url, timeout = 10L)
     val doc = response.document
 
     val name = doc.selectFirst("div.container p:contains(Name:)")
@@ -1456,7 +1454,7 @@ suspend fun getHindMoviezLinks(
                 val redirectDoc = app.get(
                     redirectUrl,
                     referer = response.url,
-                    timeout = 10000L
+                    timeout = 10L
                 ).document
 
                 redirectDoc.select("a.button[href]").forEach { btn ->
@@ -1703,6 +1701,7 @@ suspend fun bypassXD(url: String): String? {
         .addHeader("User-Agent", USER_AGENT)
         .build()
 
+    val callerScope = CoroutineScope(coroutineContext)
     var heartbeatJob: kotlinx.coroutines.Job? = null
 
     val webSocket = okHttpClient.newWebSocket(wsRequest, object : WebSocketListener() {
@@ -1722,7 +1721,7 @@ suspend fun bypassXD(url: String): String? {
                     webSocket.send("""42["bind","$rebindToken"]""")
                     webSocket.send("""42["visibility","visible"]""")
 
-                    heartbeatJob = extractorCallbackScope.launch {
+                    heartbeatJob = callerScope.launch {
                         var elapsed = 0
                         while (elapsed < 28) {
                             delay(1000)
@@ -1809,7 +1808,7 @@ suspend fun safeGet(
         url = url,
         headers = headers ?: emptyMap(),
         referer = referer,
-        timeout = timeout ?: 10000L,
+        timeout = timeout ?: 10L,
         interceptor = interceptor,
         allowRedirects = allowRedirects,
         cacheTime = cacheTime
@@ -1862,6 +1861,7 @@ suspend inline fun <A, B> Iterable<A>.safeAmap(
                     try {
                         f(item)
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         Log.e("safeMap", "Request failed for $item $e")
                         null
                     }
@@ -1869,7 +1869,7 @@ suspend inline fun <A, B> Iterable<A>.safeAmap(
             }
         }.awaitAll().filterNotNull()
     }
-}
+}.onFailure { if (it is CancellationException) throw it }
 
 
 val HindmoviezSECRET = base64Decode("NWU5NjA4NWM1NmUwZjU0ZWRhNjU3NzkwYWM1OGQxOWIyNzE0NzljNTA0MzY3ZmM5ZTZhNmMzM2YxZjgyNGU2Yg==")

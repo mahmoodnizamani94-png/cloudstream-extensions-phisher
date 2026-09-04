@@ -20,7 +20,7 @@ open class DesicinemasProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1 || request.name == "Home") request.data else "${request.data}page/$page/"
-        val doc = app.get(url, referer = mainUrl, timeout = 10000).document
+        val doc = app.get(url, referer = mainUrl, timeout = 10L).document
 
         val homePages = listOfNotNull(
             doc.selectFirst(".MovieListTop")?.toHomePageList("Most popular").takeIf { request.name == "Home" },
@@ -47,7 +47,7 @@ open class DesicinemasProvider : MainAPI() {
             .select(".MovieList li").mapNotNull { it.toHomePageResult() }
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get("$proxy?url=$url", referer = mainUrl, timeout = 10000).document
+        val doc = app.get("$proxy?url=$url", referer = mainUrl, timeout = 10L).document
         val title = doc.selectFirst("h1")?.text()?.trim() ?: return null
         val posterUrl = fixUrlNull(doc.select(".Image img").attr("src"))
 

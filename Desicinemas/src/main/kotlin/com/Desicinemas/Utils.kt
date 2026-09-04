@@ -8,13 +8,8 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.Requests
 import com.lagradost.nicehttp.ResponseParser
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import java.net.URI
 import kotlin.reflect.KClass
 
@@ -154,8 +149,6 @@ private fun getBaseUrl(url: String): String {
     }
 }
 
-private val extractorCallbackScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
 suspend fun loadSourceNameExtractor(
     source: String,
     url: String,
@@ -169,33 +162,30 @@ suspend fun loadSourceNameExtractor(
     val sizePart = size.trim().takeIf { it.isNotBlank() }
 
     loadExtractor(url, referer, subtitleCallback) { link ->
-        extractorCallbackScope.launch {
-            val label = buildString {
-                provider?.let { append(it) }
-                if (link.name.isNotEmpty()) {
-                    if (isNotEmpty()) append(' ')
-                    append(link.name)
-                }
-                sizePart?.let {
-                    if (isNotEmpty()) append(' ')
-                    append(it)
-                }
+        val label = buildString {
+            provider?.let { append(it) }
+            if (link.name.isNotEmpty()) {
+                if (isNotEmpty()) append(' ')
+                append(link.name)
             }
-
-            callback(
-                newExtractorLink(
-                    link.source,
-                    label,
-                    link.url
-                ) {
-                    this.quality = quality ?: link.quality
-                    this.type = link.type
-                    this.referer = link.referer
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                }
-            )
+            sizePart?.let {
+                if (isNotEmpty()) append(' ')
+                append(it)
+            }
         }
+
+        callback(
+            ExtractorLink(
+                source = link.source,
+                name = label,
+                url = link.url,
+                referer = link.referer,
+                quality = quality ?: link.quality,
+                type = link.type,
+                headers = link.headers,
+                extractorData = link.extractorData
+            )
+        )
     }
 }
 
