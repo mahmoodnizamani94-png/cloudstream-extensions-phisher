@@ -11,3 +11,7 @@
 local.properties
 .vscodetest.txt
 /builds
+.kotlin/
+.agents/
+ORIGINAL_REQUEST.md
+

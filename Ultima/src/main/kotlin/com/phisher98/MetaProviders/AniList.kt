@@ -65,12 +65,12 @@ class AniList(val plugin: UltimaPlugin) : MainAPI() {
     }
 
     private suspend fun anilistAPICall(query: String): AnilistAPIResponse {
-        val data = mapOf("query" to query)
-        val test = app.post(apiUrl, headers = headerJSON, data = data)
-        val res =
+        return SingleFlight.executeShared("anilist_query:${query.hashCode()}") {
+            val data = mapOf("query" to query)
+            val test = app.post(apiUrl, headers = headerJSON, data = data)
             test.parsedSafe<AnilistAPIResponse>()
                 ?: throw Exception("Unable to fetch or parse Anilist api response")
-        return res
+        }
     }
 
     private fun AniListApi.Media.toSearchResponse(): SearchResponse {
@@ -151,7 +151,9 @@ class AniList(val plugin: UltimaPlugin) : MainAPI() {
         val jpTitle = data.title.romaji
 
 
-        val syncMetaData = app.get("https://api.ani.zip/mappings?anilist_id=${ids.id}").toString()
+        val syncMetaData = SingleFlight.executeShared("anizip:anilist:${ids.id}") {
+            app.get("https://api.ani.zip/mappings?anilist_id=${ids.id}").toString()
+        }
         val animeMetaData = parseAnimeData(syncMetaData)
 
         val href = LinkData(

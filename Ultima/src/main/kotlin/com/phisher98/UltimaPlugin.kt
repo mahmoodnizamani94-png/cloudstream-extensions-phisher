@@ -1,4 +1,4 @@
-﻿package com.phisher98
+package com.phisher98
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -292,12 +292,22 @@ class UltimaPlugin : Plugin() {
         lifecycleCallbacks = null
         registeredApp = null
 
+        // Save telemetry on clean shutdown
+        try {
+            ProviderTelemetryManager.onCleanShutdown(CloudStreamApp.context?.getSharedPrefs())
+        } catch (_: Exception) {}
+
         activity = null
     }
 
     override fun load(context: Context) {
         // Defensive cleanup — if load() is called again (plugin reload), clean up previous state
         cleanup()
+        NetworkOptimizer.initialize(context)
+        DeviceProfiler.initialize(context)
+        try {
+            ProviderTelemetryManager.loadPersistedStats(context.getSharedPrefs())
+        } catch (_: Exception) {}
         pluginScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         activity = context as? AppCompatActivity

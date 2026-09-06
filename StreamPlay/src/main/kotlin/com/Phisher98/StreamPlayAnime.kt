@@ -1,5 +1,6 @@
 package com.phisher98
 
+import com.lagradost.api.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.CommonActivity.activity
 import com.lagradost.cloudstream3.DubStatus
@@ -40,6 +41,7 @@ import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.nicehttp.RequestBodyTypes
 import com.phisher98.StreamPlay.Companion.anilistAPI
 import com.phisher98.StreamPlay.Companion.malsyncAPI
@@ -317,15 +319,11 @@ class StreamPlayAnime : MainAPI() {
         val aniid = mediaData.aniId
         val year = mediaData.year
 
-        val emittedLinks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator(callback)
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         val optimizedCallback: (ExtractorLink) -> Unit = { link ->
-            val optimized = StreamPlayLinkOptimizer.optimize(link)
-            val key = StreamPlayLinkOptimizer.canonicalStreamKey(optimized)
-            if (emittedLinks.add(key)) {
-                callback(optimized)
-            }
+            deduplicator.emit(StreamLinkOptimizer.optimize(link))
         }
 
         val optimizedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
@@ -361,34 +359,69 @@ class StreamPlayAnime : MainAPI() {
             else if (mediaData.isDub) "DUB"
             else "SUB"
 
-        runAllAsync(
-            { invokeHianime(malId, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
-            {
-                malsync?.animepahe?.values?.firstNotNullOfOrNull { it["url"] }?.let {
-                    invokeAnimepahe(it, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus)
-                }
-            },
-            { invokeAnizone(jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
-            { invokeAnikage(aniid, anititle ?: jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
-            { invokeAnichi(jpTitle, anititle, year, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
-            { invokeKickAssAnime(jpTitle, kaasSlug, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
-            { invokeAnimex(malId, aniid, jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus) },
-            {
-                malId?.let {
-                    invokeAnimetosho(
-                        optimizedSubtitleCallback,
-                        optimizedCallback,
-                        dubStatus,
-                        anidbEid
-                    )
-                }
-            },
-            {
-                invokeReAnime(aniid, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus)
-            },
-            {
-                invokeAnineko(anititle, jpTitle, episode, optimizedSubtitleCallback, optimizedCallback, dubStatus)
+        val earlySatisfactionConfig = EarlySatisfactionConfig(
+            minVerifiedLinks = 2,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            highBitrateThresholdKbps = 2500,
+            minSubtitles = 1,
+            satisfyWithOneLinkIfSubsFound = true,
+            requireSubtitles = false
+        )
+        val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
+
+        val animeLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val trackedCallback: (ExtractorLink) -> Unit = { link ->
+            animeLinksFound.incrementAndGet()
+            earlyController.onLinkEmitted(link)
+            optimizedCallback(link)
+        }
+        val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
+            earlyController.onSubtitleEmitted(sub)
+            optimizedSubtitleCallback(sub)
+        }
+
+        val tasks = buildList {
+            add(PipelinedTask("Hianime", LatencyTier.TIER_1) {
+                invokeHianime(malId, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            malsync?.animepahe?.values?.firstNotNullOfOrNull { it["url"] }?.let { url ->
+                add(PipelinedTask("Animepahe", LatencyTier.TIER_1) {
+                    invokeAnimepahe(url, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+                })
             }
+            add(PipelinedTask("Anizone", LatencyTier.TIER_1) {
+                invokeAnizone(jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            add(PipelinedTask("Anikage", LatencyTier.TIER_2) {
+                invokeAnikage(aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            add(PipelinedTask("Anichi", LatencyTier.TIER_2) {
+                invokeAnichi(jpTitle, anititle, year, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            add(PipelinedTask("KickAssAnime", LatencyTier.TIER_2) {
+                invokeKickAssAnime(jpTitle, kaasSlug, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            add(PipelinedTask("Animex", LatencyTier.TIER_2) {
+                invokeAnimex(malId, aniid, jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            malId?.let {
+                add(PipelinedTask("Animetosho", LatencyTier.TIER_2) {
+                    invokeAnimetosho(trackedSubtitleCallback, trackedCallback, dubStatus, anidbEid)
+                })
+            }
+            add(PipelinedTask("ReAnime", LatencyTier.TIER_2) {
+                invokeReAnime(aniid, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+            add(PipelinedTask("Anineko", LatencyTier.TIER_3) {
+                invokeAnineko(anititle, jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            })
+        }
+
+        SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = earlySatisfactionConfig,
+            controller = earlyController
         )
         return true
     }

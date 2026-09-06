@@ -114,14 +114,16 @@ class Pahe : ExtractorApi() {
     private val kwikDToken = Regex("value=\"([^\"]+)\"")
 
     companion object {
-        private val baseClient = OkHttpClient()
-        private val noRedirectsClient = baseClient.newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build()
+        private val noRedirectsClient: OkHttpClient by lazy {
+            app.baseClient.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+        }
     }
 
-    private val client = baseClient
+    private val client: OkHttpClient
+        get() = app.baseClient
 
     private fun decrypt(fullString: String, key: String, v1: Int, v2: Int): String {
         val keyIndexMap = key.withIndex().associate { it.value to it.index }

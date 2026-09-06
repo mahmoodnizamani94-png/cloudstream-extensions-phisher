@@ -18,6 +18,8 @@ import com.phisher98.BuildConfig.SUPERSTREAM_FOURTH_API
 import com.phisher98.BuildConfig.SUPERSTREAM_THIRD_API
 import com.phisher98.BuildConfig.NuvFeb
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -27,6 +29,8 @@ import java.net.URLEncoder
 import java.util.Locale
 
 private val ORG_QUALITY_REGEX = Regex("""(\d{3,4}p)""", RegexOption.IGNORE_CASE)
+private val GSON = Gson()
+private val WYZIESUB_LIST_TYPE = object : TypeToken<List<WyZIESUB>>() {}.type
 
 private val VIDEO_HEADERS = mapOf(
     "Accept" to "*/*",
@@ -109,61 +113,49 @@ object SuperStreamExtractor : SuperStream() {
             }
         } ?: return
 
+        val semaphore = Semaphore(DeviceProfiler.getActiveConcurrency().coerceAtMost(8))
         coroutineScope {
             fids.mapIndexed { index, fileList ->
                 async {
-                    try {
-                        val superToken = token?.let {
-                            if (it.startsWith("ui=")) it else "ui=$it"
-                        } ?: ""
-                        val player = app.get(
-                            "$thirdAPI/console/video_quality_list?fid=${fileList.fid}&share_key=$shareKey",
-                            headers = mapOf("Cookie" to superToken),
-                            timeout = 10L
-                        ).text
-                        val json = try {
-                            JSONObject(player)
-                        } catch (e: Exception) {
-                            Log.e("Error:", "Invalid JSON response $e")
-                            return@async
-                        }
-                        val htmlContent = json.optString("html", "")
-                        if (htmlContent.isEmpty()) return@async
-
-                        val document: Document = Jsoup.parse(htmlContent)
-                        val sourcesWithQualities = mutableListOf<Triple<String, String, String>>()
-
-                        document.select("div.file_quality").forEach { element ->
-                            val url = element.attr("data-url").takeIf { it.isNotEmpty() } ?: return@forEach
-                            val qualityAttr = element.attr("data-quality").takeIf { it.isNotEmpty() }
-                            val size = element.selectFirst(".size")?.text()?.takeIf { it.isNotEmpty() } ?: return@forEach
-
-                            val quality = if (qualityAttr.equals("ORG", ignoreCase = true)) {
-                                ORG_QUALITY_REGEX.find(url)?.groupValues?.get(1) ?: "2160p"
-                            } else {
-                                qualityAttr ?: return@forEach
+                    semaphore.withPermit {
+                        try {
+                            val superToken = token?.let {
+                                if (it.startsWith("ui=")) it else "ui=$it"
+                            } ?: ""
+                            val player = app.get(
+                                "$thirdAPI/console/video_quality_list?fid=${fileList.fid}&share_key=$shareKey",
+                                headers = mapOf("Cookie" to superToken),
+                                timeout = 10L
+                            ).text
+                            val json = try {
+                                JSONObject(player)
+                            } catch (e: Exception) {
+                                Log.e("Error:", "Invalid JSON response $e")
+                                return@withPermit
                             }
+                            val htmlContent = json.optString("html", "")
+                            if (htmlContent.isEmpty()) return@withPermit
 
-                            sourcesWithQualities.add(Triple(url, quality, size))
-                        }
+                            val sourcesWithQualities = ZeroAllocParser.extractSuperStreamQualities(htmlContent)
 
-                        sourcesWithQualities.forEach { (url, label, size) ->
-                            val format = ExtractorLinkType.VIDEO
-                            callback.invoke(
-                                newExtractorLink(
-                                    "⌜ SuperStream ⌟",
-                                    "⌜ SuperStream ⌟ [Server ${index + 1}] $size",
-                                    url.replace("\\/", "/"),
-                                    format
-                                ) {
-                                    this.quality = getIndexQuality(label)
-                                    this.headers = VIDEO_HEADERS
-                                }
-                            )
+                            sourcesWithQualities.forEach { item ->
+                                val format = ExtractorLinkType.VIDEO
+                                callback.invoke(
+                                    newExtractorLink(
+                                        "⌜ SuperStream ⌟",
+                                        "⌜ SuperStream ⌟ [Server ${index + 1}] ${item.size}",
+                                        item.url,
+                                        format
+                                    ) {
+                                        this.quality = getIndexQuality(item.quality)
+                                        this.headers = VIDEO_HEADERS
+                                    }
+                                )
+                            }
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                            Log.e("SuperStream", "invokeExternalSource failed: $e")
                         }
-                    } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        Log.e("SuperStream", "invokeExternalSource failed: $e")
                     }
                 }
             }.awaitAll()
@@ -209,9 +201,7 @@ object SuperStreamExtractor : SuperStream() {
         }
 
         val res = app.get(url, timeout = 10L).text
-        val gson = Gson()
-        val listType = object : TypeToken<List<WyZIESUB>>() {}.type
-        val subtitles: List<WyZIESUB> = gson.fromJson(res, listType)
+        val subtitles: List<WyZIESUB> = GSON.fromJson(res, WYZIESUB_LIST_TYPE)
         subtitles.map {
             val lan = it.display
             val suburl = it.url

@@ -191,7 +191,9 @@ object StreamPlayCache {
         val totalTimeMs: Long = 0,
         val lastExecutionMs: Long = 0,
         val consecutiveFailures: Int = 0,
-        val lastFailureAtMs: Long = 0L
+        val lastFailureAtMs: Long = 0L,
+        val isCircuitBroken: Boolean = false,
+        val isRecovering: Boolean = false
     ) {
         val successRate: Float
             get() = if (successCount + failureCount == 0) 0f
@@ -199,88 +201,45 @@ object StreamPlayCache {
 
         val avgTimeMs: Long
             get() = if (successCount == 0) 0L else totalTimeMs / successCount
-
-        val isCircuitBroken: Boolean
-            get() = consecutiveFailures >= 5 &&
-                System.currentTimeMillis() - lastFailureAtMs < CIRCUIT_BREAKER_COOLDOWN_MS
-
-        val isRecovering: Boolean
-            get() = consecutiveFailures >= 5 && !isCircuitBroken
     }
 
     private const val CIRCUIT_BREAKER_COOLDOWN_MS = 15 * 60 * 1000L
-    private const val PROVIDER_STATS_MAX_SIZE = 300
-    private val providerStatsMap = ConcurrentHashMap<String, ProviderStats>()
-    private val dirtyProviderKeys = ConcurrentHashMap.newKeySet<String>()
     private val loadedPrefs = java.util.Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
 
     /**
      * Get provider statistics
      */
     fun getProviderStats(providerId: String): ProviderStats {
-        return providerStatsMap[providerId] ?: ProviderStats()
+        val stats = ProviderTelemetryManager.getStats(providerId)
+        return ProviderStats(
+            successCount = stats.successCount,
+            failureCount = stats.failureCount,
+            totalTimeMs = (stats.latencyEwma * stats.successCount).toLong(),
+            lastExecutionMs = stats.lastExecutionMs,
+            consecutiveFailures = stats.consecutiveFailures,
+            lastFailureAtMs = stats.lastFailureAtMs,
+            isCircuitBroken = ProviderTelemetryManager.isCircuitBroken(providerId),
+            isRecovering = ProviderTelemetryManager.isRecovering(providerId)
+        )
     }
 
     /**
-     * Record provider execution result with atomic compute
+     * Record provider execution result with atomic compute and EWMA scoring
      */
     fun recordProviderExecution(providerId: String, success: Boolean, durationMs: Long) {
-        var previous = ProviderStats()
-        var updated = ProviderStats()
+        val wasBroken = ProviderTelemetryManager.isCircuitBroken(providerId)
+        ProviderTelemetryManager.recordExecution(providerId, success, durationMs)
+        val isBroken = ProviderTelemetryManager.isCircuitBroken(providerId)
 
-        providerStatsMap.compute(providerId) { _, currentStats ->
-            val current = currentStats ?: ProviderStats()
-            previous = current
-            updated = if (success) {
-                current.copy(
-                    successCount = current.successCount + 1,
-                    totalTimeMs = current.totalTimeMs + durationMs,
-                    lastExecutionMs = durationMs,
-                    consecutiveFailures = 0,
-                    lastFailureAtMs = 0L
-                )
-            } else {
-                current.copy(
-                    failureCount = current.failureCount + 1,
-                    lastExecutionMs = durationMs,
-                    consecutiveFailures = current.consecutiveFailures + 1,
-                    lastFailureAtMs = System.currentTimeMillis()
-                )
-            }
-            updated
-        }
-
-        dirtyProviderKeys.add(providerId)
-
-        // Bounded capacity check
-        if (providerStatsMap.size > PROVIDER_STATS_MAX_SIZE) {
-            val victim = providerStatsMap.entries
-                .filter { it.key != providerId }
-                .minByOrNull { it.value.lastFailureAtMs.takeIf { t -> t > 0L } ?: Long.MAX_VALUE }
-                ?.key
-            if (victim != null) {
-                providerStatsMap.remove(victim)
-                dirtyProviderKeys.remove(victim)
-            }
-        }
-
-        if (updated.isCircuitBroken && !previous.isCircuitBroken) {
-            Log.w(TAG, "📉 Provider moved to low priority / circuit-broken: $providerId (${updated.consecutiveFailures} consecutive failures)")
-        } else if (!updated.isCircuitBroken && previous.isCircuitBroken) {
+        if (isBroken && !wasBroken) {
+            Log.w(TAG, "📉 Provider moved to low priority / circuit-broken: $providerId")
+        } else if (!isBroken && wasBroken) {
             Log.d(TAG, "✅ Provider recovered: $providerId")
         }
     }
 
     fun getProviderPriorityScore(providerId: String): Float {
-        val stats = getProviderStats(providerId)
-
-        if (stats.isCircuitBroken) return -1000f
-        if (stats.isRecovering) return -25f
-
-        if (stats.successCount + stats.failureCount == 0) return 0f
-
-        val timePenalty = if (stats.avgTimeMs > 0) stats.avgTimeMs / 1000f else 0f
-        return (stats.successRate * 100f) - timePenalty
+        return ProviderTelemetryManager.getPriorityScore(providerId)
     }
 
     // ==================== Metadata Caching ====================
@@ -320,19 +279,11 @@ object StreamPlayCache {
     // ==================== Persistence ====================
 
     fun saveProviderStats(prefs: SharedPreferences?) {
-        if (prefs == null || dirtyProviderKeys.isEmpty()) return
-        prefs.edit()?.apply {
-            val toSave = ArrayList(dirtyProviderKeys)
-            for (providerId in toSave) {
-                val stats = providerStatsMap[providerId] ?: continue
-                putString(
-                    "provider_stats_$providerId",
-                    "${stats.successCount},${stats.failureCount},${stats.totalTimeMs},${stats.consecutiveFailures},${stats.lastFailureAtMs},${stats.lastExecutionMs}"
-                )
-            }
-            dirtyProviderKeys.removeAll(toSave.toSet())
-            apply()
-        }
+        ProviderTelemetryManager.scheduleSave(prefs)
+    }
+
+    fun flushProviderStats(prefs: SharedPreferences?) {
+        ProviderTelemetryManager.flushSync(prefs)
     }
 
     fun loadProviderStatsOnce(prefs: SharedPreferences?) {
@@ -347,35 +298,13 @@ object StreamPlayCache {
      * Load provider stats from SharedPreferences
      */
     fun loadProviderStats(prefs: SharedPreferences?) {
-        prefs?.all?.forEach { (key, value) ->
-            if (key.startsWith("provider_stats_") && value is String) {
-                val providerId = key.removePrefix("provider_stats_")
-                val parts = value.split(",")
-                if (parts.size >= 4) {
-                    try {
-                        val stats = ProviderStats(
-                            successCount = parts[0].toInt(),
-                            failureCount = parts[1].toInt(),
-                            totalTimeMs = parts[2].toLong(),
-                            consecutiveFailures = parts[3].toInt(),
-                            lastFailureAtMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L,
-                            lastExecutionMs = parts.getOrNull(5)?.toLongOrNull() ?: 0L
-                        )
-                        providerStatsMap[providerId] = stats
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error loading stats for $providerId: ${e.message}")
-                    }
-                }
-            }
-        }
-        Log.d(TAG, "📂 Loaded provider stats from SharedPreferences (${providerStatsMap.size} providers)")
+        ProviderTelemetryManager.loadPersistedStats(prefs)
     }
 
     fun clearAllCachesForTesting() {
         animeIdCache.clear()
         metadataCache.clear()
-        providerStatsMap.clear()
-        dirtyProviderKeys.clear()
+        ProviderTelemetryManager.clearAllForTesting()
         apiCacheEntry = null
     }
 }

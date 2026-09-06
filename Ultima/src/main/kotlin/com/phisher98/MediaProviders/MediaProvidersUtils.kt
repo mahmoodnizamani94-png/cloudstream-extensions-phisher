@@ -21,6 +21,7 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.DataStore.getSharedPrefs
 import com.phisher98.UltimaMediaProvidersUtils.ServerName.Hubcloud
 import com.phisher98.UltimaMediaProvidersUtils.ServerName.Vcloud
 import com.phisher98.UltimaMediaProvidersUtils.commonLinkLoader
@@ -28,8 +29,11 @@ import com.phisher98.UltimaMediaProvidersUtils.getBaseUrl
 import com.phisher98.UltimaMediaProvidersUtils.getIndexQuality
 import com.phisher98.UltimaUtils.Category
 import com.phisher98.UltimaUtils.LinkData
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.FormBody
 import org.json.JSONObject
 import java.net.URI
@@ -122,14 +126,50 @@ object UltimaMediaProvidersUtils {
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
     ) {
-        UltimaStorageManager.currentMediaProviders.toList().amap {
-            val provider = it.getProvider()
-            if (provider.categories.contains(category) && it.enabled) {
-                try {
-                    provider.loadContent(it.getDomain(), data, subtitleCallback, callback)
-                } catch (_: Exception) {}
-            }
+        val earlySatisfactionConfig = EarlySatisfactionConfig(
+            minVerifiedLinks = 2,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            highBitrateThresholdKbps = 2500,
+            minSubtitles = 1,
+            satisfyWithOneLinkIfSubsFound = true,
+            requireSubtitles = false
+        )
+        val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
+
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { link ->
+            earlyController.onLinkEmitted(link)
+            callback(link)
         }
+        val optimizedCallback: (ExtractorLink) -> Unit = { link ->
+            deduplicator.emit(StreamLinkOptimizer.optimize(link))
+        }
+        val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
+            earlyController.onSubtitleEmitted(sub)
+            subtitleCallback(sub)
+        }
+
+        val tasks = UltimaStorageManager.currentMediaProviders.toList()
+            .mapNotNull { item ->
+                val provider = item.getProvider()
+                val providerId = provider.name
+                if (provider.categories.contains(category) && item.enabled) {
+                    PipelinedTask(
+                        providerId = providerId,
+                        isVideo = true
+                    ) {
+                        provider.loadContent(item.getDomain(), data, trackedSubtitleCallback, optimizedCallback)
+                    }
+                } else null
+            }
+
+        SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = earlySatisfactionConfig,
+            controller = earlyController,
+            context = com.lagradost.cloudstream3.CloudStreamApp.context
+        )
+        ProviderTelemetryManager.scheduleSave(com.lagradost.cloudstream3.CloudStreamApp.context?.getSharedPrefs())
     }
 
     enum class ServerName {
@@ -707,7 +747,7 @@ class AnyGDFlix(provider: String?, dubType: String?, domain: String = "") : Extr
 
                             if (indexbotResponse.isSuccessful) {
                                 val cookiesSSID = indexbotResponse.cookies["PHPSESSID"]
-                                val docStr = indexbotResponse.document.toString()
+                                val docStr = indexbotResponse.text
 
                                 val token = DRIVEBOT_TOKEN_REGEX
                                     .find(docStr)?.groupValues?.get(1).orEmpty()

@@ -73,8 +73,10 @@ class Tmdb(val plugin: UltimaPlugin) : TmdbProvider() {
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         )
-        app.get(url, headers = headers, timeout = 100L)
-            .parsedSafe<SubtitlesAPI>()?.subtitles?.amap { it ->
+        val subData = SingleFlight.executeShared("opensubtitles:$id:$season:$episode") {
+            app.get(url, headers = headers, timeout = 100L).parsedSafe<SubtitlesAPI>()
+        }
+        subData?.subtitles?.amap { it ->
                 val lan = getLanguage(it.lang) ?: "Unknown"
                 val suburl = it.url
                 subtitleCallback.invoke(

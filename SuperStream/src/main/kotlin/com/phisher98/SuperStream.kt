@@ -43,6 +43,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.SuperStreamExtractor.invokeSubtitleAPI
 import com.phisher98.SuperStreamExtractor.invokeSuperstream
@@ -55,7 +56,10 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import java.util.regex.Pattern
-open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
+
+private val STREAM_SOURCE_PATTERN = Pattern.compile("""\{"type":"([^"]+)","file":"([^"]+)","label":"([^"]+)"\}""")
+
+open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider() {
     override var name = "SuperStream"
     override val hasMainPage = true
     override val instantLinkLoading = true
@@ -280,10 +284,11 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
 
     override suspend fun search(query: String,page: Int): SearchResponseList? {
         val tmdbAPI = getApiBase()
-        return app.get("$tmdbAPI/search/multi?api_key=$apiKey&language=en-US&query=$query&page=$page&include_adult=${settingsForProvider.enableAdult}")
-            .parsedSafe<Results>()?.results?.mapNotNull { media ->
-                media.toSearchResponse()
-            }?.toNewSearchResponseList()
+        return SingleFlight.executeShared("tmdb_search:$query:$page") {
+            app.get("$tmdbAPI/search/multi?api_key=$apiKey&language=en-US&query=$query&page=$page&include_adult=${settingsForProvider.enableAdult}")
+        }.parsedSafe<Results>()?.results?.mapNotNull { media ->
+            media.toSearchResponse()
+        }?.toNewSearchResponseList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -348,8 +353,9 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
             "$tmdbAPI/tv/${data.id}?api_key=$apiKey&append_to_response=$append"
         }
 
-        val res = app.get(resUrl).parsedSafe<MediaDetail>()
-            ?: throw ErrorLoadingException("Invalid Json Response")
+        val res = SingleFlight.executeShared("tmdb:${data.type}:${data.id}:details") {
+            app.get(resUrl).parsedSafe<MediaDetail>()
+        } ?: throw ErrorLoadingException("Invalid Json Response")
         val title = res.title ?: res.name ?: return null
         val poster = getOriImageUrl(res.posterPath)
         val bgPoster = getOriImageUrl(res.backdropPath)
@@ -388,8 +394,10 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
         if (type == TvType.TvSeries) {
             val lastSeason = res.last_episode_to_air?.season_number
             val episodes = res.seasons?.amap { season ->
-                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
-                    .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
+                SingleFlight.executeShared("tmdb_season:${data.type}:${data.id}:${season.seasonNumber}") {
+                    app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
+                        .parsedSafe<MediaDetailEpisodes>()
+                }?.episodes?.map { eps ->
                         newEpisode(
                             LinkData(
                                 data.id,
@@ -432,7 +440,9 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
                 val gson = Gson()
                 val animeType = if (data.type?.contains("tv", ignoreCase = true) == true) "series" else "movie"
                 val imdbId = res.external_ids?.imdb_id.orEmpty()
-                val cineJsonText = app.get("$Cinemeta/meta/$animeType/$imdbId.json").text
+                val cineJsonText = SingleFlight.executeShared("cinemeta:$animeType:$imdbId") {
+                    app.get("$Cinemeta/meta/$animeType/$imdbId.json").text
+                }
                 val cinejson = runCatching {
                     gson.fromJson(cineJsonText, CinemetaRes::class.java)
                 }.getOrNull()
@@ -563,6 +573,31 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
     ): Boolean {
         Log.d("Phisher",data.toJson())
 
+        val earlySatisfactionConfig = EarlySatisfactionConfig(
+            minVerifiedLinks = 2,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            highBitrateThresholdKbps = 2500,
+            minSubtitles = 1,
+            satisfyWithOneLinkIfSubsFound = true,
+            requireSubtitles = false
+        )
+        val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
+
+        val linksEmitted = java.util.concurrent.atomic.AtomicInteger(0)
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { link ->
+            linksEmitted.incrementAndGet()
+            earlyController.onLinkEmitted(link)
+            callback(link)
+        }
+        val optimizedCallback: (ExtractorLink) -> Unit = { link ->
+            deduplicator.emit(StreamLinkOptimizer.optimize(link))
+        }
+        val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
+            earlyController.onSubtitleEmitted(sub)
+            subtitleCallback(sub)
+        }
+
         if (data.startsWith(febbox)) {
 
             val fid = data.substringAfterLast("|")
@@ -580,20 +615,18 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
                 headers = mapOf("cookie" to (token ?: ""))
             ).text
 
-            val regex = """\{"type":"([^"]+)","file":"([^"]+)","label":"([^"]+)"\}"""
-            val pattern = Pattern.compile(regex)
-            val matcher = pattern.matcher(source)
+            val matcher = STREAM_SOURCE_PATTERN.matcher(source)
 
             var found = false
 
             while (matcher.find()) {
                 found = true
 
-                val file = matcher.group(2)?.replace("\\/", "/")
+                val file = matcher.group(2)?.let { ZeroAllocParser.fastUnescapeSlash(it) }
                 val label = matcher.group(3)
 
                 if (file != null) {
-                    callback.invoke(
+                    optimizedCallback.invoke(
                         newExtractorLink(
                             "$name $label",
                             "$name $label",
@@ -611,7 +644,7 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
                 val first = list.firstOrNull() as? Map<*, *> ?: return false
                 val url = first["download_url"]?.toString() ?: return false
 
-                callback.invoke(
+                optimizedCallback.invoke(
                     newExtractorLink(
                         name,
                         name,
@@ -623,41 +656,58 @@ open class SuperStream(sharedPref: SharedPreferences? = null) : TmdbProvider() {
         }
         else {
             val res = parseJson<LinkData>(data)
-            runAllAsync(
-                {
+            val tasks = buildList {
+                add(PipelinedTask(
+                    providerId = "SubtitleAPI",
+                    initialTier = LatencyTier.TIER_1,
+                    isVideo = false
+                ) {
                     invokeSubtitleAPI(
                         res.imdbId,
                         res.season,
                         res.episode,
-                        subtitleCallback,
+                        trackedSubtitleCallback,
                     )
-                },
-                {
-                    if (res.imdbId!==null)
-                    {
+                })
+                if (res.imdbId != null) {
+                    add(PipelinedTask(
+                        providerId = "SuperStream",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = true
+                    ) {
                         invokeSuperstream(
                             token,
                             res.imdbId,
                             res.season,
                             res.episode,
-                            callback
+                            optimizedCallback
                         )
-                    }
-                },
-                {
-                    if (res.id!==null)
-                    {
+                    })
+                }
+                if (res.id != null) {
+                    add(PipelinedTask(
+                        providerId = "SuperStreamFebbox",
+                        initialTier = LatencyTier.TIER_2,
+                        isVideo = true
+                    ) {
                         invokeSuperstreamFeb(
                             token,
                             res.id,
                             res.season,
                             res.episode,
-                            callback
+                            optimizedCallback
                         )
-                    }
-                },
+                    })
+                }
+            }
+
+            SpeculativePipeliner.executePipelined(
+                tasks = tasks,
+                config = earlySatisfactionConfig,
+                controller = earlyController
             )
         }
+        ProviderTelemetryManager.scheduleSave(sharedPref)
         return true
     }
     data class LinkData(

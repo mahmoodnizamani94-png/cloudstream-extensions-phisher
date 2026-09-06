@@ -43,10 +43,11 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.SubsExtractors.invokeOpenSubs
 import com.phisher98.SubsExtractors.invokeWatchsomuch
 import java.util.Calendar
-import com.lagradost.cloudstream3.amap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
     override var mainUrl = "https://example.com"
@@ -156,8 +157,9 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
         } else {
             "$tmdbAPI/tv/${data.id}?api_key=$apiKey&append_to_response=keywords,credits,external_ids,videos,recommendations"
         }
-        val res = app.get(resUrl).parsedSafe<MediaDetail>()
-            ?: throw ErrorLoadingException("Invalid Json Response")
+        val res = SingleFlight.executeShared("tmdb:${data.type}:${data.id}:details") {
+            app.get(resUrl).parsedSafe<MediaDetail>()
+        } ?: throw ErrorLoadingException("Invalid Json Response")
 
         val title = res.title ?: res.name ?: return null
         val poster = getOriImageUrl(res.posterPath, "https://files.catbox.moe/32gthr.jpg")
@@ -193,8 +195,10 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
 
         return if (type == TvType.TvSeries) {
             val episodes = res.seasons?.mapNotNull { season ->
-                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
-                    .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
+                SingleFlight.executeShared("tmdb_season:${data.type}:${data.id}:${season.seasonNumber}") {
+                    app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
+                        .parsedSafe<MediaDetailEpisodes>()
+                }?.episodes?.map { eps ->
                         newEpisode(LoadData(
                             res.external_ids?.imdb_id,
                             eps.seasonNumber,
@@ -262,22 +266,29 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
     ): Boolean {
         val res = parseJson<LoadData>(data)
 
-        runAllAsync(
-            suspend { invokeMainSource(res.imdbId, res.season, res.episode, subtitleCallback, callback) },
-            suspend { invokeWatchsomuch(res.imdbId, res.season, res.episode, subtitleCallback) },
-            suspend { invokeOpenSubs(res.imdbId, res.season, res.episode, subtitleCallback) }
+        val earlySatisfactionConfig = EarlySatisfactionConfig(
+            minVerifiedLinks = 2,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            highBitrateThresholdKbps = 2500,
+            minSubtitles = 1,
+            satisfyWithOneLinkIfSubsFound = true,
+            requireSubtitles = false
         )
+        val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
 
-        return true
-    }
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { link ->
+            earlyController.onLinkEmitted(link)
+            callback(link)
+        }
+        val optimizedCallback: (ExtractorLink) -> Unit = { link ->
+            deduplicator.emit(StreamLinkOptimizer.optimize(link))
+        }
+        val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
+            earlyController.onSubtitleEmitted(sub)
+            subtitleCallback(sub)
+        }
 
-    private suspend fun invokeMainSource(
-        imdbId: String? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
         val addonList = buildList {
             var index = 0
             while (true) {
@@ -288,35 +299,57 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
             }
         }
 
-        coroutineScope {
-            addonList.map { addonPref ->
-                async {
+        val tasks = buildList {
+            addonList.forEach { addonPref ->
+                add(PipelinedTask(
+                    providerId = addonPref,
+                    initialTier = LatencyTier.TIER_1,
+                    isVideo = true,
+                    taskTimeoutMs = 12_000L
+                ) {
                     val fixMainUrl = sharedPref.getString(addonPref, "")?.fixSourceUrl()
-
                     if (!fixMainUrl.isNullOrBlank()) {
-                        val url = if (season == null) {
-                            "$fixMainUrl/stream/movie/$imdbId.json"
+                        val url = if (res.season == null) {
+                            "$fixMainUrl/stream/movie/${res.imdbId}.json"
                         } else {
-                            "$fixMainUrl/stream/series/$imdbId:$season:$episode.json"
+                            "$fixMainUrl/stream/series/${res.imdbId}:${res.season}:${res.episode}.json"
                         }
 
                         if (URLUtil.isValidUrl(url)) {
-                            runCatching {
-                                app.get(url, timeout = 10L).parsedSafe<StreamsResponse>()
-                            }.onSuccess { res ->
-                                res?.streams?.amap { stream ->
-                                    stream.runCallback(subtitleCallback, callback)
+                            val resp = app.get(url, timeout = 10L).parsedSafe<StreamsResponse>()
+                            if (resp?.streams?.isNotEmpty() == true) {
+                                resp.streams.forEach { stream ->
+                                    stream.runCallback(trackedSubtitleCallback, optimizedCallback)
                                 }
-                            }.onFailure { e ->
-                                if (e is kotlinx.coroutines.CancellationException) throw e
-                                Log.e(name, "Error loading from $addonPref")
                             }
                         }
                     }
-                }
-            }.awaitAll()
+                })
+            }
+            add(PipelinedTask(
+                providerId = "Watchsomuch",
+                initialTier = LatencyTier.TIER_1,
+                isVideo = false
+            ) {
+                invokeWatchsomuch(res.imdbId, res.season, res.episode, trackedSubtitleCallback)
+            })
+            add(PipelinedTask(
+                providerId = "OpenSubs",
+                initialTier = LatencyTier.TIER_1,
+                isVideo = false
+            ) {
+                invokeOpenSubs(res.imdbId, res.season, res.episode, trackedSubtitleCallback)
+            })
         }
 
+        SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = earlySatisfactionConfig,
+            controller = earlyController
+        )
+
+        ProviderTelemetryManager.scheduleSave(sharedPref)
+        return true
     }
 
     private data class StreamsResponse(val streams: List<Stream>)
@@ -364,12 +397,13 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                         this.headers=behaviorHints?.proxyHeaders?.request ?: behaviorHints?.headers ?: mapOf()
                     }
                 )
-                subtitles.amap { sub ->
+                subtitles.forEach { sub ->
+                    val subUrl = sub.url ?: return@forEach
                     subtitleCallback.invoke(
                         newSubtitleFile(
                             SubtitleHelper.fromTagToEnglishLanguageName(sub.lang ?: "") ?: sub.lang
                             ?: "",
-                            sub.url ?: return@amap
+                            subUrl
                         )
                     )
                 }
@@ -385,7 +419,7 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
 
                 val sourceTrackers = sources
                     .filter { it.startsWith("tracker:") }
-                    .amap { it.removePrefix("tracker:") }
+                    .map { it.removePrefix("tracker:") }
                     .filter { s -> s.isNotEmpty() }.joinToString("") { "&tr=$it" }
 
                 val magnet = "magnet:?xt=urn:btih:${infoHash}${sourceTrackers}${otherTrackers}"

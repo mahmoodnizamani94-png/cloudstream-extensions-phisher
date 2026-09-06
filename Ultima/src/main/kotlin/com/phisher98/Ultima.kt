@@ -248,7 +248,7 @@ class Ultima(val plugin: UltimaPlugin) : MainAPI() {
         providers: List<MainAPI>,
         url: String
     ): LoadResponse? = supervisorScope {
-        val semaphore = Semaphore(4)
+        val semaphore = Semaphore(DeviceProfiler.getActiveConcurrency())
         val winnerDeferred = CompletableDeferred<LoadResponse>()
 
         val jobs = providers.map { provider ->

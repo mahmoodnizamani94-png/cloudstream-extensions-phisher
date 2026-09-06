@@ -1,5 +1,6 @@
 package com.phisher98
 
+import com.lagradost.api.Log
 import android.content.SharedPreferences
 import android.os.Build
 import androidx.annotation.RequiresApi
@@ -28,6 +29,7 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
 import com.phisher98.StreamPlay.Companion.dahmerMoviesAPI
 import com.phisher98.StreamPlayExtractor.invokeSubtitleAPI
 import com.phisher98.StreamPlayExtractor.invokeWYZIESubs
@@ -133,52 +135,86 @@ class StreamPlayStremioCatelog(
             title = cinemeta?.title
         )
 
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator(callback)
+        val optimizedCallback: (ExtractorLink) -> Unit = { link ->
+            deduplicator.emit(StreamLinkOptimizer.optimize(link))
+        }
+
         val disabledProviderIds = sharedPref
             ?.getStringSet("disabled_providers", emptySet())
             ?.toSet() ?: emptySet()
         val providersList = buildProviders().filter { it.id !in disabledProviderIds }
+        val earlySatisfactionConfig = EarlySatisfactionConfig(
+            minVerifiedLinks = 2,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            highBitrateThresholdKbps = 2500,
+            minSubtitles = 1,
+            satisfyWithOneLinkIfSubsFound = true,
+            requireSubtitles = false
+        )
+        val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
+
+        val catalogLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val catalogSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val trackedLinkCallback: (ExtractorLink) -> Unit = { link ->
+            catalogLinksFound.incrementAndGet()
+            earlyController.onLinkEmitted(link)
+            optimizedCallback(link)
+        }
+        val trackedSubCallback: (SubtitleFile) -> Unit = { sub ->
+            catalogSubsFound.incrementAndGet()
+            earlyController.onSubtitleEmitted(sub)
+            subtitleCallback(sub)
+        }
+
         val stremioAddons = StreamPlayStremioAddonSettings.getDynamicStremioMap(
             sharedPref,
             imdb,
             resolved.season,
             resolved.episode,
-            subtitleCallback,
-            callback
-        ).values
+            trackedSubCallback,
+            trackedLinkCallback
+        )
         val authToken = token
-        runLimitedAsync(
-            concurrency = 10,
-            taskTimeoutMs = 25_000L,
-            suspend {
-                try {
-                    invokeSubtitleAPI(imdb, resolved.season, resolved.episode, subtitleCallback)
-                } catch (_: Throwable) {
-                    // ignore failure but do not cancel the rest
-                }
-            },
-            suspend {
-                try {
-                    invokeWYZIESubs(imdb, res.season, res.episode, subtitleCallback)
-                } catch (_: Throwable) {
-                    // ignore failure
-                }
-            },
-            *providersList.map { provider ->
-                suspend {
-                    try {
-                        provider.invoke(
-                            resolved.toLinkData(),
-                            subtitleCallback,
-                            callback,
-                            authToken ?: "",
-                            dahmerMoviesAPI
-                        )
-                    } catch (_: Throwable) {
-                        // provider failure shouldn't kill others
-                    }
-                }
-            }.toTypedArray(),
-            *stremioAddons.toTypedArray()
+
+        val tasks = buildList {
+            add(PipelinedTask("SubtitleAPI", LatencyTier.TIER_1, isVideo = false) {
+                invokeSubtitleAPI(imdb, resolved.season, resolved.episode, trackedSubCallback)
+            })
+            add(PipelinedTask("WyZIESUB", LatencyTier.TIER_1, isVideo = false) {
+                invokeWYZIESubs(imdb, res.season, res.episode, trackedSubCallback)
+            })
+            providersList.forEach { provider ->
+                add(PipelinedTask(
+                    providerId = provider.id,
+                    isVideo = true,
+                    priorityBoost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+                ) {
+                    provider.invoke(
+                        resolved.toLinkData(),
+                        trackedSubCallback,
+                        trackedLinkCallback,
+                        authToken ?: "",
+                        dahmerMoviesAPI
+                    )
+                })
+            }
+            stremioAddons.forEach { (addonId, addon) ->
+                add(PipelinedTask(
+                    providerId = addonId,
+                    isVideo = true,
+                    taskTimeoutMs = 12_000L
+                ) {
+                    addon()
+                })
+            }
+        }
+
+        SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = earlySatisfactionConfig,
+            controller = earlyController
         )
 
         return true

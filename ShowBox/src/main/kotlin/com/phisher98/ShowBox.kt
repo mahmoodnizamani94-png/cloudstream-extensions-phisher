@@ -317,12 +317,9 @@ oFuZne+lYcCPMNDXdku6wKdf9gSnOSHOGMu8TvHcud4uIDYmFH5qabJL5GDoQi7Q
 
         val trustManager = tmf.trustManagers[0] as X509TrustManager
 
-        OkHttpClient.Builder()
+        app.baseClient.newBuilder()
             .sslSocketFactory(sslContext.socketFactory, trustManager)
-            .connectionPool(ConnectionPool(32, 5, TimeUnit.MINUTES))
             .addInterceptor(UserAgentInterceptor())
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .build()
     }

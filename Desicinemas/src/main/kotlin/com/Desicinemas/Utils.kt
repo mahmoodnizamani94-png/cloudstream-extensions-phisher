@@ -37,8 +37,13 @@ val JSONParser = object : ResponseParser {
     }
 }
 
-val app = Requests(responseParser = JSONParser).apply {
-    defaultHeaders = mapOf("User-Agent" to USER_AGENT)
+val app by lazy {
+    Requests(
+        baseClient = com.lagradost.cloudstream3.app.baseClient,
+        responseParser = JSONParser
+    ).apply {
+        defaultHeaders = mapOf("User-Agent" to USER_AGENT)
+    }
 }
 
 

@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.base64DecodeArray
 import com.lagradost.cloudstream3.extractors.helper.AesHelper.cryptoAESHandler
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.newSubtitleFile
@@ -64,7 +65,7 @@ private val RIVESTREAM_QUOTED_STR_REGEX = Regex("\"([^\"]+)\"")
 private val DAHMER_QUALITY_REGEX = Regex("(?i)(1080p|2160p)")
 
 
-val session = Session(Requests().baseClient)
+val session: Session by lazy { Session(app.baseClient) }
 
 val webMutex = Mutex()
 private val streamPlayExtractorMapper by lazy { jacksonObjectMapper() }
@@ -3600,7 +3601,7 @@ object StreamPlayExtractor : StreamPlay() {
             "X-Requested-With" to "XMLHttpRequest"
         )
 
-        fun String.getIframe(): String = Jsoup.parse(this).select("iframe").attr("src")
+        fun String.getIframe(): String = ZeroAllocParser.extractIframeSrc(this) ?: ""
 
         suspend fun fetchSource(post: String, nume: String, type: String): String {
             val response = app.post(

@@ -114,6 +114,13 @@ private val SUB_URL_REGEX = Regex(""""?url"?\s*:\s*"([^"]+)"""")
 private val SUB_LANG_REGEX = Regex(""""?language"?\s*:\s*"([^"]+)"""")
 private val BYSESX_VD_REGEX = Regex("""var\s+vd\s*=\s*["']([^"']+)["']""")
 private val BYSESX_TK_REGEX = Regex("""tk\s*=\s*["']([^"']+)["']""")
+private val MOVIESMOD_FINAL_ID_REGEX = Regex("""FinalID\s*=\s*"([^"]+)"""")
+private val MOVIESMOD_MY_KEY_REGEX = Regex("""myKey\s*=\s*"([^"]+)"""")
+private val MOVIESMOD_ID_TYPE_REGEX = Regex("""idType\s*=\s*"([^"]+)"""")
+private val MOVIESMOD_BASE_URL_REGEX = Regex("""let\s+baseUrl\s*=\s*"([^"]+)"""")
+private val MOVIESMOD_PLAYER_BASE_REGEX = Regex("""player_base\s*=\s*["']([^"']+)["']""")
+private val MOVIESMOD_TV_SEASON_REGEX = Regex("""/tv/\d+/(\d+)/""")
+private val MOVIESMOD_TV_EPISODE_REGEX = Regex("""/tv/\d+/\d+/(\d+)""")
 
 private fun extractCleanTitle(title: String): String {
     val name = title.replace(extractorTitleExtensionRegex, "")
@@ -246,7 +253,7 @@ open class Playm4u : ExtractorApi() {
     }
 
     private fun String.findIn(data: String): String {
-        return "$this\\s*=\\s*[\"'](\\S+)[\"'];".toRegex().find(data)?.groupValues?.get(1) ?: ""
+        return ZeroAllocParser.extractJsAssignment(data, this) ?: ""
     }
 
     private fun String.toLanguage(): String {
@@ -301,7 +308,7 @@ open class M4ufree : ExtractorApi() {
     }
 
     private fun String.findIn(data: String): String? {
-        return "$this\\s*=\\s*[\"'](\\S+)[\"'];".toRegex().find(data)?.groupValues?.get(1)
+        return ZeroAllocParser.extractJsAssignment(data, this)
     }
 
     data class Source(
@@ -321,7 +328,7 @@ class VCloudGDirect : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val source = app.get(url).document.selectFirst("#vd")?.attr("href") ?: ""
+        val source = ZeroAllocParser.extractAttributeWhere(app.get(url).text, "*", "href", "id", "vd") ?: ""
         if (source.isBlank()) {
             Log.e("Error:", "Failed to extract video link from $url")
             //loadExtractor(url, subtitleCallback, callback) // Passes original URL, not an empty string
@@ -532,7 +539,7 @@ open class Streamruby : ExtractorApi() {
         val script = if (!getPacked(response.text).isNullOrEmpty()) {
             getAndUnpack(response.text)
         } else {
-            response.document.selectFirst("script:containsData(sources:)")?.data()
+            ZeroAllocParser.extractScriptContaining(response.text, "sources:")
         }
         val m3u8 = STREAMRUBY_M3U8_REGEX.find(script ?: return)?.groupValues?.getOrNull(1)
         generateM3u8(
@@ -627,7 +634,7 @@ open class Ridoo : ExtractorApi() {
         val script = if (!getPacked(response.text).isNullOrEmpty()) {
             getAndUnpack(response.text)
         } else {
-            response.document.selectFirst("script:containsData(sources:)")?.data()
+            ZeroAllocParser.extractScriptContaining(response.text, "sources:")
         }
         val m3u8 = STREAMVID_M3U8_REGEX.find(script ?: return)?.groupValues?.getOrNull(1)
         val quality = STREAMVID_QUALITY_REGEX.find(script)?.groupValues?.get(1)
@@ -661,7 +668,7 @@ open class Streamvid : ExtractorApi() {
         val script = if (!getPacked(response.text).isNullOrEmpty()) {
             getAndUnpack(response.text)
         } else {
-            response.document.selectFirst("script:containsData(sources:)")?.data()
+            ZeroAllocParser.extractScriptContaining(response.text, "sources:")
         }
         val m3u8 =
             STREAMVID_SRC_REGEX.find(script ?: return)?.groupValues?.getOrNull(1)
@@ -1269,7 +1276,7 @@ open class Driveseed : ExtractorApi() {
     private suspend fun resumeBot(url: String): String? {
         return runCatching {
             val response = app.get(url)
-            val docString = response.document.toString()
+            val docString = response.text
             val ssid = response.cookies["PHPSESSID"].orEmpty()
             val token = GDFLIX_TOKEN_REGEX.find(docString)?.groupValues?.getOrNull(1).orEmpty()
             val path = GDFLIX_PATH_REGEX.find(docString)?.groupValues?.getOrNull(1).orEmpty()
@@ -1472,14 +1479,16 @@ open class Pahe : ExtractorApi() {
     private val kwikDToken = Regex("value=\"([^\"]+)\"")
 
     companion object {
-        private val baseClient = OkHttpClient()
-        private val noRedirectsClient = baseClient.newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build()
+        private val noRedirectsClient: OkHttpClient by lazy {
+            app.baseClient.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+        }
     }
 
-    private val client = baseClient
+    private val client: OkHttpClient
+        get() = app.baseClient
 
     private fun decrypt(fullString: String, key: String, v1: Int, v2: Int): String {
         val keyIndexMap = key.withIndex().associate { it.value to it.index }
@@ -1697,29 +1706,29 @@ open class GDMirrorbot : ExtractorApi() {
         } else {
             var pageText = app.get(url).text
 
-            val finalId = Regex("""FinalID\s*=\s*"([^"]+)"""")
+            val finalId = MOVIESMOD_FINAL_ID_REGEX
                 .find(pageText)?.groupValues?.get(1)
 
-            val myKey = Regex("""myKey\s*=\s*"([^"]+)"""")
+            val myKey = MOVIESMOD_MY_KEY_REGEX
                 .find(pageText)?.groupValues?.get(1)
 
-            val idType = Regex("""idType\s*=\s*"([^"]+)"""")
+            val idType = MOVIESMOD_ID_TYPE_REGEX
                 .find(pageText)?.groupValues?.get(1) ?: "imdbid"
 
-            val baseUrl = Regex("""let\s+baseUrl\s*=\s*"([^"]+)"""")
+            val baseUrl = MOVIESMOD_BASE_URL_REGEX
                 .find(pageText)?.groupValues?.get(1)
                 ?.takeIf { it.startsWith("http") }
-                ?: Regex("""player_base\s*=\s*["']([^"']+)["']""")
+                ?: MOVIESMOD_PLAYER_BASE_REGEX
                     .find(pageText)?.groupValues?.get(1)
 
             val host = baseUrl?.let { getBaseUrl(it) }
 
             if (finalId != null && myKey != null) {
                 val apiUrl = if (url.contains("/tv/")) {
-                    val season = Regex("""/tv/\d+/(\d+)/""")
+                    val season = MOVIESMOD_TV_SEASON_REGEX
                         .find(url)?.groupValues?.get(1) ?: "1"
 
-                    val episode = Regex("""/tv/\d+/\d+/(\d+)""")
+                    val episode = MOVIESMOD_TV_EPISODE_REGEX
                         .find(url)?.groupValues?.get(1) ?: "1"
 
                     "$mainUrl/myseriesapi?tmdbid=$finalId&season=$season&epname=$episode&key=$myKey"
@@ -2013,7 +2022,7 @@ class UqloadsXyz : ExtractorApi() {
         val script = if (!getPacked(response.text).isNullOrEmpty()) {
             getAndUnpack(response.text)
         } else {
-            response.document.selectFirst("script:containsData(sources:)")?.data()
+            ZeroAllocParser.extractScriptContaining(response.text, "sources:")
         } ?: return
         val regex = UQLOADS_HLS_REGEX
         val links = regex.findAll(script)
@@ -2435,7 +2444,7 @@ class Vidora : ExtractorApi() {
         val scriptData = if (!getPacked(pageResponse.text).isNullOrEmpty()) {
             getAndUnpack(pageResponse.text)
         } else {
-            pageResponse.document.selectFirst("script:containsData(sources:)")?.data()
+            ZeroAllocParser.extractScriptContaining(pageResponse.text, "sources:")
         }
 
         val m3u8Url = scriptData?.let {
@@ -3060,33 +3069,11 @@ class ZenCloudExtractor : ExtractorApi() {
     }
 
     private fun extractJsonBlock(html: String, key: String): String? {
-        val match = Regex(""""?${Regex.escape(key)}"?\s*:\s*(\{)""").find(html) ?: return null
-        val startIdx = match.groups[1]!!.range.first
-        var depth = 0
-        var i = startIdx
-        while (i < html.length) {
-            when (html[i]) {
-                '{' -> depth++
-                '}' -> { depth--; if (depth == 0) return html.substring(startIdx, i + 1) }
-            }
-            i++
-        }
-        return null
+        return ZeroAllocParser.extractJsonBlock(html, key)
     }
 
     private fun extractArrayBlock(html: String, key: String): String? {
-        val match = Regex(""""?${Regex.escape(key)}"?\s*:\s*(\[)""").find(html) ?: return null
-        val startIdx = match.groups[1]!!.range.first
-        var depth = 0
-        var i = startIdx
-        while (i < html.length) {
-            when (html[i]) {
-                '[' -> depth++
-                ']' -> { depth--; if (depth == 0) return html.substring(startIdx, i + 1) }
-            }
-            i++
-        }
-        return null
+        return ZeroAllocParser.extractArrayBlock(html, key)
     }
 
     private fun wasmDeriveKey(
@@ -3250,17 +3237,15 @@ class Wootly : ExtractorApi() {
     override val requiresReferer = true
 
     override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink>? {
-        val iframe = app.get(url).document.select("iframe").attr("src")
+        val iframe = ZeroAllocParser.extractIframeSrc(app.get(url).text) ?: ""
         val body = FormBody.Builder()
             .add("qdfx", "1")
             .build()
 
         val iframeResp = app.post(iframe, requestBody = body)
         val iframeHtml = iframeResp.text
-        val vdRegex = Regex("""var\s+vd\s*=\s*["']([^"']+)["']""")
-        val tkRegex = Regex("""tk\s*=\s*["']([^"']+)["']""")
-        val vd = vdRegex.find(iframeHtml)?.groupValues?.get(1)
-        val tk = tkRegex.find(iframeHtml)?.groupValues?.get(1)
+        val vd = BYSESX_VD_REGEX.find(iframeHtml)?.groupValues?.get(1)
+        val tk = BYSESX_TK_REGEX.find(iframeHtml)?.groupValues?.get(1)
 
         if (vd.isNullOrBlank() || tk.isNullOrBlank()) {
             return null

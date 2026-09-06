@@ -44,22 +44,9 @@ class StreamPlayPlugin: Plugin() {
         // Initialize StreamPlay optimizations
         Log.d("StreamPlay", "🚀 Initializing StreamPlay optimizations...")
 
-        // Optimize OkHttp connection pool and dispatcher for max throughput & multi-chunk downloads
-        try {
-            val dispatcher = Dispatcher().apply {
-                maxRequests = 128
-                maxRequestsPerHost = 32
-            }
-            app.baseClient = app.baseClient.newBuilder()
-                .dispatcher(dispatcher)
-                .connectionPool(ConnectionPool(64, 5, TimeUnit.MINUTES))
-                .connectTimeout(6, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .build()
-            Log.d("StreamPlay", "⚡ StreamPlay network engine optimized (pool: 64, maxRequests: 128, maxPerHost: 32)")
-        } catch (e: Exception) {
-            Log.e("StreamPlay", "Failed tuning network client: ${e.message}")
-        }
+        // Idempotently configure unified network engine across all plugins
+        NetworkOptimizer.initialize(context)
+        DeviceProfiler.initialize(context)
 
         // Load provider stats from SharedPreferences
         StreamPlayCache.loadProviderStatsOnce(sharedPref)

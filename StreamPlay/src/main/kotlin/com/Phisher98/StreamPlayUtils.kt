@@ -612,29 +612,15 @@ suspend fun invokeExternalSource(
         val htmlContent = json.optString("html", "")
         if (htmlContent.isEmpty()) return@amapIndexed
 
-        val document: Document = Jsoup.parse(htmlContent)
-        val sourcesWithQualities = mutableListOf<Triple<String, String, String>>() // url, quality, size
-        document.select("div.file_quality").forEach { element ->
-            val url = element.attr("data-url").takeIf { it.isNotEmpty() } ?: return@forEach
-            val qualityAttr = element.attr("data-quality").takeIf { it.isNotEmpty() }
-            val size = element.selectFirst(".size")?.text()?.takeIf { it.isNotEmpty() } ?: return@forEach
-
-            val quality = if (qualityAttr.equals("ORG", ignoreCase = true)) {
-                Regex("""(\d{3,4}p)""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1) ?: "2160p"
-            } else {
-                qualityAttr ?: return@forEach
-            }
-
-            sourcesWithQualities.add(Triple(url, quality, size))
-        }
+        val sourcesWithQualities = ZeroAllocParser.extractSuperStreamQualities(htmlContent)
 
         val sourcesJsonArray = JSONArray().apply {
-            sourcesWithQualities.forEach { (url, quality, size) ->
+            sourcesWithQualities.forEach { item ->
                 put(JSONObject().apply {
-                    put("file", url)
-                    put("label", quality)
+                    put("file", item.url)
+                    put("label", item.quality)
                     put("type", "video/mp4")
-                    put("size", size)
+                    put("size", item.size)
                 })
             }
         }
@@ -1692,7 +1678,6 @@ suspend fun bypassXD(url: String): String? {
         .replace("http://",  "ws://")
 
     val visibleTimeDone = CompletableDeferred<Unit>()
-    val okHttpClient    = OkHttpClient()
 
     val wsRequest = Request.Builder()
         .url("$wsBaseUrl/socket.io/?EIO=4&transport=websocket")
@@ -1704,7 +1689,7 @@ suspend fun bypassXD(url: String): String? {
     val callerScope = CoroutineScope(coroutineContext)
     var heartbeatJob: kotlinx.coroutines.Job? = null
 
-    val webSocket = okHttpClient.newWebSocket(wsRequest, object : WebSocketListener() {
+    val webSocket = app.baseClient.newWebSocket(wsRequest, object : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             // Socket.IO: connect to default namespace
@@ -1757,7 +1742,6 @@ suspend fun bypassXD(url: String): String? {
     } finally {
         heartbeatJob?.cancel()
         webSocket.close(1000, null)
-        okHttpClient.dispatcher.executorService.shutdown()
     }
 
     // ── STEP 4: Complete session — retry until token returned ─────────────────

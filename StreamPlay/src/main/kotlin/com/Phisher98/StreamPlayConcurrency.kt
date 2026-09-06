@@ -52,25 +52,13 @@ object StreamPlayConcurrency {
     /**
      * Detect device capabilities and return appropriate profile
      */
-    fun detectDeviceProfile(context: Context): DeviceProfile {
-        if (detectedProfile != null) return detectedProfile!!
-
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        val memoryInfo = ActivityManager.MemoryInfo()
-        activityManager?.getMemoryInfo(memoryInfo)
-
-        val totalRamMB = memoryInfo.totalMem / (1024 * 1024)
-        val availableProcessors = Runtime.getRuntime().availableProcessors()
-
-        val profile = when {
-            totalRamMB < 2048 || availableProcessors < 4 -> DeviceProfile.LOW_END
-            totalRamMB < 4096 || availableProcessors < 6 -> DeviceProfile.MID_RANGE
-            else -> DeviceProfile.HIGH_END
+    fun detectDeviceProfile(context: Context? = null): DeviceProfile {
+        val tier = DeviceProfiler.getDeviceTier(context)
+        return when (tier) {
+            DeviceTier.LOW_END -> DeviceProfile.LOW_END
+            DeviceTier.MID_RANGE -> DeviceProfile.MID_RANGE
+            DeviceTier.HIGH_END -> DeviceProfile.HIGH_END
         }
-
-        detectedProfile = profile
-        Log.d(TAG, "🔍 Detected device: $profile (RAM: ${totalRamMB}MB, Cores: $availableProcessors)")
-        return profile
     }
 
     // ==================== Supervised Concurrency Engine ====================
@@ -81,7 +69,7 @@ object StreamPlayConcurrency {
      * pending and stalled tasks are cancelled immediately so the player never hangs.
      */
     suspend fun runSupervisedLimitedAsync(
-        concurrency: Int = 32,
+        concurrency: Int = DeviceProfiler.getActiveConcurrency(),
         taskTimeoutMs: Long = 25_000L,
         isSatisfied: (() -> Boolean)? = null,
         tasks: List<suspend () -> Unit>
@@ -109,10 +97,10 @@ object StreamPlayConcurrency {
             }
         }
 
-        if (isSatisfied != null) {
-            val monitorJob = launch {
+        val monitorJob = if (isSatisfied != null) {
+            launch {
                 while (isActive) {
-                    delay(120.milliseconds)
+                    delay(30.milliseconds)
                     if (isSatisfied.invoke()) {
                         Log.d(TAG, "⚡ Early completion condition satisfied; cancelling trailing stalled tasks.")
                         jobs.forEach { job ->
@@ -124,13 +112,13 @@ object StreamPlayConcurrency {
                     }
                 }
             }
-            try {
-                jobs.forEach { it.join() }
-            } finally {
-                monitorJob.cancel()
-            }
-        } else {
+        } else null
+
+        try {
             jobs.forEach { it.join() }
+        } finally {
+            monitorJob?.cancel()
+            jobs.forEach { if (it.isActive) it.cancel() }
         }
     }
 
