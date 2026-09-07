@@ -69,7 +69,10 @@ data class EarlySatisfactionConfig(
     val tier1DelayMs: Long = 150L,
     val tier2DelayMs: Long = 1500L,
     val tier3DelayMs: Long = 3500L,
-    val checkIntervalMs: Long = 20L
+    val checkIntervalMs: Long = 20L,
+    val adaptiveTierEscalation: Boolean = false,
+    val softGracePeriodAfterFirstLinkMs: Long = 0L,
+    val maxPipelineTimeoutMs: Long = 30_000L
 )
 
 /**
@@ -83,8 +86,21 @@ class EarlySatisfactionController(
     private val subtitlesFound = AtomicInteger(0)
     private val satisfied = AtomicBoolean(false)
 
+    companion object {
+        private val FOUR_K_WORD_REGEX = Regex("""\b(?:4k|2160p?|uhd)\b""", RegexOption.IGNORE_CASE)
+        private val FHD_WORD_REGEX = Regex("""\b(?:1080p?|fhd)\b""", RegexOption.IGNORE_CASE)
+    }
+
     fun onLinkEmitted(link: ExtractorLink): Boolean {
         linksFound.incrementAndGet()
+        if (isHighQualityVerifiedStream(link)) {
+            qualityLinksFound.incrementAndGet()
+        }
+        checkSatisfaction()
+        return isSatisfied()
+    }
+
+    fun onLinkUpgraded(link: ExtractorLink): Boolean {
         if (isHighQualityVerifiedStream(link)) {
             qualityLinksFound.incrementAndGet()
         }
@@ -106,9 +122,8 @@ class EarlySatisfactionController(
         return quality >= config.qualityThreshold ||
             quality >= Qualities.P1080.value ||
             bitrateKbps >= config.highBitrateThresholdKbps ||
-            name.contains("1080", ignoreCase = true) ||
-            name.contains("4k", ignoreCase = true) ||
-            name.contains("2160", ignoreCase = true) ||
+            FOUR_K_WORD_REGEX.containsMatchIn(name) ||
+            FHD_WORD_REGEX.containsMatchIn(name) ||
             (quality >= Qualities.P720.value && (
                 url.contains("pixeldrain", ignoreCase = true) ||
                 url.contains("febbox", ignoreCase = true) ||
@@ -280,6 +295,10 @@ object SpeculativePipeliner {
             .sortedByDescending { it.third }.map { it.first }
 
         val activeJobs = CopyOnWriteArrayList<Job>()
+        val tier0Jobs = CopyOnWriteArrayList<Job>()
+        val tier1Jobs = CopyOnWriteArrayList<Job>()
+        val tier2Jobs = CopyOnWriteArrayList<Job>()
+        val tier3Jobs = CopyOnWriteArrayList<Job>()
 
         fun cancelAllActiveJobs() {
             for (job in activeJobs) {
@@ -289,7 +308,7 @@ object SpeculativePipeliner {
             }
         }
 
-        fun launchTaskGroup(taskList: List<PipelinedTask>): List<Job> {
+        fun launchTaskGroup(taskList: List<PipelinedTask>, targetList: CopyOnWriteArrayList<Job>): List<Job> {
             if (controller.isSatisfied()) return emptyList()
             return taskList.map { task ->
                 launch(Dispatchers.IO) {
@@ -337,23 +356,50 @@ object SpeculativePipeliner {
                             cancelAllActiveJobs()
                         }
                     }
-                }.also { activeJobs.add(it) }
+                }.also {
+                    activeJobs.add(it)
+                    targetList.add(it)
+                }
             }
         }
 
-        suspend fun delayUnlessSatisfied(delayMs: Long) {
+        suspend fun delayUnlessSatisfied(
+            delayMs: Long,
+            earlierJobs: List<Job> = emptyList()
+        ) {
             if (delayMs <= 0L) return
             val step = 10L
             var elapsed = 0L
             while (elapsed < delayMs && !controller.isSatisfied()) {
+                if (config.adaptiveTierEscalation && (earlierJobs.isEmpty() || earlierJobs.all { it.isCompleted })) {
+                    Log.d(TAG, "⚡ Earlier tiers completed. Adaptively escalating to next tier immediately.")
+                    break
+                }
                 val sleepTime = minOf(step, delayMs - elapsed)
                 delay(sleepTime.milliseconds)
                 elapsed += sleepTime
             }
         }
 
+        val pipelineStartTime = System.currentTimeMillis()
+        val firstLinkEmittedAt = java.util.concurrent.atomic.AtomicLong(0L)
         val satisfactionWatcher = launch {
             while (isActive && !controller.isSatisfied()) {
+                val now = System.currentTimeMillis()
+                if (config.maxPipelineTimeoutMs > 0L && (now - pipelineStartTime) >= config.maxPipelineTimeoutMs) {
+                    Log.d(TAG, "⏰ Max pipeline timeout (${config.maxPipelineTimeoutMs}ms) reached. Satisfying pipeline.")
+                    controller.markSatisfied()
+                    break
+                }
+                if (config.softGracePeriodAfterFirstLinkMs > 0L && controller.getLinksCount() > 0) {
+                    firstLinkEmittedAt.compareAndSet(0L, now)
+                    val graceElapsed = now - firstLinkEmittedAt.get()
+                    if (graceElapsed >= config.softGracePeriodAfterFirstLinkMs) {
+                        Log.d(TAG, "⚡ Soft grace period (${config.softGracePeriodAfterFirstLinkMs}ms) expired after first link. Marking satisfied.")
+                        controller.markSatisfied()
+                        break
+                    }
+                }
                 delay(config.checkIntervalMs.milliseconds)
             }
             if (controller.isSatisfied()) {
@@ -361,37 +407,45 @@ object SpeculativePipeliner {
             }
         }
 
-        val pipelineStartTime = System.currentTimeMillis()
-
         try {
             // Stage 0: Launch Tier 0 immediately (T = 0ms)
-            launchTaskGroup(tier0Tasks)
+            launchTaskGroup(tier0Tasks, tier0Jobs)
 
             // Stage 1: Launch Tier 1 after tier1DelayMs (150ms)
+            // SOTA: If Tier 0 had zero tasks and adaptiveTierEscalation is enabled, launch Tier 1 at T = 0ms
             if (!controller.isSatisfied() && tier1Tasks.isNotEmpty()) {
-                delayUnlessSatisfied(config.tier1DelayMs)
+                val delayTier1 = if (tier0Tasks.isEmpty() && config.adaptiveTierEscalation) 0L else config.tier1DelayMs
+                delayUnlessSatisfied(delayTier1, tier0Jobs)
                 if (!controller.isSatisfied()) {
-                    launchTaskGroup(tier1Tasks)
+                    launchTaskGroup(tier1Tasks, tier1Jobs)
                 }
             }
 
             // Stage 2: Launch Tier 2 after tier2DelayMs (1500ms)
             if (!controller.isSatisfied() && tier2Tasks.isNotEmpty()) {
-                val elapsed = System.currentTimeMillis() - pipelineStartTime
-                val delayToTier2 = (config.tier2DelayMs - elapsed).coerceAtLeast(0L)
-                delayUnlessSatisfied(delayToTier2)
+                val delayTier2 = if (tier0Tasks.isEmpty() && tier1Tasks.isEmpty() && config.adaptiveTierEscalation) {
+                    0L
+                } else {
+                    val elapsed = System.currentTimeMillis() - pipelineStartTime
+                    (config.tier2DelayMs - elapsed).coerceAtLeast(0L)
+                }
+                delayUnlessSatisfied(delayTier2, tier0Jobs + tier1Jobs)
                 if (!controller.isSatisfied()) {
-                    launchTaskGroup(tier2Tasks)
+                    launchTaskGroup(tier2Tasks, tier2Jobs)
                 }
             }
 
             // Stage 3: Launch Tier 3 after tier3DelayMs (3500ms) only if earlier tiers yielded 0 links!
             if (!controller.isSatisfied() && tier3Tasks.isNotEmpty() && controller.getLinksCount() == 0) {
-                val elapsed2 = System.currentTimeMillis() - pipelineStartTime
-                val delayToTier3 = (config.tier3DelayMs - elapsed2).coerceAtLeast(0L)
-                delayUnlessSatisfied(delayToTier3)
+                val delayTier3 = if (tier0Tasks.isEmpty() && tier1Tasks.isEmpty() && tier2Tasks.isEmpty() && config.adaptiveTierEscalation) {
+                    0L
+                } else {
+                    val elapsed2 = System.currentTimeMillis() - pipelineStartTime
+                    (config.tier3DelayMs - elapsed2).coerceAtLeast(0L)
+                }
+                delayUnlessSatisfied(delayTier3, tier0Jobs + tier1Jobs + tier2Jobs)
                 if (!controller.isSatisfied() && controller.getLinksCount() == 0) {
-                    launchTaskGroup(tier3Tasks)
+                    launchTaskGroup(tier3Tasks, tier3Jobs)
                 }
             }
 

@@ -580,16 +580,25 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
             satisfyWithOneLinkIfSubsFound = true,
-            requireSubtitles = false
+            requireSubtitles = false,
+            adaptiveTierEscalation = true,
+            softGracePeriodAfterFirstLinkMs = 3500L,
+            maxPipelineTimeoutMs = 18_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
 
         val linksEmitted = java.util.concurrent.atomic.AtomicInteger(0)
-        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { link ->
-            linksEmitted.incrementAndGet()
-            earlyController.onLinkEmitted(link)
-            callback(link)
-        }
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
+            upstreamCallback = { link ->
+                linksEmitted.incrementAndGet()
+                earlyController.onLinkEmitted(link)
+                callback(link)
+            },
+            onUpgradeCallback = { link ->
+                earlyController.onLinkUpgraded(link)
+                callback(link)
+            }
+        )
         val optimizedCallback: (ExtractorLink) -> Unit = { link ->
             deduplicator.emit(StreamLinkOptimizer.optimize(link))
         }

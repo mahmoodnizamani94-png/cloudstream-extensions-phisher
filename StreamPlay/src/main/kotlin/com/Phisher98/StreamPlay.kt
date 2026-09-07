@@ -239,17 +239,24 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             } ?: false
         }
 
-        private suspend fun fetchProxyList(): List<String> = try {
-            val response = app.get(REMOTE_PROXY_LIST, timeout = 4L).text
-            val json = JSONObject(response)
-            val arr = json.getJSONArray("proxies")
+        private suspend fun fetchProxyList(): List<String> {
+            StreamPlayCache.getCachedProxyList()?.let { return it }
+            return try {
+                val response = app.get(REMOTE_PROXY_LIST, timeout = 4L).text
+                val json = JSONObject(response)
+                val arr = json.getJSONArray("proxies")
 
-            // Convert to list and clean strings
-            (0 until arr.length()).map { arr.getString(it).trim().removeSuffix("/") }
-                .filter { it.isNotEmpty() }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching proxy list: ${e.message}")
-            emptyList()
+                // Convert to list and clean strings
+                val proxies = (0 until arr.length()).map { arr.getString(it).trim().removeSuffix("/") }
+                    .filter { it.isNotEmpty() }
+                if (proxies.isNotEmpty()) {
+                    StreamPlayCache.cacheProxyList(proxies)
+                }
+                proxies
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching proxy list: ${e.message}")
+                emptyList()
+            }
         }
 
         private const val DOMAINS_URL =
@@ -455,12 +462,21 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query,1)?.items
 
     override suspend fun search(query: String, page: Int): SearchResponseList? {
+        val cacheKey = "search_${query.trim().lowercase()}_${page}_${langCode}_${settingsForProvider.enableAdult}"
+        StreamPlayCache.getCachedSearchResponse(cacheKey)?.let { return it }
+
         val tmdbAPI = resolveApiBase()
 
-        return app.get("$tmdbAPI/search/multi?api_key=$apiKey&language=$langCode&query=$query&page=$page&include_adult=${settingsForProvider.enableAdult}")
-            .parsedSafe<Results>()?.results?.mapNotNull { media ->
-                media.toSearchResponse()
-            }?.toNewSearchResponseList()
+        val results = SingleFlight.executeShared("tmdb:search:$cacheKey") {
+            app.get("$tmdbAPI/search/multi?api_key=$apiKey&language=$langCode&query=$query&page=$page&include_adult=${settingsForProvider.enableAdult}")
+                .parsedSafe<Results>()?.results?.mapNotNull { media ->
+                    media.toSearchResponse()
+                }?.toNewSearchResponseList()
+        }
+        if (results != null) {
+            StreamPlayCache.cacheSearchResponse(cacheKey, results)
+        }
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -470,6 +486,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val type = getType(data.type)
 
         val cacheKey = "metadata_${data.id}_${data.type}_$langCode"
+        StreamPlayCache.getCachedLoadResponse(cacheKey)?.let { return it }
         val cached = StreamPlayCache.getCachedMetadata(cacheKey)
         if (cached != null) {
             try {
@@ -595,11 +612,24 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 res.seasons?.map { season ->
                     async {
                         semaphore.withPermit {
-                            withTimeoutOrNull(5000.milliseconds) {
-                                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=$langCode")
-                                    .parsedSafe<MediaDetailEpisodes>()
-                                    ?.episodes
-                                    ?.map { eps ->
+                            val seasonCacheKey = "season_${data.id}_${season.seasonNumber}_$langCode"
+                            val cachedSeason = StreamPlayCache.getCachedSeasonEpisodes(seasonCacheKey)
+                            val seasonEpisodes = if (cachedSeason != null) {
+                                cachedSeason
+                            } else {
+                                withTimeoutOrNull(5000.milliseconds) {
+                                    SingleFlight.executeShared("tmdb:season:${data.id}:${season.seasonNumber}:$langCode") {
+                                        val fetched = app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=$langCode")
+                                            .parsedSafe<MediaDetailEpisodes>()
+                                        if (fetched != null) {
+                                            StreamPlayCache.cacheSeasonEpisodes(seasonCacheKey, fetched)
+                                        }
+                                        fetched
+                                    }
+                                }
+                            }
+                            seasonEpisodes?.episodes
+                                ?.map { eps ->
                                         newEpisode(
                                             LinkData(
                                                 data.id,
@@ -646,7 +676,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                     }
                             }
                         }
-                    }
                 }?.awaitAll()?.filterNotNull()?.flatten() ?: listOf()
             }
             if (isAnime) {
@@ -708,7 +737,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     ep.copy(data = ep.data.replace("\"isDub\":false", "\"isDub\":true"))
                 }
 
-                return newAnimeLoadResponse(title, url, TvType.Anime) {
+                val animeResponse = newAnimeLoadResponse(title, url, TvType.Anime) {
                     addEpisodes(DubStatus.Subbed, subbedList)
                     addEpisodes(DubStatus.Dubbed, dubbedList)
                     this.posterUrl = poster
@@ -727,8 +756,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     this.contentRating = cineRes?.meta?.appExtras?.certification
                     addImdbId(imdbId)
                 }
+                StreamPlayCache.cacheLoadResponse(cacheKey, animeResponse)
+                return animeResponse
             } else {
-                return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                val tvResponse = newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                     this.posterUrl = poster
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
@@ -744,9 +775,11 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     addTrailer(trailer)
                     addImdbId(res.external_ids?.imdb_id)
                 }
+                StreamPlayCache.cacheLoadResponse(cacheKey, tvResponse)
+                return tvResponse
             }
         } else {
-            return newMovieLoadResponse(
+            val movieResponse = newMovieLoadResponse(
                 title,
                 url,
                 TvType.Movie,
@@ -784,6 +817,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 addTrailer(trailer)
                 addImdbId(res.external_ids?.imdb_id)
             }
+            StreamPlayCache.cacheLoadResponse(cacheKey, movieResponse)
+            return movieResponse
         }
     }
 
@@ -850,20 +885,30 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
             satisfyWithOneLinkIfSubsFound = true,
-            requireSubtitles = false
+            requireSubtitles = false,
+            adaptiveTierEscalation = true,
+            softGracePeriodAfterFirstLinkMs = 3500L,
+            maxPipelineTimeoutMs = 18_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
 
         fun emitLink(link: ExtractorLink): Boolean {
             val optimizedLink = StreamLinkOptimizer.optimize(link)
-            val emitted = deduplicator.emit(optimizedLink)
-            if (emitted) {
-                linksFound.incrementAndGet()
-                earlyController.onLinkEmitted(optimizedLink)
-            } else {
-                Log.d(TAG, "Skipped duplicate or inferior link from ${link.name}")
+            return when (deduplicator.emitDetailed(optimizedLink)) {
+                StreamLinkOptimizer.DeduplicationResult.NEW -> {
+                    linksFound.incrementAndGet()
+                    earlyController.onLinkEmitted(optimizedLink)
+                    true
+                }
+                StreamLinkOptimizer.DeduplicationResult.UPGRADED -> {
+                    earlyController.onLinkUpgraded(optimizedLink)
+                    true
+                }
+                StreamLinkOptimizer.DeduplicationResult.DROPPED -> {
+                    Log.d(TAG, "Skipped duplicate or inferior link from ${link.name}")
+                    false
+                }
             }
-            return emitted
         }
 
         fun emitSubtitle(subtitle: SubtitleFile): Boolean {

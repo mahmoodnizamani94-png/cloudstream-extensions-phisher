@@ -133,14 +133,23 @@ object UltimaMediaProvidersUtils {
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
             satisfyWithOneLinkIfSubsFound = true,
-            requireSubtitles = false
+            requireSubtitles = false,
+            adaptiveTierEscalation = true,
+            softGracePeriodAfterFirstLinkMs = 3500L,
+            maxPipelineTimeoutMs = 18_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
 
-        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { link ->
-            earlyController.onLinkEmitted(link)
-            callback(link)
-        }
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
+            upstreamCallback = { link ->
+                earlyController.onLinkEmitted(link)
+                callback(link)
+            },
+            onUpgradeCallback = { link ->
+                earlyController.onLinkUpgraded(link)
+                callback(link)
+            }
+        )
         val optimizedCallback: (ExtractorLink) -> Unit = { link ->
             deduplicator.emit(StreamLinkOptimizer.optimize(link))
         }

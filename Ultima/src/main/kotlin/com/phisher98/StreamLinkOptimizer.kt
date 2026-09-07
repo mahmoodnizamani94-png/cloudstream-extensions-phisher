@@ -75,6 +75,66 @@ object StreamLinkOptimizer {
         """(?:[a-zA-Z0-9_-]+\.)?gdflix\.[a-z]+""",
         RegexOption.IGNORE_CASE
     )
+    private val MIXDROP_HOST_REGEX = Regex(
+        """(?:mixdrop\.(?:co|to|sx|bz|ch|ag|vc))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val FILEMOON_HOST_REGEX = Regex(
+        """(?:filemoon\.(?:sx|to|in|top))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val VIDHIDE_HOST_REGEX = Regex(
+        """(?:vidhide\.(?:com|org)|vidhidepro\.(?:com|org)|vidhideplus\.(?:com|org)|vidhidepre\.(?:com|org)|streamhide\.(?:to|com))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val STREAMWISH_HOST_REGEX = Regex(
+        """(?:streamwish\.(?:to|com)|strwish\.(?:com|xyz)|wishembed\.(?:pro|com))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val VOE_HOST_REGEX = Regex(
+        """(?:voe\.(?:sx|net)|voe-network\.net|audaciousdefaulthouse\.com|jilliandesitewildly\.com)""",
+        RegexOption.IGNORE_CASE
+    )
+    private val MP4UPLOAD_HOST_REGEX = Regex(
+        """(?:mp4upload\.(?:com|org))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val FASTSTREAM_HOST_REGEX = Regex(
+        """(?:faststream\.(?:org|co|to|net))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val STREAMRUBY_HOST_REGEX = Regex(
+        """(?:streamruby\.(?:com|net)|rubystream\.(?:net|org))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val EMBEDRISE_HOST_REGEX = Regex(
+        """(?:embedrise\.(?:org|com))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val RIDOO_HOST_REGEX = Regex(
+        """(?:ridoo\.(?:net|com))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val ASNWISH_HOST_REGEX = Regex(
+        """(?:asnwish\.(?:com|net))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val LULUVDO_HOST_REGEX = Regex(
+        """(?:luluvdo\.(?:com|net)|luluvstream\.(?:com|net))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val STREAMVID_HOST_REGEX = Regex(
+        """(?:streamvid\.(?:net|io))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val DROPLOAD_HOST_REGEX = Regex(
+        """(?:dropload\.(?:io|com)|dropgalaxy\.(?:com|co))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val FILELIONS_HOST_REGEX = Regex(
+        """(?:filelions\.(?:to|online|site|co))""",
+        RegexOption.IGNORE_CASE
+    )
 
     // Container & Manifest Regexes
     private val DIRECT_VIDEO_EXT_REGEX = Regex("""\.(mp4|mkv|webm|avi|mov|flv|ts|m4v|3gp|wmv|ogv|divx)$""", RegexOption.IGNORE_CASE)
@@ -111,24 +171,37 @@ object StreamLinkOptimizer {
     private val AUDIO_AAC_REGEX = Regex("""\b(aac(?:[ .]?[0-9]\.[0-9])?|he-aac)\b""", RegexOption.IGNORE_CASE)
     private val AUDIO_MP3_REGEX = Regex("""\b(mp3)\b""", RegexOption.IGNORE_CASE)
 
+    // Video Codec, HDR, Color & Source Regexes (§SOTA Visual Badging Engine)
+    private val VIDEO_DV_REGEX = Regex("""\b(dolby[\s-.]?vision|dv|dovi)\b""", RegexOption.IGNORE_CASE)
+    private val VIDEO_HDR10_PLUS_REGEX = Regex("""(?:\bhdr10\+|\bhdr10plus\b)""", RegexOption.IGNORE_CASE)
+    private val VIDEO_HDR_REGEX = Regex("""\b(hdr10|hdr)\b""", RegexOption.IGNORE_CASE)
+    private val VIDEO_10BIT_REGEX = Regex("""\b(10[\s-.]?bit|hi10p)\b""", RegexOption.IGNORE_CASE)
+    private val VIDEO_HEVC_REGEX = Regex("""\b(hevc|h[\s-.]?265|x265)\b""", RegexOption.IGNORE_CASE)
+    private val VIDEO_AV1_REGEX = Regex("""\b(av1)\b""", RegexOption.IGNORE_CASE)
+    private val VIDEO_AVC_REGEX = Regex("""\b(avc|h[\s-.]?264|x264)\b""", RegexOption.IGNORE_CASE)
+    private val SOURCE_REMUX_REGEX = Regex("""\b(remux)\b""", RegexOption.IGNORE_CASE)
+    private val SOURCE_BLURAY_REGEX = Regex("""\b(bluray|bdrip|brrip)\b""", RegexOption.IGNORE_CASE)
+    private val SOURCE_WEBDL_REGEX = Regex("""\b(web[\s-.]?dl)\b""", RegexOption.IGNORE_CASE)
+    private val SOURCE_WEBRIP_REGEX = Regex("""\b(webrip)\b""", RegexOption.IGNORE_CASE)
+
     // CDN Cluster Edge Pattern
     private val CDN_SUBDOMAIN_PATTERN = Regex(
         """^(?:[a-z]{2,4}[-_])?(?:cdn|edge|node|srv|server|store|mirror|stream|storage|video|fs|play|worker|hls|s|v)[-_0-9a-z]*\d*$|^(?:[a-z]{2,3}\d+)$""",
         RegexOption.IGNORE_CASE
     )
 
-    // 32+ Transient Query Parameters to Strip for Canonical Deduplication
+    // 40+ Transient Query Parameters to Strip for Canonical Deduplication
     private val TRANSIENT_QUERY_PARAMS = setOf(
         // Timestamps & Expirations (12)
         "t", "_", "ts", "timestamp", "exp", "expire", "expires", "expiry", "deadline", "valid", "validity", "time",
-        // Signatures, Hashes & Nonces (17)
-        "sig", "signature", "sign", "h", "hash", "md5", "key", "auth", "auth_key", "verify", "verification", "hmac", "token", "st", "nonce", "csrf", "xsrf",
+        // Signatures, Hashes & Nonces (21)
+        "sig", "signature", "sign", "h", "hash", "md5", "key", "auth", "auth_key", "verify", "verification", "hmac", "token", "st", "nonce", "csrf", "xsrf", "auth_token", "access_token", "play_token", "download_token",
         // Session & Request Tracking (9)
         "session", "session_id", "sid", "sessionid", "req_id", "request_id", "client_id", "uuid", "state",
-        // IP & Geo-Locking (7)
-        "ip", "ip_token", "user_ip", "client_ip", "geo", "country", "asn",
-        // Cache Busters (6)
-        "cb", "rand", "rnd", "random", "nocache", "cache_buster"
+        // IP & Geo-Locking (8)
+        "ip", "ip_token", "user_ip", "client_ip", "geo", "country", "asn", "wsiphost",
+        // Cache Busters & Stream Routing (8)
+        "cb", "rand", "rnd", "random", "nocache", "cache_buster", "stream_id", "sub_id", "hls_key", "dl", "direct"
     )
 
     // ==================== Primary Optimization Entry Points ====================
@@ -160,12 +233,14 @@ object StreamLinkOptimizer {
                 link.quality
             }
             val audioBadges = extractAudioBadges(link.name, link.extractorData)
+            val videoBadges = extractVideoBadges(link.name, link.extractorData)
             val formattedName = formatLinkName(
                 currentName = link.name,
                 quality = resolvedQuality,
                 url = rawUrl,
                 bitrateKbps = null,
-                audioBadges = audioBadges
+                audioBadges = audioBadges,
+                videoBadges = videoBadges
             )
             @Suppress("DEPRECATION")
             return ExtractorLink(
@@ -203,8 +278,9 @@ object StreamLinkOptimizer {
             else -> Qualities.Unknown.value
         }
 
-        // 5. Audio badging
+        // 5. Audio and video badging
         val audioBadges = extractAudioBadges(link.name, link.extractorData)
+        val videoBadges = extractVideoBadges(link.name, link.extractorData)
 
         // 6. Name formatting
         val formattedName = formatLinkName(
@@ -212,7 +288,8 @@ object StreamLinkOptimizer {
             quality = resolvedQuality,
             url = optimizedUrl,
             bitrateKbps = estimatedBitrate,
-            audioBadges = audioBadges
+            audioBadges = audioBadges,
+            videoBadges = videoBadges
         )
 
         // 7. Optimized headers
@@ -362,6 +439,66 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://gdflix.top/"
                 headers[HEADER_ORIGIN] = "https://gdflix.top"
             }
+            MIXDROP_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://mixdrop.ag/"
+                headers[HEADER_ORIGIN] = "https://mixdrop.ag"
+            }
+            FILEMOON_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://filemoon.sx/"
+                headers[HEADER_ORIGIN] = "https://filemoon.sx"
+            }
+            VIDHIDE_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://vidhide.com/"
+                headers[HEADER_ORIGIN] = "https://vidhide.com"
+            }
+            STREAMWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://streamwish.to/"
+                headers[HEADER_ORIGIN] = "https://streamwish.to"
+            }
+            VOE_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://voe.sx/"
+                headers[HEADER_ORIGIN] = "https://voe.sx"
+            }
+            MP4UPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://www.mp4upload.com/"
+                headers[HEADER_ORIGIN] = "https://www.mp4upload.com"
+            }
+            FASTSTREAM_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://faststream.org/"
+                headers[HEADER_ORIGIN] = "https://faststream.org"
+            }
+            STREAMRUBY_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://streamruby.com/"
+                headers[HEADER_ORIGIN] = "https://streamruby.com"
+            }
+            EMBEDRISE_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://embedrise.org/"
+                headers[HEADER_ORIGIN] = "https://embedrise.org"
+            }
+            RIDOO_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://ridoo.net/"
+                headers[HEADER_ORIGIN] = "https://ridoo.net"
+            }
+            ASNWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://asnwish.com/"
+                headers[HEADER_ORIGIN] = "https://asnwish.com"
+            }
+            LULUVDO_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://luluvdo.com/"
+                headers[HEADER_ORIGIN] = "https://luluvdo.com"
+            }
+            STREAMVID_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://streamvid.net/"
+                headers[HEADER_ORIGIN] = "https://streamvid.net"
+            }
+            DROPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://dropload.io/"
+                headers[HEADER_ORIGIN] = "https://dropload.io"
+            }
+            FILELIONS_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://filelions.to/"
+                headers[HEADER_ORIGIN] = "https://filelions.to"
+            }
             lowerUrl.contains("febbox.com") -> {
                 headers[HEADER_REFERER] = "https://www.febbox.com/"
                 headers[HEADER_ORIGIN] = "https://www.febbox.com"
@@ -408,6 +545,12 @@ object StreamLinkOptimizer {
             }
             HUBCLOUD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://hubcloud.one/"
             GDFLIX_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://gdflix.top/"
+            MIXDROP_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://mixdrop.ag/"
+            FILEMOON_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://filemoon.sx/"
+            VIDHIDE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://vidhide.com/"
+            STREAMWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamwish.to/"
+            VOE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://voe.sx/"
+            MP4UPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://www.mp4upload.com/"
             lowerUrl.contains("febbox.com") -> "https://www.febbox.com/"
             !referer.isNullOrBlank() -> referer
             else -> getHostUrl(url) ?: ""
@@ -702,6 +845,55 @@ object StreamLinkOptimizer {
         return badges.distinct()
     }
 
+    // ==================== Video Track & Source Badging ====================
+
+    /**
+     * Parses video codec, dynamic range (HDR/DV), color depth, and release source
+     * from text metadata, returning standardized badge strings (e.g. [REMUX], [DV], [HDR10+], [HDR], [HEVC], [10-bit]).
+     */
+    fun extractVideoBadges(vararg texts: String?): List<String> {
+        val combined = texts.filterNotNull().joinToString(" ")
+        if (combined.isBlank()) return emptyList()
+
+        val badges = mutableListOf<String>()
+
+        // 1. Source format (Remux > BluRay > WEB-DL > WEBRip)
+        if (SOURCE_REMUX_REGEX.containsMatchIn(combined)) {
+            badges.add("[REMUX]")
+        } else if (SOURCE_BLURAY_REGEX.containsMatchIn(combined)) {
+            badges.add("[BluRay]")
+        } else if (SOURCE_WEBDL_REGEX.containsMatchIn(combined)) {
+            badges.add("[WEB-DL]")
+        } else if (SOURCE_WEBRIP_REGEX.containsMatchIn(combined)) {
+            badges.add("[WEBRip]")
+        }
+
+        // 2. Dynamic Range (Dolby Vision > HDR10+ > HDR)
+        if (VIDEO_DV_REGEX.containsMatchIn(combined)) {
+            badges.add("[DV]")
+        } else if (VIDEO_HDR10_PLUS_REGEX.containsMatchIn(combined)) {
+            badges.add("[HDR10+]")
+        } else if (VIDEO_HDR_REGEX.containsMatchIn(combined)) {
+            badges.add("[HDR]")
+        }
+
+        // 3. Color Depth (10-bit)
+        if (VIDEO_10BIT_REGEX.containsMatchIn(combined)) {
+            badges.add("[10-bit]")
+        }
+
+        // 4. Video Codec (HEVC, AV1, AVC)
+        if (VIDEO_HEVC_REGEX.containsMatchIn(combined)) {
+            badges.add("[HEVC]")
+        } else if (VIDEO_AV1_REGEX.containsMatchIn(combined)) {
+            badges.add("[AV1]")
+        } else if (VIDEO_AVC_REGEX.containsMatchIn(combined)) {
+            badges.add("[AVC]")
+        }
+
+        return badges.distinct()
+    }
+
     // ==================== Stream Name Formatting & Badging ====================
 
     /**
@@ -713,7 +905,8 @@ object StreamLinkOptimizer {
         quality: Int,
         url: String,
         bitrateKbps: Long? = null,
-        audioBadges: List<String> = emptyList()
+        audioBadges: List<String> = emptyList(),
+        videoBadges: List<String> = emptyList()
     ): String {
         var baseName = currentName.trim()
         if (baseName.isBlank()) {
@@ -736,7 +929,14 @@ object StreamLinkOptimizer {
             prefixBadges.add("[$qualityTag]")
         }
 
-        // 2. Bitrate Badge
+        // 2. Video & Source Badges (REMUX, BluRay, DV, HDR, HEVC, etc.)
+        for (badge in videoBadges) {
+            if (!baseName.contains(badge, ignoreCase = true)) {
+                prefixBadges.add(badge)
+            }
+        }
+
+        // 3. Bitrate Badge
         if (bitrateKbps != null && bitrateKbps > 0) {
             val formattedBitrate = formatBitrate(bitrateKbps)
             if (!baseName.contains("[$formattedBitrate]", ignoreCase = true)) {
@@ -744,7 +944,7 @@ object StreamLinkOptimizer {
             }
         }
 
-        // 3. Audio Badges
+        // 4. Audio Badges
         for (badge in audioBadges) {
             if (!baseName.contains(badge, ignoreCase = true)) {
                 prefixBadges.add(badge)
@@ -839,39 +1039,89 @@ object StreamLinkOptimizer {
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
      * 1. Higher bitrate (kbps)
      * 2. Higher resolution quality
-     * 3. Anti-throttling header completeness
-     * 4. Direct endpoint rewrites
+     * 3. Direct endpoint rewrites
+     * 4. Video source and HDR/codec score
+     * 5. Audio format and channel score
+     * 6. Anti-throttling header completeness
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Bitrate comparison
-        val b1 = parseBitrateKbpsFromText(candidate.name)
-        val b2 = parseBitrateKbpsFromText(current.name)
-        if (b1 != null && b2 != null && b1 != b2) {
-            return b1 > b2
-        }
-
-        // 2. Resolution Quality comparison
+        // 1. Resolution Quality comparison: higher resolution quality strictly takes precedence
         val q1 = if (candidate.quality > Qualities.Unknown.value) candidate.quality else extractQualityFromText(candidate.name, candidate.url)
         val q2 = if (current.quality > Qualities.Unknown.value) current.quality else extractQualityFromText(current.name, current.url)
         if (q1 != q2) {
             return q1 > q2
         }
 
-        // 3. Header score comparison
-        val score1 = calculateHeaderScore(candidate)
-        val score2 = calculateHeaderScore(current)
-        if (score1 != score2) {
-            return score1 > score2
+        // 2. Bitrate comparison (when resolutions are equivalent)
+        val b1 = parseBitrateKbpsFromText(candidate.name)
+        val b2 = parseBitrateKbpsFromText(current.name)
+        if (b1 != null && b2 != null && b1 != b2) {
+            return b1 > b2
+        }
+        if (b1 != null && b2 == null) {
+            return true
         }
 
-        // 4. Direct endpoint score
+        // 3. Direct endpoint score
         val endpointScore1 = if (candidate.url.contains("?download") || candidate.url.contains("&stream=1")) 10 else 0
         val endpointScore2 = if (current.url.contains("?download") || current.url.contains("&stream=1")) 10 else 0
         if (endpointScore1 != endpointScore2) {
             return endpointScore1 > endpointScore2
         }
 
+        // 4. Video source & HDR score comparison
+        val videoScore1 = calculateVideoScore(candidate)
+        val videoScore2 = calculateVideoScore(current)
+        if (videoScore1 != videoScore2) {
+            return videoScore1 > videoScore2
+        }
+
+        // 5. Audio score comparison
+        val audioScore1 = calculateAudioScore(candidate)
+        val audioScore2 = calculateAudioScore(current)
+        if (audioScore1 != audioScore2) {
+            return audioScore1 > audioScore2
+        }
+
+        // 6. Header score comparison
+        val score1 = calculateHeaderScore(candidate)
+        val score2 = calculateHeaderScore(current)
+        if (score1 != score2) {
+            return score1 > score2
+        }
+
         return false
+    }
+
+    private fun calculateVideoScore(link: ExtractorLink): Int {
+        var score = 0
+        val name = link.name
+        if (name.contains("[REMUX]", ignoreCase = true)) score += 40
+        else if (name.contains("[BluRay]", ignoreCase = true)) score += 30
+        else if (name.contains("[WEB-DL]", ignoreCase = true)) score += 20
+        else if (name.contains("[WEBRip]", ignoreCase = true)) score += 10
+
+        if (name.contains("[DV]", ignoreCase = true)) score += 25
+        else if (name.contains("[HDR10+]", ignoreCase = true)) score += 20
+        else if (name.contains("[HDR]", ignoreCase = true)) score += 15
+
+        if (name.contains("[HEVC]", ignoreCase = true)) score += 10
+        if (name.contains("[AV1]", ignoreCase = true)) score += 10
+        if (name.contains("[10-bit]", ignoreCase = true)) score += 5
+        return score
+    }
+
+    private fun calculateAudioScore(link: ExtractorLink): Int {
+        var score = 0
+        val name = link.name
+        if (name.contains("[TrueHD]", ignoreCase = true)) score += 30
+        else if (name.contains("[DTS-HD]", ignoreCase = true)) score += 25
+        else if (name.contains("[Atmos]", ignoreCase = true)) score += 20
+        else if (name.contains("[DTS]", ignoreCase = true)) score += 15
+
+        if (name.contains("[7.1]", ignoreCase = true)) score += 15
+        else if (name.contains("[5.1]", ignoreCase = true)) score += 10
+        return score
     }
 
     private fun calculateHeaderScore(link: ExtractorLink): Int {
@@ -883,31 +1133,50 @@ object StreamLinkOptimizer {
         return score
     }
 
+    enum class DeduplicationResult {
+        NEW,
+        UPGRADED,
+        DROPPED
+    }
+
     /**
      * Lock-free atomic stream deduplicator.
      * Colliding streams are compared; superior streams atomically upgrade existing entries
      * and are emitted to CloudStream, while inferior or identical streams are dropped.
      */
-    class StreamDeduplicator(private val upstreamCallback: (ExtractorLink) -> Unit) {
+    class StreamDeduplicator(
+        private val upstreamCallback: (ExtractorLink) -> Unit,
+        private val onUpgradeCallback: ((ExtractorLink) -> Unit)? = null
+    ) {
+        constructor(upstreamCallback: (ExtractorLink) -> Unit) : this(upstreamCallback, null)
+
         private val emittedStreams = ConcurrentHashMap<String, ExtractorLink>()
 
         fun emit(link: ExtractorLink): Boolean {
+            return emitDetailed(link) != DeduplicationResult.DROPPED
+        }
+
+        fun emitDetailed(link: ExtractorLink): DeduplicationResult {
             val key = canonicalStreamKey(link)
             while (true) {
                 val existing = emittedStreams[key]
                 if (existing == null) {
                     if (emittedStreams.putIfAbsent(key, link) == null) {
                         upstreamCallback(link)
-                        return true
+                        return DeduplicationResult.NEW
                     }
                 } else {
                     if (isBetterThan(link, existing)) {
                         if (emittedStreams.replace(key, existing, link)) {
-                            upstreamCallback(link)
-                            return true
+                            if (onUpgradeCallback != null) {
+                                onUpgradeCallback.invoke(link)
+                            } else {
+                                upstreamCallback(link)
+                            }
+                            return DeduplicationResult.UPGRADED
                         }
                     } else {
-                        return false
+                        return DeduplicationResult.DROPPED
                     }
                 }
             }

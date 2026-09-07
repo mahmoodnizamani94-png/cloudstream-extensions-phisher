@@ -2,6 +2,8 @@ package com.phisher98
 
 import android.content.SharedPreferences
 import com.lagradost.api.Log
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.SearchResponseList
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -58,6 +60,7 @@ object StreamPlayCache {
         }
 
         fun put(key: K, value: V, ttlMillis: Long = defaultTtlMillis) = synchronized(this) {
+            cleanExpiredLocked()
             val now = System.currentTimeMillis()
             val expiresAt = if (ttlMillis >= Long.MAX_VALUE - now) {
                 Long.MAX_VALUE
@@ -276,6 +279,121 @@ object StreamPlayCache {
         Log.d(TAG, "📦 Cached metadata: $key (cache size: ${metadataCache.size})")
     }
 
+    // ==================== Typed LoadResponse Caching ====================
+
+    private const val LOAD_RESPONSE_CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
+    private const val LOAD_RESPONSE_CACHE_MAX_SIZE = 100
+
+    private val loadResponseCache = LruCacheWithTtl<String, LoadResponse>(
+        maxSize = LOAD_RESPONSE_CACHE_MAX_SIZE,
+        defaultTtlMillis = LOAD_RESPONSE_CACHE_TTL_MS
+    )
+
+    fun getCachedLoadResponse(key: String): LoadResponse? {
+        val cached = loadResponseCache.get(key)
+        if (cached != null) {
+            Log.d(TAG, "✅ LoadResponse cache hit: $key")
+        }
+        return cached
+    }
+
+    fun cacheLoadResponse(key: String, response: LoadResponse) {
+        loadResponseCache.put(key, response)
+        Log.d(TAG, "📦 Cached LoadResponse: $key (cache size: ${loadResponseCache.size})")
+    }
+
+    // ==================== Season Episodes Caching ====================
+
+    private const val SEASON_EPISODES_CACHE_TTL_MS = 60 * 60 * 1000L // 60 minutes
+    private const val SEASON_EPISODES_CACHE_MAX_SIZE = 200
+
+    private val seasonEpisodesCache = LruCacheWithTtl<String, StreamPlay.MediaDetailEpisodes>(
+        maxSize = SEASON_EPISODES_CACHE_MAX_SIZE,
+        defaultTtlMillis = SEASON_EPISODES_CACHE_TTL_MS
+    )
+
+    fun getCachedSeasonEpisodes(key: String): StreamPlay.MediaDetailEpisodes? {
+        val cached = seasonEpisodesCache.get(key)
+        if (cached != null) {
+            Log.d(TAG, "✅ Season episodes cache hit: $key")
+        }
+        return cached
+    }
+
+    fun cacheSeasonEpisodes(key: String, episodes: StreamPlay.MediaDetailEpisodes) {
+        seasonEpisodesCache.put(key, episodes)
+        Log.d(TAG, "📦 Cached season episodes: $key (cache size: ${seasonEpisodesCache.size})")
+    }
+
+    // ==================== Search Response Caching ====================
+
+    private const val SEARCH_RESPONSE_CACHE_TTL_MS = 15 * 60 * 1000L // 15 minutes
+    private const val SEARCH_RESPONSE_CACHE_MAX_SIZE = 100
+
+    private val searchResponseCache = LruCacheWithTtl<String, SearchResponseList>(
+        maxSize = SEARCH_RESPONSE_CACHE_MAX_SIZE,
+        defaultTtlMillis = SEARCH_RESPONSE_CACHE_TTL_MS
+    )
+
+    fun getCachedSearchResponse(key: String): SearchResponseList? {
+        val cached = searchResponseCache.get(key)
+        if (cached != null) {
+            Log.d(TAG, "✅ Search response cache hit: $key")
+        }
+        return cached
+    }
+
+    fun cacheSearchResponse(key: String, response: SearchResponseList) {
+        searchResponseCache.put(key, response)
+        Log.d(TAG, "📦 Cached search response: $key (cache size: ${searchResponseCache.size})")
+    }
+
+    // ==================== Remote Proxy List Caching ====================
+
+    private const val PROXY_LIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000L // 6 hours
+    private const val PROXY_LIST_CACHE_KEY = "tmdb_proxy_list"
+
+    private val proxyListCache = LruCacheWithTtl<String, List<String>>(
+        maxSize = 2,
+        defaultTtlMillis = PROXY_LIST_CACHE_TTL_MS
+    )
+
+    fun getCachedProxyList(): List<String>? {
+        val cached = proxyListCache.get(PROXY_LIST_CACHE_KEY)
+        if (cached != null) {
+            Log.d(TAG, "✅ Proxy list cache hit (${cached.size} proxies)")
+        }
+        return cached
+    }
+
+    fun cacheProxyList(proxies: List<String>) {
+        proxyListCache.put(PROXY_LIST_CACHE_KEY, proxies)
+        Log.d(TAG, "📦 Cached proxy list (${proxies.size} proxies)")
+    }
+
+    // ==================== AniZip Mappings Caching ====================
+
+    private const val ANIZIP_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
+    private const val ANIZIP_CACHE_MAX_SIZE = 300
+
+    private val aniZipCache = LruCacheWithTtl<String, String>(
+        maxSize = ANIZIP_CACHE_MAX_SIZE,
+        defaultTtlMillis = ANIZIP_CACHE_TTL_MS
+    )
+
+    fun getCachedAniZip(key: String): String? {
+        val cached = aniZipCache.get(key)
+        if (cached != null) {
+            Log.d(TAG, "✅ AniZip mappings cache hit: $key")
+        }
+        return cached
+    }
+
+    fun cacheAniZip(key: String, data: String) {
+        aniZipCache.put(key, data)
+        Log.d(TAG, "📦 Cached AniZip mappings: $key (cache size: ${aniZipCache.size})")
+    }
+
     // ==================== Persistence ====================
 
     fun saveProviderStats(prefs: SharedPreferences?) {
@@ -304,6 +422,11 @@ object StreamPlayCache {
     fun clearAllCachesForTesting() {
         animeIdCache.clear()
         metadataCache.clear()
+        loadResponseCache.clear()
+        seasonEpisodesCache.clear()
+        searchResponseCache.clear()
+        proxyListCache.clear()
+        aniZipCache.clear()
         ProviderTelemetryManager.clearAllForTesting()
         apiCacheEntry = null
     }

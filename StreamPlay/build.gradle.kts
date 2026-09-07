@@ -38,6 +38,7 @@ android {
 
 dependencies {
     implementation("com.google.android.material:material:1.14.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 }
 
 cloudstream {
