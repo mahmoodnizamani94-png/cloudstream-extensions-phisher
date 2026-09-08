@@ -4124,6 +4124,7 @@ object StreamPlayExtractor : StreamPlay() {
         tmdbId: Int? = null,
         season: Int? = null,
         episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
     ) {
         if (tmdbId == null) return
@@ -4217,7 +4218,9 @@ object StreamPlayExtractor : StreamPlay() {
                 val file = track.file
                 val label = track.label
                 if (!file.isNullOrBlank() && !label.isNullOrBlank() && seen.add(file)) {
-                    subtitles.add(newSubtitleFile(label, file))
+                    val sub = newSubtitleFile(label, file)
+                    subtitles.add(sub)
+                    subtitleCallback?.invoke(sub)
                 }
             }
 
@@ -4429,19 +4432,41 @@ object StreamPlayExtractor : StreamPlay() {
 
         val apiBase = "https://enc-dec.app/api"
 
-        val token = safeGet("$apiBase/enc-hexa", headers = baseHeaders).parsedSafe<HexaEn>()?.result?.token ?: return
+        val token = runCatching {
+            safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 6L).parsedSafe<HexaEn>()?.result?.token
+        }.getOrNull() ?: return
 
         val headers = baseHeaders + mapOf(
             "X-Cap-Token" to token
         )
 
-        val url = if (season == null) {
-            "$hexaSU/api/tmdb/movie/$tmdbId/images"
+        val path = if (season == null) {
+            "/api/tmdb/movie/$tmdbId/images"
         } else {
-            "$hexaSU/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images"
+            "/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images"
         }
 
-        val encrypted = safeGet(url, headers).text
+        val domainTargets = listOf(
+            hexaSU to "https://hexa.su/",
+            embedSU to "https://embed.su/"
+        )
+
+        var encrypted = ""
+        var chosenReferer = "https://hexa.su/"
+
+        for ((domain, referer) in domainTargets) {
+            val url = "$domain$path"
+            val targetHeaders = headers + mapOf("Referer" to referer)
+            val response = runCatching { safeGet(url, targetHeaders, timeout = 6L) }.getOrNull()
+            if (response != null && response.isSuccessful && response.code != 403 && response.code != 502 && response.text.isNotBlank()) {
+                encrypted = response.text
+                chosenReferer = referer
+                break
+            } else {
+                android.util.Log.d("StreamPlay", "HexaSU primary $domain unavailable (code: ${response?.code}), falling back to next endpoint")
+            }
+        }
+
         if (encrypted.isEmpty()) return
 
         val jsonBody = """
@@ -4451,11 +4476,14 @@ object StreamPlayExtractor : StreamPlay() {
         }
     """.trimIndent().toRequestBody("application/json".toMediaType())
 
-        val decryptRes = app.post(
-            "$apiBase/dec-hexa",
-            headers = mapOf("Content-Type" to "application/json"),
-            requestBody = jsonBody
-        ).parsedSafe<HexaResponse>() ?: return
+        val decryptRes = runCatching {
+            app.post(
+                "$apiBase/dec-hexa",
+                headers = mapOf("Content-Type" to "application/json"),
+                requestBody = jsonBody,
+                timeout = 8L
+            ).parsedSafe<HexaResponse>()
+        }.getOrNull() ?: return
 
         if (decryptRes.status != 200) return
 
@@ -4477,7 +4505,8 @@ object StreamPlayExtractor : StreamPlay() {
                         generateM3u8(
                             "HexaSU $name",
                             link,
-                            "https://hexa.su/"
+                            chosenReferer,
+                            headers = mapOf("Referer" to chosenReferer, "Origin" to chosenReferer.removeSuffix("/"))
                         ).forEach(callback)
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
@@ -4485,6 +4514,230 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }.awaitAll()
         }
+    }
+
+    suspend fun invokeHexa(
+        tmdbId: Int?,
+        season: Int?,
+        episode: Int?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeHexa(tmdbId, season, episode, callback)
+    }
+
+    suspend fun invokeAutoembed(
+        tmdbId: Int?,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit = {},
+        callback: (ExtractorLink) -> Unit
+    ) {
+        if (tmdbId == null) return
+
+        val paths = if (season == null) {
+            listOf("/embed/movie/$tmdbId", "/movie/$tmdbId")
+        } else {
+            listOf("/embed/tv/$tmdbId/$season/$episode", "/tv/$tmdbId/$season/$episode")
+        }
+
+        val domainTargets = listOf(
+            autoembedPlayer,
+            autoembedDomain
+        )
+
+        val baseHeaders = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language" to "en-US,en;q=0.5"
+        )
+
+        val streamRegex = Regex("""(?:"|')(https?:\\?/\\?/[^"'\s<>]+\.(?:m3u8|mp4)(?:[^"'\s<>]*)?)(?:"|')""", RegexOption.IGNORE_CASE)
+        val playerJsFileRegex = Regex("""(?:file|source)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        val subtitleRegex = Regex("""(?:subtitle|track|caption)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
+        fun extractQuality(text: String): Int {
+            return when {
+                text.contains("2160", ignoreCase = true) || text.contains("4k", ignoreCase = true) -> Qualities.P2160.value
+                text.contains("1440", ignoreCase = true) -> Qualities.P1440.value
+                text.contains("1080", ignoreCase = true) -> Qualities.P1080.value
+                text.contains("720", ignoreCase = true) -> Qualities.P720.value
+                text.contains("480", ignoreCase = true) -> Qualities.P480.value
+                text.contains("360", ignoreCase = true) -> Qualities.P360.value
+                else -> Qualities.P1080.value
+            }
+        }
+
+        fun normalizeUrl(rawUrl: String, domain: String): String {
+            val unescaped = rawUrl.replace("\\/", "/").trim().trim('"', '\'')
+            return when {
+                unescaped.startsWith("//") -> "https:$unescaped"
+                unescaped.startsWith("/") -> "$domain$unescaped"
+                else -> unescaped
+            }
+        }
+
+        suspend fun emitStreamLink(streamUrl: String, domain: String, refererUrl: String, qualityHint: Int? = null) {
+            val cleanedUrl = normalizeUrl(streamUrl, domain)
+            if (cleanedUrl.isBlank() || cleanedUrl.contains("favicon", ignoreCase = true)) return
+
+            if (cleanedUrl.contains(".m3u8", ignoreCase = true)) {
+                generateM3u8(
+                    "AutoEmbed",
+                    cleanedUrl,
+                    refererUrl,
+                    headers = mapOf(
+                        "Referer" to refererUrl,
+                        "Origin" to domain
+                    )
+                ).forEach { link ->
+                    callback(link)
+                }
+            } else {
+                val q = qualityHint ?: extractQuality(cleanedUrl)
+                callback(
+                    newExtractorLink(
+                        source = "AutoEmbed",
+                        name = "AutoEmbed",
+                        url = cleanedUrl,
+                        type = INFER_TYPE
+                    ) {
+                        this.referer = refererUrl
+                        this.quality = q
+                        this.headers = mapOf(
+                            "Referer" to refererUrl,
+                            "Origin" to domain
+                        )
+                    }
+                )
+            }
+        }
+
+        for (domain in domainTargets) {
+            var foundOnDomain = false
+            for (path in paths) {
+                val url = "$domain$path"
+                val headers = baseHeaders + mapOf("Referer" to "$domain/")
+                val response = runCatching { safeGet(url, headers = headers, timeout = 6L) }.getOrNull() ?: continue
+                if (!response.isSuccessful || response.text.isBlank()) continue
+
+                val pageText = response.text
+                val unescapedPage = pageText.replace("\\/", "/")
+                val doc = response.document
+
+                // 1. Parse subtitles from <track> elements
+                doc.select("track[src]").forEach { track ->
+                    val src = track.attr("src")
+                    val label = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                    if (src.isNotBlank()) {
+                        val subUrl = normalizeUrl(src, domain)
+                        subtitleCallback(newSubtitleFile(label, subUrl))
+                    }
+                }
+
+                // 2. Parse subtitle string configs (e.g. subtitle: "[English]https://...")
+                subtitleRegex.findAll(unescapedPage).forEach { match ->
+                    val subVal = match.groupValues[1]
+                    if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
+                        val subParts = subVal.split(",")
+                        for (part in subParts) {
+                            val lang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                            val subUrl = normalizeUrl(if (part.contains("]")) part.substringAfter("]") else part, domain)
+                            if (subUrl.startsWith("http")) {
+                                subtitleCallback(newSubtitleFile(lang, subUrl))
+                            }
+                        }
+                    }
+                }
+
+                // 3. Direct stream / playlist URL in HTML or script blocks
+                streamRegex.findAll(pageText).forEach { match ->
+                    val rawStream = match.groupValues[1]
+                    emitStreamLink(rawStream, domain, "$domain/")
+                    foundOnDomain = true
+                }
+
+                // 4. Playerjs style configs (e.g. file: "[1080p]https://...,[720p]https://...")
+                playerJsFileRegex.findAll(unescapedPage).forEach { match ->
+                    val fileContent = match.groupValues[1]
+                    if (fileContent.contains("[")) {
+                        val fileParts = fileContent.split(",")
+                        for (part in fileParts) {
+                            val qTag = part.substringAfter("[").substringBefore("]")
+                            val partUrl = part.substringAfter("]")
+                            val q = extractQuality(qTag)
+                            emitStreamLink(partUrl, domain, "$domain/", qualityHint = q)
+                            foundOnDomain = true
+                        }
+                    } else if (fileContent.startsWith("http") || fileContent.contains(".m3u8") || fileContent.contains(".mp4")) {
+                        emitStreamLink(fileContent, domain, "$domain/")
+                        foundOnDomain = true
+                    }
+                }
+
+                // 5. Unpack obfuscated / packed scripts (eval(function(p,a,c,k,e,d)...))
+                val packedScripts = doc.select("script")
+                    .map { it.data() }
+                    .filter { it.contains("function(p,a,c,k,e,d)") }
+
+                for (packed in packedScripts) {
+                    val unpacked = runCatching { getAndUnpack(packed) }.getOrNull() ?: continue
+                    val unescapedUnpacked = unpacked.replace("\\/", "/")
+                    streamRegex.findAll(unpacked).forEach { match ->
+                        emitStreamLink(match.groupValues[1], domain, "$domain/")
+                        foundOnDomain = true
+                    }
+                    playerJsFileRegex.findAll(unescapedUnpacked).forEach { match ->
+                        emitStreamLink(match.groupValues[1], domain, "$domain/")
+                        foundOnDomain = true
+                    }
+                }
+
+                // 6. Follow embedded iframes and server buttons/links
+                val iframeSources = mutableListOf<String>()
+                doc.select("iframe[src], iframe[data-src]").forEach {
+                    val s = it.attr("src").ifBlank { it.attr("data-src") }
+                    if (s.isNotBlank()) iframeSources.add(normalizeUrl(s, domain))
+                }
+                doc.select("div.server[data-url], button[data-src], button[data-url], a.server[href]").forEach {
+                    val s = it.attr("data-url").ifBlank { it.attr("data-src") }.ifBlank { it.attr("href") }
+                    if (s.isNotBlank() && !s.startsWith("#") && !s.startsWith("javascript:")) {
+                        iframeSources.add(normalizeUrl(s, domain))
+                    }
+                }
+
+                for (iframeSrc in iframeSources.distinct()) {
+                    val resolvedByExtractor = runCatching {
+                        loadExtractor(iframeSrc, "$domain/", subtitleCallback = subtitleCallback, callback = callback)
+                    }.getOrDefault(false)
+
+                    if (!resolvedByExtractor) {
+                        val iframeResp = runCatching { safeGet(iframeSrc, headers = mapOf("Referer" to "$domain/"), timeout = 6L) }.getOrNull()
+                        if (iframeResp != null && iframeResp.isSuccessful && iframeResp.text.isNotBlank()) {
+                            val iframeText = iframeResp.text
+                            streamRegex.findAll(iframeText).forEach { match ->
+                                emitStreamLink(match.groupValues[1], domain, iframeSrc)
+                                foundOnDomain = true
+                            }
+                        }
+                    } else {
+                        foundOnDomain = true
+                    }
+                }
+
+                if (foundOnDomain) break
+            }
+            if (foundOnDomain) break
+        }
+    }
+
+    suspend fun invokeAutoembed(
+        tmdbId: Int?,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeAutoembed(tmdbId, season, episode, subtitleCallback = {}, callback = callback)
     }
 
     suspend fun invokeHindmoviez(

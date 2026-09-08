@@ -502,6 +502,27 @@ object StreamLinkOptimizer {
             lowerUrl.contains("febbox.com") -> {
                 headers[HEADER_REFERER] = "https://www.febbox.com/"
                 headers[HEADER_ORIGIN] = "https://www.febbox.com"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> {
+                headers[HEADER_REFERER] = "https://player.autoembed.cc/"
+                headers[HEADER_ORIGIN] = "https://player.autoembed.cc"
+            }
+            lowerUrl.contains("embed.su") -> {
+                headers[HEADER_REFERER] = "https://embed.su/"
+                headers[HEADER_ORIGIN] = "https://embed.su"
+            }
+            lowerUrl.contains("hexa.su") -> {
+                headers[HEADER_REFERER] = "https://hexa.su/"
+                headers[HEADER_ORIGIN] = "https://hexa.su"
+            }
+            lowerUrl.contains("vidlink.pro") -> {
+                headers[HEADER_REFERER] = "https://vidlink.pro/"
+                headers[HEADER_ORIGIN] = "https://vidlink.pro"
+            }
+            lowerUrl.contains("vidfast.pro") -> {
+                headers[HEADER_REFERER] = "https://vidfast.pro/"
+                headers[HEADER_ORIGIN] = "https://vidfast.pro"
             }
             else -> {
                 val effectiveReferer = when {
@@ -552,6 +573,11 @@ object StreamLinkOptimizer {
             VOE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://voe.sx/"
             MP4UPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://www.mp4upload.com/"
             lowerUrl.contains("febbox.com") -> "https://www.febbox.com/"
+            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> "https://player.autoembed.cc/"
+            lowerUrl.contains("embed.su") -> "https://embed.su/"
+            lowerUrl.contains("hexa.su") -> "https://hexa.su/"
+            lowerUrl.contains("vidlink.pro") -> "https://vidlink.pro/"
+            lowerUrl.contains("vidfast.pro") -> "https://vidfast.pro/"
             !referer.isNullOrBlank() -> referer
             else -> getHostUrl(url) ?: ""
         }
@@ -1041,8 +1067,9 @@ object StreamLinkOptimizer {
      * 2. Higher resolution quality
      * 3. Direct endpoint rewrites
      * 4. Video source and HDR/codec score
-     * 5. Audio format and channel score
-     * 6. Anti-throttling header completeness
+     * 5. Top-tier source priority rank (superstream > vidlink > HexaSU > vidfast > autoembed > VidEasy)
+     * 6. Audio format and channel score
+     * 7. Anti-throttling header completeness
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
         // 1. Resolution Quality comparison: higher resolution quality strictly takes precedence
@@ -1062,28 +1089,43 @@ object StreamLinkOptimizer {
             return true
         }
 
-        // 3. Direct endpoint score
+        // 3. Top-Tier Source Priority Rank (Download and streaming reliability hierarchy)
+        // SuperStream (60) > Vidlink (50) > HexaSU/EmbedSU (40) > VidFast (30) > AutoEmbed (20) > VidEasy (10) > Secondary (0)
+        val sourceRank1 = getSourcePriorityRank(candidate)
+        val sourceRank2 = getSourcePriorityRank(current)
+        if (sourceRank1 != sourceRank2) {
+            return sourceRank1 > sourceRank2
+        }
+
+        // 4. Direct endpoint score
         val endpointScore1 = if (candidate.url.contains("?download") || candidate.url.contains("&stream=1")) 10 else 0
         val endpointScore2 = if (current.url.contains("?download") || current.url.contains("&stream=1")) 10 else 0
         if (endpointScore1 != endpointScore2) {
             return endpointScore1 > endpointScore2
         }
 
-        // 4. Video source & HDR score comparison
+        // 5. Video source & HDR score comparison
         val videoScore1 = calculateVideoScore(candidate)
         val videoScore2 = calculateVideoScore(current)
         if (videoScore1 != videoScore2) {
             return videoScore1 > videoScore2
         }
 
-        // 5. Audio score comparison
+        // 6. Direct byte stream over HLS for equal tier sources (Range request chunking for downloads)
+        val isDirect1 = candidate.type == ExtractorLinkType.VIDEO || candidate.url.endsWith(".mp4", ignoreCase = true)
+        val isDirect2 = current.type == ExtractorLinkType.VIDEO || current.url.endsWith(".mp4", ignoreCase = true)
+        if (isDirect1 != isDirect2) {
+            return isDirect1
+        }
+
+        // 7. Audio score comparison
         val audioScore1 = calculateAudioScore(candidate)
         val audioScore2 = calculateAudioScore(current)
         if (audioScore1 != audioScore2) {
             return audioScore1 > audioScore2
         }
 
-        // 6. Header score comparison
+        // 8. Header score comparison
         val score1 = calculateHeaderScore(candidate)
         val score2 = calculateHeaderScore(current)
         if (score1 != score2) {
@@ -1091,6 +1133,32 @@ object StreamLinkOptimizer {
         }
 
         return false
+    }
+
+    /**
+     * Definitive top-tier source priority ranking (§R1/R4):
+     * 1. SuperStream (Direct Febbox CDN MP4s with native Range-request chunking)
+     * 2. Vidlink (api.vidlink.pro fast HLS/m3u8 REST resolver)
+     * 3. HexaSU / embed.su (multi-cluster HLS resolver)
+     * 4. VidFast (vidfast.pro direct embed stream)
+     * 5. AutoEmbed (autoembed.cc direct embed stream)
+     * 6. VidEasy (multi-host aggregator for catalog depth)
+     */
+    fun getSourcePriorityRank(link: ExtractorLink): Int {
+        val s = link.source.lowercase(Locale.ROOT)
+        val n = link.name.lowercase(Locale.ROOT)
+        val u = link.url.lowercase(Locale.ROOT)
+        return when {
+            s.contains("superstream") || n.contains("superstream") || u.contains("febbox.com") || u.contains("febbox") -> 60
+            s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") -> 50
+            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") ||
+                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") ||
+                u.contains("hexa.su") || u.contains("embed.su") -> 40
+            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") -> 30
+            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 20
+            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 10
+            else -> 0
+        }
     }
 
     private fun calculateVideoScore(link: ExtractorLink): Int {

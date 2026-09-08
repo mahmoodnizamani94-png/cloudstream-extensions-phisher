@@ -1,6 +1,8 @@
 package com.phisher98
 
+import android.content.SharedPreferences
 import android.util.Log
+import androidx.core.content.edit
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.phisher98.StreamPlayExtractor.invoke2embed
@@ -13,6 +15,7 @@ import com.phisher98.StreamPlayExtractor.invokeAnimepahe
 import com.phisher98.StreamPlayExtractor.invokeAnimetosho
 import com.phisher98.StreamPlayExtractor.invokeAnimex
 import com.phisher98.StreamPlayExtractor.invokeAnizone
+import com.phisher98.StreamPlayExtractor.invokeAutoembed
 import com.phisher98.StreamPlayExtractor.invokeBollyflix
 import com.phisher98.StreamPlayExtractor.invokeCineVood
 import com.phisher98.StreamPlayExtractor.invokeDahmerMovies
@@ -57,7 +60,6 @@ import com.phisher98.StreamPlayExtractor.invokeZinkmovies
 import com.phisher98.StreamPlayExtractor.invokeZshow
 import com.phisher98.StreamPlayExtractor.invokecinemacity
 import com.phisher98.StreamPlayExtractor.invokehdhub4u
-import com.phisher98.StreamPlayExtractor.invokevaplayer
 import com.phisher98.StreamPlayExtractor.invokevidrock
 import com.phisher98.StreamPlayExtractor.resolveAnimeIds
 import kotlinx.coroutines.sync.Mutex
@@ -302,8 +304,8 @@ private val providers by lazy {
         Provider("dahmermovies", "DahmerMovies") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeDahmerMovies(res.title, res.year, res.season, res.episode, callback)
         },
-        Provider("vidfast", "VidFast") { res, _, callback, _, _ ->
-            invokeVidFast(res.id, res.season,res.episode, callback)
+        Provider("vidfast", "VidFast") { res, subtitleCallback, callback, _, _ ->
+            invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("VidEasy", "VidEasy") { res, subtitleCallback, callback, _, _ ->
             invokeVideasy(res.title,res.id, res.imdbId, res.year, res.season,res.episode, subtitleCallback, callback )
@@ -351,9 +353,6 @@ private val providers by lazy {
         Provider("Xpass", "Xpass") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeXpass(res.id, res.season, res.episode, callback, )
         },
-        Provider("vaplayer", "Vaplayer", ProviderKind.MIXED) { res, subtitleCallback, callback, _, _ ->
-            invokevaplayer(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
         Provider("Dudefilms", "Dudefilms") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeDudefilms(res.imdbId, res.season, res.episode, subtitleCallback, callback)
         },
@@ -363,7 +362,52 @@ private val providers by lazy {
         Provider("Peachify", "Peachify") { res, _, callback, _, _ ->
             if (!res.isAnime) invokePeachify(res.id, res.season, res.episode, callback)
         },
+        Provider("autoembed", "AutoEmbed") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeAutoembed(res.id, res.season, res.episode, subtitleCallback, callback)
+        },
     )
 }
 
+val DEFAULT_TOP_TIER_PROVIDERS = setOf(
+    "superstream",
+    "vidlink",
+    "HexaSU",
+    "vidfast",
+    "autoembed",
+    "VidEasy"
+)
+
+fun getDefaultDisabledProviderIds(): Set<String> =
+    buildProviders().map { it.id }.filterNot { it in DEFAULT_TOP_TIER_PROVIDERS }.toSet()
+
 fun buildProviders(): List<Provider> = providers
+
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v2_initialized"
+
+/**
+ * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS with all other sources disabled,
+ * and seamlessly migrates upgrading users so newly promoted top-tier sources (such as AutoEmbed)
+ * are enabled without overwriting custom user selections.
+ */
+fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
+    if (sharedPref == null) return getDefaultDisabledProviderIds()
+
+    val isTopTierV2Initialized = sharedPref.getBoolean(PREFS_TOP_TIER_INITIALIZED, false)
+    if (!isTopTierV2Initialized) {
+        val defaultDisabled = getDefaultDisabledProviderIds()
+        val existingDisabled = sharedPref.getStringSet("disabled_providers", null)
+        val finalDisabled = if (existingDisabled.isNullOrEmpty()) {
+            defaultDisabled
+        } else {
+            (existingDisabled + defaultDisabled) - DEFAULT_TOP_TIER_PROVIDERS
+        }
+        sharedPref.edit {
+            putStringSet("disabled_providers", finalDisabled)
+            putBoolean("streamplay_top5_defaults_initialized", true)
+            putBoolean(PREFS_TOP_TIER_INITIALIZED, true)
+        }
+        Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")
+        return finalDisabled
+    }
+    return sharedPref.getStringSet("disabled_providers", null) ?: getDefaultDisabledProviderIds()
+}

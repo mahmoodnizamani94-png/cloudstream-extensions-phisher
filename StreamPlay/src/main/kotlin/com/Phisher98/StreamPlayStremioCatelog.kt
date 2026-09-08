@@ -2,6 +2,7 @@ package com.phisher98
 
 import com.lagradost.api.Log
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import android.os.Build
 import androidx.annotation.RequiresApi
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -140,9 +141,7 @@ class StreamPlayStremioCatelog(
             deduplicator.emit(StreamLinkOptimizer.optimize(link))
         }
 
-        val disabledProviderIds = sharedPref
-            ?.getStringSet("disabled_providers", emptySet())
-            ?.toSet() ?: emptySet()
+        val disabledProviderIds = getOrInitializeDisabledProviders(sharedPref)
         val providersList = buildProviders().filter { it.id !in disabledProviderIds }
         val earlySatisfactionConfig = EarlySatisfactionConfig(
             minVerifiedLinks = 2,

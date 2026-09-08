@@ -143,7 +143,7 @@ class ProvidersFragment(
         }
 
         // --- Load disabled providers ---
-        val savedDisabled = sharedPref.getStringSet(PREFS_DISABLED, emptySet()) ?: emptySet()
+        val savedDisabled = getOrInitializeDisabledProviders(sharedPref)
 
         adapter = ProviderAdapter(providers, savedDisabled) { disabled ->
             sharedPref.edit { putStringSet(PREFS_DISABLED, disabled) }

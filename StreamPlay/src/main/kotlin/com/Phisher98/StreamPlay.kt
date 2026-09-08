@@ -92,22 +92,33 @@ private val NON_ANIME_PROVIDERS = setOf(
     "Xpass",
     "Dudefilms",
     "Zinkmovies",
-    "Peachify"
+    "Peachify",
+    "autoembed"
 )
 
 internal val FAST_PROVIDER_BOOST = mapOf(
-    "WyZIESUB" to 65f,
-    "SubtitleAPI" to 65f,
-    "vidsrcxyz" to 60f,
-    "rivestream" to 55f,
-    "vidlink" to 52f,
-    "vidfast" to 50f,
-    "moviesapi" to 48f,
-    "HexaSU" to 42f,
-    "superstream" to 40f,
-    "moviebox" to 35f,
-    "vidzeeapi" to 32f,
-    "2Embed" to 28f
+    "superstream" to 70f,
+    "SuperStream" to 70f,
+    "vidlink" to 65f,
+    "Vidlink" to 65f,
+    "HexaSU" to 60f,
+    "hexasu" to 60f,
+    "embedsu" to 60f,
+    "embed.su" to 60f,
+    "vidfast" to 55f,
+    "VidFast" to 55f,
+    "autoembed" to 50f,
+    "AutoEmbed" to 50f,
+    "VidEasy" to 45f,
+    "videasy" to 45f,
+    "WyZIESUB" to 40f,
+    "SubtitleAPI" to 40f,
+    "vidsrcxyz" to 38f,
+    "rivestream" to 35f,
+    "moviesapi" to 30f,
+    "moviebox" to 25f,
+    "vidzeeapi" to 20f,
+    "2Embed" to 15f
 )
 
 open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
@@ -351,6 +362,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val moviesClubApi = "https://moviesapi.club"
         const val cinemacity = "https://cinemacity.cc"
         const val hexaSU = "https://theemoviedb.hexa.su"
+        const val embedSU = "https://embed.su"
+        const val autoembedPlayer = "https://player.autoembed.cc"
+        const val autoembedDomain = "https://autoembed.cc"
         const val mappleAPI = "https://mapple.uk"
         const val twoEmbedAPI = "https://www.2embed.cc"
         const val xpassAPI = "https://play.xpass.top"
@@ -831,13 +845,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val res = parseJson<LinkData>(data)
 
         val allProviders = buildProviders()
-        val disabledProviderIds = sharedPref?.getStringSet("disabled_providers", null)
+        val disabledProviderIds = getOrInitializeDisabledProviders(sharedPref)
 
-        val activeProviders = if (disabledProviderIds.isNullOrEmpty()) {
-            allProviders
-        } else {
-            allProviders.filterNot { disabledProviderIds.contains(it.id) }
-        }
+        val activeProviders = allProviders.filterNot { disabledProviderIds.contains(it.id) }
         val authToken = token.orEmpty()
 
         fun Provider.isApplicableTo(res: LinkData): Boolean {
