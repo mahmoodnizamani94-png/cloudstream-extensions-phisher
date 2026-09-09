@@ -4155,6 +4155,11 @@ object StreamPlayExtractor : StreamPlay() {
                     ) {
                         this.referer = "$base/"
                         this.quality = qual
+                        this.headers = mapOf(
+                            "Origin" to base,
+                            "Referer" to "$base/",
+                            "User-Agent" to USER_AGENT
+                        )
                     }
                 )
             }

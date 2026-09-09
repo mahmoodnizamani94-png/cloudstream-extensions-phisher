@@ -77,13 +77,21 @@ object StreamPlayConcurrency {
         if (tasks.isEmpty()) return@supervisorScope
 
         val activeConcurrency = normalizeConcurrency(concurrency).coerceAtMost(tasks.size)
-        val semaphore = Semaphore(activeConcurrency)
+        val iterator = tasks.iterator()
+        val queueLock = Any()
 
-        val jobs = tasks.map { task ->
+        fun nextTask(): (suspend () -> Unit)? {
+            if (isSatisfied?.invoke() == true) return null
+            synchronized(queueLock) {
+                return if (iterator.hasNext()) iterator.next() else null
+            }
+        }
+
+        val workerJobs = (0 until activeConcurrency).map {
             launch(Dispatchers.IO) {
-                if (isSatisfied?.invoke() == true) return@launch
-                semaphore.withPermit {
-                    if (isSatisfied?.invoke() == true) return@launch
+                while (isActive) {
+                    if (isSatisfied?.invoke() == true) break
+                    val task = nextTask() ?: break
                     try {
                         withTimeoutOrNull(taskTimeoutMs.milliseconds) {
                             task()
@@ -103,7 +111,7 @@ object StreamPlayConcurrency {
                     delay(30.milliseconds)
                     if (isSatisfied.invoke()) {
                         Log.d(TAG, "⚡ Early completion condition satisfied; cancelling trailing stalled tasks.")
-                        jobs.forEach { job ->
+                        workerJobs.forEach { job ->
                             if (job.isActive) {
                                 job.cancel()
                             }
@@ -115,10 +123,10 @@ object StreamPlayConcurrency {
         } else null
 
         try {
-            jobs.forEach { it.join() }
+            workerJobs.forEach { it.join() }
         } finally {
             monitorJob?.cancel()
-            jobs.forEach { if (it.isActive) it.cancel() }
+            workerJobs.forEach { if (it.isActive) it.cancel() }
         }
     }
 

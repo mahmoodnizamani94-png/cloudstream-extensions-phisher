@@ -399,7 +399,7 @@ class DnsMultiplexingAdversarialTest {
                 async(Dispatchers.IO) {
                     flight.execute(key) {
                         totalExecutions.incrementAndGet()
-                        delay(30)
+                        delay(80) // Match realistic simulated API network latency under heavy JVM load
                         "payload_for_$key"
                     }
                 }

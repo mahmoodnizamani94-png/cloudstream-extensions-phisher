@@ -35,10 +35,11 @@ class SingleFlight<K, V> {
      * if another coroutine is already executing for the same [key].
      */
     suspend fun execute(key: K, block: suspend () -> V): V {
-        val newFlight = Flight<V>()
-        val existing = inFlight.putIfAbsent(key, newFlight)
-        val flight = existing ?: newFlight
-        flight.waiters.incrementAndGet()
+        val flight = inFlight.compute(key) { _, current ->
+            val target = current ?: Flight()
+            target.waiters.incrementAndGet()
+            target
+        }!!
 
         try {
             // Fast-path: if a concurrent leader already produced a result, return immediately without locking
@@ -63,9 +64,16 @@ class SingleFlight<K, V> {
                 }
             }
         } finally {
-            // Atomic 2-argument remove: only evict when all active waiters have drained to zero
-            if (flight.waiters.decrementAndGet() == 0) {
-                inFlight.remove(key, flight)
+            inFlight.compute(key) { _, current ->
+                if (current === flight) {
+                    if (flight.waiters.decrementAndGet() == 0) {
+                        null
+                    } else {
+                        current
+                    }
+                } else {
+                    current
+                }
             }
         }
     }
