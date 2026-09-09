@@ -1149,14 +1149,14 @@ object StreamLinkOptimizer {
         val n = link.name.lowercase(Locale.ROOT)
         val u = link.url.lowercase(Locale.ROOT)
         return when {
-            s.contains("superstream") || n.contains("superstream") || u.contains("febbox.com") || u.contains("febbox") -> 60
-            s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") -> 50
+            s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") -> 60
             s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") ||
                 n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") ||
-                u.contains("hexa.su") || u.contains("embed.su") -> 40
-            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") -> 30
-            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 20
-            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 10
+                u.contains("hexa.su") || u.contains("embed.su") -> 50
+            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") -> 40
+            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 30
+            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 20
+            s.contains("superstream") || n.contains("superstream") || u.contains("febbox.com") || u.contains("febbox") -> 10
             else -> 0
         }
     }

@@ -100,64 +100,64 @@ class StreamPlayTopTierSourceHierarchyTest {
 
     @Test
     fun testFastProviderBoostStrictRankOrder() {
-        val superstreamBoost = FAST_PROVIDER_BOOST["superstream"] ?: 0f
         val vidlinkBoost = FAST_PROVIDER_BOOST["vidlink"] ?: 0f
         val hexaBoost = FAST_PROVIDER_BOOST["HexaSU"] ?: 0f
         val vidfastBoost = FAST_PROVIDER_BOOST["vidfast"] ?: 0f
         val autoembedBoost = FAST_PROVIDER_BOOST["autoembed"] ?: 0f
         val videasyBoost = FAST_PROVIDER_BOOST["VidEasy"] ?: 0f
+        val superstreamBoost = FAST_PROVIDER_BOOST["superstream"] ?: 0f
 
         // Check exact target scores
-        assertEquals(70f, superstreamBoost, 0.001f)
-        assertEquals(65f, vidlinkBoost, 0.001f)
-        assertEquals(60f, hexaBoost, 0.001f)
-        assertEquals(55f, vidfastBoost, 0.001f)
-        assertEquals(50f, autoembedBoost, 0.001f)
-        assertEquals(45f, videasyBoost, 0.001f)
+        assertEquals(70f, vidlinkBoost, 0.001f)
+        assertEquals(65f, hexaBoost, 0.001f)
+        assertEquals(60f, vidfastBoost, 0.001f)
+        assertEquals(55f, autoembedBoost, 0.001f)
+        assertEquals(50f, videasyBoost, 0.001f)
+        assertEquals(20f, superstreamBoost, 0.001f)
 
-        // Strict monotonicity check: SuperStream > VidLink > HexaSU > VidFast > AutoEmbed > VidEasy
-        assertTrue(superstreamBoost > vidlinkBoost)
+        // Strict monotonicity check: VidLink > HexaSU > VidFast > AutoEmbed > VidEasy > SuperStream
         assertTrue(vidlinkBoost > hexaBoost)
         assertTrue(hexaBoost > vidfastBoost)
         assertTrue(vidfastBoost > autoembedBoost)
         assertTrue(autoembedBoost > videasyBoost)
+        assertTrue(videasyBoost > superstreamBoost)
 
-        // Secondary providers must never outrank top-tier providers (must be < 45f)
+        // Secondary providers must never outrank top-tier providers (must be < 20f)
         val secondaryProviders = listOf("vidsrcxyz", "rivestream", "moviesapi", "moviebox", "vidzeeapi", "2Embed")
         for (sec in secondaryProviders) {
             val secBoost = FAST_PROVIDER_BOOST[sec] ?: 0f
-            assertTrue("Secondary provider '$sec' ($secBoost) must be strictly lower than VidEasy ($videasyBoost)", secBoost < videasyBoost)
+            assertTrue("Secondary provider '$sec' ($secBoost) must be strictly lower than SuperStream ($superstreamBoost)", secBoost < superstreamBoost)
         }
     }
 
     @Test
     fun testStreamLinkOptimizerSourcePriorityRanks() {
-        val superstreamLink = createLink("SuperStream", "SuperStream [1080p]", "https://www.febbox.com/file/stream.mp4")
         val vidlinkLink = createLink("Vidlink", "Vidlink [1080p]", "https://vidlink.pro/stream/master.m3u8", type = ExtractorLinkType.M3U8)
         val hexaLink = createLink("HexaSU", "HexaSU Server 1 [1080p]", "https://hexa.su/stream.m3u8", type = ExtractorLinkType.M3U8)
         val embedSuLink = createLink("HexaSU", "HexaSU Server 2 [1080p]", "https://embed.su/stream.m3u8", type = ExtractorLinkType.M3U8)
         val vidfastLink = createLink("VidFast", "VidFast Server 1 [1080p]", "https://vidfast.pro/stream.m3u8", type = ExtractorLinkType.M3U8)
         val autoembedLink = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
         val videasyLink = createLink("VidEasy", "VidEasy [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val superstreamLink = createLink("SuperStream", "SuperStream [1080p]", "https://www.febbox.com/file/stream.mp4")
         val secondaryLink = createLink("UnknownProvider", "Scraped Link [1080p]", "https://secondary.example.com/video.mp4")
 
-        val rSuper = StreamLinkOptimizer.getSourcePriorityRank(superstreamLink)
         val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(vidlinkLink)
         val rHexa = StreamLinkOptimizer.getSourcePriorityRank(hexaLink)
         val rEmbedSu = StreamLinkOptimizer.getSourcePriorityRank(embedSuLink)
         val rVidfast = StreamLinkOptimizer.getSourcePriorityRank(vidfastLink)
         val rAutoembed = StreamLinkOptimizer.getSourcePriorityRank(autoembedLink)
         val rVideasy = StreamLinkOptimizer.getSourcePriorityRank(videasyLink)
+        val rSuper = StreamLinkOptimizer.getSourcePriorityRank(superstreamLink)
         val rSecondary = StreamLinkOptimizer.getSourcePriorityRank(secondaryLink)
 
         // Strict hierarchy check
-        assertTrue("SuperStream ($rSuper) > Vidlink ($rVidlink)", rSuper > rVidlink)
         assertTrue("Vidlink ($rVidlink) > HexaSU ($rHexa)", rVidlink > rHexa)
         assertEquals("embed.su has same rank as HexaSU", rHexa, rEmbedSu)
         assertTrue("HexaSU ($rHexa) > VidFast ($rVidfast)", rHexa > rVidfast)
         assertTrue("VidFast ($rVidfast) > AutoEmbed ($rAutoembed)", rVidfast > rAutoembed)
         assertTrue("AutoEmbed ($rAutoembed) > VidEasy ($rVideasy)", rAutoembed > rVideasy)
-        assertTrue("VidEasy ($rVideasy) > Secondary ($rSecondary)", rVideasy > rSecondary)
+        assertTrue("VidEasy ($rVideasy) > SuperStream ($rSuper)", rVideasy > rSuper)
+        assertTrue("SuperStream ($rSuper) > Secondary ($rSecondary)", rSuper > rSecondary)
     }
 
     @Test
@@ -169,9 +169,9 @@ class StreamPlayTopTierSourceHierarchyTest {
         val autoembedStream = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
         val videasyStream = createLink("VidEasy", "VidEasy [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
 
-        // Direct Febbox CDN MP4 beats HLS resolver
-        assertTrue("SuperStream direct Febbox CDN MP4 beats Vidlink", StreamLinkOptimizer.isBetterThan(superstreamDirect, vidlinkStream))
-        assertFalse("Vidlink does not beat SuperStream direct CDN MP4", StreamLinkOptimizer.isBetterThan(vidlinkStream, superstreamDirect))
+        // Vidlink beats SuperStream
+        assertTrue("Vidlink beats SuperStream", StreamLinkOptimizer.isBetterThan(vidlinkStream, superstreamDirect))
+        assertFalse("SuperStream does not beat Vidlink", StreamLinkOptimizer.isBetterThan(superstreamDirect, vidlinkStream))
 
         // Vidlink beats HexaSU
         assertTrue("Vidlink beats HexaSU", StreamLinkOptimizer.isBetterThan(vidlinkStream, hexaStream))
@@ -192,16 +192,16 @@ class StreamPlayTopTierSourceHierarchyTest {
 
     @Test
     fun testTopTierSourceTakesPrecedenceOverVideoScrapeBadges() {
-        // SuperStream with no title badges must strictly beat secondary scraper or lower-tier sources with [REMUX] or [WEB-DL]
-        val superstreamPlain = createLink("SuperStream", "SuperStream [1080p]", "https://www.febbox.com/file/stream.mp4")
-        val videasyRemux = createLink("VidEasy", "VidEasy [REMUX] [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
+        // Higher-tier sources with no title badges must strictly beat lower-tier or secondary sources even with [REMUX] or [WEB-DL]
+        val videasyPlain = createLink("VidEasy", "VidEasy [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val superstreamRemux = createLink("SuperStream", "SuperStream [REMUX] [1080p]", "https://www.febbox.com/file/stream.mp4")
         val secondaryWebDl = createLink("SecondaryScraper", "SecondaryScraper [WEB-DL] [1080p]", "https://secondary.com/video.mp4")
 
-        assertTrue("SuperStream beats VidEasy even with [REMUX] badge", StreamLinkOptimizer.isBetterThan(superstreamPlain, videasyRemux))
-        assertFalse("VidEasy [REMUX] does not beat SuperStream", StreamLinkOptimizer.isBetterThan(videasyRemux, superstreamPlain))
+        assertTrue("VidEasy beats SuperStream even with [REMUX] badge", StreamLinkOptimizer.isBetterThan(videasyPlain, superstreamRemux))
+        assertFalse("SuperStream [REMUX] does not beat VidEasy", StreamLinkOptimizer.isBetterThan(superstreamRemux, videasyPlain))
 
-        assertTrue("SuperStream beats SecondaryScraper [WEB-DL]", StreamLinkOptimizer.isBetterThan(superstreamPlain, secondaryWebDl))
-        assertFalse("SecondaryScraper [WEB-DL] does not beat SuperStream", StreamLinkOptimizer.isBetterThan(secondaryWebDl, superstreamPlain))
+        assertTrue("SuperStream beats SecondaryScraper [WEB-DL]", StreamLinkOptimizer.isBetterThan(superstreamRemux, secondaryWebDl))
+        assertFalse("SecondaryScraper [WEB-DL] does not beat SuperStream", StreamLinkOptimizer.isBetterThan(secondaryWebDl, superstreamRemux))
 
         // VidFast beats AutoEmbed even if AutoEmbed has [WEB-DL]
         val vidfastPlain = createLink("VidFast", "VidFast [1080p]", "https://vidfast.pro/stream.m3u8", type = ExtractorLinkType.M3U8)

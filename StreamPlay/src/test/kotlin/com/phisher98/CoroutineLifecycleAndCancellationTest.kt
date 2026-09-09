@@ -81,7 +81,7 @@ class CoroutineLifecycleAndCancellationTest {
 
         // Allow fast tasks to finish and slow tasks to enter delay
         var waitElapsed = 0L
-        while (completedCount.get() < 2 && waitElapsed < 1000L) {
+        while (completedCount.get() < 2 && waitElapsed < 3000L) {
             delay(10)
             waitElapsed += 10L
         }

@@ -97,28 +97,28 @@ private val NON_ANIME_PROVIDERS = setOf(
 )
 
 internal val FAST_PROVIDER_BOOST = mapOf(
-    "superstream" to 70f,
-    "SuperStream" to 70f,
-    "vidlink" to 65f,
-    "Vidlink" to 65f,
-    "HexaSU" to 60f,
-    "hexasu" to 60f,
-    "embedsu" to 60f,
-    "embed.su" to 60f,
-    "vidfast" to 55f,
-    "VidFast" to 55f,
-    "autoembed" to 50f,
-    "AutoEmbed" to 50f,
-    "VidEasy" to 45f,
-    "videasy" to 45f,
+    "vidlink" to 70f,
+    "Vidlink" to 70f,
+    "HexaSU" to 65f,
+    "hexasu" to 65f,
+    "embedsu" to 65f,
+    "embed.su" to 65f,
+    "vidfast" to 60f,
+    "VidFast" to 60f,
+    "autoembed" to 55f,
+    "AutoEmbed" to 55f,
+    "VidEasy" to 50f,
+    "videasy" to 50f,
+    "superstream" to 20f,
+    "SuperStream" to 20f,
     "WyZIESUB" to 40f,
     "SubtitleAPI" to 40f,
-    "vidsrcxyz" to 38f,
-    "rivestream" to 35f,
-    "moviesapi" to 30f,
-    "moviebox" to 25f,
-    "vidzeeapi" to 20f,
-    "2Embed" to 15f
+    "vidsrcxyz" to 18f,
+    "rivestream" to 15f,
+    "moviesapi" to 12f,
+    "moviebox" to 10f,
+    "vidzeeapi" to 8f,
+    "2Embed" to 5f
 )
 
 open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
