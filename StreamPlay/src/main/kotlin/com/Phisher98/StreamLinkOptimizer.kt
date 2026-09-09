@@ -416,6 +416,13 @@ object StreamLinkOptimizer {
                 // PixelDrain & Hakunaymatata direct downloads must NOT send third-party or arbitrary referers
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
+                if (lowerUrl.contains("hakunaymatata.com")) {
+                    val currentUa = headers.entries.firstOrNull { it.key.equals(HEADER_USER_AGENT, ignoreCase = true) }?.value
+                    if (currentUa == null || currentUa.contains("Mozilla", ignoreCase = true)) {
+                        headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                    }
+                    headers[HEADER_ACCEPT] = "*/*"
+                }
             }
             lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> {
                 headers[HEADER_REFERER] = "https://vidfast.pro/"

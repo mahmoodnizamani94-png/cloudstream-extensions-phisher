@@ -606,7 +606,8 @@ data class VidlinkQuality(
     @SerializedName("size") val size: String? = null,
     @SerializedName("resourceId") val resourceId: String? = null,
     @SerializedName("linkType") val linkType: Int? = null,
-    @SerializedName("requiresProxy") val requiresProxy: Boolean? = null
+    @SerializedName("requiresProxy") val requiresProxy: Boolean? = null,
+    @SerializedName("headers") val headers: Map<String, String>? = null
 )
 
 data class VidlinkCaption(

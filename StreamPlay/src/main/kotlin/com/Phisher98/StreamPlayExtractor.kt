@@ -4147,6 +4147,23 @@ object StreamPlayExtractor : StreamPlay() {
             if (!videoUrl.isNullOrBlank()) {
                 val qual = getQualityFromName(qualityKey)
                 val isHakuna = videoUrl.contains("hakunaymatata", ignoreCase = true)
+                val qualHeaders = (qualityObj.headers ?: emptyMap()).toMutableMap()
+                if (isHakuna) {
+                    qualHeaders.remove("Referer")
+                    qualHeaders.remove("Origin")
+                    qualHeaders.remove("referer")
+                    qualHeaders.remove("origin")
+                    if (!qualHeaders.keys.any { it.equals("User-Agent", ignoreCase = true) }) {
+                        qualHeaders["User-Agent"] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                    }
+                    if (!qualHeaders.keys.any { it.equals("Accept", ignoreCase = true) }) {
+                        qualHeaders["Accept"] = "*/*"
+                    }
+                } else {
+                    if (!qualHeaders.keys.any { it.equals("Origin", ignoreCase = true) }) qualHeaders["Origin"] = base
+                    if (!qualHeaders.keys.any { it.equals("Referer", ignoreCase = true) }) qualHeaders["Referer"] = "$base/"
+                    if (!qualHeaders.keys.any { it.equals("User-Agent", ignoreCase = true) }) qualHeaders["User-Agent"] = USER_AGENT
+                }
                 callback(
                     newExtractorLink(
                         "Vidlink",
@@ -4156,15 +4173,7 @@ object StreamPlayExtractor : StreamPlay() {
                     ) {
                         this.referer = if (isHakuna) "" else "$base/"
                         this.quality = qual
-                        this.headers = if (isHakuna) {
-                            emptyMap()
-                        } else {
-                            mapOf(
-                                "Origin" to base,
-                                "Referer" to "$base/",
-                                "User-Agent" to USER_AGENT
-                            )
-                        }
+                        this.headers = qualHeaders
                     }
                 )
             }
