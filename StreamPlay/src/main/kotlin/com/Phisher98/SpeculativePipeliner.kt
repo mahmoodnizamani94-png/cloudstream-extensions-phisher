@@ -318,10 +318,11 @@ object SpeculativePipeliner {
 
         fun launchTaskGroup(taskList: List<PipelinedTask>, targetList: CopyOnWriteArrayList<Job>): List<Job> {
             if (controller.isSatisfied()) return emptyList()
+            val allBroken = taskList.isNotEmpty() && taskList.all { ProviderTelemetryManager.isCircuitBroken(it.providerId) }
             return taskList.map { task ->
                 launch(Dispatchers.IO) {
                     if (controller.isSatisfied()) return@launch
-                    if (!ProviderTelemetryManager.canExecute(task.providerId)) {
+                    if (!allBroken && !ProviderTelemetryManager.canExecute(task.providerId)) {
                         Log.d(TAG, "Circuit breaker: skipping open provider ${task.providerId}")
                         return@launch
                     }
