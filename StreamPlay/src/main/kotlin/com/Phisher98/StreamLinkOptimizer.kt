@@ -412,10 +412,14 @@ object StreamLinkOptimizer {
         // 7. Host-specific download optimizations and Referer / Origin handling
         val lowerUrl = url.lowercase(Locale.ROOT)
         when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> {
-                // PixelDrain direct downloads must NOT send third-party or arbitrary referers
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata.com") -> {
+                // PixelDrain & Hakunaymatata direct downloads must NOT send third-party or arbitrary referers
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
+            }
+            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> {
+                headers[HEADER_REFERER] = "https://vidfast.pro/"
+                headers[HEADER_ORIGIN] = "https://vidfast.pro"
             }
             lowerUrl.contains("gofile.io") -> {
                 headers[HEADER_REFERER] = "https://gofile.io/"
@@ -556,7 +560,8 @@ object StreamLinkOptimizer {
     fun getEffectiveReferer(url: String, referer: String?, headers: Map<String, String>): String {
         val lowerUrl = url.lowercase(Locale.ROOT)
         return when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata.com") -> ""
+            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> "https://vidfast.pro/"
             headers.containsKey(HEADER_REFERER) -> headers[HEADER_REFERER] ?: ""
             lowerUrl.contains("gofile.io") -> "https://gofile.io/"
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"

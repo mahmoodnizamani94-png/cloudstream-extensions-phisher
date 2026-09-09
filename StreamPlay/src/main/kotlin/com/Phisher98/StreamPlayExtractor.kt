@@ -4146,6 +4146,7 @@ object StreamPlayExtractor : StreamPlay() {
             val videoUrl = qualityObj.url
             if (!videoUrl.isNullOrBlank()) {
                 val qual = getQualityFromName(qualityKey)
+                val isHakuna = videoUrl.contains("hakunaymatata", ignoreCase = true)
                 callback(
                     newExtractorLink(
                         "Vidlink",
@@ -4153,13 +4154,17 @@ object StreamPlayExtractor : StreamPlay() {
                         url = videoUrl,
                         type = INFER_TYPE
                     ) {
-                        this.referer = "$base/"
+                        this.referer = if (isHakuna) "" else "$base/"
                         this.quality = qual
-                        this.headers = mapOf(
-                            "Origin" to base,
-                            "Referer" to "$base/",
-                            "User-Agent" to USER_AGENT
-                        )
+                        this.headers = if (isHakuna) {
+                            emptyMap()
+                        } else {
+                            mapOf(
+                                "Origin" to base,
+                                "Referer" to "$base/",
+                                "User-Agent" to USER_AGENT
+                            )
+                        }
                     }
                 )
             }
@@ -4288,6 +4293,11 @@ object StreamPlayExtractor : StreamPlay() {
                 ) {
                     this.referer = "$vidfastProApi/"
                     this.quality = quality
+                    this.headers = mapOf(
+                        "Referer" to "$vidfastProApi/",
+                        "Origin" to vidfastProApi,
+                        "User-Agent" to USER_AGENT
+                    )
                 }
             )
         }

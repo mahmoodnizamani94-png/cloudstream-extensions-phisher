@@ -894,10 +894,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             qualityThreshold = Qualities.P1080.value,
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
-            satisfyWithOneLinkIfSubsFound = true,
+            satisfyWithOneLinkIfSubsFound = false,
             requireSubtitles = false,
             adaptiveTierEscalation = true,
-            softGracePeriodAfterFirstLinkMs = 3500L,
+            softGracePeriodAfterFirstLinkMs = 4500L,
             maxPipelineTimeoutMs = 18_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
