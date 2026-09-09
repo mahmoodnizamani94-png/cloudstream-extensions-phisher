@@ -1,6 +1,6 @@
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 14
+version = 15
 
 android {
     buildFeatures {
@@ -9,9 +9,14 @@ android {
     }
     defaultConfig {
         val properties = Properties()
-        properties.load(project.rootProject.file("local.properties").inputStream())
+        val localProp = project.rootProject.file("local.properties")
+        if (localProp.exists()) {
+            properties.load(localProp.inputStream())
+        }
+        val tmdbApiKey = properties.getProperty("TMDB_API")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: "1865f43a0549ca50d341dd9ab8b29f49"
         android.buildFeatures.buildConfig=true
-        buildConfigField("String", "TMDB_API", "\"${properties.getProperty("TMDB_API")}\"")
+        buildConfigField("String", "TMDB_API", "\"$tmdbApiKey\"")
     }
 }
 

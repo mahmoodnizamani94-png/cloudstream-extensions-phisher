@@ -2,7 +2,7 @@
 
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 35
+version = 36
 
 android {
     buildFeatures {
@@ -11,9 +11,14 @@ android {
     }
     defaultConfig {
         val properties = Properties()
-        properties.load(project.rootProject.file("local.properties").inputStream())
+        val localProp = project.rootProject.file("local.properties")
+        if (localProp.exists()) {
+            properties.load(localProp.inputStream())
+        }
+        val tmdbApiKey = properties.getProperty("TMDB_API")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: "1865f43a0549ca50d341dd9ab8b29f49"
         android.buildFeatures.buildConfig=true
-        buildConfigField("String", "TMDB_API", "\"${properties.getProperty("TMDB_API")}\"")
+        buildConfigField("String", "TMDB_API", "\"$tmdbApiKey\"")
         buildConfigField("String", "SUPERSTREAM_THIRD_API", "\"${properties.getProperty("SUPERSTREAM_THIRD_API")}\"")
         buildConfigField("String", "SUPERSTREAM_FOURTH_API", "\"${properties.getProperty("SUPERSTREAM_FOURTH_API")}\"")
         buildConfigField("String", "SUPERSTREAM_FIRST_API", "\"${properties.getProperty("SUPERSTREAM_FIRST_API")}\"")
