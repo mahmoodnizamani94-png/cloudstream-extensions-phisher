@@ -588,11 +588,33 @@ data class Watch32(
 
 //Vidlink
 data class VidlinkResponse(
-    @SerializedName("stream") val stream: VidlinkStream
+    @SerializedName("stream") val stream: VidlinkStream? = null
 )
 
 data class VidlinkStream(
-    @SerializedName("playlist") val playlist: String
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("type") val type: String? = null,
+    @SerializedName("playlist") val playlist: String? = null,
+    @SerializedName("qualities") val qualities: Map<String, VidlinkQuality>? = null,
+    @SerializedName("captions") val captions: List<VidlinkCaption>? = null
+)
+
+data class VidlinkQuality(
+    @SerializedName("type") val type: String? = null,
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("codecName") val codecName: String? = null,
+    @SerializedName("size") val size: String? = null,
+    @SerializedName("resourceId") val resourceId: String? = null,
+    @SerializedName("linkType") val linkType: Int? = null,
+    @SerializedName("requiresProxy") val requiresProxy: Boolean? = null
+)
+
+data class VidlinkCaption(
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("language") val language: String? = null,
+    @SerializedName("type") val type: String? = null,
+    @SerializedName("hasCorsRestrictions") val hasCorsRestrictions: Boolean? = null
 )
 
 data class VidFastRes(

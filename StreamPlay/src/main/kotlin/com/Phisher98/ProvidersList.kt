@@ -295,8 +295,8 @@ private val providers by lazy {
         Provider("vidrock", "Vidrock") { res, _, callback, _, _ ->
             if (!res.isAnime) invokevidrock(res.id, res.season, res.episode, callback)
         },
-        Provider("vidlink", "Vidlink") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeVidlink(res.id, res.season, res.episode, callback)
+        Provider("vidlink", "Vidlink") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("kisskh", "KissKH (Asian Drama)") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeKisskh(res.title, res.season, res.episode, res.lastSeason, subtitleCallback, callback)

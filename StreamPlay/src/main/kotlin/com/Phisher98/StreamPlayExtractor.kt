@@ -1901,6 +1901,11 @@ object StreamPlayExtractor : StreamPlay() {
 
         if(title == null) return
 
+        val isAlive = runCatching {
+            app.get(videasyAPI, timeout = 3L).isSuccessful
+        }.getOrDefault(false)
+        if (!isAlive) return
+
         val firstPass = quote(title)
         val encTitle = quote(firstPass)
 
@@ -1911,13 +1916,18 @@ object StreamPlayExtractor : StreamPlay() {
                 "$videasyAPI/$server/sources-with-title?title=$encTitle&mediaType=tv&year=$year&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season&imdbId=$imdbId"
             }
 
-            val encdata = safeGet(url, headers = headers).text
+            val encdata = runCatching {
+                safeGet(url, headers = headers, timeout = 3L).text
+            }.getOrNull() ?: return@safeAmap
 
             val jsonBody = mapOf("text" to encdata, "id" to tmdbId)
-            val response = app.post(
-                "https://enc-dec.app/api/dec-videasy",
-                json = jsonBody
-            )
+            val response = runCatching {
+                app.post(
+                    "https://enc-dec.app/api/dec-videasy",
+                    json = jsonBody,
+                    timeout = 3L
+                )
+            }.getOrNull() ?: return@safeAmap
 
             if(response.isSuccessful) {
                 val json = response.text
@@ -4054,12 +4064,13 @@ object StreamPlayExtractor : StreamPlay() {
         tmdbId: Int? = null,
         season: Int? = null,
         episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit
     ) {
         if (tmdbId == null) return
 
         val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
-        val encResponse = runCatching { app.get(encUrl).text }.getOrNull() ?: return
+        val encResponse = runCatching { app.get(encUrl, timeout = 10L).text }.getOrNull() ?: return
 
         val encData = runCatching {
             JSONObject(encResponse).optString("result")
@@ -4082,41 +4093,81 @@ object StreamPlayExtractor : StreamPlay() {
         }
 
         val epResponse = runCatching {
-            app.get(apiUrl, headers = headers).text
+            app.get(apiUrl, headers = headers, timeout = 10L).text
         }.getOrNull() ?: return
 
         val data = runCatching {
             Gson().fromJson(epResponse, VidlinkResponse::class.java)
         }.getOrNull() ?: return
 
-        val stream = data.stream
-        val m3u8 = stream.playlist
+        val stream = data.stream ?: return
 
-        val headersJson = Regex("""[?&]headers=([^&]+)""")
-            .find(m3u8)?.groupValues?.get(1)
-            ?.let { URLDecoder.decode(it, "UTF-8") }
-
-        var referer = "$base/"
-        var origin  = base
-
-        if (!headersJson.isNullOrBlank()) {
-            runCatching {
-                val obj = Gson().fromJson(headersJson, JsonObject::class.java)
-                obj["referer"]?.asString?.let { referer = it }
-                obj["origin"]?.asString?.let  { origin  = it }
+        // 1. Parse captions / subtitles
+        stream.captions?.forEach { caption ->
+            val subUrl = caption.url
+            if (!subUrl.isNullOrBlank()) {
+                val lang = caption.language ?: "English"
+                subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
             }
         }
-        val m3u8url = m3u8.substringBefore("?")
-        headersJson?.toJson()?.let { Log.d("Phisher",m3u8url) }
-        generateM3u8(
-            "Vidlink",
-            m3u8url,
-            referer = referer,
-            headers = mapOf(
-                "Origin"  to vidlink,
-                "Referer" to "$vidlink/"
-            )
-        ).forEach(callback)
+
+        // 2. Parse playlist (HLS m3u8)
+        val m3u8 = stream.playlist
+        if (!m3u8.isNullOrBlank()) {
+            val headersJson = Regex("""[?&]headers=([^&]+)""")
+                .find(m3u8)?.groupValues?.get(1)
+                ?.let { URLDecoder.decode(it, "UTF-8") }
+
+            var referer = "$base/"
+            var origin  = base
+
+            if (!headersJson.isNullOrBlank()) {
+                runCatching {
+                    val obj = Gson().fromJson(headersJson, JsonObject::class.java)
+                    obj["referer"]?.asString?.let { referer = it }
+                    obj["origin"]?.asString?.let  { origin  = it }
+                }
+            }
+            val m3u8url = m3u8.substringBefore("?")
+            headersJson?.toJson()?.let { Log.d("Phisher", m3u8url) }
+            generateM3u8(
+                "Vidlink",
+                m3u8url,
+                referer = referer,
+                headers = mapOf(
+                    "Origin"  to vidlink,
+                    "Referer" to "$vidlink/"
+                )
+            ).forEach(callback)
+        }
+
+        // 3. Parse direct MP4 stream qualities
+        stream.qualities?.forEach { (qualityKey, qualityObj) ->
+            val videoUrl = qualityObj.url
+            if (!videoUrl.isNullOrBlank()) {
+                val qual = getQualityFromName(qualityKey)
+                callback(
+                    newExtractorLink(
+                        "Vidlink",
+                        "Vidlink $qualityKey",
+                        url = videoUrl,
+                        type = INFER_TYPE
+                    ) {
+                        this.referer = "$base/"
+                        this.quality = qual
+                    }
+                )
+            }
+        }
+    }
+
+    suspend fun invokeVidlink(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
     //Need Fix Encrypted Links
@@ -4140,21 +4191,20 @@ object StreamPlayExtractor : StreamPlay() {
 
         val baseHeaders = mutableMapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-            "Referer" to "$vidfastProApi/",
-            "X-Requested-With" to "XMLHttpRequest"
+            "Referer" to "$vidfastProApi/"
         )
 
         val pageText = runCatching {
-            safeGet(requestUrl, headers = baseHeaders).text
+            safeGet(requestUrl, headers = baseHeaders, timeout = 10L).text
         }.getOrNull() ?: return
 
-        val encodedText = Regex("""\\"en\\":\\"(.*?)\\"""")
-            .find(pageText)
+        val encodedText = (Regex("""(?:\\\"|")en(?:\\\"|")\s*:\s*(?:\\\"|")([^"\\]+)(?:\\\"|")""")
+            .find(pageText) ?: Regex("""\\"en\\":\\"(.*?)\\"""").find(pageText))
             ?.groupValues
             ?.getOrNull(1) ?: return
 
         val encJson = runCatching {
-            safeGet("$api/enc-vidfast?text=$encodedText&version=$version")
+            safeGet("$api/enc-vidfast?text=$encodedText&version=$version", timeout = 10L)
                 .parsedSafe<VidFastRes>()
         }.getOrNull() ?: return
 
@@ -4166,6 +4216,7 @@ object StreamPlayExtractor : StreamPlay() {
         if (serversUrl.isBlank() || streamBase.isBlank()) return
 
         baseHeaders["X-CSRF-Token"] = token
+        baseHeaders["X-Requested-With"] = "XMLHttpRequest"
 
         val serversEncrypted = runCatching {
             app.post(serversUrl, headers = baseHeaders).text
@@ -4433,7 +4484,7 @@ object StreamPlayExtractor : StreamPlay() {
         val apiBase = "https://enc-dec.app/api"
 
         val token = runCatching {
-            safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 6L).parsedSafe<HexaEn>()?.result?.token
+            safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 3L).parsedSafe<HexaEn>()?.result?.token
         }.getOrNull() ?: return
 
         val headers = baseHeaders + mapOf(
@@ -4543,7 +4594,9 @@ object StreamPlayExtractor : StreamPlay() {
 
         val domainTargets = listOf(
             autoembedPlayer,
-            autoembedDomain
+            autoembedDomain,
+            "https://autoembed.to",
+            "https://autoembed.co"
         )
 
         val baseHeaders = mapOf(
@@ -4618,7 +4671,7 @@ object StreamPlayExtractor : StreamPlay() {
             for (path in paths) {
                 val url = "$domain$path"
                 val headers = baseHeaders + mapOf("Referer" to "$domain/")
-                val response = runCatching { safeGet(url, headers = headers, timeout = 6L) }.getOrNull() ?: continue
+                val response = runCatching { safeGet(url, headers = headers, timeout = 3L) }.getOrNull() ?: continue
                 if (!response.isSuccessful || response.text.isBlank()) continue
 
                 val pageText = response.text
