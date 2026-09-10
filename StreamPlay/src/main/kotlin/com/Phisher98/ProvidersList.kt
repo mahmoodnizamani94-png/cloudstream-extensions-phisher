@@ -146,6 +146,22 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
 
 private val providers by lazy {
     listOf(
+        Provider("vidlink", "Vidlink") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback)
+        },
+        Provider("HexaSU", "HexaSU") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeHexa(res.id, res.season, res.episode, subtitleCallback, callback)
+        },
+        Provider("autoembed", "AutoEmbed") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeAutoembed(res.id, res.season, res.episode, subtitleCallback, callback)
+        },
+        Provider("vidfast", "VidFast") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback)
+        },
+        Provider("VidEasy", "VidEasy") { res, subtitleCallback, callback, _, _ ->
+            val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
+            if (!res.isAnime) invokeVideasy(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
+        },
         Provider("uhdmovies", "UHD Movies") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeUhdmovies(res.title, res.year, res.season, res.episode, callback, subtitleCallback)
         },
@@ -278,29 +294,17 @@ private val providers by lazy {
         Provider("vidrock", "Vidrock") { res, _, callback, _, _ ->
             if (!res.isAnime) invokevidrock(res.id, res.season, res.episode, callback)
         },
-        Provider("vidlink", "Vidlink") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
         Provider("kisskh", "KissKH (Asian Drama)") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeKisskh(res.title, res.season, res.episode, res.lastSeason, subtitleCallback, callback)
         },
         Provider("dahmermovies", "DahmerMovies") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeDahmerMovies(res.title, res.year, res.season, res.episode, callback)
         },
-        Provider("vidfast", "VidFast") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("VidEasy", "VidEasy") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVideasy(res.title, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
         Provider("moviesapi", "MoviesApi Club") { res, _, callback, _, _ ->
             invokeMoviesApi(res.id, res.season, res.episode, callback)
         },
         Provider("CinemaCity", "CinemaCity") { res, _, callback, _, _ ->
             invokecinemacity(res.imdbId, res.season,res.episode,  callback)
-        },
-        Provider("HexaSU", "HexaSU") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeHexa(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("Hindmoviez", "HindMoviez") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeHindmoviez(res.imdbId, res.season, res.episode, subtitleCallback, callback)
@@ -344,10 +348,7 @@ private val providers by lazy {
         },
         Provider("Peachify", "Peachify") { res, _, callback, _, _ ->
             if (!res.isAnime) invokePeachify(res.id, res.season, res.episode, callback)
-        },
-        Provider("autoembed", "AutoEmbed") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeAutoembed(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
+        }
     )
 }
 

@@ -40,6 +40,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -1866,7 +1867,7 @@ object StreamPlayExtractor : StreamPlay() {
         year: Int? = null,
         season: Int? = null,
         episode: Int? = null,
-        subtitleCallback: (SubtitleFile) -> Unit,
+        subtitleCallback: (SubtitleFile) -> Unit = {},
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -1880,46 +1881,79 @@ object StreamPlayExtractor : StreamPlay() {
             val headers = mapOf(
                 "Accept" to "*/*",
                 "User-Agent" to USER_AGENT,
-                "Origin" to "https://www.cineby.sc",
-                "Referer" to "https://www.cineby.sc/"
+                "Origin" to "https://player.videasy.to",
+                "Referer" to "https://player.videasy.to/"
             )
 
-            val servers = listOf(
-                "myflixerzupcloud",
-                "1movies",
-                "moviebox",
-                "primewire",
-                "m4uhd",
-                "hdmovie",
-                "cdn",
-                "primesrcme",
-                "visioncine",
-                "overflix",
-                "superflix",
-                "cuevana",
-                "lamovie",
-                "mb-flix",
-            )
+            val servers = listOf("cdn", "m4uhd")
 
             val firstPass = quote(title)
             val encTitle = quote(firstPass)
 
+            var activeApi = videasyAPI
+            var seed: String? = runCatching {
+                val resp = safeGet("$videasyAPI/seed?mediaId=$tmdbId", headers = headers, timeout = 4L)
+                if (resp.isSuccessful && resp.text.isNotBlank()) {
+                    val raw = resp.text.trim()
+                    if (raw.startsWith("{")) {
+                        runCatching { JSONObject(raw).optString("seed", "") }.getOrNull()?.ifBlank { null }
+                    } else {
+                        raw.trim('"')
+                    }
+                } else null
+            }.getOrNull()
+
+            if (seed.isNullOrBlank()) {
+                val fallbackResp = runCatching {
+                    safeGet("$videasyFallbackAPI/seed?mediaId=$tmdbId", headers = headers, timeout = 4L)
+                }.getOrNull()
+                if (fallbackResp != null && fallbackResp.isSuccessful && fallbackResp.text.isNotBlank()) {
+                    val raw = fallbackResp.text.trim()
+                    seed = if (raw.startsWith("{")) {
+                        runCatching { JSONObject(raw).optString("seed", "") }.getOrNull()?.ifBlank { null }
+                    } else {
+                        raw.trim('"')
+                    }
+                    if (!seed.isNullOrBlank()) {
+                        activeApi = videasyFallbackAPI
+                    }
+                }
+            }
+
+            val seedParam = if (!seed.isNullOrBlank()) "&enc=2&seed=$seed" else ""
+
             servers.safeAmap { server ->
-                val url = if (season == null) {
-                    "$videasyAPI/$server/sources-with-title?title=$encTitle&mediaType=movie&year=$year&tmdbId=$tmdbId&imdbId=$imdbId"
+                val primaryUrl = if (season == null) {
+                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie&year=$year&tmdbId=$tmdbId&imdbId=$imdbId$seedParam"
                 } else {
-                    "$videasyAPI/$server/sources-with-title?title=$encTitle&mediaType=tv&year=$year&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season&imdbId=$imdbId"
+                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv&year=$year&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season&imdbId=$imdbId$seedParam"
                 }
 
-                val encdata = runCatching {
-                    safeGet(url, headers = headers, timeout = 4L).text
-                }.getOrNull() ?: return@safeAmap
+                var encdata = runCatching {
+                    val resp = safeGet(primaryUrl, headers = headers, timeout = 4L)
+                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                }.getOrNull()
 
-                val jsonBody = mapOf("text" to encdata, "id" to tmdbId)
+                if (encdata.isNullOrBlank() && activeApi != videasyFallbackAPI) {
+                    val fallbackUrl = if (season == null) {
+                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie&year=$year&tmdbId=$tmdbId&imdbId=$imdbId$seedParam"
+                    } else {
+                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv&year=$year&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season&imdbId=$imdbId$seedParam"
+                    }
+                    encdata = runCatching {
+                        val resp = safeGet(fallbackUrl, headers = headers, timeout = 4L)
+                        if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                    }.getOrNull()
+                }
+
+                if (encdata.isNullOrBlank()) return@safeAmap
+
+                val jsonBody = JSONObject().put("text", encdata).put("id", tmdbId).put("seed", seed ?: "")
                 val response = runCatching {
                     app.post(
                         "https://enc-dec.app/api/dec-videasy",
-                        json = jsonBody,
+                        headers = mapOf("Content-Type" to "application/json"),
+                        requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType()),
                         timeout = 4L
                     )
                 }.getOrNull() ?: return@safeAmap
@@ -1947,7 +1981,7 @@ object StreamPlayExtractor : StreamPlay() {
                                     generateM3u8(
                                         "VidEasy",
                                         source,
-                                        "https://www.cineby.sc/",
+                                        "https://player.videasy.to/",
                                         headers = headers
                                     )
                                 }.getOrNull()
@@ -1964,7 +1998,7 @@ object StreamPlayExtractor : StreamPlay() {
                                         ) {
                                             this.quality = getIndexQuality(quality)
                                             this.headers = headers
-                                            this.referer = "https://www.cineby.sc/"
+                                            this.referer = "https://player.videasy.to/"
                                         }
                                     )
                                 }
@@ -1978,7 +2012,7 @@ object StreamPlayExtractor : StreamPlay() {
                                     ) {
                                         this.quality = getIndexQuality(quality)
                                         this.headers = headers
-                                        this.referer = "https://www.cineby.sc/"
+                                        this.referer = "https://player.videasy.to/"
                                     }
                                 )
                             }
@@ -2007,6 +2041,18 @@ object StreamPlayExtractor : StreamPlay() {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeVideasy failed: ${e.message}")
         }
+    }
+
+    suspend fun invokeVideasy(
+        title: String? = null,
+        tmdbId: Int? = null,
+        imdbId: String? = null,
+        year: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVideasy(title, tmdbId, imdbId, year, season, episode, subtitleCallback = {}, callback = callback)
     }
 
     suspend fun invokeMapple(
@@ -4228,8 +4274,8 @@ object StreamPlayExtractor : StreamPlay() {
                 safeGet(requestUrl, headers = baseHeaders, timeout = 5L).text
             }.getOrNull() ?: return
 
-            val encodedText = (Regex("""(?:\\\"|")en(?:\\\"|")\s*:\s*(?:\\\"|")([^"\\]+)(?:\\\"|")""")
-                .find(pageText) ?: Regex("""\\"en\\":\\"(.*?)\\"""").find(pageText))
+            val encodedText = (Regex("""(?:\\\"|")(?:en|token)(?:\\\"|")\s*:\s*(?:\\\"|")([^"\\]+)(?:\\\"|")""")
+                .find(pageText) ?: Regex("""\\"(?:en|token)\\":\\"(.*?)\\"""").find(pageText))
                 ?.groupValues
                 ?.getOrNull(1) ?: return
 
@@ -4566,7 +4612,7 @@ object StreamPlayExtractor : StreamPlay() {
             val apiBase = "https://enc-dec.app/api"
 
             val token = runCatching {
-                safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 3L).parsedSafe<HexaEn>()?.result?.token
+                safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()?.result?.token
             }.getOrNull() ?: return
 
             val headers = baseHeaders + mapOf(
@@ -4581,6 +4627,7 @@ object StreamPlayExtractor : StreamPlay() {
 
             val domainTargets = listOf(
                 hexaSU to "https://hexa.su/",
+                flixerSU to "https://flixer.su/",
                 embedSU to "https://embed.su/"
             )
 
@@ -4657,12 +4704,17 @@ object StreamPlayExtractor : StreamPlay() {
                             if (!generated.isNullOrEmpty()) {
                                 generated.forEach(callback)
                             } else {
+                                val streamType = if (link.contains(".mp4", ignoreCase = true) || link.contains(".mkv", ignoreCase = true)) {
+                                    ExtractorLinkType.VIDEO
+                                } else {
+                                    ExtractorLinkType.M3U8
+                                }
                                 callback(
                                     newExtractorLink(
                                         "HexaSU",
                                         "HexaSU $name",
                                         link,
-                                        ExtractorLinkType.M3U8
+                                        streamType
                                     ) {
                                         this.referer = chosenReferer
                                         this.quality = Qualities.P1080.value
@@ -4701,11 +4753,12 @@ object StreamPlayExtractor : StreamPlay() {
         try {
             if (tmdbId == null || (season != null && episode == null)) return
 
-            val paths = if (season == null) {
-                listOf("/embed/movie/$tmdbId", "/movie/$tmdbId")
-            } else {
-                listOf("/embed/tv/$tmdbId/$season/$episode", "/tv/$tmdbId/$season/$episode")
-            }
+            withTimeoutOrNull(7000L) {
+                val paths = if (season == null) {
+                    listOf("/embed/movie/$tmdbId", "/movie/$tmdbId")
+                } else {
+                    listOf("/embed/tv/$tmdbId/$season/$episode", "/tv/$tmdbId/$season/$episode")
+                }
 
             val domainTargets = listOf(
                 autoembedPlayer,
@@ -4895,11 +4948,28 @@ object StreamPlayExtractor : StreamPlay() {
 
                     for (iframeSrc in iframeSources.distinct()) {
                         val resolvedByExtractor = runCatching {
-                            loadExtractor(iframeSrc, "$domain/", subtitleCallback = subtitleCallback, callback = callback)
+                            loadExtractor(iframeSrc, "$domain/", subtitleCallback = subtitleCallback) { link ->
+                                @Suppress("DEPRECATION")
+                                val taggedLink = if (!link.name.contains("AutoEmbed", ignoreCase = true) && !link.source.contains("AutoEmbed", ignoreCase = true)) {
+                                    ExtractorLink(
+                                        source = "AutoEmbed",
+                                        name = "AutoEmbed [${link.name}]",
+                                        url = link.url,
+                                        referer = link.referer.ifBlank { "$domain/" },
+                                        quality = link.quality,
+                                        type = link.type,
+                                        headers = link.headers,
+                                        extractorData = link.extractorData
+                                    )
+                                } else {
+                                    link
+                                }
+                                callback(taggedLink)
+                            }
                         }.getOrDefault(false)
 
                         if (!resolvedByExtractor) {
-                            val iframeResp = runCatching { safeGet(iframeSrc, headers = mapOf("Referer" to "$domain/"), timeout = 6L) }.getOrNull()
+                            val iframeResp = runCatching { safeGet(iframeSrc, headers = mapOf("Referer" to "$domain/"), timeout = 3L) }.getOrNull()
                             if (iframeResp != null && iframeResp.isSuccessful && iframeResp.text.isNotBlank()) {
                                 val iframeText = iframeResp.text
                                 streamRegex.findAll(iframeText).forEach { match ->
@@ -4916,6 +4986,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 if (foundOnDomain) break
             }
+        }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeAutoembed failed: ${e.message}")

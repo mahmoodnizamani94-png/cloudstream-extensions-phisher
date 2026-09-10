@@ -103,6 +103,8 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "Vidlink" to 100f,
     "HexaSU" to 90f,
     "hexasu" to 90f,
+    "flixersu" to 90f,
+    "flixer.su" to 90f,
     "embedsu" to 90f,
     "embed.su" to 90f,
     "autoembed" to 80f,
@@ -360,10 +362,12 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val vidrock = "https://vidrock.ru"
         const val vidlink = "https://vidlink.pro"
         const val vidfastProApi = "https://vidfast.vc"
-        const val videasyAPI = "https://api.videasy.net"
+        const val videasyAPI = "https://api.speedracelight.com"
+        const val videasyFallbackAPI = "https://api.videasy.net"
         const val moviesClubApi = "https://moviesapi.club"
         const val cinemacity = "https://cinemacity.cc"
         const val hexaSU = "https://theemoviedb.hexa.su"
+        const val flixerSU = "https://flixer.su"
         const val embedSU = "https://embed.su"
         const val autoembedPlayer = "https://player.autoembed.cc"
         const val autoembedDomain = "https://autoembed.cc"

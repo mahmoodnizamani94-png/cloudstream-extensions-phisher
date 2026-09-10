@@ -158,8 +158,9 @@ class StreamPlayStremioCatelog(
         val catalogSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
         val trackedLinkCallback: (ExtractorLink) -> Unit = { link ->
             catalogLinksFound.incrementAndGet()
-            earlyController.onLinkEmitted(link)
-            optimizedCallback(link)
+            val optimized = StreamLinkOptimizer.optimize(link)
+            earlyController.onLinkEmitted(optimized)
+            deduplicator.emit(optimized)
         }
         val trackedSubCallback: (SubtitleFile) -> Unit = { sub ->
             catalogSubsFound.incrementAndGet()

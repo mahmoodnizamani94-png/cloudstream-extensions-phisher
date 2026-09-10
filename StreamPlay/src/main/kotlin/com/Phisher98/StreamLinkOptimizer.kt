@@ -415,6 +415,14 @@ object StreamLinkOptimizer {
             (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
                 it.value.contains("vidlink.pro", ignoreCase = true)
         } || referer?.contains("vidlink.pro", ignoreCase = true) == true
+        val isVideasy = referer?.contains("videasy", ignoreCase = true) == true ||
+            referer?.contains("cineby", ignoreCase = true) == true ||
+            referer?.contains("speedracelight", ignoreCase = true) == true ||
+            headers.entries.any {
+                it.value.contains("videasy", ignoreCase = true) ||
+                    it.value.contains("cineby", ignoreCase = true) ||
+                    it.value.contains("speedracelight", ignoreCase = true)
+            }
         when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
             lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
@@ -429,10 +437,35 @@ object StreamLinkOptimizer {
                     headers[HEADER_ACCEPT] = "*/*"
                 }
             }
-            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
-            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> {
+            lowerUrl.contains("embed.su") -> {
+                headers[HEADER_REFERER] = "https://embed.su/"
+                headers[HEADER_ORIGIN] = "https://embed.su"
+            }
+            lowerUrl.contains("hexa.su") -> {
+                headers[HEADER_REFERER] = "https://hexa.su/"
+                headers[HEADER_ORIGIN] = "https://hexa.su"
+            }
+            lowerUrl.contains("flixer.su") -> {
+                headers[HEADER_REFERER] = "https://flixer.su/"
+                headers[HEADER_ORIGIN] = "https://flixer.su"
+            }
+            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> {
+                headers[HEADER_REFERER] = "https://player.autoembed.cc/"
+                headers[HEADER_ORIGIN] = "https://player.autoembed.cc"
+            }
+            (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc")) && !isVideasy -> {
                 headers[HEADER_REFERER] = "https://vidfast.vc/"
                 headers[HEADER_ORIGIN] = "https://vidfast.vc"
+            }
+            lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
+            (lowerUrl.contains("peakstorm.top") && isVideasy) -> {
+                headers[HEADER_REFERER] = "https://player.videasy.to/"
+                headers[HEADER_ORIGIN] = "https://player.videasy.to"
+            }
+            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> {
+                headers[HEADER_REFERER] = "https://www.cineby.sc/"
+                headers[HEADER_ORIGIN] = "https://www.cineby.sc"
             }
             lowerUrl.contains("gofile.io") -> {
                 headers[HEADER_REFERER] = "https://gofile.io/"
@@ -521,22 +554,6 @@ object StreamLinkOptimizer {
                 headers[HEADER_ORIGIN] = "https://www.febbox.com"
                 headers["Accept-Ranges"] = "bytes"
             }
-            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> {
-                headers[HEADER_REFERER] = "https://player.autoembed.cc/"
-                headers[HEADER_ORIGIN] = "https://player.autoembed.cc"
-            }
-            lowerUrl.contains("embed.su") -> {
-                headers[HEADER_REFERER] = "https://embed.su/"
-                headers[HEADER_ORIGIN] = "https://embed.su"
-            }
-            lowerUrl.contains("hexa.su") -> {
-                headers[HEADER_REFERER] = "https://hexa.su/"
-                headers[HEADER_ORIGIN] = "https://hexa.su"
-            }
-            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> {
-                headers[HEADER_REFERER] = "https://www.cineby.sc/"
-                headers[HEADER_ORIGIN] = "https://www.cineby.sc"
-            }
             else -> {
                 val effectiveReferer = when {
                     !referer.isNullOrBlank() -> referer
@@ -568,6 +585,14 @@ object StreamLinkOptimizer {
      */
     fun getEffectiveReferer(url: String, referer: String?, headers: Map<String, String>): String {
         val lowerUrl = url.lowercase(Locale.ROOT)
+        val isVideasy = referer?.contains("videasy", ignoreCase = true) == true ||
+            referer?.contains("cineby", ignoreCase = true) == true ||
+            referer?.contains("speedracelight", ignoreCase = true) == true ||
+            headers.entries.any {
+                it.value.contains("videasy", ignoreCase = true) ||
+                    it.value.contains("cineby", ignoreCase = true) ||
+                    it.value.contains("speedracelight", ignoreCase = true)
+            }
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
             lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
@@ -576,9 +601,15 @@ object StreamLinkOptimizer {
                 (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
                     it.value.contains("vidlink.pro", ignoreCase = true)
             } -> ""
-            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
-            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> "https://vidfast.vc/"
-            headers.containsKey(HEADER_REFERER) -> headers[HEADER_REFERER] ?: ""
+            lowerUrl.contains("embed.su") -> "https://embed.su/"
+            lowerUrl.contains("hexa.su") -> "https://hexa.su/"
+            lowerUrl.contains("flixer.su") -> "https://flixer.su/"
+            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> "https://player.autoembed.cc/"
+            (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc")) && !isVideasy -> "https://vidfast.vc/"
+            lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
+            (lowerUrl.contains("peakstorm.top") && isVideasy) -> "https://player.videasy.to/"
+            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> "https://www.cineby.sc/"
             lowerUrl.contains("gofile.io") -> "https://gofile.io/"
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"
             DOOD_HOST_REGEX.containsMatchIn(lowerUrl) -> {
@@ -593,11 +624,10 @@ object StreamLinkOptimizer {
             STREAMWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamwish.to/"
             VOE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://voe.sx/"
             MP4UPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://www.mp4upload.com/"
-            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> "https://player.autoembed.cc/"
-            lowerUrl.contains("embed.su") -> "https://embed.su/"
-            lowerUrl.contains("hexa.su") -> "https://hexa.su/"
-            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> "https://www.cineby.sc/"
             !referer.isNullOrBlank() -> referer
+            headers.entries.any { it.key.equals(HEADER_REFERER, ignoreCase = true) } -> {
+                headers.entries.firstOrNull { it.key.equals(HEADER_REFERER, ignoreCase = true) }?.value ?: ""
+            }
             else -> getHostUrl(url) ?: ""
         }
     }
@@ -1174,13 +1204,14 @@ object StreamLinkOptimizer {
         val u = link.url.lowercase(Locale.ROOT)
         return when {
             s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
-            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") ||
-                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") ||
-                u.contains("hexa.su") || u.contains("embed.su") -> 90
+            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") || s.contains("flixer.su") ||
+                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") || n.contains("flixer.su") ||
+                u.contains("hexa.su") || u.contains("embed.su") || u.contains("flixer.su") -> 90
             s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 80
             s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") ||
-                u.contains("peakstorm.top") || u.contains("hypergate.top") -> 70
-            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") || u.contains("cineby.sc") -> 60
+                ((u.contains("peakstorm.top") || u.contains("hypergate.top")) && !s.contains("videasy") && !n.contains("videasy")) -> 70
+            s.contains("videasy") || n.contains("videasy") || u.contains("videasy") || u.contains("speedracelight.com") || u.contains("videasy.to") || u.contains("videasy.net") || u.contains("cineby.sc") ||
+                (u.contains("peakstorm.top") && (s.contains("videasy") || n.contains("videasy"))) -> 60
             s.contains("moviebox") || n.contains("moviebox") -> 50
             s.contains("rivestream") || n.contains("rivestream") -> 40
             s.contains("vidrock") || n.contains("vidrock") -> 30

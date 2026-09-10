@@ -698,4 +698,223 @@ class StreamPlayTopTierSourceHierarchyTest {
         val effRefOrigin = StreamLinkOptimizer.getEffectiveReferer(cdnUrl, null, headersOrigin)
         assertEquals("Effective referer must be empty for lowercase origin containing vidlink.pro", "", effRefOrigin)
     }
+
+    @Test
+    fun testTopTierProvidersOrderInProvidersList() {
+        val allProviders = buildProviders()
+        val top5 = allProviders.take(5).map { it.id }
+        val expected = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy")
+        assertEquals("ProvidersList must define top-tier providers in strict priority order", expected, top5)
+    }
+
+    @Test
+    fun testGetEffectiveRefererPreservesTopTierContractsWithExistingHeaders() {
+        val conflictingHeaders = mapOf(
+            "Referer" to "https://conflicting.example.com/wrapper",
+            "referer" to "https://conflicting.example.com/wrapper"
+        )
+
+        // 1. AutoEmbed
+        assertEquals(
+            "https://player.autoembed.cc/",
+            StreamLinkOptimizer.getEffectiveReferer("https://player.autoembed.cc/video.m3u8", null, conflictingHeaders)
+        )
+        assertEquals(
+            "https://player.autoembed.cc/",
+            StreamLinkOptimizer.getEffectiveReferer("https://autoembed.cc/video.m3u8", null, conflictingHeaders)
+        )
+
+        // 2. HexaSU & EmbedSU
+        assertEquals(
+            "https://hexa.su/",
+            StreamLinkOptimizer.getEffectiveReferer("https://theemoviedb.hexa.su/stream.m3u8", null, conflictingHeaders)
+        )
+        assertEquals(
+            "https://embed.su/",
+            StreamLinkOptimizer.getEffectiveReferer("https://embed.su/stream.m3u8", null, conflictingHeaders)
+        )
+
+        // 3. VidFast
+        assertEquals(
+            "https://vidfast.vc/",
+            StreamLinkOptimizer.getEffectiveReferer("https://vidfast.vc/stream.m3u8", null, conflictingHeaders)
+        )
+
+        // 4. VidEasy & Cineby
+        assertEquals(
+            "https://www.cineby.sc/",
+            StreamLinkOptimizer.getEffectiveReferer("https://api.videasy.net/stream.m3u8", null, conflictingHeaders)
+        )
+        assertEquals(
+            "https://www.cineby.sc/",
+            StreamLinkOptimizer.getEffectiveReferer("https://cdn.cineby.sc/stream.m3u8", null, conflictingHeaders)
+        )
+    }
+
+    @Test
+    fun testInvokeVideasyOverloadWithoutSubtitleCallback() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        StreamPlayExtractor.invokeVideasy(
+            title = "Inception",
+            tmdbId = null,
+            imdbId = "tt1375666",
+            year = 2010,
+            season = null,
+            episode = null,
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVideasy without subtitleCallback must return safely when tmdbId is null", linkEmitted)
+    }
+
+    @Test
+    fun testVidEasyPeakstormRankAndRefererContract() {
+        val videasyCdn = createLink("VidEasy", "VidEasy [CDN]", "https://moon.peakstorm.top/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val videasyM4u = createLink("VidEasy", "VidEasy [M4UHD]", "https://moon.peakstorm.top/hls/master.m3u8", type = ExtractorLinkType.M3U8)
+        val videasyNameOnly = createLink("CDN", "VidEasy stream", "https://moon.peakstorm.top/video.mp4", type = ExtractorLinkType.VIDEO)
+
+        // Must be classified as rank 60 (VidEasy) and NOT rank 70 (VidFast)
+        assertEquals("VidEasy CDN on moon.peakstorm.top must have rank 60", 60, StreamLinkOptimizer.getSourcePriorityRank(videasyCdn))
+        assertEquals("VidEasy M4UHD on moon.peakstorm.top must have rank 60", 60, StreamLinkOptimizer.getSourcePriorityRank(videasyM4u))
+        assertEquals("Stream with VidEasy in name on moon.peakstorm.top must have rank 60", 60, StreamLinkOptimizer.getSourcePriorityRank(videasyNameOnly))
+
+        // Headers & Referer routing: VidEasy on peakstorm.top must receive player.videasy.to
+        val headersWithVideasy = mapOf("Referer" to "https://player.videasy.to/", "Origin" to "https://player.videasy.to")
+        val effectiveRef = StreamLinkOptimizer.getEffectiveReferer("https://moon.peakstorm.top/stream.m3u8", "https://player.videasy.to/", headersWithVideasy)
+        assertEquals("VidEasy peakstorm.top stream must have player.videasy.to referer", "https://player.videasy.to/", effectiveRef)
+
+        val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(headersWithVideasy, "https://moon.peakstorm.top/stream.m3u8", "https://player.videasy.to/")
+        assertEquals("https://player.videasy.to/", downloadHeaders["Referer"])
+        assertEquals("https://player.videasy.to", downloadHeaders["Origin"])
+    }
+
+    @Test
+    fun testVidFastPeakstormRankAndRefererContract() {
+        val vidfastLink = createLink("VidFast", "VidFast [1080p]", "https://moon.peakstorm.top/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val unknownLink = createLink("UnknownSource", "Stream 1080p", "https://moon.peakstorm.top/stream.m3u8", type = ExtractorLinkType.M3U8)
+
+        // Must be classified as rank 70 (VidFast)
+        assertEquals("VidFast on moon.peakstorm.top must have rank 70", 70, StreamLinkOptimizer.getSourcePriorityRank(vidfastLink))
+        assertEquals("Unknown link on moon.peakstorm.top must have rank 70", 70, StreamLinkOptimizer.getSourcePriorityRank(unknownLink))
+
+        // Headers & Referer routing: VidFast on peakstorm.top must receive vidfast.vc
+        val effectiveRef = StreamLinkOptimizer.getEffectiveReferer("https://moon.peakstorm.top/stream.m3u8", null, emptyMap())
+        assertEquals("VidFast peakstorm.top stream must have vidfast.vc referer", "https://vidfast.vc/", effectiveRef)
+
+        val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), "https://moon.peakstorm.top/stream.m3u8", null)
+        assertEquals("https://vidfast.vc/", downloadHeaders["Referer"])
+        assertEquals("https://vidfast.vc", downloadHeaders["Origin"])
+    }
+
+    @Test
+    fun testSpeedracelightAndVideasyToRankAndRefererContract() {
+        val speedracelightLink = createLink("UnknownSource", "Stream 1080p", "https://api.speedracelight.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val videasyToLink = createLink("UnknownSource", "Stream 1080p", "https://videasy.to/video.mp4", type = ExtractorLinkType.VIDEO)
+        val playerVideasyLink = createLink("UnknownSource", "Stream 1080p", "https://player.videasy.to/stream.m3u8", type = ExtractorLinkType.M3U8)
+
+        // Must be classified as rank 60 (VidEasy)
+        assertEquals("speedracelight.com stream must have rank 60", 60, StreamLinkOptimizer.getSourcePriorityRank(speedracelightLink))
+        assertEquals("videasy.to stream must have rank 60", 60, StreamLinkOptimizer.getSourcePriorityRank(videasyToLink))
+        assertEquals("player.videasy.to stream must have rank 60", 60, StreamLinkOptimizer.getSourcePriorityRank(playerVideasyLink))
+
+        // Headers & Referer routing: speedracelight.com and videasy.to must receive player.videasy.to referer and origin
+        for (url in listOf("https://api.speedracelight.com/stream.m3u8", "https://videasy.to/stream.m3u8")) {
+            val effRef = StreamLinkOptimizer.getEffectiveReferer(url, null, emptyMap())
+            assertEquals("Effective referer for $url must be https://player.videasy.to/", "https://player.videasy.to/", effRef)
+
+            val headers = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), url, null)
+            assertEquals("https://player.videasy.to/", headers["Referer"])
+            assertEquals("https://player.videasy.to", headers["Origin"])
+        }
+    }
+
+    @Test
+    fun testStrictOrderFiveTopTierProvidersOrderAndDomination() {
+        val vidlink = createLink("Vidlink", "Vidlink [1080p]", "https://vidlink.pro/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val hexasu = createLink("HexaSU", "HexaSU [1080p]", "https://hexa.su/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val autoembed = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidfast = createLink("VidFast", "VidFast [1080p]", "https://moon.peakstorm.top/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val videasy = createLink("VidEasy", "VidEasy [1080p]", "https://moon.peakstorm.top/stream.m3u8", type = ExtractorLinkType.M3U8)
+
+        val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(vidlink)
+        val rHexasu = StreamLinkOptimizer.getSourcePriorityRank(hexasu)
+        val rAutoembed = StreamLinkOptimizer.getSourcePriorityRank(autoembed)
+        val rVidfast = StreamLinkOptimizer.getSourcePriorityRank(vidfast)
+        val rVideasy = StreamLinkOptimizer.getSourcePriorityRank(videasy)
+
+        assertEquals(100, rVidlink)
+        assertEquals(90, rHexasu)
+        assertEquals(80, rAutoembed)
+        assertEquals(70, rVidfast)
+        assertEquals(60, rVideasy)
+
+        assertTrue("VidLink (100) > HexaSU (90)", rVidlink > rHexasu)
+        assertTrue("HexaSU (90) > AutoEmbed (80)", rHexasu > rAutoembed)
+        assertTrue("AutoEmbed (80) > VidFast (70)", rAutoembed > rVidfast)
+        assertTrue("VidFast (70) > VidEasy (60)", rVidfast > rVideasy)
+
+        // Pairwise isBetterThan transitive checks
+        assertTrue("VidLink beats HexaSU", StreamLinkOptimizer.isBetterThan(vidlink, hexasu))
+        assertTrue("HexaSU beats AutoEmbed", StreamLinkOptimizer.isBetterThan(hexasu, autoembed))
+        assertTrue("AutoEmbed beats VidFast", StreamLinkOptimizer.isBetterThan(autoembed, vidfast))
+        assertTrue("VidFast beats VidEasy", StreamLinkOptimizer.isBetterThan(vidfast, videasy))
+    }
+
+    @Test
+    fun testVidFastTokenRegexHardening() {
+        val payloadWithToken = """\"token\":\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\""""
+        val payloadWithEn = """\"en\":\"ZGF0YXRlc3RlbmNyeXB0ZWQxMjM0NQ==\""""
+        val payloadUnescapedToken = """{"token":"eyJhbGciOiJIUzI1NiJ9"}"""
+        val payloadUnescapedEn = """{"en":"dGVzdDEyMzQ1"}"""
+
+        val regex = Regex("""(?:\\\"|")(?:en|token)(?:\\\"|")\s*:\s*(?:\\\"|")([^"\\]+)(?:\\\"|)""")
+        val fallbackRegex = Regex("""\\"(?:en|token)\\":\\"(.*?)\\"""")
+
+        val matchToken = regex.find(payloadWithToken) ?: fallbackRegex.find(payloadWithToken)
+        assertNotNull("Must match payload with token key", matchToken)
+        assertEquals("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", matchToken?.groupValues?.get(1))
+
+        val matchEn = regex.find(payloadWithEn) ?: fallbackRegex.find(payloadWithEn)
+        assertNotNull("Must match payload with en key", matchEn)
+        assertEquals("ZGF0YXRlc3RlbmNyeXB0ZWQxMjM0NQ==", matchEn?.groupValues?.get(1))
+
+        val matchUnescapedToken = regex.find(payloadUnescapedToken) ?: fallbackRegex.find(payloadUnescapedToken)
+        assertNotNull("Must match unescaped json with token key", matchUnescapedToken)
+        assertEquals("eyJhbGciOiJIUzI1NiJ9", matchUnescapedToken?.groupValues?.get(1))
+
+        val matchUnescapedEn = regex.find(payloadUnescapedEn) ?: fallbackRegex.find(payloadUnescapedEn)
+        assertNotNull("Must match unescaped json with en key", matchUnescapedEn)
+        assertEquals("dGVzdDEyMzQ1", matchUnescapedEn?.groupValues?.get(1))
+    }
+
+    @Test
+    fun testHexaSUConstantsAndFlixerSUMirror() {
+        assertEquals("https://theemoviedb.hexa.su", StreamPlay.hexaSU)
+        assertEquals("https://flixer.su", StreamPlay.flixerSU)
+        assertEquals("https://embed.su", StreamPlay.embedSU)
+        assertEquals("https://api.speedracelight.com", StreamPlay.videasyAPI)
+        assertEquals("https://api.videasy.net", StreamPlay.videasyFallbackAPI)
+
+        val flixerLink = createLink("HexaSU", "HexaSU [1080p]", "https://flixer.su/stream.m3u8", type = ExtractorLinkType.M3U8)
+        assertEquals("flixer.su stream must be classified as rank 90", 90, StreamLinkOptimizer.getSourcePriorityRank(flixerLink))
+
+        val effRef = StreamLinkOptimizer.getEffectiveReferer("https://flixer.su/stream.m3u8", null, emptyMap())
+        assertEquals("https://flixer.su/", effRef)
+
+        val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), "https://flixer.su/stream.m3u8", null)
+        assertEquals("https://flixer.su/", downloadHeaders["Referer"])
+        assertEquals("https://flixer.su", downloadHeaders["Origin"])
+    }
+
+    @Test
+    fun testAutoembedFaultToleranceAndGracefulTimeout() = kotlinx.coroutines.runBlocking {
+        // invokeAutoembed must gracefully complete even with non-existent IDs without blocking or throwing unhandled errors
+        var linkEmitted = false
+        StreamPlayExtractor.invokeAutoembed(
+            tmdbId = 999999999,
+            season = null,
+            episode = null,
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeAutoembed must not emit links for non-existent content", linkEmitted)
+    }
 }
