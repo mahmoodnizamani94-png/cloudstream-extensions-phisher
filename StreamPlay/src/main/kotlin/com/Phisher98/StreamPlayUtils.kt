@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.gson.Gson
+import java.text.Normalizer
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.APIHolder.unixTimeMS
 import com.lagradost.cloudstream3.SubtitleFile
@@ -743,9 +744,129 @@ val languageMap: Map<String, Set<String>> = mapOf(
     "Yiddish"     to setOf("yi", "yid")
 )
 
+val nativeToStandardLanguage: Map<String, String> = mapOf(
+    "español" to "Spanish",
+    "espanol" to "Spanish",
+    "castellano" to "Spanish",
+    "français" to "French",
+    "francais" to "French",
+    "deutsch" to "German",
+    "italiano" to "Italian",
+    "português" to "Portuguese",
+    "portugues" to "Portuguese",
+    "русский" to "Russian",
+    "polski" to "Polish",
+    "nederlands" to "Dutch",
+    "türkçe" to "Turkish",
+    "turkce" to "Turkish",
+    "svenska" to "Swedish",
+    "norsk" to "Norwegian",
+    "dansk" to "Danish",
+    "suomi" to "Finnish",
+    "magyar" to "Hungarian",
+    "čeština" to "Czech",
+    "cestina" to "Czech",
+    "română" to "Romanian",
+    "romana" to "Romanian",
+    "ελληνικά" to "Greek",
+    "ellinika" to "Greek",
+    "日本語" to "Japanese",
+    "nihongo" to "Japanese",
+    "한국어" to "Korean",
+    "hangugeo" to "Korean",
+    "中文" to "Chinese"
+)
+
 fun getLanguage(code: String): String {
-    val lower = code.lowercase()
-    return languageMap.entries.firstOrNull { lower in it.value }?.key ?: "UnKnown"
+    val trimmed = code.trim()
+    if (trimmed.isEmpty()) return "English"
+    val lower = trimmed.lowercase(Locale.ROOT)
+    val match = languageMap.entries.firstOrNull { it.key.equals(trimmed, ignoreCase = true) || lower in it.value }?.key
+    if (match != null) return match
+    val nativeMatch = nativeToStandardLanguage[lower]
+    if (nativeMatch != null) return nativeMatch
+    return trimmed.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+}
+
+/**
+ * State-of-the-art subtitle label and language normalizer:
+ * 1. Strips UTF-8 BOM (\uFEFF) and zero-width spaces (\u200B, \u200C, \u200D).
+ * 2. Decodes named, decimal, and hex HTML character entities (&amp;, &ntilde;, &#39;, &#xE9;, etc.).
+ * 3. Normalizes Unicode characters to Canonical Decomposition/Composition (NFC).
+ * 4. Resolves ISO language codes to standardized names while preserving [Forced], [SDH], [CC] badges.
+ */
+fun cleanSubtitleLabel(raw: String?): String {
+    if (raw.isNullOrBlank()) return "English"
+    var text = raw.trim()
+
+    // Strip UTF-8 BOM and zero-width spaces
+    text = text.replace("\uFEFF", "")
+        .replace("\u200B", "")
+        .replace("\u200C", "")
+        .replace("\u200D", "")
+        .trim()
+
+    // Decode HTML entities (named & numeric decimal/hex)
+    if (text.contains("&")) {
+        text = text
+            .replace("&amp;", "&", ignoreCase = true)
+            .replace("&quot;", "\"", ignoreCase = true)
+            .replace("&#39;", "'", ignoreCase = true)
+            .replace("&apos;", "'", ignoreCase = true)
+            .replace("&lt;", "<", ignoreCase = true)
+            .replace("&gt;", ">", ignoreCase = true)
+            .replace("&nbsp;", " ", ignoreCase = true)
+            .replace("&ntilde;", "ñ", ignoreCase = true)
+            .replace("&Ntilde;", "Ñ", ignoreCase = true)
+            .replace("&eacute;", "é", ignoreCase = true)
+            .replace("&Eacute;", "É", ignoreCase = true)
+            .replace("&aacute;", "á", ignoreCase = true)
+            .replace("&Aacute;", "Á", ignoreCase = true)
+            .replace("&iacute;", "í", ignoreCase = true)
+            .replace("&Iacute;", "Í", ignoreCase = true)
+            .replace("&oacute;", "ó", ignoreCase = true)
+            .replace("&Oacute;", "Ó", ignoreCase = true)
+            .replace("&uacute;", "ú", ignoreCase = true)
+            .replace("&Uacute;", "Ú", ignoreCase = true)
+            .replace("&ccedil;", "ç", ignoreCase = true)
+            .replace("&Ccedil;", "Ç", ignoreCase = true)
+            .replace("&uuml;", "ü", ignoreCase = true)
+            .replace("&Uuml;", "Ü", ignoreCase = true)
+            .replace("&ouml;", "ö", ignoreCase = true)
+            .replace("&Ouml;", "Ö", ignoreCase = true)
+            .replace("&auml;", "ä", ignoreCase = true)
+            .replace("&Auml;", "Ä", ignoreCase = true)
+
+        text = Regex("""&#(\d+);""").replace(text) { match ->
+            match.groupValues[1].toIntOrNull()?.toChar()?.toString() ?: match.value
+        }
+        text = Regex("""&#x([0-9a-fA-F]+);""").replace(text) { match ->
+            match.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: match.value
+        }
+    }
+
+    text = Normalizer.normalize(text, Normalizer.Form.NFC).trim()
+
+    val modifierMatch = Regex("""(\[(?:forced|sdh|cc|hi)\]|\((?:forced|sdh|cc|hi)\))""", RegexOption.IGNORE_CASE).find(text)
+    val modifier = modifierMatch?.groupValues?.get(1)?.replace("(", "[")?.replace(")", "]")?.let {
+        when {
+            it.equals("[forced]", ignoreCase = true) -> "[Forced]"
+            it.equals("[sdh]", ignoreCase = true) -> "[SDH]"
+            it.equals("[cc]", ignoreCase = true) -> "[CC]"
+            it.equals("[hi]", ignoreCase = true) -> "[HI]"
+            else -> it
+        }
+    }
+    val cleanBase = if (modifier != null) text.replace(modifierMatch.value, "").trim() else text.trim('[', ']', ' ')
+
+    val resolvedLang = getLanguage(cleanBase)
+    val finalLang = if (resolvedLang != "UnKnown") {
+        resolvedLang
+    } else {
+        cleanBase.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+    }
+
+    return if (modifier != null) "$finalLang $modifier" else finalLang
 }
 
 

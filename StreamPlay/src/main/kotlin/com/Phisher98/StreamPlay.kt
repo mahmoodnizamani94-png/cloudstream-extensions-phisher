@@ -934,6 +934,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun emitLink(link: ExtractorLink): Boolean {
             val optimizedLink = StreamLinkOptimizer.optimize(link)
+            earlyController.onCandidateLink(optimizedLink)
             return when (deduplicator.emitDetailed(optimizedLink)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {
                     linksFound.incrementAndGet()
@@ -953,16 +954,17 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun emitSubtitle(subtitle: SubtitleFile): Boolean {
             val url = subtitle.url.trim().takeIf { it.startsWith("http", ignoreCase = true) } ?: return false
-            val lang = subtitle.lang.trim().ifBlank { "Unknown" }
-            val dedupeKey = "${lang.lowercase()}|$url"
+            val cleanedLang = cleanSubtitleLabel(subtitle.lang)
+            val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$url"
 
             return if (emittedSubtitles.add(dedupeKey)) {
                 subtitlesFound.incrementAndGet()
-                earlyController.onSubtitleEmitted(subtitle)
-                subtitleCallback(subtitle)
+                val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = url)
+                earlyController.onSubtitleEmitted(cleanedSubtitle)
+                subtitleCallback(cleanedSubtitle)
                 true
             } else {
-                Log.d(TAG, "Skipped duplicate subtitle: $lang")
+                Log.d(TAG, "Skipped duplicate subtitle: ${subtitle.lang}")
                 false
             }
         }

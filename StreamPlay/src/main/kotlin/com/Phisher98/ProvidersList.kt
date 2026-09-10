@@ -272,17 +272,17 @@ private val providers by lazy {
         Provider("moviesdrive", "MoviesDrive") { res, subtitleCallback, callback, _, _ ->
             invokeMoviesdrive(res.imdbId, res.season, res.episode, subtitleCallback, callback)
         },
-        Provider("vidsrcxyz", "VidSrcXyz") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcXyz(res.imdbId, res.season, res.episode, callback, res.id)
+        Provider("vidsrcxyz", "VidSrcXyz") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrcXyz(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
         },
-        Provider("vidsrccc", "VidSrc CC") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcCc(res.imdbId, res.season, res.episode, callback, res.id)
+        Provider("vidsrccc", "VidSrc CC") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrcCc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
         },
-        Provider("vidsrcto", "VidSrc To") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcTo(res.imdbId, res.season, res.episode, callback, res.id)
+        Provider("vidsrcto", "VidSrc To") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrcTo(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
         },
-        Provider("vidsrc", "VidSrc (Unified)") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, callback, res.id)
+        Provider("vidsrc", "VidSrc (Unified)") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
         },
         Provider("vidzeeapi", "Vidzee API") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidzee(res.id, res.season, res.episode, subtitleCallback, callback)
@@ -297,11 +297,11 @@ private val providers by lazy {
             if (!res.isAnime) invokeHdmovie2(res.title, res.year,
                 res.episode, subtitleCallback, callback)
         },
-        Provider("rivestream", "RiveStream") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeRiveStream(res.id, res.season, res.episode, callback)
-        },
         Provider("moviebox", "MovieBox (Multi)") { res, subtitleCallback, callback, _, _ ->
             invokeMovieBox(res.title, res.season, res.episode, subtitleCallback, callback)
+        },
+        Provider("rivestream", "RiveStream") { res, _, callback, _, _ ->
+            if (!res.isAnime) invokeRiveStream(res.id, res.season, res.episode, callback)
         },
         Provider("vidrock", "Vidrock") { res, _, callback, _, _ ->
             if (!res.isAnime) invokevidrock(res.id, res.season, res.episode, callback)

@@ -12,7 +12,6 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.base64DecodeArray
 import com.lagradost.cloudstream3.extractors.helper.AesHelper.cryptoAESHandler
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.newSubtitleFile
@@ -1870,134 +1869,169 @@ object StreamPlayExtractor : StreamPlay() {
         subtitleCallback: (SubtitleFile) -> Unit = {},
         callback: (ExtractorLink) -> Unit
     ) {
-        try {
-            if (title.isNullOrBlank() || tmdbId == null || (season != null && episode == null)) return
+        withTimeoutOrNull(9500L) {
+            try {
+                val effectiveTitle = if (title.isNullOrBlank()) "Media" else title
+                if (tmdbId == null || (season != null && episode == null)) return@withTimeoutOrNull
 
-            fun quote(text: String): String {
-                return URLEncoder.encode(text, "UTF-8")
-                    .replace("+", "%20")
-            }
-
-            val headers = mapOf(
-                "Accept" to "*/*",
-                "User-Agent" to USER_AGENT,
-                "Origin" to "https://player.videasy.to",
-                "Referer" to "https://player.videasy.to/"
-            )
-
-            val servers = listOf("cdn", "m4uhd")
-
-            val firstPass = quote(title)
-            val encTitle = quote(firstPass)
-
-            var activeApi = videasyAPI
-            var seed: String? = runCatching {
-                val resp = safeGet("$videasyAPI/seed?mediaId=$tmdbId", headers = headers, timeout = 4L)
-                if (resp.isSuccessful && resp.text.isNotBlank()) {
-                    val raw = resp.text.trim()
-                    if (raw.startsWith("{")) {
-                        runCatching { JSONObject(raw).optString("seed", "") }.getOrNull()?.ifBlank { null }
-                    } else {
-                        raw.trim('"')
-                    }
-                } else null
-            }.getOrNull()
-
-            if (seed.isNullOrBlank()) {
-                val fallbackResp = runCatching {
-                    safeGet("$videasyFallbackAPI/seed?mediaId=$tmdbId", headers = headers, timeout = 4L)
-                }.getOrNull()
-                if (fallbackResp != null && fallbackResp.isSuccessful && fallbackResp.text.isNotBlank()) {
-                    val raw = fallbackResp.text.trim()
-                    seed = if (raw.startsWith("{")) {
-                        runCatching { JSONObject(raw).optString("seed", "") }.getOrNull()?.ifBlank { null }
-                    } else {
-                        raw.trim('"')
-                    }
-                    if (!seed.isNullOrBlank()) {
-                        activeApi = videasyFallbackAPI
-                    }
-                }
-            }
-
-            val seedParam = if (!seed.isNullOrBlank()) "&enc=2&seed=$seed" else ""
-            val imdbParam = if (!imdbId.isNullOrBlank()) "&imdbId=$imdbId" else ""
-            val yearParam = if (year != null) "&year=$year" else ""
-
-            servers.safeAmap { server ->
-                val primaryUrl = if (season == null) {
-                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
-                } else {
-                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
+                fun quote(text: String): String {
+                    return URLEncoder.encode(text, "UTF-8")
+                        .replace("+", "%20")
                 }
 
-                var encdata = runCatching {
-                    val resp = safeGet(primaryUrl, headers = headers, timeout = 4L)
-                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                val headers = mapOf(
+                    "Accept" to "*/*",
+                    "User-Agent" to USER_AGENT,
+                    "Origin" to "https://player.videasy.to",
+                    "Referer" to "https://player.videasy.to/"
+                )
+
+                val servers = listOf("cdn", "m4uhd")
+
+                val firstPass = quote(effectiveTitle)
+                val encTitle = quote(firstPass)
+
+                var activeApi = videasyAPI
+                var seed: String? = runCatching {
+                    val resp = safeGet("$videasyAPI/seed?mediaId=$tmdbId", headers = headers, timeout = 4L)
+                    if (resp.isSuccessful && resp.text.isNotBlank()) {
+                        val raw = resp.text.trim()
+                        if (raw.startsWith("{")) {
+                            runCatching { JSONObject(raw).optString("seed", "") }.getOrNull()?.ifBlank { null }
+                        } else {
+                            raw.trim('"')
+                        }
+                    } else null
                 }.getOrNull()
 
-                if (encdata.isNullOrBlank() && activeApi != videasyFallbackAPI) {
-                    val fallbackUrl = if (season == null) {
-                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
-                    } else {
-                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
+                if (seed.isNullOrBlank()) {
+                    val fallbackResp = runCatching {
+                        safeGet("$videasyFallbackAPI/seed?mediaId=$tmdbId", headers = headers, timeout = 4L)
+                    }.getOrNull()
+                    if (fallbackResp != null && fallbackResp.isSuccessful && fallbackResp.text.isNotBlank()) {
+                        val raw = fallbackResp.text.trim()
+                        seed = if (raw.startsWith("{")) {
+                            runCatching { JSONObject(raw).optString("seed", "") }.getOrNull()?.ifBlank { null }
+                        } else {
+                            raw.trim('"')
+                        }
+                        if (!seed.isNullOrBlank()) {
+                            activeApi = videasyFallbackAPI
+                        }
                     }
-                    encdata = runCatching {
-                        val resp = safeGet(fallbackUrl, headers = headers, timeout = 4L)
+                }
+
+                val seedParam = if (!seed.isNullOrBlank()) "&enc=2&seed=$seed" else ""
+                val imdbParam = if (!imdbId.isNullOrBlank()) "&imdbId=$imdbId" else ""
+                val yearParam = if (year != null) "&year=$year" else ""
+
+                servers.safeAmap { server ->
+                    val primaryUrl = if (season == null) {
+                        "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
+                    } else {
+                        "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
+                    }
+
+                    var encdata = runCatching {
+                        val resp = safeGet(primaryUrl, headers = headers, timeout = 4L)
                         if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
                     }.getOrNull()
-                }
 
-                if (encdata.isNullOrBlank()) return@safeAmap
+                    // TV Special fallback: if season == 0 yields no stream, attempt movie query
+                    if (encdata.isNullOrBlank() && season == 0) {
+                        val specialMovieUrl = "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
+                        encdata = runCatching {
+                            val resp = safeGet(specialMovieUrl, headers = headers, timeout = 4L)
+                            if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                        }.getOrNull()
+                    }
 
-                val jsonBody = JSONObject().put("text", encdata).put("id", tmdbId).put("seed", seed ?: "")
-                val response = runCatching {
-                    app.post(
-                        "https://enc-dec.app/api/dec-videasy",
-                        headers = mapOf("Content-Type" to "application/json"),
-                        requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType()),
-                        timeout = 4L
-                    )
-                }.getOrNull() ?: return@safeAmap
+                    if (encdata.isNullOrBlank() && activeApi != videasyFallbackAPI) {
+                        val fallbackUrl = if (season == null) {
+                            "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
+                        } else {
+                            "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
+                        }
+                        encdata = runCatching {
+                            val resp = safeGet(fallbackUrl, headers = headers, timeout = 4L)
+                            if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                        }.getOrNull()
 
-                if (response.isSuccessful) {
-                    val json = response.text
-                    val result = runCatching { JSONObject(json).getJSONObject("result") }.getOrNull() ?: return@safeAmap
+                        if (encdata.isNullOrBlank() && season == 0) {
+                            val fallbackMovieUrl = "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
+                            encdata = runCatching {
+                                val resp = safeGet(fallbackMovieUrl, headers = headers, timeout = 4L)
+                                if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                            }.getOrNull()
+                        }
+                    }
 
-                    val sourcesArray = result.optJSONArray("sources")
-                    if (sourcesArray != null) {
-                        for (i in 0 until sourcesArray.length()) {
-                            val obj = sourcesArray.optJSONObject(i) ?: continue
-                            val quality = obj.optString("quality", "1080p")
-                            val source = obj.optString("url")
-                            if (source.isBlank()) continue
+                    if (encdata.isNullOrBlank()) return@safeAmap
 
-                            val type = when {
-                                source.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
-                                source.contains(".mp4", ignoreCase = true) || source.contains(".mkv", ignoreCase = true) -> ExtractorLinkType.VIDEO
-                                else -> INFER_TYPE
-                            }
+                    val jsonBody = JSONObject().put("text", encdata).put("id", tmdbId).put("seed", seed ?: "")
+                    val response = runCatching {
+                        app.post(
+                            "https://enc-dec.app/api/dec-videasy",
+                            headers = mapOf("Content-Type" to "application/json"),
+                            requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType()),
+                            timeout = 4L
+                        )
+                    }.getOrNull() ?: return@safeAmap
 
-                            if (type == ExtractorLinkType.M3U8) {
-                                val m3u8Links = runCatching {
-                                    generateM3u8(
-                                        "VidEasy",
-                                        source,
-                                        "https://player.videasy.to/",
-                                        headers = headers
-                                    )
-                                }.getOrNull()
+                    if (response.isSuccessful) {
+                        val json = response.text
+                        val result = runCatching { JSONObject(json).getJSONObject("result") }.getOrNull() ?: return@safeAmap
 
-                                if (!m3u8Links.isNullOrEmpty()) {
-                                    m3u8Links.forEach { genLink ->
+                        val sourcesArray = result.optJSONArray("sources")
+                        if (sourcesArray != null) {
+                            for (i in 0 until sourcesArray.length()) {
+                                val obj = sourcesArray.optJSONObject(i) ?: continue
+                                val quality = obj.optString("quality", "1080p")
+                                val source = obj.optString("url").trim()
+                                if (source.isBlank() || !source.startsWith("http", ignoreCase = true)) continue
+
+                                val type = when {
+                                    source.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
+                                    source.contains(".mp4", ignoreCase = true) || source.contains(".mkv", ignoreCase = true) -> ExtractorLinkType.VIDEO
+                                    else -> INFER_TYPE
+                                }
+
+                                if (type == ExtractorLinkType.M3U8) {
+                                    val m3u8Links = withTimeoutOrNull(4000L) {
+                                        runCatching {
+                                            generateM3u8(
+                                                "VidEasy",
+                                                source,
+                                                "https://player.videasy.to/",
+                                                headers = headers
+                                            )
+                                        }.getOrNull()
+                                    }
+
+                                    if (!m3u8Links.isNullOrEmpty()) {
+                                        m3u8Links.forEach { genLink ->
+                                            callback(
+                                                newExtractorLink(
+                                                    "VidEasy",
+                                                    if (genLink.name.contains(server, ignoreCase = true)) genLink.name else "VidEasy [${server.uppercase()}]",
+                                                    genLink.url,
+                                                    genLink.type
+                                                ) {
+                                                    this.quality = genLink.quality
+                                                    this.headers = headers
+                                                    this.referer = "https://player.videasy.to/"
+                                                }
+                                            )
+                                        }
+                                    } else {
                                         callback(
                                             newExtractorLink(
                                                 "VidEasy",
-                                                if (genLink.name.contains(server, ignoreCase = true)) genLink.name else "VidEasy [${server.uppercase()}]",
-                                                genLink.url,
-                                                genLink.type
+                                                "VidEasy [${server.uppercase()}]",
+                                                source,
+                                                ExtractorLinkType.M3U8
                                             ) {
-                                                this.quality = genLink.quality
+                                                this.quality = getIndexQuality(quality)
                                                 this.headers = headers
                                                 this.referer = "https://player.videasy.to/"
                                             }
@@ -2009,7 +2043,7 @@ object StreamPlayExtractor : StreamPlay() {
                                             "VidEasy",
                                             "VidEasy [${server.uppercase()}]",
                                             source,
-                                            ExtractorLinkType.M3U8
+                                            type
                                         ) {
                                             this.quality = getIndexQuality(quality)
                                             this.headers = headers
@@ -2017,44 +2051,32 @@ object StreamPlayExtractor : StreamPlay() {
                                         }
                                     )
                                 }
-                            } else {
-                                callback(
-                                    newExtractorLink(
-                                        "VidEasy",
-                                        "VidEasy [${server.uppercase()}]",
-                                        source,
-                                        type
-                                    ) {
-                                        this.quality = getIndexQuality(quality)
-                                        this.headers = headers
-                                        this.referer = "https://player.videasy.to/"
-                                    }
-                                )
                             }
                         }
-                    }
 
-                    val subtitlesArray = result.optJSONArray("subtitles")
-                    if (subtitlesArray != null) {
-                        for (i in 0 until subtitlesArray.length()) {
-                            val obj = subtitlesArray.optJSONObject(i) ?: continue
-                            val source = obj.optString("url")
-                            val language = obj.optString("language", "English")
-                            if (source.isNotBlank()) {
-                                subtitleCallback(
-                                    newSubtitleFile(
-                                        getLanguage(language),
-                                        source
+                        val subtitlesArray = result.optJSONArray("subtitles")
+                        if (subtitlesArray != null) {
+                            for (i in 0 until subtitlesArray.length()) {
+                                val obj = subtitlesArray.optJSONObject(i) ?: continue
+                                val source = obj.optString("url").trim()
+                                val rawLanguage = obj.optString("language", "English")
+                                if (source.isNotBlank() && source.startsWith("http", ignoreCase = true)) {
+                                    val label = cleanSubtitleLabel(rawLanguage)
+                                    subtitleCallback(
+                                        newSubtitleFile(
+                                            label,
+                                            source
+                                        )
                                     )
-                                )
+                                }
                             }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.w("StreamPlay", "invokeVideasy failed: ${e.message}")
             }
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            Log.w("StreamPlay", "invokeVideasy failed: ${e.message}")
         }
     }
 
@@ -3253,6 +3275,7 @@ object StreamPlayExtractor : StreamPlay() {
         id: String? = null,
         season: Int? = null,
         episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
         tmdbId: Int? = null
     ) {
@@ -3291,23 +3314,49 @@ object StreamPlayExtractor : StreamPlay() {
                                         candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
                                         candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
                                     }
+                                    // TV Special fallback to movie endpoints
+                                    if (season == 0) {
+                                        if (id != null) {
+                                            candidateUrls.add("$domain/embed/movie?imdb=$id")
+                                            candidateUrls.add("$domain/embed/movie/$id")
+                                        }
+                                        if (tmdbId != null) {
+                                            candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
+                                            candidateUrls.add("$domain/embed/movie/$tmdbId")
+                                        }
+                                    }
                                 }
 
                                 for (url in candidateUrls) {
                                     val iframeUrl = extractIframeUrl(url) ?: continue
                                     val prorcpUrl = extractProrcpUrl(iframeUrl) ?: continue
-                                    val decryptedSource = extractAndDecryptSource(prorcpUrl, iframeUrl) ?: continue
+                                    val decryptedSource = extractAndDecryptSource(prorcpUrl, iframeUrl, subtitleCallback) ?: continue
 
                                     val referer = "${getBaseUrl(prorcpUrl)}/"
+                                    val streamHeaders = mapOf(
+                                        "Referer" to referer,
+                                        "Origin" to referer.removeSuffix("/")
+                                    )
                                     var found = false
-                                    decryptedSource.forEach { (version, streamUrl) ->
+                                    decryptedSource.forEach { (version, rawStreamUrl) ->
+                                        val streamUrl = rawStreamUrl.trim()
+                                        if (streamUrl.isBlank() || !streamUrl.startsWith("http", ignoreCase = true)) return@forEach
+
                                         val formattedVersion = version.replaceFirstChar {
                                             if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString()
                                         }
                                         val serverLabel = "VidSrc Server $formattedVersion"
-                                        val m3u8Links = runCatching {
-                                            generateM3u8(serverLabel, streamUrl, referer)
-                                        }.getOrNull()
+                                        val isHls = streamUrl.contains(".m3u8", ignoreCase = true)
+                                        val isDirectVideo = streamUrl.contains(".mp4", ignoreCase = true) || streamUrl.contains(".mkv", ignoreCase = true)
+                                        val streamType = if (isHls) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                                        val m3u8Links = if (isHls) {
+                                            withTimeoutOrNull(4000L) {
+                                                runCatching {
+                                                    generateM3u8(serverLabel, streamUrl, referer, headers = streamHeaders)
+                                                }.getOrNull()
+                                            }
+                                        } else null
 
                                         if (!m3u8Links.isNullOrEmpty()) {
                                             found = true
@@ -3319,10 +3368,10 @@ object StreamPlayExtractor : StreamPlay() {
                                                     source = "VidSrc",
                                                     name = serverLabel,
                                                     url = streamUrl,
-                                                    type = if (streamUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else INFER_TYPE
+                                                    type = streamType
                                                 ) {
                                                     this.referer = referer
-                                                    this.headers = mapOf("Referer" to referer)
+                                                    this.headers = streamHeaders
                                                 }
                                             )
                                         }
@@ -3344,6 +3393,16 @@ object StreamPlayExtractor : StreamPlay() {
                 Log.e("StreamPlay", "invokeVidSrcXyz error: ${e.message}")
             }
         }
+    }
+
+    suspend fun invokeVidSrcXyz(
+        id: String?,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int?
+    ) {
+        invokeVidSrcXyz(id, season, episode, subtitleCallback = null, callback = callback, tmdbId = tmdbId)
     }
 
     private suspend fun extractIframeUrl(url: String): String? {
@@ -3424,13 +3483,42 @@ object StreamPlayExtractor : StreamPlay() {
 
     private suspend fun extractAndDecryptSource(
         prorcpUrl: String,
-        referer: String
+        referer: String,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null
     ): List<Pair<String, String>>? {
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
             "Referer" to referer
         )
         val responseText = runCatching { safeGet(prorcpUrl, headers = headers, referer = referer, timeout = 5L).text }.getOrNull() ?: return null
+
+        if (subtitleCallback != null) {
+            val doc = runCatching { Jsoup.parse(responseText) }.getOrNull()
+            doc?.select("track[src]")?.forEach { track ->
+                if (track.attr("kind").equals("thumbnails", ignoreCase = true)) return@forEach
+                val src = track.attr("src")
+                val rawLabel = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                if (src.isNotBlank()) {
+                    val subUrl = normalizeVidSrcUrl(src, prorcpUrl)
+                    val label = cleanSubtitleLabel(rawLabel)
+                    subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                }
+            }
+            val subtitleRegex = Regex("""(?:subtitle|track|caption)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            subtitleRegex.findAll(responseText).forEach { match ->
+                val subVal = match.groupValues[1]
+                if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
+                    for (part in subVal.split(",")) {
+                        val rawLang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                        val subUrl = normalizeVidSrcUrl(if (part.contains("]")) part.substringAfter("]") else part, prorcpUrl)
+                        if (subUrl.startsWith("http") && !rawLang.equals("thumbnails", ignoreCase = true) && !subUrl.contains("thumbnails", ignoreCase = true)) {
+                            val label = cleanSubtitleLabel(rawLang)
+                            subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                        }
+                    }
+                }
+            }
+        }
 
         val playerJsRegex = Regex("""Playerjs\(\{.*?file:"(.*?)".*?\}\)""")
         val temp = playerJsRegex.find(responseText)?.groupValues?.get(1)
@@ -3534,6 +3622,7 @@ object StreamPlayExtractor : StreamPlay() {
         id: String? = null,
         season: Int? = null,
         episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
         tmdbId: Int? = null
     ) {
@@ -3560,11 +3649,17 @@ object StreamPlayExtractor : StreamPlay() {
                                             "$domain/embed/movie/$targetId"
                                         )
                                     } else {
-                                        listOf(
+                                        val list = mutableListOf(
                                             "$domain/v2/embed/tv/$targetId/$season/$episode",
                                             "$domain/v3/embed/tv/$targetId/$season/$episode",
                                             "$domain/embed/tv/$targetId/$season/$episode"
                                         )
+                                        if (season == 0) {
+                                            list.add("$domain/v2/embed/movie/$targetId")
+                                            list.add("$domain/v3/embed/movie/$targetId")
+                                            list.add("$domain/embed/movie/$targetId")
+                                        }
+                                        list
                                     }
 
                                     for (embedUrl in embedUrls) {
@@ -3572,25 +3667,66 @@ object StreamPlayExtractor : StreamPlay() {
                                             safeGet(embedUrl, headers = mobileHeaders + ("Referer" to "$domain/"), timeout = 4L)
                                         }.getOrNull() ?: continue
 
+                                        if (subtitleCallback != null) {
+                                            resp.document.select("track[src]").forEach { track ->
+                                                if (track.attr("kind").equals("thumbnails", ignoreCase = true)) return@forEach
+                                                val src = track.attr("src")
+                                                val rawLabel = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                                                if (src.isNotBlank()) {
+                                                    val subUrl = normalizeVidSrcUrl(src, embedUrl)
+                                                    val label = cleanSubtitleLabel(rawLabel)
+                                                    subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                                }
+                                            }
+                                            val subtitleRegex = Regex("""(?:subtitle|track|caption)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                            subtitleRegex.findAll(resp.text).forEach { match ->
+                                                val subVal = match.groupValues[1]
+                                                if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
+                                                    for (part in subVal.split(",")) {
+                                                        val rawLang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                                                        val subUrl = normalizeVidSrcUrl(if (part.contains("]")) part.substringAfter("]") else part, embedUrl)
+                                                        if (subUrl.startsWith("http") && !rawLang.equals("thumbnails", ignoreCase = true) && !subUrl.contains("thumbnails", ignoreCase = true)) {
+                                                            val label = cleanSubtitleLabel(rawLang)
+                                                            subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        val streamHeaders = mapOf(
+                                            "Referer" to embedUrl,
+                                            "Origin" to getBaseUrl(embedUrl)
+                                        )
+
                                         // 1. Direct stream match in page HTML
-                                        val directMatch = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(resp.text)?.groupValues?.get(1)
+                                        val directMatch = Regex("""['"](https?://[^'"]+\.(?:m3u8|mp4|mkv)[^'"]*)['"]""").find(resp.text)?.groupValues?.get(1)
                                             ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
 
-                                        if (!directMatch.isNullOrBlank() && directMatch.contains(".m3u8")) {
+                                        if (!directMatch.isNullOrBlank() && (directMatch.contains(".m3u8", ignoreCase = true) || directMatch.contains(".mp4", ignoreCase = true) || directMatch.contains(".mkv", ignoreCase = true))) {
                                             val normalizedStream = normalizeVidSrcUrl(directMatch, embedUrl)
-                                            val m3u8Links = runCatching { generateM3u8("VidSrc CC", normalizedStream, embedUrl) }.getOrNull()
+                                            val isHls = normalizedStream.contains(".m3u8", ignoreCase = true)
+                                            val isDirectVideo = normalizedStream.contains(".mp4", ignoreCase = true) || normalizedStream.contains(".mkv", ignoreCase = true)
+                                            val streamType = if (isHls) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                                            val m3u8Links = if (isHls) {
+                                                withTimeoutOrNull(4000L) {
+                                                    runCatching { generateM3u8("VidSrc CC", normalizedStream, embedUrl, headers = streamHeaders) }.getOrNull()
+                                                }
+                                            } else null
+
                                             if (!m3u8Links.isNullOrEmpty()) {
                                                 m3u8Links.forEach(callback)
-                                            } else {
+                                            } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
                                                 callback(
                                                     newExtractorLink(
                                                         source = "VidSrc CC",
                                                         name = "VidSrc CC",
                                                         url = normalizedStream,
-                                                        type = ExtractorLinkType.M3U8
+                                                        type = streamType
                                                     ) {
                                                         this.referer = embedUrl
-                                                        this.headers = mapOf("Referer" to embedUrl)
+                                                        this.headers = streamHeaders
                                                     }
                                                 )
                                             }
@@ -3607,24 +3743,65 @@ object StreamPlayExtractor : StreamPlay() {
                                             safeGet(fullIframeUrl, headers = mobileHeaders + ("Referer" to embedUrl), timeout = 4L)
                                         }.getOrNull() ?: continue
 
-                                        val m3u8Match = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+                                        if (subtitleCallback != null) {
+                                            iframeResp.document.select("track[src]").forEach { track ->
+                                                if (track.attr("kind").equals("thumbnails", ignoreCase = true)) return@forEach
+                                                val src = track.attr("src")
+                                                val rawLabel = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                                                if (src.isNotBlank()) {
+                                                    val subUrl = normalizeVidSrcUrl(src, fullIframeUrl)
+                                                    val label = cleanSubtitleLabel(rawLabel)
+                                                    subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                                }
+                                            }
+                                            val subtitleRegex = Regex("""(?:subtitle|track|caption)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                            subtitleRegex.findAll(iframeResp.text).forEach { match ->
+                                                val subVal = match.groupValues[1]
+                                                if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
+                                                    for (part in subVal.split(",")) {
+                                                        val rawLang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                                                        val subUrl = normalizeVidSrcUrl(if (part.contains("]")) part.substringAfter("]") else part, fullIframeUrl)
+                                                        if (subUrl.startsWith("http") && !rawLang.equals("thumbnails", ignoreCase = true) && !subUrl.contains("thumbnails", ignoreCase = true)) {
+                                                            val label = cleanSubtitleLabel(rawLang)
+                                                            subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        val iframeStreamHeaders = mapOf(
+                                            "Referer" to fullIframeUrl,
+                                            "Origin" to getBaseUrl(fullIframeUrl)
+                                        )
+
+                                        val m3u8Match = Regex("""['"](https?://[^'"]+\.(?:m3u8|mp4|mkv)[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
                                             ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
 
-                                        if (!m3u8Match.isNullOrBlank() && m3u8Match.contains(".m3u8")) {
+                                        if (!m3u8Match.isNullOrBlank() && (m3u8Match.contains(".m3u8", ignoreCase = true) || m3u8Match.contains(".mp4", ignoreCase = true) || m3u8Match.contains(".mkv", ignoreCase = true))) {
                                             val normalizedStream = normalizeVidSrcUrl(m3u8Match, fullIframeUrl)
-                                            val m3u8Links = runCatching { generateM3u8("VidSrc CC", normalizedStream, fullIframeUrl) }.getOrNull()
+                                            val isHls = normalizedStream.contains(".m3u8", ignoreCase = true)
+                                            val isDirectVideo = normalizedStream.contains(".mp4", ignoreCase = true) || normalizedStream.contains(".mkv", ignoreCase = true)
+                                            val streamType = if (isHls) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                                            val m3u8Links = if (isHls) {
+                                                withTimeoutOrNull(4000L) {
+                                                    runCatching { generateM3u8("VidSrc CC", normalizedStream, fullIframeUrl, headers = iframeStreamHeaders) }.getOrNull()
+                                                }
+                                            } else null
+
                                             if (!m3u8Links.isNullOrEmpty()) {
                                                 m3u8Links.forEach(callback)
-                                            } else {
+                                            } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
                                                 callback(
                                                     newExtractorLink(
                                                         source = "VidSrc CC",
                                                         name = "VidSrc CC",
                                                         url = normalizedStream,
-                                                        type = ExtractorLinkType.M3U8
+                                                        type = streamType
                                                     ) {
                                                         this.referer = fullIframeUrl
-                                                        this.headers = mapOf("Referer" to fullIframeUrl)
+                                                        this.headers = iframeStreamHeaders
                                                     }
                                                 )
                                             }
@@ -3649,10 +3826,21 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    suspend fun invokeVidSrcCc(
+        id: String?,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int?
+    ) {
+        invokeVidSrcCc(id, season, episode, subtitleCallback = null, callback = callback, tmdbId = tmdbId)
+    }
+
     suspend fun invokeVidSrcTo(
         id: String? = null,
         season: Int? = null,
         episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
         tmdbId: Int? = null
     ) {
@@ -3660,7 +3848,6 @@ object StreamPlayExtractor : StreamPlay() {
             try {
                 if (id == null && tmdbId == null) return@withTimeoutOrNull
 
-                val candidateIds = listOfNotNull(id, tmdbId?.toString()).distinct()
                 val domains = listOf("https://vidsrc.to", "https://vidsrc2.to", "https://vidsrc.net")
                 val headers = mapOf(
                     "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -3671,84 +3858,181 @@ object StreamPlayExtractor : StreamPlay() {
                     val jobs = domains.map { domain ->
                         async {
                             try {
-                                for (targetId in candidateIds) {
-                                    val embedUrls = if (season == null) {
-                                        listOf(
-                                            "$domain/embed/movie/$targetId",
-                                            "$domain/embed/movie?imdb=$targetId",
-                                            "$domain/embed/movie?tmdb=$targetId"
-                                        )
-                                    } else {
-                                        listOf(
-                                            "$domain/embed/tv/$targetId/$season/$episode",
-                                            "$domain/embed/tv?imdb=$targetId&season=$season&episode=$episode",
-                                            "$domain/embed/tv?tmdb=$targetId&season=$season&episode=$episode"
-                                        )
+                                val candidateUrls = mutableListOf<String>()
+                                if (season == null) {
+                                    if (!id.isNullOrBlank()) {
+                                        candidateUrls.add("$domain/embed/movie/$id")
+                                        candidateUrls.add("$domain/embed/movie?imdb=$id")
+                                    }
+                                    if (tmdbId != null) {
+                                        candidateUrls.add("$domain/embed/movie/$tmdbId")
+                                        candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
+                                    }
+                                } else {
+                                    if (!id.isNullOrBlank()) {
+                                        candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
+                                        candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
+                                    }
+                                    if (tmdbId != null) {
+                                        candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
+                                        candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
+                                    }
+                                    if (season == 0) {
+                                        if (!id.isNullOrBlank()) {
+                                            candidateUrls.add("$domain/embed/movie/$id")
+                                            candidateUrls.add("$domain/embed/movie?imdb=$id")
+                                        }
+                                        if (tmdbId != null) {
+                                            candidateUrls.add("$domain/embed/movie/$tmdbId")
+                                            candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
+                                        }
+                                    }
+                                }
+
+                                for (embedUrl in candidateUrls.distinct()) {
+                                    val resp = runCatching {
+                                        safeGet(embedUrl, headers = headers + ("Referer" to "$domain/"), timeout = 4L)
+                                    }.getOrNull() ?: continue
+
+                                    if (subtitleCallback != null) {
+                                        resp.document.select("track[src]").forEach { track ->
+                                            if (track.attr("kind").equals("thumbnails", ignoreCase = true)) return@forEach
+                                            val src = track.attr("src")
+                                            val rawLabel = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                                            if (src.isNotBlank()) {
+                                                val subUrl = normalizeVidSrcUrl(src, embedUrl)
+                                                val label = cleanSubtitleLabel(rawLabel)
+                                                subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                            }
+                                        }
+                                        val subtitleRegex = Regex("""(?:subtitle|track|caption)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                        subtitleRegex.findAll(resp.text).forEach { match ->
+                                            val subVal = match.groupValues[1]
+                                            if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
+                                                for (part in subVal.split(",")) {
+                                                    val rawLang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                                                    val subUrl = normalizeVidSrcUrl(if (part.contains("]")) part.substringAfter("]") else part, embedUrl)
+                                                    if (subUrl.startsWith("http") && !rawLang.equals("thumbnails", ignoreCase = true) && !subUrl.contains("thumbnails", ignoreCase = true)) {
+                                                        val label = cleanSubtitleLabel(rawLang)
+                                                        subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
 
-                                    for (embedUrl in embedUrls) {
-                                        val resp = runCatching {
-                                            safeGet(embedUrl, headers = headers + ("Referer" to "$domain/"), timeout = 4L)
-                                        }.getOrNull() ?: continue
+                                    val streamHeaders = mapOf(
+                                        "Referer" to embedUrl,
+                                        "Origin" to getBaseUrl(embedUrl)
+                                    )
 
-                                        // 1. Direct stream match
-                                        val directMatch = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(resp.text)?.groupValues?.get(1)
-                                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
+                                    // 1. Direct stream match
+                                    val directMatch = Regex("""['"](https?://[^'"]+\.(?:m3u8|mp4|mkv)[^'"]*)['"]""").find(resp.text)?.groupValues?.get(1)
+                                        ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
 
-                                        if (!directMatch.isNullOrBlank() && directMatch.contains(".m3u8")) {
-                                            val normalizedStream = normalizeVidSrcUrl(directMatch, embedUrl)
-                                            val m3u8Links = runCatching { generateM3u8("VidSrc To", normalizedStream, embedUrl) }.getOrNull()
-                                            if (!m3u8Links.isNullOrEmpty()) {
-                                                m3u8Links.forEach(callback)
-                                            } else {
-                                                callback(
-                                                    newExtractorLink(
-                                                        source = "VidSrc To",
-                                                        name = "VidSrc To",
-                                                        url = normalizedStream,
-                                                        type = ExtractorLinkType.M3U8
-                                                    ) {
-                                                        this.referer = embedUrl
-                                                        this.headers = mapOf("Referer" to embedUrl)
-                                                    }
-                                                )
+                                    if (!directMatch.isNullOrBlank() && (directMatch.contains(".m3u8", ignoreCase = true) || directMatch.contains(".mp4", ignoreCase = true) || directMatch.contains(".mkv", ignoreCase = true))) {
+                                        val normalizedStream = normalizeVidSrcUrl(directMatch, embedUrl)
+                                        val isHls = normalizedStream.contains(".m3u8", ignoreCase = true)
+                                        val isDirectVideo = normalizedStream.contains(".mp4", ignoreCase = true) || normalizedStream.contains(".mkv", ignoreCase = true)
+                                        val streamType = if (isHls) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                                        val m3u8Links = if (isHls) {
+                                            withTimeoutOrNull(4000L) {
+                                                runCatching { generateM3u8("VidSrc To", normalizedStream, embedUrl, headers = streamHeaders) }.getOrNull()
                                             }
-                                            return@async true
+                                        } else null
+
+                                        if (!m3u8Links.isNullOrEmpty()) {
+                                            m3u8Links.forEach(callback)
+                                        } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
+                                            callback(
+                                                newExtractorLink(
+                                                    source = "VidSrc To",
+                                                    name = "VidSrc To",
+                                                    url = normalizedStream,
+                                                    type = streamType
+                                                ) {
+                                                    this.referer = embedUrl
+                                                    this.headers = streamHeaders
+                                                }
+                                            )
                                         }
+                                        return@async true
+                                    }
 
-                                        // 2. Nested iframe match
-                                        val iframeSrc = resp.document.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
-                                            ?: Regex("""iframe\s+src=['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
-                                            ?: continue
+                                    // 2. Nested iframe match
+                                    val iframeSrc = resp.document.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
+                                        ?: Regex("""iframe\s+src=['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
+                                        ?: continue
 
-                                        val fullIframeUrl = normalizeVidSrcUrl(iframeSrc, embedUrl)
-                                        val iframeResp = runCatching {
-                                            safeGet(fullIframeUrl, headers = headers + ("Referer" to embedUrl), timeout = 4L)
-                                        }.getOrNull() ?: continue
+                                    val fullIframeUrl = normalizeVidSrcUrl(iframeSrc, embedUrl)
+                                    val iframeResp = runCatching {
+                                        safeGet(fullIframeUrl, headers = headers + ("Referer" to embedUrl), timeout = 4L)
+                                    }.getOrNull() ?: continue
 
-                                        val m3u8Match = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
-                                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
-
-                                        if (!m3u8Match.isNullOrBlank() && m3u8Match.contains(".m3u8")) {
-                                            val normalizedStream = normalizeVidSrcUrl(m3u8Match, fullIframeUrl)
-                                            val m3u8Links = runCatching { generateM3u8("VidSrc To", normalizedStream, fullIframeUrl) }.getOrNull()
-                                            if (!m3u8Links.isNullOrEmpty()) {
-                                                m3u8Links.forEach(callback)
-                                            } else {
-                                                callback(
-                                                    newExtractorLink(
-                                                        source = "VidSrc To",
-                                                        name = "VidSrc To",
-                                                        url = normalizedStream,
-                                                        type = ExtractorLinkType.M3U8
-                                                    ) {
-                                                        this.referer = fullIframeUrl
-                                                        this.headers = mapOf("Referer" to fullIframeUrl)
-                                                    }
-                                                )
+                                    if (subtitleCallback != null) {
+                                        iframeResp.document.select("track[src]").forEach { track ->
+                                            if (track.attr("kind").equals("thumbnails", ignoreCase = true)) return@forEach
+                                            val src = track.attr("src")
+                                            val rawLabel = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                                            if (src.isNotBlank()) {
+                                                val subUrl = normalizeVidSrcUrl(src, fullIframeUrl)
+                                                val label = cleanSubtitleLabel(rawLabel)
+                                                subtitleCallback.invoke(newSubtitleFile(label, subUrl))
                                             }
-                                            return@async true
                                         }
+                                        val subtitleRegex = Regex("""(?:subtitle|track|caption)\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                        subtitleRegex.findAll(iframeResp.text).forEach { match ->
+                                            val subVal = match.groupValues[1]
+                                            if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
+                                                for (part in subVal.split(",")) {
+                                                    val rawLang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                                                    val subUrl = normalizeVidSrcUrl(if (part.contains("]")) part.substringAfter("]") else part, fullIframeUrl)
+                                                    if (subUrl.startsWith("http") && !rawLang.equals("thumbnails", ignoreCase = true) && !subUrl.contains("thumbnails", ignoreCase = true)) {
+                                                        val label = cleanSubtitleLabel(rawLang)
+                                                        subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    val iframeStreamHeaders = mapOf(
+                                        "Referer" to fullIframeUrl,
+                                        "Origin" to getBaseUrl(fullIframeUrl)
+                                    )
+
+                                    val m3u8Match = Regex("""['"](https?://[^'"]+\.(?:m3u8|mp4|mkv)[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+                                        ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+
+                                    if (!m3u8Match.isNullOrBlank() && (m3u8Match.contains(".m3u8", ignoreCase = true) || m3u8Match.contains(".mp4", ignoreCase = true) || m3u8Match.contains(".mkv", ignoreCase = true))) {
+                                        val normalizedStream = normalizeVidSrcUrl(m3u8Match, fullIframeUrl)
+                                        val isHls = normalizedStream.contains(".m3u8", ignoreCase = true)
+                                        val isDirectVideo = normalizedStream.contains(".mp4", ignoreCase = true) || normalizedStream.contains(".mkv", ignoreCase = true)
+                                        val streamType = if (isHls) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                                        val m3u8Links = if (isHls) {
+                                            withTimeoutOrNull(4000L) {
+                                                runCatching { generateM3u8("VidSrc To", normalizedStream, fullIframeUrl, headers = iframeStreamHeaders) }.getOrNull()
+                                            }
+                                        } else null
+
+                                        if (!m3u8Links.isNullOrEmpty()) {
+                                            m3u8Links.forEach(callback)
+                                        } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
+                                            callback(
+                                                newExtractorLink(
+                                                    source = "VidSrc To",
+                                                    name = "VidSrc To",
+                                                    url = normalizedStream,
+                                                    type = streamType
+                                                ) {
+                                                    this.referer = fullIframeUrl
+                                                    this.headers = iframeStreamHeaders
+                                                }
+                                            )
+                                        }
+                                        return@async true
                                     }
                                 }
                                 false
@@ -3768,10 +4052,21 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    suspend fun invokeVidSrcTo(
+        id: String?,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int?
+    ) {
+        invokeVidSrcTo(id, season, episode, subtitleCallback = null, callback = callback, tmdbId = tmdbId)
+    }
+
     suspend fun invokeVidSrc(
         id: String? = null,
         season: Int? = null,
         episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
         tmdbId: Int? = null
     ) {
@@ -3779,7 +4074,7 @@ object StreamPlayExtractor : StreamPlay() {
             coroutineScope {
                 val j1 = async {
                     try {
-                        invokeVidSrcXyz(id, season, episode, callback, tmdbId)
+                        invokeVidSrcXyz(id, season, episode, subtitleCallback, callback, tmdbId)
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.w("StreamPlay", "VidSrcXyz sub-job failed: ${e.message}")
@@ -3787,7 +4082,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 val j2 = async {
                     try {
-                        invokeVidSrcCc(id, season, episode, callback, tmdbId)
+                        invokeVidSrcCc(id, season, episode, subtitleCallback, callback, tmdbId)
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.w("StreamPlay", "VidSrcCc sub-job failed: ${e.message}")
@@ -3795,7 +4090,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 val j3 = async {
                     try {
-                        invokeVidSrcTo(id, season, episode, callback, tmdbId)
+                        invokeVidSrcTo(id, season, episode, subtitleCallback, callback, tmdbId)
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.w("StreamPlay", "VidSrcTo sub-job failed: ${e.message}")
@@ -3806,6 +4101,16 @@ object StreamPlayExtractor : StreamPlay() {
                 j3.await()
             }
         }
+    }
+
+    suspend fun invokeVidSrc(
+        id: String?,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int?
+    ) {
+        invokeVidSrc(id, season, episode, subtitleCallback = null, callback = callback, tmdbId = tmdbId)
     }
 
 
@@ -4544,106 +4849,127 @@ object StreamPlayExtractor : StreamPlay() {
         try {
             if (tmdbId == null || (season != null && episode == null)) return
 
-            val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
-            val encResponse = runCatching { app.get(encUrl, timeout = 5L).text }.getOrNull() ?: return
+            withTimeoutOrNull(9000L) {
+                val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
+                val encResponse = runCatching { app.get(encUrl, timeout = 5L).text }.getOrNull() ?: return@withTimeoutOrNull
 
-            val encData = runCatching {
-                JSONObject(encResponse).optString("result")
-            }.getOrNull().takeIf { !it.isNullOrEmpty() } ?: return
+                val encData = runCatching {
+                    JSONObject(encResponse).optString("result")
+                }.getOrNull().takeIf { !it.isNullOrEmpty() } ?: return@withTimeoutOrNull
 
-            val base = vidlink
+                val base = vidlink
 
-            val headers = mapOf(
-                "User-Agent" to USER_AGENT,
-                "Connection" to "keep-alive",
-                "Referer" to "$base/",
-                "Origin" to base
-            )
+                val headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Connection" to "keep-alive",
+                    "Referer" to "$base/",
+                    "Origin" to base
+                )
 
-            val apiUrl = if (season == null) {
-                "$base/api/b/movie/$encData"
-            } else {
-                if (episode == null) return
-                "$base/api/b/tv/$encData/$season/$episode"
-            }
-
-            val epResponse = runCatching {
-                app.get(apiUrl, headers = headers, timeout = 6L).text
-            }.getOrNull() ?: return
-
-            val data = runCatching {
-                Gson().fromJson(epResponse, VidlinkResponse::class.java)
-            }.getOrNull() ?: return
-
-            val stream = data.stream ?: return
-
-            val cronetUserAgent = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
-
-            fun sanitizeVidlinkHeaders(inputHeaders: Map<String, String>? = null): MutableMap<String, String> {
-                val result = (inputHeaders ?: emptyMap()).toMutableMap()
-                result.entries.removeIf { entry ->
-                    val k = entry.key
-                    val v = entry.value
-                    (k.equals("Referer", ignoreCase = true) || k.equals("Origin", ignoreCase = true)) &&
-                        (v.contains("vidlink.pro", ignoreCase = true) || v.contains("embed", ignoreCase = true))
-                }
-                result["User-Agent"] = cronetUserAgent
-                result["Accept"] = "*/*"
-                return result
-            }
-
-            // 1. Parse captions / subtitles
-            stream.captions?.forEach { caption ->
-                val subUrl = caption?.url
-                if (!subUrl.isNullOrBlank()) {
-                    val lang = caption.language?.ifBlank { "English" } ?: "English"
-                    subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
-                }
-            }
-
-            // 2. Parse playlist (HLS m3u8)
-            val m3u8 = stream.playlist?.trim()
-            if (!m3u8.isNullOrBlank()) {
-                var referer = ""
-                var origin = ""
-
-                val headersJson = Regex("""[?&]headers=([^&]+)""")
-                    .find(m3u8)?.groupValues?.get(1)
-                    ?.let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrNull() }
-
-                if (!headersJson.isNullOrBlank()) {
-                    runCatching {
-                        val obj = Gson().fromJson(headersJson, JsonObject::class.java)
-                        val ref = obj?.get("referer")?.asString
-                        val orig = obj?.get("origin")?.asString
-                        if (!ref.isNullOrBlank() && !ref.contains("vidlink.pro", ignoreCase = true) && !ref.contains("embed", ignoreCase = true)) {
-                            referer = ref
-                        }
-                        if (!orig.isNullOrBlank() && !orig.contains("vidlink.pro", ignoreCase = true) && !orig.contains("embed", ignoreCase = true)) {
-                            origin = orig
-                        }
+                val apiUrls = if (season == null) {
+                    listOf("$base/api/b/movie/$encData")
+                } else {
+                    if (episode == null) return@withTimeoutOrNull
+                    if (season == 0) {
+                        listOf(
+                            "$base/api/b/tv/$encData/$season/$episode",
+                            "$base/api/b/movie/$encData"
+                        )
+                    } else {
+                        listOf("$base/api/b/tv/$encData/$season/$episode")
                     }
                 }
 
-                // Preserve all CDN tokens and query params while stripping only embed wrapper headers param
-                val cleanM3u8Url = if (m3u8.contains("headers=")) {
-                    m3u8.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
-                } else {
-                    m3u8
+                var stream: VidlinkStream? = null
+                for (apiUrl in apiUrls) {
+                    val epResponse = runCatching {
+                        app.get(apiUrl, headers = headers, timeout = 6L).text
+                    }.getOrNull() ?: continue
+
+                    val data = runCatching {
+                        Gson().fromJson(epResponse, VidlinkResponse::class.java)
+                    }.getOrNull()
+
+                    val s = data?.stream
+                    if (s != null && (!s.playlist.isNullOrBlank() || !s.qualities.isNullOrEmpty())) {
+                        stream = s
+                        break
+                    }
                 }
 
-                val hlsHeaders = sanitizeVidlinkHeaders()
-                if (origin.isNotBlank()) hlsHeaders["Origin"] = origin
-                if (referer.isNotBlank()) hlsHeaders["Referer"] = referer
+                if (stream == null) return@withTimeoutOrNull
 
-                runCatching {
-                    val generatedLinks = generateM3u8(
-                        "Vidlink",
-                        cleanM3u8Url,
-                        referer = referer,
-                        headers = hlsHeaders
-                    )
-                    if (generatedLinks.isNotEmpty()) {
+                val cronetUserAgent = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+
+                fun sanitizeVidlinkHeaders(inputHeaders: Map<String, String>? = null): MutableMap<String, String> {
+                    val result = (inputHeaders ?: emptyMap()).toMutableMap()
+                    result.entries.removeIf { entry ->
+                        val k = entry.key
+                        val v = entry.value
+                        (k.equals("Referer", ignoreCase = true) || k.equals("Origin", ignoreCase = true)) &&
+                            (v.contains("vidlink.pro", ignoreCase = true) || v.contains("embed", ignoreCase = true))
+                    }
+                    result["User-Agent"] = cronetUserAgent
+                    result["Accept"] = "*/*"
+                    return result
+                }
+
+                // 1. Parse captions / subtitles
+                stream.captions?.forEach { caption ->
+                    val subUrl = caption?.url
+                    if (!subUrl.isNullOrBlank() && subUrl.startsWith("http", ignoreCase = true)) {
+                        val lang = cleanSubtitleLabel(caption.language)
+                        subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+                    }
+                }
+
+                // 2. Parse playlist (HLS m3u8)
+                val m3u8 = stream.playlist?.trim()
+                if (!m3u8.isNullOrBlank()) {
+                    var referer = ""
+                    var origin = ""
+
+                    val headersJson = Regex("""[?&]headers=([^&]+)""")
+                        .find(m3u8)?.groupValues?.get(1)
+                        ?.let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrNull() }
+
+                    if (!headersJson.isNullOrBlank()) {
+                        runCatching {
+                            val obj = Gson().fromJson(headersJson, JsonObject::class.java)
+                            val ref = obj?.get("referer")?.asString
+                            val orig = obj?.get("origin")?.asString
+                            if (!ref.isNullOrBlank() && !ref.contains("vidlink.pro", ignoreCase = true) && !ref.contains("embed", ignoreCase = true)) {
+                                referer = ref
+                            }
+                            if (!orig.isNullOrBlank() && !orig.contains("vidlink.pro", ignoreCase = true) && !orig.contains("embed", ignoreCase = true)) {
+                                origin = orig
+                            }
+                        }
+                    }
+
+                    // Preserve all CDN tokens and query params while stripping only embed wrapper headers param
+                    val cleanM3u8Url = if (m3u8.contains("headers=")) {
+                        m3u8.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
+                    } else {
+                        m3u8
+                    }
+
+                    val hlsHeaders = sanitizeVidlinkHeaders()
+                    if (origin.isNotBlank()) hlsHeaders["Origin"] = origin
+                    if (referer.isNotBlank()) hlsHeaders["Referer"] = referer
+
+                    val generatedLinks = withTimeoutOrNull(4500L) {
+                        runCatching {
+                            generateM3u8(
+                                "Vidlink",
+                                cleanM3u8Url,
+                                referer = referer,
+                                headers = hlsHeaders
+                            )
+                        }.getOrNull()
+                    }
+
+                    if (!generatedLinks.isNullOrEmpty()) {
                         generatedLinks.forEach { genLink ->
                             val finalHeaders = sanitizeVidlinkHeaders(genLink.headers)
                             callback(
@@ -4659,7 +4985,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 }
                             )
                         }
-                    } else {
+                    } else if (cleanM3u8Url.startsWith("http", ignoreCase = true)) {
                         // Empty playlist from generator, emit direct M3U8 link
                         callback(
                             newExtractorLink(
@@ -4674,50 +5000,38 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                         )
                     }
-                }.onFailure { err ->
-                    Log.w("Vidlink", "generateM3u8 failed for $cleanM3u8Url: ${err.message}")
-                    callback(
-                        newExtractorLink(
-                            "Vidlink",
-                            "Vidlink HLS",
-                            url = cleanM3u8Url,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = referer
-                            this.quality = Qualities.P1080.value
-                            this.headers = hlsHeaders
-                        }
-                    )
                 }
-            }
 
-            // 3. Parse direct MP4 stream qualities (1080p, 720p, 480p)
-            stream.qualities?.forEach { (qualityKey, qualityObj) ->
-                val videoUrl = qualityObj?.url?.trim()
-                if (!videoUrl.isNullOrBlank()) {
-                    val qual = qualityKey?.let { getQualityFromName(it) } ?: Qualities.P1080.value
-                    val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
-                    val qualHeaders = sanitizeVidlinkHeaders(qualityObj.headers)
+                // 3. Parse direct MP4 stream qualities (1080p, 720p, 480p)
+                stream.qualities?.forEach { (qualityKey, qualityObj) ->
+                    val videoUrl = qualityObj?.url?.trim()
+                    if (!videoUrl.isNullOrBlank() && videoUrl.startsWith("http", ignoreCase = true)) {
+                        val qual = qualityKey?.let { getQualityFromName(it) } ?: Qualities.P1080.value
+                        val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
+                        val qualHeaders = sanitizeVidlinkHeaders(qualityObj.headers)
 
-                    val cleanVideoUrl = if (videoUrl.contains("headers=")) {
-                        videoUrl.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
-                    } else {
-                        videoUrl
-                    }
-                    val effectiveRef = qualHeaders["Referer"] ?: ""
-                    val effectiveQuality = qualityKey?.ifBlank { "1080p" } ?: "1080p"
-                    callback(
-                        newExtractorLink(
-                            "Vidlink",
-                            "Vidlink $effectiveQuality",
-                            url = cleanVideoUrl,
-                            type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = effectiveRef
-                            this.quality = qual
-                            this.headers = qualHeaders
+                        val cleanVideoUrl = if (videoUrl.contains("headers=")) {
+                            videoUrl.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
+                        } else {
+                            videoUrl
                         }
-                    )
+                        if (cleanVideoUrl.startsWith("http", ignoreCase = true)) {
+                            val effectiveRef = qualHeaders["Referer"] ?: ""
+                            val effectiveQuality = qualityKey?.ifBlank { "1080p" } ?: "1080p"
+                            callback(
+                                newExtractorLink(
+                                    "Vidlink",
+                                    "Vidlink $effectiveQuality",
+                                    url = cleanVideoUrl,
+                                    type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = effectiveRef
+                                    this.quality = qual
+                                    this.headers = qualHeaders
+                                }
+                            )
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -4746,128 +5060,179 @@ object StreamPlayExtractor : StreamPlay() {
         try {
             if (tmdbId == null || (season != null && episode == null)) return
 
-            val api = "https://enc-dec.app/api"
-            val version = "1"
+            withTimeoutOrNull(9500L) {
+                val api = "https://enc-dec.app/api"
+                val version = "1"
 
-            val requestUrl = if (season == null) {
-                "$vidfastProApi/movie/$tmdbId"
-            } else {
-                "$vidfastProApi/tv/$tmdbId/$season/$episode"
-            }
+                val requestUrls = if (season == null) {
+                    listOf("$vidfastProApi/movie/$tmdbId")
+                } else {
+                    if (episode == null) return@withTimeoutOrNull
+                    if (season == 0) {
+                        listOf(
+                            "$vidfastProApi/tv/$tmdbId/$season/$episode",
+                            "$vidfastProApi/movie/$tmdbId"
+                        )
+                    } else {
+                        listOf("$vidfastProApi/tv/$tmdbId/$season/$episode")
+                    }
+                }
 
-            val baseHeaders = mutableMapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-                "Referer" to "$vidfastProApi/"
-            )
+                val baseHeaders = mutableMapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+                    "Referer" to "$vidfastProApi/"
+                )
 
-            val pageText = runCatching {
-                safeGet(requestUrl, headers = baseHeaders, timeout = 5L).text
-            }.getOrNull() ?: return
+                var encodedText: String? = null
+                for (requestUrl in requestUrls) {
+                    val pageText = runCatching {
+                        safeGet(requestUrl, headers = baseHeaders, timeout = 5L).text
+                    }.getOrNull() ?: continue
 
-            val encodedText = (Regex("""(?:\\\"|")(?:en|token)(?:\\\"|")\s*:\s*(?:\\\"|")([^"\\]+)(?:\\\"|")""")
-                .find(pageText) ?: Regex("""\\"(?:en|token)\\":\\"(.*?)\\"""").find(pageText))
-                ?.groupValues
-                ?.getOrNull(1) ?: return
+                    val enc = (Regex("""(?:\\\"|")(?:en|token)(?:\\\"|")\s*:\s*(?:\\\"|")([^"\\]+)(?:\\\"|")""")
+                        .find(pageText) ?: Regex("""\\"(?:en|token)\\":\\"(.*?)\\"""").find(pageText))
+                        ?.groupValues
+                        ?.getOrNull(1)
 
-            val encJson = runCatching {
-                safeGet("$api/enc-vidfast?text=$encodedText&version=$version", timeout = 5L)
-                    .parsedSafe<VidFastRes>()
-            }.getOrNull() ?: return
+                    if (!enc.isNullOrBlank()) {
+                        encodedText = enc
+                        break
+                    }
+                }
 
-            val result = encJson.result
-            val serversUrl = result.servers
-            val streamBase = result.stream
-            val token = result.token
+                if (encodedText.isNullOrBlank()) return@withTimeoutOrNull
 
-            if (serversUrl.isBlank() || streamBase.isBlank()) return
+                suspend fun <T> retryTransient(maxRetries: Int = 1, delayMs: Long = 200L, block: suspend () -> T?): T? {
+                    var attempt = 0
+                    while (attempt <= maxRetries) {
+                        val res = runCatching { block() }.getOrNull()
+                        if (res != null) return res
+                        if (attempt < maxRetries) delay(delayMs)
+                        attempt++
+                    }
+                    return null
+                }
 
-            baseHeaders["X-CSRF-Token"] = token
-            baseHeaders["X-Requested-With"] = "XMLHttpRequest"
+                val encJson = retryTransient(1, 200L) {
+                    safeGet("$api/enc-vidfast?text=$encodedText&version=$version", timeout = 5L)
+                        .parsedSafe<VidFastRes>()
+                } ?: return@withTimeoutOrNull
 
-            val serversEncrypted = runCatching {
-                app.post(serversUrl, headers = baseHeaders, timeout = 5L).text
-            }.getOrNull() ?: return
+                val result = encJson.result
+                val serversUrl = result.servers
+                val streamBase = result.stream
+                val token = result.token
 
-            if (serversEncrypted.isBlank()) return
+                if (serversUrl.isBlank() || streamBase.isBlank()) return@withTimeoutOrNull
 
-            val serversRoot = runCatching {
-                app.post(
-                    "$api/dec-vidfast",
-                    json = mapOf("text" to serversEncrypted, "version" to version),
-                    timeout = 5L
-                ).parsedSafe<VidFastServers>()
-            }.getOrNull() ?: return
+                baseHeaders["X-CSRF-Token"] = token
+                baseHeaders["X-Requested-With"] = "XMLHttpRequest"
 
-            val serversList = serversRoot.result
+                val serversEncrypted = retryTransient(1, 200L) {
+                    val resp = app.post(serversUrl, headers = baseHeaders, timeout = 5L)
+                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                } ?: return@withTimeoutOrNull
 
-            if (serversList.isEmpty()) return
+                val serversRoot = retryTransient(1, 200L) {
+                    app.post(
+                        "$api/dec-vidfast",
+                        json = mapOf("text" to serversEncrypted, "version" to version),
+                        timeout = 5L
+                    ).parsedSafe<VidFastServers>()
+                } ?: return@withTimeoutOrNull
 
-            val quality = Qualities.P1080.value
+                val serversList = serversRoot.result
 
-            coroutineScope {
-                serversList.mapIndexed { index, server ->
-                    async {
-                        try {
-                            val name = server.name.ifBlank { "Server ${index + 1}" }
-                            val data = server.data
-                            if (data.isBlank()) return@async
+                if (serversList.isEmpty()) return@withTimeoutOrNull
 
-                            val streamUrl = "$streamBase/$data"
-                            val streamEncrypted = runCatching {
-                                app.post(streamUrl, headers = baseHeaders, timeout = 5L).text
-                            }.getOrNull()
+                val quality = Qualities.P1080.value
 
-                            if (streamEncrypted.isNullOrBlank()) {
-                                return@async
-                            }
+                coroutineScope {
+                    serversList.mapIndexed { index, server ->
+                        async {
+                            try {
+                                val name = server.name.ifBlank { "Server ${index + 1}" }
+                                val data = server.data
+                                if (data.isBlank()) return@async
 
-                            val streamRoot = runCatching {
-                                app.post(
-                                    "$api/dec-vidfast",
-                                    json = mapOf("text" to streamEncrypted, "version" to version),
-                                    timeout = 5L
-                                ).parsedSafe<VidFastServersStreamRoot>()
-                            }.getOrNull() ?: return@async
-
-                            val finalUrl = streamRoot.result.url
-                            if (finalUrl.isNullOrBlank()) return@async
-
-                            val seen = mutableSetOf<String>()
-                            streamRoot.result.tracks?.forEach { track ->
-                                val file = track.file
-                                val label = track.label
-                                if (!file.isNullOrBlank() && !label.isNullOrBlank() && seen.add(file)) {
-                                    val sub = newSubtitleFile(label, file)
-                                    subtitleCallback?.invoke(sub)
+                                val streamUrl = "$streamBase/$data"
+                                val streamEncrypted = retryTransient(1, 150L) {
+                                    val resp = app.post(streamUrl, headers = baseHeaders, timeout = 5L)
+                                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
                                 }
-                            }
 
-                            val linkHeaders = mapOf(
-                                "Referer" to "$vidfastProApi/",
-                                "Origin" to vidfastProApi,
-                                "User-Agent" to USER_AGENT
-                            )
+                                if (streamEncrypted.isNullOrBlank()) {
+                                    return@async
+                                }
 
-                            val isM3u8 = finalUrl.contains(".m3u8", ignoreCase = true)
-                            if (isM3u8) {
-                                val m3u8Links = runCatching {
-                                    generateM3u8(
-                                        "VidFast",
-                                        finalUrl,
-                                        "$vidfastProApi/",
-                                        headers = linkHeaders
-                                    )
-                                }.getOrNull()
+                                val streamRoot = retryTransient(1, 200L) {
+                                    app.post(
+                                        "$api/dec-vidfast",
+                                        json = mapOf("text" to streamEncrypted, "version" to version),
+                                        timeout = 5L
+                                    ).parsedSafe<VidFastServersStreamRoot>()
+                                } ?: return@async
 
-                                if (!m3u8Links.isNullOrEmpty()) {
-                                    m3u8Links.forEach(callback)
-                                } else {
+                                val finalUrl = streamRoot.result.url
+                                if (finalUrl.isNullOrBlank()) return@async
+
+                                val seen = mutableSetOf<String>()
+                                streamRoot.result.tracks?.forEach { track ->
+                                    val file = track.file
+                                    val rawLabel = track.label
+                                    if (rawLabel?.equals("thumbnails", ignoreCase = true) == true || file?.contains("thumbnails", ignoreCase = true) == true) return@forEach
+                                    if (!file.isNullOrBlank() && !rawLabel.isNullOrBlank() && seen.add(file)) {
+                                        val label = cleanSubtitleLabel(rawLabel)
+                                        val sub = newSubtitleFile(label, file)
+                                        subtitleCallback?.invoke(sub)
+                                    }
+                                }
+
+                                val linkHeaders = mapOf(
+                                    "Referer" to "$vidfastProApi/",
+                                    "Origin" to vidfastProApi,
+                                    "User-Agent" to USER_AGENT
+                                )
+
+                                val isM3u8 = finalUrl.contains(".m3u8", ignoreCase = true)
+                                val isDirectVideo = finalUrl.contains(".mp4", ignoreCase = true) || finalUrl.contains(".mkv", ignoreCase = true)
+                                val streamType = if (isM3u8) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                                if (isM3u8) {
+                                    val m3u8Links = withTimeoutOrNull(4000L) {
+                                        runCatching {
+                                            generateM3u8(
+                                                "VidFast",
+                                                finalUrl,
+                                                "$vidfastProApi/",
+                                                headers = linkHeaders
+                                            )
+                                        }.getOrNull()
+                                    }
+
+                                    if (!m3u8Links.isNullOrEmpty()) {
+                                        m3u8Links.forEach(callback)
+                                    } else if (finalUrl.startsWith("http", ignoreCase = true)) {
+                                        callback(
+                                            newExtractorLink(
+                                                "VidFast",
+                                                "VidFast [$name]",
+                                                finalUrl,
+                                                ExtractorLinkType.M3U8
+                                            ) {
+                                                this.referer = "$vidfastProApi/"
+                                                this.quality = quality
+                                                this.headers = linkHeaders
+                                            }
+                                        )
+                                    }
+                                } else if (finalUrl.startsWith("http", ignoreCase = true)) {
                                     callback(
                                         newExtractorLink(
                                             "VidFast",
                                             "VidFast [$name]",
                                             finalUrl,
-                                            ExtractorLinkType.M3U8
+                                            streamType
                                         ) {
                                             this.referer = "$vidfastProApi/"
                                             this.quality = quality
@@ -4875,26 +5240,13 @@ object StreamPlayExtractor : StreamPlay() {
                                         }
                                     )
                                 }
-                            } else {
-                                callback(
-                                    newExtractorLink(
-                                        "VidFast",
-                                        "VidFast [$name]",
-                                        finalUrl,
-                                        if (finalUrl.contains(".mp4", ignoreCase = true)) ExtractorLinkType.VIDEO else INFER_TYPE
-                                    ) {
-                                        this.referer = "$vidfastProApi/"
-                                        this.quality = quality
-                                        this.headers = linkHeaders
-                                    }
-                                )
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.w("StreamPlay", "VidFast server $index failed: ${e.message}")
                             }
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                            Log.w("StreamPlay", "VidFast server $index failed: ${e.message}")
                         }
-                    }
-                }.awaitAll()
+                    }.awaitAll()
+                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -5089,134 +5441,151 @@ object StreamPlayExtractor : StreamPlay() {
         try {
             if (tmdbId == null || (season != null && episode == null)) return
 
-            val key = generateHexKey32()
+            withTimeoutOrNull(9500L) {
+                val key = generateHexKey32()
 
-            val baseHeaders = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-                "Referer" to "https://hexa.su/",
-                "Accept" to "text/plain",
-                "X-Fingerprint-Lite" to "e9136c41504646444",
-                "X-Api-Key" to key
-            )
+                val baseHeaders = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+                    "Referer" to "https://hexa.su/",
+                    "Accept" to "text/plain",
+                    "X-Fingerprint-Lite" to "e9136c41504646444",
+                    "X-Api-Key" to key
+                )
 
-            val apiBase = "https://enc-dec.app/api"
+                val apiBase = "https://enc-dec.app/api"
 
-            val token = runCatching {
-                safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()?.result?.token
-            }.getOrNull() ?: return
+                val token = runCatching {
+                    safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()?.result?.token
+                }.getOrNull() ?: return@withTimeoutOrNull
 
-            val headers = baseHeaders + mapOf(
-                "X-Cap-Token" to token
-            )
+                val headers = baseHeaders + mapOf(
+                    "X-Cap-Token" to token
+                )
 
-            val path = if (season == null) {
-                "/api/tmdb/movie/$tmdbId/images"
-            } else {
-                "/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images"
-            }
-
-            val domainTargets = listOf(
-                hexaSU to "https://hexa.su/",
-                flixerSU to "https://flixer.su/",
-                embedSU to "https://embed.su/"
-            )
-
-            var encrypted = ""
-            var chosenReferer = "https://hexa.su/"
-
-            for ((domain, referer) in domainTargets) {
-                val url = "$domain$path"
-                val targetHeaders = headers + mapOf("Referer" to referer)
-                val response = runCatching { safeGet(url, targetHeaders, timeout = 6L) }.getOrNull()
-                if (response != null && response.isSuccessful && response.code != 403 && response.code != 502 && response.text.isNotBlank()) {
-                    encrypted = response.text
-                    chosenReferer = referer
-                    break
+                val paths = if (season == null) {
+                    listOf("/api/tmdb/movie/$tmdbId/images")
                 } else {
-                    android.util.Log.d("StreamPlay", "HexaSU primary $domain unavailable (code: ${response?.code}), falling back to next endpoint")
+                    if (episode == null) return@withTimeoutOrNull
+                    if (season == 0) {
+                        listOf(
+                            "/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images",
+                            "/api/tmdb/movie/$tmdbId/images"
+                        )
+                    } else {
+                        listOf("/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images")
+                    }
                 }
-            }
 
-            if (encrypted.isEmpty()) return
+                val domainTargets = listOf(
+                    hexaSU to "https://hexa.su/",
+                    flixerSU to "https://flixer.su/",
+                    embedSU to "https://embed.su/"
+                )
 
-            val jsonBody = """
-            {
-                "text": "$encrypted",
-                "key": "$key"
-            }
-        """.trimIndent().toRequestBody("application/json".toMediaType())
+                var encrypted = ""
+                var chosenReferer = "https://hexa.su/"
 
-            val decryptRes = runCatching {
-                app.post(
-                    "$apiBase/dec-hexa",
-                    headers = mapOf("Content-Type" to "application/json"),
-                    requestBody = jsonBody,
-                    timeout = 8L
-                ).parsedSafe<HexaResponse>()
-            }.getOrNull() ?: return
-
-            if (decryptRes.status != 200) return
-
-            // 1. Emit subtitles if available
-            decryptRes.result?.tracks?.forEach { track ->
-                val file = track.file
-                val label = track.label ?: "English"
-                if (!file.isNullOrBlank()) {
-                    subtitleCallback?.invoke(newSubtitleFile(label, file))
-                }
-            }
-
-            val sources = decryptRes.result?.sources ?: return
-
-            coroutineScope {
-                sources.map { src ->
-                    async {
-                        try {
-                            val server = src.server ?: return@async
-                            val link = src.url ?: return@async
-
-                            if (link.isEmpty()) return@async
-
-                            val name = server.replaceFirstChar {
-                                if (it.isLowerCase()) it.titlecase() else it.toString()
-                            }
-
-                            val linkHeaders = mapOf("Referer" to chosenReferer, "Origin" to chosenReferer.removeSuffix("/"))
-                            val generated = runCatching {
-                                generateM3u8(
-                                    "HexaSU $name",
-                                    link,
-                                    chosenReferer,
-                                    headers = linkHeaders
-                                )
-                            }.getOrNull()
-
-                            if (!generated.isNullOrEmpty()) {
-                                generated.forEach(callback)
-                            } else {
-                                val streamType = if (link.contains(".mp4", ignoreCase = true) || link.contains(".mkv", ignoreCase = true)) {
-                                    ExtractorLinkType.VIDEO
-                                } else {
-                                    ExtractorLinkType.M3U8
-                                }
-                                callback(
-                                    newExtractorLink(
-                                        "HexaSU",
-                                        "HexaSU $name",
-                                        link,
-                                        streamType
-                                    ) {
-                                        this.referer = chosenReferer
-                                        this.quality = Qualities.P1080.value
-                                        this.headers = linkHeaders
-                                    }
-                                )
-                            }
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
+                for (path in paths) {
+                    for ((domain, referer) in domainTargets) {
+                        val url = "$domain$path"
+                        val targetHeaders = headers + mapOf("Referer" to referer)
+                        val response = runCatching { safeGet(url, targetHeaders, timeout = 6L) }.getOrNull()
+                        if (response != null && response.isSuccessful && response.code != 403 && response.code != 502 && response.text.isNotBlank()) {
+                            encrypted = response.text
+                            chosenReferer = referer
+                            break
+                        } else {
+                            android.util.Log.d("StreamPlay", "HexaSU primary $domain unavailable (code: ${response?.code}), falling back to next endpoint")
                         }
                     }
-                }.awaitAll()
+                    if (encrypted.isNotEmpty()) break
+                }
+
+                if (encrypted.isEmpty()) return@withTimeoutOrNull
+
+                val jsonBody = """
+                {
+                    "text": "$encrypted",
+                    "key": "$key"
+                }
+            """.trimIndent().toRequestBody("application/json".toMediaType())
+
+                val decryptRes = runCatching {
+                    app.post(
+                        "$apiBase/dec-hexa",
+                        headers = mapOf("Content-Type" to "application/json"),
+                        requestBody = jsonBody,
+                        timeout = 8L
+                    ).parsedSafe<HexaResponse>()
+                }.getOrNull() ?: return@withTimeoutOrNull
+
+                if (decryptRes.status != 200) return@withTimeoutOrNull
+
+                // 1. Emit subtitles if available
+                decryptRes.result?.tracks?.forEach { track ->
+                    if (track.kind?.equals("thumbnails", ignoreCase = true) == true) return@forEach
+                    val file = track.file
+                    val rawLabel = track.label ?: "English"
+                    if (!file.isNullOrBlank()) {
+                        val label = cleanSubtitleLabel(rawLabel)
+                        subtitleCallback?.invoke(newSubtitleFile(label, file))
+                    }
+                }
+
+                val sources = decryptRes.result?.sources ?: return@withTimeoutOrNull
+
+                coroutineScope {
+                    sources.map { src ->
+                        async {
+                            try {
+                                val server = src.server ?: return@async
+                                val link = src.url ?: return@async
+
+                                if (link.isEmpty()) return@async
+
+                                val name = server.replaceFirstChar {
+                                    if (it.isLowerCase()) it.titlecase() else it.toString()
+                                }
+
+                                val linkHeaders = mapOf("Referer" to chosenReferer, "Origin" to chosenReferer.removeSuffix("/"))
+                                val isDirectVideo = link.contains(".mp4", ignoreCase = true) || link.contains(".mkv", ignoreCase = true)
+                                val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+
+                                val generated = if (!isDirectVideo) {
+                                    withTimeoutOrNull(4500L) {
+                                        runCatching {
+                                            generateM3u8(
+                                                "HexaSU $name",
+                                                link,
+                                                chosenReferer,
+                                                headers = linkHeaders
+                                            )
+                                        }.getOrNull()
+                                    }
+                                } else null
+
+                                if (!generated.isNullOrEmpty()) {
+                                    generated.forEach(callback)
+                                } else if (link.isNotBlank() && link.startsWith("http", ignoreCase = true)) {
+                                    callback(
+                                        newExtractorLink(
+                                            "HexaSU",
+                                            "HexaSU $name",
+                                            link,
+                                            streamType
+                                        ) {
+                                            this.referer = chosenReferer
+                                            this.quality = Qualities.P1080.value
+                                            this.headers = linkHeaders
+                                        }
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                            }
+                        }
+                    }.awaitAll()
+                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -5243,11 +5612,19 @@ object StreamPlayExtractor : StreamPlay() {
         try {
             if (tmdbId == null || (season != null && episode == null)) return
 
-            withTimeoutOrNull(7000L) {
-                val paths = if (season == null) {
+            val paths = if (season == null) {
                     listOf("/embed/movie/$tmdbId", "/movie/$tmdbId")
                 } else {
-                    listOf("/embed/tv/$tmdbId/$season/$episode", "/tv/$tmdbId/$season/$episode")
+                    if (season == 0) {
+                        listOf(
+                            "/embed/tv/$tmdbId/$season/$episode",
+                            "/tv/$tmdbId/$season/$episode",
+                            "/embed/movie/$tmdbId",
+                            "/movie/$tmdbId"
+                        )
+                    } else {
+                        listOf("/embed/tv/$tmdbId/$season/$episode", "/tv/$tmdbId/$season/$episode")
+                    }
                 }
 
             val domainTargets = listOf(
@@ -5292,23 +5669,30 @@ object StreamPlayExtractor : StreamPlay() {
                 val cleanedUrl = normalizeUrl(streamUrl, domain)
                 if (cleanedUrl.isBlank() || cleanedUrl.contains("favicon", ignoreCase = true)) return
 
-                if (cleanedUrl.contains(".m3u8", ignoreCase = true)) {
-                    val linkHeaders = mapOf(
-                        "Referer" to refererUrl,
-                        "Origin" to domain
-                    )
-                    val m3u8Links = runCatching {
-                        generateM3u8(
-                            "AutoEmbed",
-                            cleanedUrl,
-                            refererUrl,
-                            headers = linkHeaders
-                        )
-                    }.getOrNull()
+                val isHls = cleanedUrl.contains(".m3u8", ignoreCase = true)
+                val isDirectVideo = cleanedUrl.contains(".mp4", ignoreCase = true) || cleanedUrl.contains(".mkv", ignoreCase = true)
+                val streamType = if (isHls) ExtractorLinkType.M3U8 else if (isDirectVideo) ExtractorLinkType.VIDEO else INFER_TYPE
+
+                val linkHeaders = mapOf(
+                    "Referer" to refererUrl,
+                    "Origin" to domain
+                )
+
+                if (isHls) {
+                    val m3u8Links = withTimeoutOrNull(4000L) {
+                        runCatching {
+                            generateM3u8(
+                                "AutoEmbed",
+                                cleanedUrl,
+                                refererUrl,
+                                headers = linkHeaders
+                            )
+                        }.getOrNull()
+                    }
 
                     if (!m3u8Links.isNullOrEmpty()) {
                         m3u8Links.forEach(callback)
-                    } else {
+                    } else if (cleanedUrl.startsWith("http", ignoreCase = true)) {
                         val q = qualityHint ?: extractQuality(cleanedUrl)
                         callback(
                             newExtractorLink(
@@ -5323,21 +5707,18 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                         )
                     }
-                } else {
+                } else if (cleanedUrl.startsWith("http", ignoreCase = true)) {
                     val q = qualityHint ?: extractQuality(cleanedUrl)
                     callback(
                         newExtractorLink(
                             source = "AutoEmbed",
                             name = "AutoEmbed",
                             url = cleanedUrl,
-                            type = INFER_TYPE
+                            type = streamType
                         ) {
                             this.referer = refererUrl
                             this.quality = q
-                            this.headers = mapOf(
-                                "Referer" to refererUrl,
-                                "Origin" to domain
-                            )
+                            this.headers = linkHeaders
                         }
                     )
                 }
@@ -5357,10 +5738,12 @@ object StreamPlayExtractor : StreamPlay() {
 
                     // 1. Parse subtitles from <track> elements
                     doc.select("track[src]").forEach { track ->
+                        if (track.attr("kind").equals("thumbnails", ignoreCase = true)) return@forEach
                         val src = track.attr("src")
-                        val label = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
+                        val rawLabel = track.attr("label").ifBlank { track.attr("srclang") }.ifBlank { "English" }
                         if (src.isNotBlank()) {
                             val subUrl = normalizeUrl(src, domain)
+                            val label = cleanSubtitleLabel(rawLabel)
                             subtitleCallback(newSubtitleFile(label, subUrl))
                         }
                     }
@@ -5371,9 +5754,10 @@ object StreamPlayExtractor : StreamPlay() {
                         if (subVal.contains("http") || subVal.contains(".vtt") || subVal.contains(".srt")) {
                             val subParts = subVal.split(",")
                             for (part in subParts) {
-                                val lang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
+                                val rawLang = if (part.startsWith("[")) part.substringAfter("[").substringBefore("]") else "English"
                                 val subUrl = normalizeUrl(if (part.contains("]")) part.substringAfter("]") else part, domain)
-                                if (subUrl.startsWith("http")) {
+                                if (subUrl.startsWith("http") && !rawLang.equals("thumbnails", ignoreCase = true) && !subUrl.contains("thumbnails", ignoreCase = true)) {
+                                    val lang = cleanSubtitleLabel(rawLang)
                                     subtitleCallback(newSubtitleFile(lang, subUrl))
                                 }
                             }
@@ -5476,7 +5860,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 if (foundOnDomain) break
             }
-        }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeAutoembed failed: ${e.message}")

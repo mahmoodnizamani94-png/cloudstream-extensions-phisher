@@ -10,6 +10,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 class StreamPlayTopTierSourceHierarchyTest {
 
@@ -1124,5 +1125,253 @@ class StreamPlayTopTierSourceHierarchyTest {
         val vidfastHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), peakstormUrl, null, source = "VidFast")
         assertEquals("https://vidfast.vc/", vidfastHeaders["Referer"])
         assertEquals("https://vidfast.vc", vidfastHeaders["Origin"])
+    }
+
+    @Test
+    fun testCleanSubtitleLabelEncodingAndEntityDecoding() {
+        // 1. HTML named entities
+        assertEquals("Spanish", cleanSubtitleLabel("Espa&ntilde;ol"))
+        assertEquals("French", cleanSubtitleLabel("Fran&ccedil;ais"))
+        assertEquals("Spanish [Forced]", cleanSubtitleLabel("Espa&ntilde;ol [Forced]"))
+        assertEquals("Español & English [Forced]", cleanSubtitleLabel("Espa&ntilde;ol &amp; English [Forced]"))
+
+        // 2. Numeric entities (decimal & hex)
+        assertEquals("Spanish", cleanSubtitleLabel("Espa&#241;ol"))
+        assertEquals("French", cleanSubtitleLabel("Fran&#xE7;ais"))
+        assertEquals("English", cleanSubtitleLabel("English"))
+        assertEquals("It's English", cleanSubtitleLabel("It&#39;s English"))
+
+        // 3. BOM and zero-width spaces removal
+        assertEquals("English", cleanSubtitleLabel("\uFEFF\u200BEnglish\u200C\u200D"))
+        assertEquals("English [SDH]", cleanSubtitleLabel("\uFEFFEnglish (SDH)"))
+
+        // 4. ISO language codes resolution with modifier preservation
+        assertEquals("English [Forced]", cleanSubtitleLabel("en [forced]"))
+        assertEquals("Spanish [SDH]", cleanSubtitleLabel("spa (sdh)"))
+        assertEquals("French [CC]", cleanSubtitleLabel("fre [cc]"))
+        assertEquals("German", cleanSubtitleLabel("de"))
+        assertEquals("Italian", cleanSubtitleLabel("ita"))
+
+        // 5. Blank / null fallback
+        assertEquals("English", cleanSubtitleLabel(null))
+        assertEquals("English", cleanSubtitleLabel(""))
+        assertEquals("English", cleanSubtitleLabel("   "))
+    }
+
+    @Test
+    fun testVidSrcCdnRefererAndOriginHeadersRouting() {
+        val testCases = listOf(
+            "https://vidsrc.cc/stream/sub/index.m3u8" to "https://vidsrc.cc/",
+            "https://vidsrc.to/stream/master.m3u8" to "https://vidsrc.to/",
+            "https://vidsrc.xyz/stream/playlist.m3u8" to "https://vidsrc.xyz/",
+            "https://vidsrc.me/stream/master.m3u8" to "https://vidsrc.me/",
+            "https://cloudnestra.com/stream/file.mp4" to "https://cloudnestra.com/",
+            "https://thepixelpioneer.com/hls/test.m3u8" to "https://thepixelpioneer.com/",
+            "https://shadowlandschronicles.com/video.m3u8" to "https://shadowlandschronicles.com/",
+            "https://putgate.org/embed/123.m3u8" to "https://putgate.org/",
+            "https://whisperingpineslifestyle.com/hls/index.m3u8" to "https://whisperingpineslifestyle.com/"
+        )
+
+        for ((url, expectedReferer) in testCases) {
+            val effRef = StreamLinkOptimizer.getEffectiveReferer(url, null, emptyMap(), source = "VidSrc")
+            assertEquals("Effective Referer mismatch for $url", expectedReferer, effRef)
+
+            val dlHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), url, null, source = "VidSrc")
+            assertEquals("Download Referer mismatch for $url", expectedReferer, dlHeaders["Referer"])
+            assertEquals("Download Origin mismatch for $url", expectedReferer.removeSuffix("/"), dlHeaders["Origin"])
+        }
+    }
+
+    @Test
+    fun testStreamDeduplicatorDropsBlankUrlsAndKeys() {
+        var emittedCount = 0
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { emittedCount++ }
+
+        // 1. Blank URL should be dropped
+        val blankLink = createLink(source = "VidSrc", name = "Blank", url = "   ")
+        deduplicator.emitDetailed(blankLink)
+        assertEquals(0, emittedCount)
+
+        // 2. Valid link emits
+        val validLink1 = createLink(source = "VidSrc", name = "Valid 1", url = "https://cdn.example.com/stream.m3u8?token=123")
+        deduplicator.emitDetailed(validLink1)
+        assertEquals(1, emittedCount)
+
+        // 3. Duplicate canonical key (same host and path, different token) is dropped
+        val validLink2 = createLink(source = "VidSrc", name = "Valid 2", url = "https://cdn.example.com/stream.m3u8?token=456")
+        deduplicator.emitDetailed(validLink2)
+        assertEquals(1, emittedCount)
+
+        // 4. Distinct stream emits
+        val validLink3 = createLink(source = "VidSrc", name = "Valid 3", url = "https://cdn.example.com/stream_720.m3u8")
+        deduplicator.emitDetailed(validLink3)
+        assertEquals(2, emittedCount)
+    }
+
+    @Test
+    fun testFullProvidersHierarchyOrdering() {
+        val expectedTiers = listOf(
+            "vidlink" to 100,
+            "HexaSU" to 90,
+            "autoembed" to 80,
+            "vidfast" to 70,
+            "VidEasy" to 60,
+            "vidsrc" to 55,
+            "moviebox" to 50,
+            "rivestream" to 40,
+            "vidrock" to 30,
+            "moviesapi" to 20
+        )
+
+        for (i in 0 until expectedTiers.size - 1) {
+            val (higherId, higherRank) = expectedTiers[i]
+            val (lowerId, lowerRank) = expectedTiers[i + 1]
+
+            assertTrue(
+                "Rank of $higherId ($higherRank) must be greater than $lowerId ($lowerRank)",
+                higherRank > lowerRank
+            )
+        }
+    }
+
+    @Test
+    fun testSourceAwareEffectiveReferer() {
+        // 1. VidLink source strips referer unconditionally
+        val vidlinkRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = "https://cf.stream.example/master.m3u8",
+            referer = "https://arbitrary.com/",
+            headers = emptyMap(),
+            source = "VidLink",
+            name = "VidLink [HLS]"
+        )
+        assertEquals("", vidlinkRef)
+
+        // 2. Hexa source sets https://hexa.su/
+        val hexaRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = "https://cdn.example.com/hls.m3u8",
+            referer = null,
+            headers = emptyMap(),
+            source = "HexaSU",
+            name = "HexaSU Server 1"
+        )
+        assertEquals("https://hexa.su/", hexaRef)
+
+        // 3. AutoEmbed source sets https://player.autoembed.cc/
+        val autoembedRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = "https://stream.example/play.mp4",
+            referer = null,
+            headers = emptyMap(),
+            source = "AutoEmbed",
+            name = "AutoEmbed"
+        )
+        assertEquals("https://player.autoembed.cc/", autoembedRef)
+
+        // 4. VidFast source sets https://vidfast.vc/
+        val vidfastRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = "https://node.example/live.m3u8",
+            referer = null,
+            headers = emptyMap(),
+            source = "VidFast",
+            name = "VidFast [Server 1]"
+        )
+        assertEquals("https://vidfast.vc/", vidfastRef)
+
+        // 5. VidSrc domains return respective VidSrc host
+        val vidsrcRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = "https://vidsrc.xyz/embed/movie/550",
+            referer = null,
+            headers = emptyMap()
+        )
+        assertEquals("https://vidsrc.xyz/", vidsrcRef)
+    }
+
+    @Test
+    fun testCandidateLinksCountInEarlySatisfactionController() {
+        val controller = EarlySatisfactionController()
+        assertEquals(0, controller.getCandidateLinksCount())
+        assertEquals(0, controller.getLinksCount())
+
+        val link1 = createLink(source = "VidLink", name = "Link 1", url = "https://cdn.com/1.m3u8")
+        val link2 = createLink(source = "HexaSU", name = "Link 2", url = "https://cdn.com/1.m3u8") // duplicate url
+
+        controller.onCandidateLink(link1)
+        controller.onLinkEmitted(link1)
+        assertEquals(1, controller.getCandidateLinksCount())
+        assertEquals(1, controller.getLinksCount())
+
+        // Link 2 is a candidate link but dropped by deduplicator
+        controller.onCandidateLink(link2)
+        assertEquals(2, controller.getCandidateLinksCount())
+        assertEquals(1, controller.getLinksCount())
+
+        controller.reset()
+        assertEquals(0, controller.getCandidateLinksCount())
+        assertEquals(0, controller.getLinksCount())
+    }
+
+    @Test
+    fun testVidSrcOverloadsAndSubtitleSupport() = runBlocking {
+        // Test invocation of invokeVidSrcTo with subtitleCallback
+        var subReceived = false
+        var linkReceived = false
+        StreamPlayExtractor.invokeVidSrcTo(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            subtitleCallback = { subReceived = true },
+            callback = { linkReceived = true },
+            tmdbId = null
+        )
+        assertFalse(linkReceived)
+
+        // Test invokeVidSrcCc with subtitleCallback
+        StreamPlayExtractor.invokeVidSrcCc(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            subtitleCallback = { subReceived = true },
+            callback = { linkReceived = true },
+            tmdbId = null
+        )
+        assertFalse(linkReceived)
+
+        // Test invokeVidSrcXyz with subtitleCallback
+        StreamPlayExtractor.invokeVidSrcXyz(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            subtitleCallback = { subReceived = true },
+            callback = { linkReceived = true },
+            tmdbId = null
+        )
+        assertFalse(linkReceived)
+
+        // Test invokeVidSrc (Unified) with subtitleCallback
+        StreamPlayExtractor.invokeVidSrc(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            subtitleCallback = { subReceived = true },
+            callback = { linkReceived = true },
+            tmdbId = null
+        )
+        assertFalse(linkReceived)
+    }
+
+    @Test
+    fun testVidEasyMediaTitleFallbackGraceful() = runBlocking {
+        var linkEmitted = false
+        // Calling invokeVideasy with null/blank title should use "Media" fallback and not crash
+        StreamPlayExtractor.invokeVideasy(
+            title = null,
+            tmdbId = 999999999,
+            imdbId = null,
+            year = null,
+            season = null,
+            episode = null,
+            subtitleCallback = {},
+            callback = { linkEmitted = true }
+        )
+        assertFalse(linkEmitted)
     }
 }

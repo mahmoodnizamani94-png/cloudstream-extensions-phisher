@@ -400,6 +400,7 @@ class StreamPlayAnime : MainAPI() {
         val animeLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
         val trackedCallback: (ExtractorLink) -> Unit = { link ->
             val optimized = StreamLinkOptimizer.optimize(link)
+            earlyController.onCandidateLink(optimized)
             when (deduplicator.emitDetailed(optimized)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {
                     animeLinksFound.incrementAndGet()

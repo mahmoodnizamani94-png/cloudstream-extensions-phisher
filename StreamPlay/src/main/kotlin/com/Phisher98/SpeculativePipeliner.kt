@@ -82,10 +82,14 @@ class EarlySatisfactionController(
     val config: EarlySatisfactionConfig = EarlySatisfactionConfig()
 ) {
     private val linksFound = AtomicInteger(0)
+    private val candidateLinksFound = AtomicInteger(0)
     private val qualityLinksFound = AtomicInteger(0)
     private val subtitlesFound = AtomicInteger(0)
     private val satisfied = AtomicBoolean(false)
     private val maxEmittedPriority = java.util.concurrent.atomic.AtomicReference<Float>(0f)
+
+    @Volatile
+    var onSatisfiedCallback: (() -> Unit)? = null
 
     companion object {
         private val FOUR_K_WORD_REGEX = Regex("""\b(?:4k|2160p?|uhd)\b""", RegexOption.IGNORE_CASE)
@@ -158,18 +162,29 @@ class EarlySatisfactionController(
         }
 
         if (isEarlySatisfied) {
-            satisfied.compareAndSet(false, true)
+            if (satisfied.compareAndSet(false, true)) {
+                onSatisfiedCallback?.invoke()
+            }
         }
         return satisfied.get()
     }
 
     fun isSatisfied(): Boolean = satisfied.get() || checkSatisfaction()
-    fun markSatisfied() { satisfied.set(true) }
+    fun markSatisfied() {
+        if (satisfied.compareAndSet(false, true)) {
+            onSatisfiedCallback?.invoke()
+        }
+    }
+    fun onCandidateLink(link: ExtractorLink? = null) {
+        candidateLinksFound.incrementAndGet()
+    }
     fun getLinksCount(): Int = linksFound.get()
+    fun getCandidateLinksCount(): Int = candidateLinksFound.get()
     fun getQualityLinksCount(): Int = qualityLinksFound.get()
     fun getSubtitlesCount(): Int = subtitlesFound.get()
     fun reset() {
         linksFound.set(0)
+        candidateLinksFound.set(0)
         qualityLinksFound.set(0)
         subtitlesFound.set(0)
         satisfied.set(false)
@@ -368,6 +383,12 @@ object SpeculativePipeliner {
             }
         }
 
+        val previousCallback = controller.onSatisfiedCallback
+        controller.onSatisfiedCallback = {
+            previousCallback?.invoke()
+            handleEarlySatisfaction()
+        }
+
         fun launchTaskGroup(taskList: List<PipelinedTask>, targetList: CopyOnWriteArrayList<Job>): List<Job> {
             if (controller.isSatisfied() && !hasHigherPriorityInFlight()) return emptyList()
             val allBroken = taskList.isNotEmpty() && taskList.all { ProviderTelemetryManager.isCircuitBroken(it.providerId) }
@@ -385,6 +406,7 @@ object SpeculativePipeliner {
                     val start = System.currentTimeMillis()
                     var success = false
                     val beforeLinks = controller.getLinksCount()
+                    val beforeCandidateLinks = controller.getCandidateLinksCount()
                     val beforeQuality = controller.getQualityLinksCount()
                     val beforeSubs = controller.getSubtitlesCount()
 
@@ -396,7 +418,7 @@ object SpeculativePipeliner {
                             withTimeoutOrNull(timeout.milliseconds) {
                                 task.execute()
                             }
-                            val emittedLinks = controller.getLinksCount() > beforeLinks
+                            val emittedLinks = controller.getLinksCount() > beforeLinks || controller.getCandidateLinksCount() > beforeCandidateLinks
                             val emittedQuality = controller.getQualityLinksCount() > beforeQuality
                             success = if (task.isVideo) emittedLinks else controller.getSubtitlesCount() > beforeSubs
                             if (emittedQuality || emittedLinks) {
@@ -525,6 +547,7 @@ object SpeculativePipeliner {
 
             activeJobs.toList().joinAll()
         } finally {
+            controller.onSatisfiedCallback = previousCallback
             satisfactionWatcher.cancel()
             cancelAllActiveJobs()
         }
