@@ -135,6 +135,22 @@ object StreamLinkOptimizer {
         """(?:filelions\.(?:to|online|site|co))""",
         RegexOption.IGNORE_CASE
     )
+    private val TWOEMBED_HOST_REGEX = Regex(
+        """(?:2embed\.(?:cc|to|skin|me))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val UPSTREAM_HOST_REGEX = Regex(
+        """(?:upstream\.(?:to|org))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val VEXSTREAM_HOST_REGEX = Regex(
+        """(?:vexstream\.(?:org|net))""",
+        RegexOption.IGNORE_CASE
+    )
+    private val MULTIEMBED_HOST_REGEX = Regex(
+        """(?:multiembed\.(?:mov|cc))""",
+        RegexOption.IGNORE_CASE
+    )
 
     // Container & Manifest Regexes
     private val DIRECT_VIDEO_EXT_REGEX = Regex("""\.(mp4|mkv|webm|avi|mov|flv|ts|m4v|3gp|wmv|ogv|divx)$""", RegexOption.IGNORE_CASE)
@@ -432,6 +448,12 @@ object StreamLinkOptimizer {
             hadVidlinkHeader
         val isHexa = source?.contains("hexa", ignoreCase = true) == true ||
             name?.contains("hexa", ignoreCase = true) == true ||
+            source?.contains("embedsu", ignoreCase = true) == true ||
+            name?.contains("embedsu", ignoreCase = true) == true ||
+            source?.contains("embed.su", ignoreCase = true) == true ||
+            name?.contains("embed.su", ignoreCase = true) == true ||
+            source?.contains("flixer", ignoreCase = true) == true ||
+            name?.contains("flixer", ignoreCase = true) == true ||
             lowerUrl.contains("hexa.su") ||
             lowerUrl.contains("embed.su") ||
             lowerUrl.contains("flixer.su")
@@ -461,49 +483,24 @@ object StreamLinkOptimizer {
             name?.contains("vidsrc", ignoreCase = true) == true ||
             lowerUrl.contains("vidsrc.cc") ||
             lowerUrl.contains("vidsrc.to") ||
+            lowerUrl.contains("vidsrc2.to") ||
             lowerUrl.contains("vidsrc.xyz") ||
-            lowerUrl.contains("vidsrc.me")
+            lowerUrl.contains("vidsrc.me") ||
+            lowerUrl.contains("vidsrc.in") ||
+            lowerUrl.contains("vidsrc.pm") ||
+            lowerUrl.contains("vidsrc.net")
         when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || isVidlink -> {
-                // PixelDrain & Hakunaymatata/VidLink streams must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> {
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
-                if (isVidlink) {
-                    headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
-                    headers[HEADER_ACCEPT] = "*/*"
+            }
+            isVidlink -> {
+                headers.entries.removeIf { (k, v) ->
+                    (k.equals(HEADER_REFERER, ignoreCase = true) || k.equals(HEADER_ORIGIN, ignoreCase = true)) &&
+                    (v.contains("vidlink.pro", ignoreCase = true) || v.contains("embed", ignoreCase = true))
                 }
-            }
-            lowerUrl.contains("embed.su") || lowerUrl.contains("hexa.su") || lowerUrl.contains("flixer.su") || isHexa -> {
-                val hexaHost = when {
-                    lowerUrl.contains("embed.su") -> "https://embed.su/"
-                    lowerUrl.contains("flixer.su") -> "https://flixer.su/"
-                    else -> "https://hexa.su/"
-                }
-                headers[HEADER_REFERER] = hexaHost
-                headers[HEADER_ORIGIN] = hexaHost.removeSuffix("/")
-            }
-            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") || isAutoembed -> {
-                headers[HEADER_REFERER] = "https://player.autoembed.cc/"
-                headers[HEADER_ORIGIN] = "https://player.autoembed.cc"
-            }
-            (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
-            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") || isVidfast) && !isVideasy -> {
-                headers[HEADER_REFERER] = "https://vidfast.vc/"
-                headers[HEADER_ORIGIN] = "https://vidfast.vc"
-            }
-            lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
-            (lowerUrl.contains("videasy") && !lowerUrl.contains("videasy.net")) ||
-            (lowerUrl.contains("peakstorm.top") && isVideasy) -> {
-                headers[HEADER_REFERER] = "https://player.videasy.to/"
-                headers[HEADER_ORIGIN] = "https://player.videasy.to"
-            }
-            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> {
-                headers[HEADER_REFERER] = "https://www.cineby.sc/"
-                headers[HEADER_ORIGIN] = "https://www.cineby.sc"
-            }
-            lowerUrl.contains("gofile.io") -> {
-                headers[HEADER_REFERER] = "https://gofile.io/"
-                headers[HEADER_ORIGIN] = "https://gofile.io"
+                headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                headers[HEADER_ACCEPT] = "*/*"
             }
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> {
                 headers[HEADER_REFERER] = "https://streamtape.com/"
@@ -583,6 +580,58 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://filelions.to/"
                 headers[HEADER_ORIGIN] = "https://filelions.to"
             }
+            TWOEMBED_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://2embed.cc/"
+                headers[HEADER_ORIGIN] = "https://2embed.cc"
+            }
+            UPSTREAM_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://upstream.to/"
+                headers[HEADER_ORIGIN] = "https://upstream.to"
+            }
+            VEXSTREAM_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://vexstream.org/"
+                headers[HEADER_ORIGIN] = "https://vexstream.org"
+            }
+            MULTIEMBED_HOST_REGEX.containsMatchIn(lowerUrl) -> {
+                headers[HEADER_REFERER] = "https://multiembed.mov/"
+                headers[HEADER_ORIGIN] = "https://multiembed.mov"
+            }
+            lowerUrl.contains("gofile.io") -> {
+                headers[HEADER_REFERER] = "https://gofile.io/"
+                headers[HEADER_ORIGIN] = "https://gofile.io"
+            }
+            lowerUrl.contains("embed.su") || lowerUrl.contains("hexa.su") || lowerUrl.contains("flixer.su") || isHexa -> {
+                val hexaHost = when {
+                    lowerUrl.contains("embed.su") || referer?.contains("embed.su") == true -> "https://embed.su/"
+                    lowerUrl.contains("flixer.su") || referer?.contains("flixer.su") == true -> "https://flixer.su/"
+                    else -> "https://hexa.su/"
+                }
+                headers[HEADER_REFERER] = hexaHost
+                headers[HEADER_ORIGIN] = hexaHost.removeSuffix("/")
+            }
+            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") || isAutoembed -> {
+                headers[HEADER_REFERER] = "https://player.autoembed.cc/"
+                headers[HEADER_ORIGIN] = "https://player.autoembed.cc"
+            }
+            (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") || isVidfast) && !isVideasy -> {
+                headers[HEADER_REFERER] = "https://vidfast.vc/"
+                headers[HEADER_ORIGIN] = "https://vidfast.vc"
+            }
+            isVideasy && (lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc")) -> {
+                headers[HEADER_REFERER] = "https://www.cineby.sc/"
+                headers[HEADER_ORIGIN] = "https://www.cineby.sc"
+            }
+            isVideasy || lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
+            (lowerUrl.contains("videasy") && !lowerUrl.contains("videasy.net")) ||
+            (lowerUrl.contains("peakstorm.top") && isVideasy) -> {
+                headers[HEADER_REFERER] = "https://player.videasy.to/"
+                headers[HEADER_ORIGIN] = "https://player.videasy.to"
+            }
+            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> {
+                headers[HEADER_REFERER] = "https://www.cineby.sc/"
+                headers[HEADER_ORIGIN] = "https://www.cineby.sc"
+            }
             lowerUrl.contains("febbox.com") -> {
                 headers[HEADER_REFERER] = "https://www.febbox.com/"
                 headers[HEADER_ORIGIN] = "https://www.febbox.com"
@@ -592,7 +641,7 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://vidsrc.cc/"
                 headers[HEADER_ORIGIN] = "https://vidsrc.cc"
             }
-            lowerUrl.contains("vidsrc.to") || lowerUrl.contains("vidsrc2.to") -> {
+            lowerUrl.contains("vidsrc.to") || lowerUrl.contains("vidsrc2.to") || lowerUrl.contains("vidsrc.net") -> {
                 headers[HEADER_REFERER] = "https://vidsrc.to/"
                 headers[HEADER_ORIGIN] = "https://vidsrc.to"
             }
@@ -603,6 +652,14 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.me") -> {
                 headers[HEADER_REFERER] = "https://vidsrc.me/"
                 headers[HEADER_ORIGIN] = "https://vidsrc.me"
+            }
+            lowerUrl.contains("vidsrc.in") -> {
+                headers[HEADER_REFERER] = "https://vidsrc.in/"
+                headers[HEADER_ORIGIN] = "https://vidsrc.in"
+            }
+            lowerUrl.contains("vidsrc.pm") -> {
+                headers[HEADER_REFERER] = "https://vidsrc.pm/"
+                headers[HEADER_ORIGIN] = "https://vidsrc.pm"
             }
             lowerUrl.contains("shadowlandschronicles.com") -> {
                 headers[HEADER_REFERER] = "https://shadowlandschronicles.com/"
@@ -701,9 +758,20 @@ object StreamLinkOptimizer {
         val isHexa = source?.contains("hexa", ignoreCase = true) == true ||
             name?.contains("hexa", ignoreCase = true) == true ||
             source?.contains("embedsu", ignoreCase = true) == true ||
-            name?.contains("embedsu", ignoreCase = true) == true
+            name?.contains("embedsu", ignoreCase = true) == true ||
+            source?.contains("embed.su", ignoreCase = true) == true ||
+            name?.contains("embed.su", ignoreCase = true) == true ||
+            source?.contains("flixer", ignoreCase = true) == true ||
+            name?.contains("flixer", ignoreCase = true) == true ||
+            lowerUrl.contains("hexa.su") ||
+            lowerUrl.contains("embed.su") ||
+            lowerUrl.contains("flixer.su")
         val isAutoembed = source?.contains("autoembed", ignoreCase = true) == true ||
-            name?.contains("autoembed", ignoreCase = true) == true
+            name?.contains("autoembed", ignoreCase = true) == true ||
+            lowerUrl.contains("autoembed.cc") ||
+            lowerUrl.contains("player.autoembed.cc") ||
+            lowerUrl.contains("autoembed.to") ||
+            lowerUrl.contains("autoembed.co")
         val isVidfast = (source?.contains("vidfast", ignoreCase = true) == true ||
             name?.contains("vidfast", ignoreCase = true) == true ||
             lowerUrl.contains("vidfast.pro") ||
@@ -714,25 +782,21 @@ object StreamLinkOptimizer {
             name?.contains("vidsrc", ignoreCase = true) == true ||
             lowerUrl.contains("vidsrc.cc") ||
             lowerUrl.contains("vidsrc.to") ||
+            lowerUrl.contains("vidsrc2.to") ||
             lowerUrl.contains("vidsrc.xyz") ||
-            lowerUrl.contains("vidsrc.me")
+            lowerUrl.contains("vidsrc.me") ||
+            lowerUrl.contains("vidsrc.in") ||
+            lowerUrl.contains("vidsrc.pm") ||
+            lowerUrl.contains("vidsrc.net")
         return when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || isVidlink -> ""
-            lowerUrl.contains("embed.su") || lowerUrl.contains("hexa.su") || lowerUrl.contains("flixer.su") || isHexa -> {
-                when {
-                    lowerUrl.contains("embed.su") -> "https://embed.su/"
-                    lowerUrl.contains("flixer.su") -> "https://flixer.su/"
-                    else -> "https://hexa.su/"
-                }
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
+            isVidlink -> {
+                headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) &&
+                    !it.value.contains("vidlink.pro", ignoreCase = true) &&
+                    !it.value.contains("embed", ignoreCase = true)
+                }?.value ?: ""
             }
-            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") || isAutoembed -> "https://player.autoembed.cc/"
-            (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
-            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") || isVidfast) && !isVideasy -> "https://vidfast.vc/"
-            lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
-            (lowerUrl.contains("videasy") && !lowerUrl.contains("videasy.net")) ||
-            (lowerUrl.contains("peakstorm.top") && isVideasy) -> "https://player.videasy.to/"
-            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> "https://www.cineby.sc/"
-            lowerUrl.contains("gofile.io") -> "https://gofile.io/"
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"
             DOOD_HOST_REGEX.containsMatchIn(lowerUrl) -> {
                 val host = getHostUrl(url) ?: "https://dood.re"
@@ -746,10 +810,41 @@ object StreamLinkOptimizer {
             STREAMWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamwish.to/"
             VOE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://voe.sx/"
             MP4UPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://www.mp4upload.com/"
+            FASTSTREAM_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://faststream.org/"
+            STREAMRUBY_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamruby.com/"
+            EMBEDRISE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://embedrise.org/"
+            RIDOO_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://ridoo.net/"
+            ASNWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://asnwish.com/"
+            LULUVDO_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://luluvdo.com/"
+            STREAMVID_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamvid.net/"
+            DROPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://dropload.io/"
+            FILELIONS_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://filelions.to/"
+            TWOEMBED_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://2embed.cc/"
+            UPSTREAM_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://upstream.to/"
+            VEXSTREAM_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://vexstream.org/"
+            MULTIEMBED_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://multiembed.mov/"
+            lowerUrl.contains("gofile.io") -> "https://gofile.io/"
+            lowerUrl.contains("embed.su") || lowerUrl.contains("hexa.su") || lowerUrl.contains("flixer.su") || isHexa -> {
+                when {
+                    lowerUrl.contains("embed.su") || referer?.contains("embed.su") == true -> "https://embed.su/"
+                    lowerUrl.contains("flixer.su") || referer?.contains("flixer.su") == true -> "https://flixer.su/"
+                    else -> "https://hexa.su/"
+                }
+            }
+            lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") || isAutoembed -> "https://player.autoembed.cc/"
+            (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") || isVidfast) && !isVideasy -> "https://vidfast.vc/"
+            isVideasy && (lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc")) -> "https://www.cineby.sc/"
+            isVideasy || lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
+            (lowerUrl.contains("videasy") && !lowerUrl.contains("videasy.net")) ||
+            (lowerUrl.contains("peakstorm.top") && isVideasy) -> "https://player.videasy.to/"
+            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> "https://www.cineby.sc/"
             lowerUrl.contains("vidsrc.cc") -> "https://vidsrc.cc/"
-            lowerUrl.contains("vidsrc.to") || lowerUrl.contains("vidsrc2.to") -> "https://vidsrc.to/"
+            lowerUrl.contains("vidsrc.to") || lowerUrl.contains("vidsrc2.to") || lowerUrl.contains("vidsrc.net") -> "https://vidsrc.to/"
             lowerUrl.contains("vidsrc.xyz") -> "https://vidsrc.xyz/"
             lowerUrl.contains("vidsrc.me") -> "https://vidsrc.me/"
+            lowerUrl.contains("vidsrc.in") -> "https://vidsrc.in/"
+            lowerUrl.contains("vidsrc.pm") -> "https://vidsrc.pm/"
             lowerUrl.contains("shadowlandschronicles.com") -> "https://shadowlandschronicles.com/"
             lowerUrl.contains("cloudnestra.com") -> "https://cloudnestra.com/"
             lowerUrl.contains("thepixelpioneer.com") -> "https://thepixelpioneer.com/"
@@ -1344,16 +1439,16 @@ object StreamLinkOptimizer {
         val u = link.url.lowercase(Locale.ROOT)
         return when {
             s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
-            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") || s.contains("flixer.su") ||
-                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") || n.contains("flixer.su") ||
-                u.contains("hexa.su") || u.contains("embed.su") || u.contains("flixer.su") -> 90
-            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 80
+            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") || s.contains("flixer") ||
+                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") || n.contains("flixer") ||
+                u.contains("hexa.su") || u.contains("embed.su") || u.contains("flixer.su") || u.contains("flixer") -> 90
+            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") || u.contains("autoembed.to") || u.contains("autoembed.co") -> 80
             s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") ||
                 ((u.contains("peakstorm.top") || u.contains("hypergate.top")) && !s.contains("videasy") && !n.contains("videasy")) -> 70
             s.contains("videasy") || n.contains("videasy") || u.contains("videasy") || u.contains("speedracelight.com") || u.contains("videasy.to") || u.contains("videasy.net") || u.contains("cineby.sc") ||
                 (u.contains("peakstorm.top") && (s.contains("videasy") || n.contains("videasy"))) -> 60
             s.contains("vidsrc") || n.contains("vidsrc") || u.contains("vidsrc") || u.contains("cloudnestra") || u.contains("shadowlandschronicles") ||
-                u.contains("thepixelpioneer") || u.contains("putgate") || u.contains("whisperingpines") -> 55
+                u.contains("thepixelpioneer") || u.contains("putgate") || u.contains("whisperingpines") || u.contains("vidsrc.in") || u.contains("vidsrc.pm") || u.contains("vidsrc.net") -> 55
             s.contains("moviebox") || n.contains("moviebox") -> 50
             s.contains("rivestream") || n.contains("rivestream") -> 40
             s.contains("vidrock") || n.contains("vidrock") -> 30

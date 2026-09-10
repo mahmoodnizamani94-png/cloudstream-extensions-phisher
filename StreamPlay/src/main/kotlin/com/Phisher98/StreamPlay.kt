@@ -956,12 +956,18 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         }
 
         fun emitSubtitle(subtitle: SubtitleFile): Boolean {
-            val url = subtitle.url.trim().takeIf { it.startsWith("http", ignoreCase = true) } ?: return false
+            val rawUrl = subtitle.url.trim()
+            val url = when {
+                rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true) -> rawUrl
+                rawUrl.startsWith("//") -> "https:$rawUrl"
+                else -> return false
+            }
             val cleanedLang = cleanSubtitleLabel(subtitle.lang)
             val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$url"
 
             return if (emittedSubtitles.add(dedupeKey)) {
                 subtitlesFound.incrementAndGet()
+                @Suppress("DEPRECATION")
                 val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = url)
                 earlyController.onSubtitleEmitted(cleanedSubtitle)
                 subtitleCallback(cleanedSubtitle)

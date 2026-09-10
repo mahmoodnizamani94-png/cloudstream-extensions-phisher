@@ -31,6 +31,7 @@ class EarlySatisfactionTest {
         )
     }
 
+    @Suppress("DEPRECATION")
     private fun createSubtitle(lang: String = "English", url: String = "https://example.com/sub.srt"): SubtitleFile {
         return SubtitleFile(
             lang = lang,

@@ -42,12 +42,13 @@ class StreamPlayTopTierSourceHierarchyTest {
             "HexaSU",
             "autoembed",
             "vidfast",
-            "VidEasy"
+            "VidEasy",
+            "vidsrc"
         )
         val expectedSet = expectedOrder.toSet()
 
-        // 1. Verify DEFAULT_TOP_TIER_PROVIDERS contains all 5 sources
-        assertEquals(5, DEFAULT_TOP_TIER_PROVIDERS.size)
+        // 1. Verify DEFAULT_TOP_TIER_PROVIDERS contains all 6 sources
+        assertEquals(6, DEFAULT_TOP_TIER_PROVIDERS.size)
         assertEquals(expectedSet, DEFAULT_TOP_TIER_PROVIDERS)
 
         // 2. Verify all are registered in buildProviders()
@@ -99,15 +100,15 @@ class StreamPlayTopTierSourceHierarchyTest {
             assertFalse("Top tier provider '$topId' must NOT be disabled", disabledIds.contains(topId))
         }
 
-        // Active providers must be exactly the 5 top-tier providers
+        // Active providers must be exactly the 6 top-tier providers
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals(5, activeProviders.size)
+        assertEquals(6, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders.map { it.id }.toSet())
     }
 
     @Test
     fun testColdStartLatencyTiersMatchPriority() {
-        val topTierSources = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy")
+        val topTierSources = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy", "vidsrc")
 
         for (source in topTierSources) {
             val tier = SpeculativePipeliner.STATIC_COLD_START_TIERS[source]
@@ -244,7 +245,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         val allProviders = buildProviders()
         val active = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 5 top-tier providers", 5, active.size)
+        assertEquals("Clean install must activate exactly 6 top-tier providers", 6, active.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue(mockPrefs.getBoolean("streamplay_top5_defaults_initialized", false))
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
@@ -269,7 +270,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertFalse("AutoEmbed must not be disabled after migration", finalDisabled.contains("autoembed"))
         // SuperStream must be explicitly disabled in migration
         assertTrue("SuperStream must be in disabled_providers after migration", finalDisabled.contains("superstream"))
-        assertEquals("All 5 top-tier providers must be active after migration", DEFAULT_TOP_TIER_PROVIDERS, active)
+        assertEquals("All 6 top-tier providers must be active after migration", DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
@@ -1546,5 +1547,198 @@ class StreamPlayTopTierSourceHierarchyTest {
         StreamPlayExtractor.invokeVidSrcCc(id = "tt999999999", season = 0, episode = null, callback = {})
         StreamPlayExtractor.invokeVidSrcTo(id = "tt999999999", season = 0, episode = null, callback = {})
         StreamPlayExtractor.invokeVidSrcXyz(id = "tt999999999", season = 0, episode = null, callback = {})
+    }
+
+    @Test
+    fun testFullTenTierHierarchyStrictMonotonicity() {
+        val vidlink = createLink(source = "Vidlink", name = "Vidlink HLS", url = "https://hakunaymatata.org/stream.m3u8")
+        val hexa = createLink(source = "HexaSU", name = "HexaSU Server 1", url = "https://hexa.su/stream.m3u8")
+        val autoembed = createLink(source = "AutoEmbed", name = "AutoEmbed HLS", url = "https://autoembed.cc/hls.m3u8")
+        val vidfast = createLink(source = "VidFast", name = "VidFast [Server 1]", url = "https://vidfast.vc/stream.m3u8")
+        val videasy = createLink(source = "VidEasy", name = "VidEasy [CDN]", url = "https://player.videasy.to/stream.m3u8")
+        val vidsrc = createLink(source = "VidSrc", name = "VidSrc Server v1", url = "https://vidsrc.xyz/stream.m3u8")
+        val moviebox = createLink(source = "MovieBox", name = "MovieBox (Original)", url = "https://moviebox.example/video.mp4")
+        val rivestream = createLink(source = "RiveStream", name = "RiveStream", url = "https://rivestream.example/stream.m3u8")
+        val vidrock = createLink(source = "Vidrock-alpha", name = "Vidrock MP4", url = "https://vidrock.example/stream.mp4")
+        val moviesapi = createLink(source = "MoviesApi Club", name = "MoviesApi Club", url = "https://moviesapi.example/master.m3u8")
+
+        // 1. Exact priority scores
+        assertEquals(100, StreamLinkOptimizer.getSourcePriorityRank(vidlink))
+        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(hexa))
+        assertEquals(80, StreamLinkOptimizer.getSourcePriorityRank(autoembed))
+        assertEquals(70, StreamLinkOptimizer.getSourcePriorityRank(vidfast))
+        assertEquals(60, StreamLinkOptimizer.getSourcePriorityRank(videasy))
+        assertEquals(55, StreamLinkOptimizer.getSourcePriorityRank(vidsrc))
+        assertEquals(50, StreamLinkOptimizer.getSourcePriorityRank(moviebox))
+        assertEquals(40, StreamLinkOptimizer.getSourcePriorityRank(rivestream))
+        assertEquals(30, StreamLinkOptimizer.getSourcePriorityRank(vidrock))
+        assertEquals(20, StreamLinkOptimizer.getSourcePriorityRank(moviesapi))
+
+        // 2. Strict rank order
+        val allRanks = listOf(
+            StreamLinkOptimizer.getSourcePriorityRank(vidlink),
+            StreamLinkOptimizer.getSourcePriorityRank(hexa),
+            StreamLinkOptimizer.getSourcePriorityRank(autoembed),
+            StreamLinkOptimizer.getSourcePriorityRank(vidfast),
+            StreamLinkOptimizer.getSourcePriorityRank(videasy),
+            StreamLinkOptimizer.getSourcePriorityRank(vidsrc),
+            StreamLinkOptimizer.getSourcePriorityRank(moviebox),
+            StreamLinkOptimizer.getSourcePriorityRank(rivestream),
+            StreamLinkOptimizer.getSourcePriorityRank(vidrock),
+            StreamLinkOptimizer.getSourcePriorityRank(moviesapi)
+        )
+        for (i in 0 until allRanks.size - 1) {
+            assertTrue(
+                "Rank at index $i (${allRanks[i]}) must be strictly greater than rank at ${i + 1} (${allRanks[i + 1]})",
+                allRanks[i] > allRanks[i + 1]
+            )
+        }
+    }
+
+    @Test
+    fun testIsBetterThanStrictHierarchyAtEqualResolution() {
+        val links = listOf(
+            createLink(source = "Vidlink", name = "Vidlink HLS", url = "https://cdn.example/vidlink.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "HexaSU", name = "HexaSU Server 1", url = "https://cdn.example/hexa.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "AutoEmbed", name = "AutoEmbed", url = "https://cdn.example/autoembed.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "VidFast", name = "VidFast", url = "https://cdn.example/vidfast.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "VidEasy", name = "VidEasy", url = "https://cdn.example/videasy.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "VidSrc", name = "VidSrc", url = "https://cdn.example/vidsrc.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "MovieBox", name = "MovieBox", url = "https://cdn.example/moviebox.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "RiveStream", name = "RiveStream", url = "https://cdn.example/rivestream.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "Vidrock", name = "Vidrock", url = "https://cdn.example/vidrock.m3u8", quality = Qualities.P1080.value),
+            createLink(source = "MoviesApi", name = "MoviesApi", url = "https://cdn.example/moviesapi.m3u8", quality = Qualities.P1080.value)
+        )
+
+        // Pairwise comparison: higher tier strictly beats lower tier
+        for (i in 0 until links.size - 1) {
+            val higher = links[i]
+            val lower = links[i + 1]
+            assertTrue("${higher.source} must be better than ${lower.source}", StreamLinkOptimizer.isBetterThan(higher, lower))
+            assertFalse("${lower.source} must NOT be better than ${higher.source}", StreamLinkOptimizer.isBetterThan(lower, higher))
+        }
+    }
+
+    @Test
+    fun testAutoembedToAndCoDomainContracts() {
+        val linkTo = createLink(source = "Unknown", name = "Stream", url = "https://autoembed.to/api/hls/master.m3u8")
+        val linkCo = createLink(source = "Unknown", name = "Stream", url = "https://autoembed.co/stream/video.mp4")
+
+        assertEquals(80, StreamLinkOptimizer.getSourcePriorityRank(linkTo))
+        assertEquals(80, StreamLinkOptimizer.getSourcePriorityRank(linkCo))
+
+        val refTo = StreamLinkOptimizer.getEffectiveReferer(
+            url = linkTo.url,
+            referer = null,
+            headers = emptyMap(),
+            source = linkTo.source,
+            name = linkTo.name
+        )
+        assertEquals("https://player.autoembed.cc/", refTo)
+
+        val headersCo = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = linkCo.url,
+            referer = null,
+            linkType = ExtractorLinkType.VIDEO,
+            source = linkCo.source,
+            name = linkCo.name
+        )
+        assertEquals("https://player.autoembed.cc/", headersCo["Referer"])
+        assertEquals("https://player.autoembed.cc", headersCo["Origin"])
+    }
+
+    @Test
+    fun testHexaSuMirrorAliasesContracts() {
+        val embedsuLink = createLink(source = "embedsu", name = "embedsu server", url = "https://arbitrary-cdn.net/stream.m3u8")
+        val flixerLink = createLink(source = "flixersu", name = "flixer stream", url = "https://arbitrary-cdn.net/hls/video.m3u8")
+
+        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(embedsuLink))
+        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(flixerLink))
+
+        val embedsuHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = embedsuLink.url,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = embedsuLink.source,
+            name = embedsuLink.name
+        )
+        assertEquals("https://hexa.su/", embedsuHeaders["Referer"])
+        assertEquals("https://hexa.su", embedsuHeaders["Origin"])
+    }
+
+    @Test
+    fun testVidEasyThirdPartyCdnRefererContract() {
+        val videasyThirdPartyCdn = "https://cdn-streaming-node-99.fastcloud.net/hls/master.m3u8"
+        val headers = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = videasyThirdPartyCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidEasy",
+            name = "VidEasy [CDN]"
+        )
+        assertEquals("https://player.videasy.to/", headers["Referer"])
+        assertEquals("https://player.videasy.to", headers["Origin"])
+
+        val effRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = videasyThirdPartyCdn,
+            referer = null,
+            headers = emptyMap(),
+            source = "VidEasy",
+            name = "VidEasy [CDN]"
+        )
+        assertEquals("https://player.videasy.to/", effRef)
+    }
+
+    @Test
+    fun testVidSrcDomainVariantsContracts() {
+        val vidsrcIn = "https://vidsrc.in/stream/master.m3u8"
+        val vidsrcPm = "https://vidsrc.pm/hls/playlist.m3u8"
+        val vidsrcNet = "https://vidsrc.net/embed/tv/tt123"
+
+        val linkIn = createLink(source = "VidSrc", name = "VidSrc In", url = vidsrcIn)
+        val linkPm = createLink(source = "VidSrc", name = "VidSrc Pm", url = vidsrcPm)
+        val linkNet = createLink(source = "VidSrc", name = "VidSrc Net", url = vidsrcNet)
+
+        assertEquals(55, StreamLinkOptimizer.getSourcePriorityRank(linkIn))
+        assertEquals(55, StreamLinkOptimizer.getSourcePriorityRank(linkPm))
+        assertEquals(55, StreamLinkOptimizer.getSourcePriorityRank(linkNet))
+
+        val headersIn = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = vidsrcIn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc",
+            name = "VidSrc"
+        )
+        assertEquals("https://vidsrc.in/", headersIn["Referer"])
+        assertEquals("https://vidsrc.in", headersIn["Origin"])
+
+        val headersNet = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = vidsrcNet,
+            referer = null,
+            linkType = ExtractorLinkType.VIDEO,
+            source = "VidSrc To",
+            name = "VidSrc To"
+        )
+        assertEquals("https://vidsrc.to/", headersNet["Referer"])
+    }
+
+    @Test
+    fun testCancellationSafetyPropagationInHelpers() = runBlocking {
+        // Verify that CancellationException is properly rethrown by retryTransient
+        var caughtCancellation = false
+        try {
+            StreamPlayExtractor.retryTransient(maxRetries = 2, delayMs = 10L) {
+                throw kotlinx.coroutines.CancellationException("Test cancellation")
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            caughtCancellation = true
+        }
+        assertTrue("retryTransient must rethrow CancellationException", caughtCancellation)
     }
 }

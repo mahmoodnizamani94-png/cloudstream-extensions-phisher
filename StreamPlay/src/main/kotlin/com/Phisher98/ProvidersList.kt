@@ -165,6 +165,9 @@ private val providers by lazy {
             val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
             if (!res.isAnime) invokeVideasy(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
         },
+        Provider("vidsrc", "VidSrc (Unified)") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
+        },
         Provider("uhdmovies", "UHD Movies") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeUhdmovies(res.title, res.year, res.season, res.episode, callback, subtitleCallback)
         },
@@ -281,9 +284,6 @@ private val providers by lazy {
         Provider("vidsrcto", "VidSrc To") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidSrcTo(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
         },
-        Provider("vidsrc", "VidSrc (Unified)") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
-        },
         Provider("vidzeeapi", "Vidzee API") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidzee(res.id, res.season, res.episode, subtitleCallback, callback)
         },
@@ -369,7 +369,8 @@ val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "HexaSU",
     "autoembed",
     "vidfast",
-    "VidEasy"
+    "VidEasy",
+    "vidsrc"
 )
 
 fun getDefaultDisabledProviderIds(): Set<String> =
@@ -377,7 +378,7 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v5_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v6_initialized"
 
 /**
  * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy)

@@ -27,9 +27,10 @@ class StreamPlayProviderDefaultsTest {
             "HexaSU",
             "autoembed",
             "vidfast",
-            "VidEasy"
+            "VidEasy",
+            "vidsrc"
         )
-        assertEquals("Top tier default providers must contain exactly 5 sources", 5, DEFAULT_TOP_TIER_PROVIDERS.size)
+        assertEquals("Top tier default providers must contain exactly 6 sources", 6, DEFAULT_TOP_TIER_PROVIDERS.size)
         assertEquals("Top tier default providers must match expected IDs", expected, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
@@ -59,7 +60,7 @@ class StreamPlayProviderDefaultsTest {
 
         // Active providers when applying default disabled set must be exactly top tier
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("Only top tier providers should be active by default", 5, activeProviders.size)
+        assertEquals("Only top tier providers should be active by default", 6, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,

@@ -37,7 +37,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Interceptor
@@ -80,7 +82,13 @@ object StreamPlayExtractor : StreamPlay() {
     suspend fun <T> retryTransient(maxRetries: Int = 1, delayMs: Long = 200L, block: suspend () -> T?): T? {
         var attempt = 0
         while (attempt <= maxRetries) {
-            val res = runCatching { block() }.getOrNull()
+            val res = try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                null
+            }
             if (res != null) return res
             if (attempt < maxRetries) delay(delayMs)
             attempt++
@@ -106,6 +114,7 @@ object StreamPlayExtractor : StreamPlay() {
             }
             true
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             false
         }
     }
@@ -4984,12 +4993,12 @@ object StreamPlayExtractor : StreamPlay() {
                         runCatching {
                             val obj = Gson().fromJson(headersJson, JsonObject::class.java)
                             val ref = obj?.get("referer")?.asString
-                            val orig = obj?.get("origin")?.asString
+                            val parsedOrigin = obj?.get("origin")?.asString
                             if (!ref.isNullOrBlank() && !ref.contains("vidlink.pro", ignoreCase = true) && !ref.contains("embed", ignoreCase = true)) {
                                 referer = ref
                             }
-                            if (!orig.isNullOrBlank() && !orig.contains("vidlink.pro", ignoreCase = true) && !orig.contains("embed", ignoreCase = true)) {
-                                origin = orig
+                            if (!parsedOrigin.isNullOrBlank() && !parsedOrigin.contains("vidlink.pro", ignoreCase = true) && !parsedOrigin.contains("embed", ignoreCase = true)) {
+                                origin = parsedOrigin
                             }
                         }
                     }
@@ -5184,6 +5193,7 @@ object StreamPlayExtractor : StreamPlay() {
                 val quality = Qualities.P1080.value
 
                 coroutineScope {
+                    val decodeSemaphore = Semaphore(3)
                     serversList.mapIndexed { index, server ->
                         async {
                             try {
@@ -5201,12 +5211,14 @@ object StreamPlayExtractor : StreamPlay() {
                                     return@async
                                 }
 
-                                val streamRoot = retryTransient(1, 200L) {
-                                    app.post(
-                                        "$api/dec-vidfast",
-                                        json = mapOf("text" to streamEncrypted, "version" to version),
-                                        timeout = 5L
-                                    ).parsedSafe<VidFastServersStreamRoot>()
+                                val streamRoot = decodeSemaphore.withPermit {
+                                    retryTransient(1, 200L) {
+                                        app.post(
+                                            "$api/dec-vidfast",
+                                            json = mapOf("text" to streamEncrypted, "version" to version),
+                                            timeout = 5L
+                                        ).parsedSafe<VidFastServersStreamRoot>()
+                                    }
                                 } ?: return@async
 
                                 val finalUrl = streamRoot.result.url
@@ -5539,12 +5551,8 @@ object StreamPlayExtractor : StreamPlay() {
 
                 if (encrypted.isEmpty()) return@withTimeoutOrNull
 
-                val jsonBody = """
-                {
-                    "text": "$encrypted",
-                    "key": "$key"
-                }
-            """.trimIndent().toRequestBody("application/json".toMediaType())
+                val jsonBody = JSONObject().put("text", encrypted).put("key", key).toString()
+                    .toRequestBody("application/json".toMediaType())
 
                 val decryptRes = runCatching {
                     app.post(
