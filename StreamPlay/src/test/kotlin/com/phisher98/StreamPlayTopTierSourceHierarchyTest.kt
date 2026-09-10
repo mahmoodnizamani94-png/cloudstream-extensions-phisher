@@ -930,7 +930,12 @@ class StreamPlayTopTierSourceHierarchyTest {
         val videasyLink = createLink("VidEasy", "VidEasy [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
         val vidsrcLink = createLink("VidSrc", "VidSrc Server V1 [1080p]", "https://shadowlandschronicles.com/stream.m3u8", type = ExtractorLinkType.M3U8)
         val vidsrcCcLink = createLink("VidSrc CC", "VidSrc CC [1080p]", "https://vidsrc.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidsrcToLink = createLink("VidSrc To", "VidSrc To [1080p]", "https://vidsrc.to/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidsrcMeLink = createLink("VidSrc Me", "VidSrc Me [1080p]", "https://vidsrc.me/stream.m3u8", type = ExtractorLinkType.M3U8)
         val cloudnestraLink = createLink("VidSrc", "VidSrc Server V2 [1080p]", "https://cloudnestra.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val pixelPioneerLink = createLink("VidSrc", "VidSrc Server V3 [1080p]", "https://thepixelpioneer.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val putgateLink = createLink("VidSrc", "VidSrc Server V4 [1080p]", "https://putgate.org/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val whisperingPinesLink = createLink("VidSrc", "VidSrc Server V5 [1080p]", "https://whisperingpineslifestyle.com/stream.m3u8", type = ExtractorLinkType.M3U8)
         val movieboxLink = createLink("MovieBox", "MovieBox [1080p]", "https://moviebox.example/stream.mp4")
         val rivestreamLink = createLink("RiveStream", "RiveStream [1080p]", "https://rivestream.example/stream.mp4")
         val vidrockLink = createLink("Vidrock", "Vidrock [1080p]", "https://vidrock.example/stream.mp4")
@@ -944,7 +949,12 @@ class StreamPlayTopTierSourceHierarchyTest {
         val rVideasy = StreamLinkOptimizer.getSourcePriorityRank(videasyLink)
         val rVidSrc = StreamLinkOptimizer.getSourcePriorityRank(vidsrcLink)
         val rVidSrcCc = StreamLinkOptimizer.getSourcePriorityRank(vidsrcCcLink)
+        val rVidSrcTo = StreamLinkOptimizer.getSourcePriorityRank(vidsrcToLink)
+        val rVidSrcMe = StreamLinkOptimizer.getSourcePriorityRank(vidsrcMeLink)
         val rCloudnestra = StreamLinkOptimizer.getSourcePriorityRank(cloudnestraLink)
+        val rPixelPioneer = StreamLinkOptimizer.getSourcePriorityRank(pixelPioneerLink)
+        val rPutgate = StreamLinkOptimizer.getSourcePriorityRank(putgateLink)
+        val rWhisperingPines = StreamLinkOptimizer.getSourcePriorityRank(whisperingPinesLink)
         val rMoviebox = StreamLinkOptimizer.getSourcePriorityRank(movieboxLink)
         val rRivestream = StreamLinkOptimizer.getSourcePriorityRank(rivestreamLink)
         val rVidrock = StreamLinkOptimizer.getSourcePriorityRank(vidrockLink)
@@ -959,7 +969,12 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertEquals("VidEasy rank is 60", 60, rVideasy)
         assertEquals("VidSrc rank must be exactly 55 (King of Fallbacks)", 55, rVidSrc)
         assertEquals("VidSrc CC rank must be exactly 55", 55, rVidSrcCc)
+        assertEquals("VidSrc To rank must be exactly 55", 55, rVidSrcTo)
+        assertEquals("VidSrc Me rank must be exactly 55", 55, rVidSrcMe)
         assertEquals("Cloudnestra mirror rank must be exactly 55", 55, rCloudnestra)
+        assertEquals("PixelPioneer mirror rank must be exactly 55", 55, rPixelPioneer)
+        assertEquals("Putgate mirror rank must be exactly 55", 55, rPutgate)
+        assertEquals("WhisperingPines mirror rank must be exactly 55", 55, rWhisperingPines)
         assertEquals("MovieBox rank is 50", 50, rMoviebox)
         assertEquals("RiveStream rank is 40", 40, rRivestream)
         assertEquals("Vidrock rank is 30", 30, rVidrock)
@@ -982,11 +997,15 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertEquals(55f, FAST_PROVIDER_BOOST["vidsrc"] ?: 0f, 0.001f)
         assertEquals(55f, FAST_PROVIDER_BOOST["vidsrcxyz"] ?: 0f, 0.001f)
         assertEquals(55f, FAST_PROVIDER_BOOST["vidsrccc"] ?: 0f, 0.001f)
+        assertEquals(55f, FAST_PROVIDER_BOOST["vidsrcto"] ?: 0f, 0.001f)
+        assertEquals(55f, FAST_PROVIDER_BOOST["vidsrcme"] ?: 0f, 0.001f)
 
         // SpeculativePipeliner tier check
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrc"])
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcxyz"])
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrccc"])
+        assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcto"])
+        assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcme"])
     }
 
     @Test
@@ -999,6 +1018,33 @@ class StreamPlayTopTierSourceHierarchyTest {
             callback = { linkEmitted = true }
         )
         assertFalse("invokeVidSrc must complete gracefully without emitting links for nonexistent id", linkEmitted)
+
+        var toEmitted = false
+        StreamPlayExtractor.invokeVidSrcTo(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            callback = { toEmitted = true }
+        )
+        assertFalse("invokeVidSrcTo must complete gracefully without emitting links for nonexistent id", toEmitted)
+
+        var ccEmitted = false
+        StreamPlayExtractor.invokeVidSrcCc(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            callback = { ccEmitted = true }
+        )
+        assertFalse("invokeVidSrcCc must complete gracefully without emitting links for nonexistent id", ccEmitted)
+
+        var xyzEmitted = false
+        StreamPlayExtractor.invokeVidSrcXyz(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            callback = { xyzEmitted = true }
+        )
+        assertFalse("invokeVidSrcXyz must complete gracefully without emitting links for nonexistent id", xyzEmitted)
     }
 
     @Test

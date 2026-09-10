@@ -50,6 +50,7 @@ import com.phisher98.StreamPlayExtractor.invokeVegamovies
 import com.phisher98.StreamPlayExtractor.invokeVidFast
 import com.phisher98.StreamPlayExtractor.invokeVidSrc
 import com.phisher98.StreamPlayExtractor.invokeVidSrcCc
+import com.phisher98.StreamPlayExtractor.invokeVidSrcTo
 import com.phisher98.StreamPlayExtractor.invokeVidSrcXyz
 import com.phisher98.StreamPlayExtractor.invokeVideasy
 import com.phisher98.StreamPlayExtractor.invokeVidlink
@@ -276,6 +277,9 @@ private val providers by lazy {
         },
         Provider("vidsrccc", "VidSrc CC") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeVidSrcCc(res.imdbId, res.season, res.episode, callback, res.id)
+        },
+        Provider("vidsrcto", "VidSrc To") { res, _, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrcTo(res.imdbId, res.season, res.episode, callback, res.id)
         },
         Provider("vidsrc", "VidSrc (Unified)") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, callback, res.id)
