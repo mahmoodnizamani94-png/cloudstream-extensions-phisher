@@ -1078,13 +1078,14 @@ object StreamLinkOptimizer {
 
     /**
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
-     * 1. Higher bitrate (kbps)
-     * 2. Higher resolution quality
-     * 3. Direct endpoint rewrites
-     * 4. Video source and HDR/codec score
-     * 5. Top-tier source priority rank (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy > Secondary)
-     * 6. Audio format and channel score
-     * 7. Anti-throttling header completeness
+     * 1. Higher resolution quality
+     * 2. Top-tier source priority rank (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy > Secondary)
+     * 3. Higher bitrate (kbps) (when resolutions and top-tier source ranks are equivalent)
+     * 4. Direct endpoint rewrites
+     * 5. Video source and HDR/codec score
+     * 6. Direct byte stream over HLS for equal tier sources
+     * 7. Audio format and channel score
+     * 8. Anti-throttling header completeness
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
         // 1. Resolution Quality comparison: higher resolution quality strictly takes precedence

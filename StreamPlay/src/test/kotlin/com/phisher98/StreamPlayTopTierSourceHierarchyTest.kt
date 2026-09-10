@@ -515,4 +515,64 @@ class StreamPlayTopTierSourceHierarchyTest {
         val expectedOrder = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy", "moviebox")
         assertEquals("Operational providers must strictly preserve priority order", expectedOrder, sorted.map { it.id })
     }
+
+    @Test
+    fun testAllFiveTopTierSourcesInNonAnimeSet() {
+        val topFive = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy")
+        for (id in topFive) {
+            assertTrue("Top-tier provider '$id' must be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains(id))
+        }
+    }
+
+    @Test
+    fun testAnimeFilterPreventsTopTierExecution() = kotlinx.coroutines.runBlocking {
+        val animeData = StreamPlay.LinkData(
+            id = 12345,
+            title = "Attack on Titan",
+            year = 2013,
+            isAnime = true
+        )
+        val allProviders = buildProviders().associateBy { it.id }
+        val topFive = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy")
+
+        for (id in topFive) {
+            val provider = allProviders[id]
+            assertNotNull("Provider '$id' must exist", provider)
+            var invoked = false
+            provider?.invoke(
+                animeData,
+                { _ -> invoked = true },
+                { _ -> invoked = true },
+                "",
+                ""
+            )
+            assertFalse("Provider '$id' must NOT execute on anime title", invoked)
+        }
+    }
+
+    @Test
+    fun testVideasyNullTmdbIdEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        var subEmitted = false
+        StreamPlayExtractor.invokeVideasy(
+            title = "Test Movie",
+            tmdbId = null,
+            imdbId = "tt1234567",
+            year = 2024,
+            subtitleCallback = { subEmitted = true },
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVideasy must not emit links when tmdbId is null", linkEmitted)
+        assertFalse("invokeVideasy must not emit subtitles when tmdbId is null", subEmitted)
+    }
+
+    @Test
+    fun testAutoembedNullTmdbIdEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        StreamPlayExtractor.invokeAutoembed(
+            tmdbId = null,
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeAutoembed must not emit links when tmdbId is null", linkEmitted)
+    }
 }

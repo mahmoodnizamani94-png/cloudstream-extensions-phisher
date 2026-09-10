@@ -63,7 +63,7 @@ private val ANIME_ONLY_PROVIDERS = setOf(
     "anizone"
 )
 
-private val NON_ANIME_PROVIDERS = setOf(
+internal val NON_ANIME_PROVIDERS = setOf(
     "uhdmovies",
     "topmovies",
     "moviesmod",
@@ -93,7 +93,9 @@ private val NON_ANIME_PROVIDERS = setOf(
     "Dudefilms",
     "Zinkmovies",
     "Peachify",
-    "autoembed"
+    "autoembed",
+    "vidfast",
+    "VidEasy"
 )
 
 internal val FAST_PROVIDER_BOOST = mapOf(

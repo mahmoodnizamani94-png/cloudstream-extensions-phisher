@@ -288,10 +288,10 @@ private val providers by lazy {
             if (!res.isAnime) invokeDahmerMovies(res.title, res.year, res.season, res.episode, callback)
         },
         Provider("vidfast", "VidFast") { res, subtitleCallback, callback, _, _ ->
-            invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback)
+            if (!res.isAnime) invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("VidEasy", "VidEasy") { res, subtitleCallback, callback, _, _ ->
-            invokeVideasy(res.title,res.id, res.imdbId, res.year, res.season,res.episode, subtitleCallback, callback )
+            if (!res.isAnime) invokeVideasy(res.title, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("moviesapi", "MoviesApi Club") { res, _, callback, _, _ ->
             invokeMoviesApi(res.id, res.season, res.episode, callback)
