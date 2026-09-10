@@ -411,18 +411,19 @@ object StreamLinkOptimizer {
 
         // 7. Host-specific download optimizations and Referer / Origin handling
         val lowerUrl = url.lowercase(Locale.ROOT)
+        val hadVidlinkHeader = headers.entries.any {
+            (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
+                it.value.contains("vidlink.pro", ignoreCase = true)
+        } || referer?.contains("vidlink.pro", ignoreCase = true) == true
         when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
             lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
-            headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true ||
-            headers[HEADER_ORIGIN]?.contains("vidlink.pro", ignoreCase = true) == true ||
-            referer?.contains("vidlink.pro", ignoreCase = true) == true -> {
+            hadVidlinkHeader -> {
                 // PixelDrain & Hakunaymatata/VidLink streams must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
                 if (lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
-                    headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true ||
-                    referer?.contains("vidlink.pro", ignoreCase = true) == true ||
+                    hadVidlinkHeader ||
                     linkType == ExtractorLinkType.VIDEO || lowerUrl.contains(".mp4")) {
                     headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                     headers[HEADER_ACCEPT] = "*/*"
@@ -571,7 +572,10 @@ object StreamLinkOptimizer {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
             lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
             referer?.contains("vidlink.pro", ignoreCase = true) == true ||
-            headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true -> ""
+            headers.entries.any {
+                (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
+                    it.value.contains("vidlink.pro", ignoreCase = true)
+            } -> ""
             lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
             lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> "https://vidfast.vc/"
             headers.containsKey(HEADER_REFERER) -> headers[HEADER_REFERER] ?: ""

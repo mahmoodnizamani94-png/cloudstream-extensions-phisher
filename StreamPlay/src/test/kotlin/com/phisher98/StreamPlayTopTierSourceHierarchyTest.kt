@@ -575,4 +575,127 @@ class StreamPlayTopTierSourceHierarchyTest {
         )
         assertFalse("invokeAutoembed must not emit links when tmdbId is null", linkEmitted)
     }
+
+    @Test
+    fun testHexaNullTmdbIdOrMissingEpisodeEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        var subEmitted = false
+        StreamPlayExtractor.invokeHexa(
+            tmdbId = null,
+            season = null,
+            episode = null,
+            subtitleCallback = { subEmitted = true },
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeHexa must not emit links when tmdbId is null", linkEmitted)
+        assertFalse("invokeHexa must not emit subs when tmdbId is null", subEmitted)
+
+        linkEmitted = false
+        subEmitted = false
+        StreamPlayExtractor.invokeHexa(
+            tmdbId = 12345,
+            season = 1,
+            episode = null,
+            subtitleCallback = { subEmitted = true },
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeHexa must not emit links when TV episode is null", linkEmitted)
+        assertFalse("invokeHexa must not emit subs when TV episode is null", subEmitted)
+    }
+
+    @Test
+    fun testVidFastNullTmdbIdOrMissingEpisodeEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        var subEmitted = false
+        StreamPlayExtractor.invokeVidFast(
+            tmdbId = null,
+            season = null,
+            episode = null,
+            subtitleCallback = { subEmitted = true },
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVidFast must not emit links when tmdbId is null", linkEmitted)
+        assertFalse("invokeVidFast must not emit subs when tmdbId is null", subEmitted)
+
+        linkEmitted = false
+        subEmitted = false
+        StreamPlayExtractor.invokeVidFast(
+            tmdbId = 12345,
+            season = 1,
+            episode = null,
+            subtitleCallback = { subEmitted = true },
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVidFast must not emit links when TV episode is null", linkEmitted)
+        assertFalse("invokeVidFast must not emit subs when TV episode is null", subEmitted)
+    }
+
+    @Test
+    fun testAutoembedMissingEpisodeEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        StreamPlayExtractor.invokeAutoembed(
+            tmdbId = 12345,
+            season = 1,
+            episode = null,
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeAutoembed must not emit links when TV episode is null", linkEmitted)
+    }
+
+    @Test
+    fun testVideasyMissingEpisodeEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        var subEmitted = false
+        StreamPlayExtractor.invokeVideasy(
+            title = "Test Series",
+            tmdbId = 12345,
+            imdbId = "tt1234567",
+            year = 2024,
+            season = 1,
+            episode = null,
+            subtitleCallback = { subEmitted = true },
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVideasy must not emit links when TV episode is null", linkEmitted)
+        assertFalse("invokeVideasy must not emit subs when TV episode is null", subEmitted)
+    }
+
+    @Test
+    fun testVidlinkMissingEpisodeEarlyReturn() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        StreamPlayExtractor.invokeVidlink(
+            tmdbId = 12345,
+            season = 1,
+            episode = null,
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVidlink must not emit links when TV episode is null", linkEmitted)
+    }
+
+    @Test
+    fun testBuildDownloadHeadersWithVidlinkHeaderWithoutUrlOrRefererArg() {
+        val cdnUrl = "https://cdn.example.org/stream.m3u8"
+        val headersWithVidlink = mapOf(
+            "referer" to "https://vidlink.pro/embed/movie/123",
+            "origin" to "https://vidlink.pro"
+        )
+        val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(headersWithVidlink, cdnUrl, null)
+
+        assertFalse("Referer must be stripped", downloadHeaders.containsKey("Referer") || downloadHeaders.containsKey("referer"))
+        assertFalse("Origin must be stripped", downloadHeaders.containsKey("Origin") || downloadHeaders.containsKey("origin"))
+        assertTrue("Mobile Cronet UA must be attached", downloadHeaders["User-Agent"]?.contains("Cronet") == true)
+        assertEquals("*/*", downloadHeaders["Accept"])
+    }
+
+    @Test
+    fun testGetEffectiveRefererCaseInsensitiveVidlink() {
+        val cdnUrl = "https://cdn.example.org/stream.m3u8"
+        val headersLower = mapOf("referer" to "https://vidlink.pro/embed/movie/123")
+        val effRef = StreamLinkOptimizer.getEffectiveReferer(cdnUrl, null, headersLower)
+        assertEquals("Effective referer must be empty for lowercase referer containing vidlink.pro", "", effRef)
+
+        val headersOrigin = mapOf("origin" to "https://vidlink.pro")
+        val effRefOrigin = StreamLinkOptimizer.getEffectiveReferer(cdnUrl, null, headersOrigin)
+        assertEquals("Effective referer must be empty for lowercase origin containing vidlink.pro", "", effRefOrigin)
+    }
 }
