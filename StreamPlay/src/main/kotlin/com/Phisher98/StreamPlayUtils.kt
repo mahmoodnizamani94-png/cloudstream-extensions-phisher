@@ -748,12 +748,18 @@ val nativeToStandardLanguage: Map<String, String> = mapOf(
     "español" to "Spanish",
     "espanol" to "Spanish",
     "castellano" to "Spanish",
+    "español (latinoamérica)" to "Spanish [Latin America]",
+    "español latino" to "Spanish [Latin America]",
+    "spanish (latin america)" to "Spanish [Latin America]",
     "français" to "French",
     "francais" to "French",
     "deutsch" to "German",
     "italiano" to "Italian",
     "português" to "Portuguese",
     "portugues" to "Portuguese",
+    "português (brasil)" to "Portuguese [Brazil]",
+    "português do brasil" to "Portuguese [Brazil]",
+    "portuguese (brazil)" to "Portuguese [Brazil]",
     "русский" to "Russian",
     "polski" to "Polish",
     "nederlands" to "Dutch",
@@ -774,37 +780,91 @@ val nativeToStandardLanguage: Map<String, String> = mapOf(
     "nihongo" to "Japanese",
     "한국어" to "Korean",
     "hangugeo" to "Korean",
-    "中文" to "Chinese"
+    "中文" to "Chinese",
+    "chinese (simplified)" to "Chinese [Simplified]",
+    "chinese (traditional)" to "Chinese [Traditional]",
+    "العربية" to "Arabic",
+    "عربي" to "Arabic",
+    "हिन्दी" to "Hindi",
+    "हिंदी" to "Hindi",
+    "বাংলা" to "Bengali",
+    "தமிழ்" to "Tamil",
+    "తెలుగు" to "Telugu",
+    "മലയാളം" to "Malayalam",
+    "فارسی" to "Persian",
+    "עברית" to "Hebrew",
+    "ไทย" to "Thai",
+    "ภาษาไทย" to "Thai",
+    "tiếng việt" to "Vietnamese",
+    "bahasa indonesia" to "Indonesian",
+    "українська" to "Ukrainian"
+)
+
+private val bcp47LanguageMap: Map<String, String> = mapOf(
+    "es-419" to "Spanish [Latin America]",
+    "pt-br" to "Portuguese [Brazil]",
+    "pt-pt" to "Portuguese [Portugal]",
+    "zh-hans" to "Chinese [Simplified]",
+    "zh-cn" to "Chinese [Simplified]",
+    "zh-sg" to "Chinese [Simplified]",
+    "zh-hant" to "Chinese [Traditional]",
+    "zh-tw" to "Chinese [Traditional]",
+    "zh-hk" to "Chinese [Traditional]",
+    "en-us" to "English",
+    "en-gb" to "English",
+    "en-ca" to "English",
+    "en-au" to "English",
+    "es-es" to "Spanish",
+    "es-mx" to "Spanish",
+    "es-ar" to "Spanish"
 )
 
 fun getLanguage(code: String): String {
     val trimmed = code.trim()
     if (trimmed.isEmpty()) return "English"
     val lower = trimmed.lowercase(Locale.ROOT)
+    val bcpMatch = bcp47LanguageMap[lower]
+    if (bcpMatch != null) return bcpMatch
     val match = languageMap.entries.firstOrNull { it.key.equals(trimmed, ignoreCase = true) || lower in it.value }?.key
     if (match != null) return match
     val nativeMatch = nativeToStandardLanguage[lower]
     if (nativeMatch != null) return nativeMatch
+    if (lower.contains('-') || lower.contains('_')) {
+        val baseCode = lower.substringBefore('-').substringBefore('_')
+        val baseMatch = languageMap.entries.firstOrNull { baseCode in it.value }?.key
+        if (baseMatch != null) return baseMatch
+    }
     return trimmed.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
 }
 
 /**
  * State-of-the-art subtitle label and language normalizer:
- * 1. Strips UTF-8 BOM (\uFEFF) and zero-width spaces (\u200B, \u200C, \u200D).
- * 2. Decodes named, decimal, and hex HTML character entities (&amp;, &ntilde;, &#39;, &#xE9;, etc.).
+ * 1. Strips UTF-8 BOM (\uFEFF) and zero-width spaces (\u200B, \u200C, \u200D, \u2060).
+ * 2. Decodes named, decimal, and hex HTML character entities (&amp;, &ntilde;, &#39;, &#xE9;, etc.)
+ *    and URL percent-encoded characters (%20, %5B, etc.).
  * 3. Normalizes Unicode characters to Canonical Decomposition/Composition (NFC).
- * 4. Resolves ISO language codes to standardized names while preserving [Forced], [SDH], [CC] badges.
+ * 4. Resolves BCP-47 and ISO language codes to standardized names while preserving [Forced], [SDH], [CC], [HI] badges.
  */
 fun cleanSubtitleLabel(raw: String?): String {
     if (raw.isNullOrBlank()) return "English"
     var text = raw.trim()
 
-    // Strip UTF-8 BOM and zero-width spaces
+    // URL percent-decode if encoded
+    if (text.contains("%")) {
+        text = runCatching { java.net.URLDecoder.decode(text, "UTF-8") }.getOrDefault(text)
+    }
+
+    // Strip UTF-8 BOM and invisible zero-width characters
     text = text.replace("\uFEFF", "")
         .replace("\u200B", "")
         .replace("\u200C", "")
         .replace("\u200D", "")
+        .replace("\u2060", "")
+        .replace("\u00A0", " ")
         .trim()
+
+    // Strip non-informative generic badges like [Default] or (Full)
+    text = text.replace(Regex("""\s*[\(\[](?:default|full)[\)\]]""", RegexOption.IGNORE_CASE), "").trim()
 
     // Decode HTML entities (named & numeric decimal/hex)
     if (text.contains("&")) {
@@ -836,28 +896,33 @@ fun cleanSubtitleLabel(raw: String?): String {
             .replace("&Ouml;", "Ö", ignoreCase = true)
             .replace("&auml;", "ä", ignoreCase = true)
             .replace("&Auml;", "Ä", ignoreCase = true)
+            .replace("&egrave;", "è", ignoreCase = true)
+            .replace("&Egrave;", "È", ignoreCase = true)
+            .replace("&agrave;", "à", ignoreCase = true)
+            .replace("&Agrave;", "À", ignoreCase = true)
 
-        text = Regex("""&#(\d+);""").replace(text) { match ->
+        text = Regex("""&#(\d+);?""").replace(text) { match ->
             match.groupValues[1].toIntOrNull()?.toChar()?.toString() ?: match.value
         }
-        text = Regex("""&#x([0-9a-fA-F]+);""").replace(text) { match ->
+        text = Regex("""&#x([0-9a-fA-F]+);?""").replace(text) { match ->
             match.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: match.value
         }
     }
 
     text = Normalizer.normalize(text, Normalizer.Form.NFC).trim()
 
-    val modifierMatch = Regex("""(\[(?:forced|sdh|cc|hi)\]|\((?:forced|sdh|cc|hi)\))""", RegexOption.IGNORE_CASE).find(text)
+    val modifierMatch = Regex("""(\[(?:forced|sdh|cc|hi|hearing\s+impaired)\]|\((?:forced|sdh|cc|hi|hearing\s+impaired)\))""", RegexOption.IGNORE_CASE).find(text)
     val modifier = modifierMatch?.groupValues?.get(1)?.replace("(", "[")?.replace(")", "]")?.let {
         when {
             it.equals("[forced]", ignoreCase = true) -> "[Forced]"
             it.equals("[sdh]", ignoreCase = true) -> "[SDH]"
             it.equals("[cc]", ignoreCase = true) -> "[CC]"
-            it.equals("[hi]", ignoreCase = true) -> "[HI]"
+            it.equals("[hi]", ignoreCase = true) || it.contains("hearing", ignoreCase = true) -> "[HI]"
             else -> it
         }
     }
-    val cleanBase = if (modifier != null) text.replace(modifierMatch.value, "").trim() else text.trim('[', ']', ' ')
+    val rawBase = if (modifier != null) text.replace(modifierMatch.value, "") else text
+    val cleanBase = rawBase.trim().trimEnd('-', ':', '|', ' ', '[', ']').trimStart('[', ']', ' ')
 
     val resolvedLang = getLanguage(cleanBase)
     val finalLang = if (resolvedLang != "UnKnown") {

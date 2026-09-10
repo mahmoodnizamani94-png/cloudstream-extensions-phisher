@@ -77,6 +77,39 @@ object StreamPlayExtractor : StreamPlay() {
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
 
+    suspend fun <T> retryTransient(maxRetries: Int = 1, delayMs: Long = 200L, block: suspend () -> T?): T? {
+        var attempt = 0
+        while (attempt <= maxRetries) {
+            val res = runCatching { block() }.getOrNull()
+            if (res != null) return res
+            if (attempt < maxRetries) delay(delayMs)
+            attempt++
+        }
+        return null
+    }
+
+    suspend fun isValidM3u8(url: String?, headers: Map<String, String> = emptyMap()): Boolean {
+        if (url.isNullOrBlank() || !url.startsWith("http", ignoreCase = true)) return false
+        return try {
+            val res = app.get(url, headers = headers, timeout = 5L)
+            if (!res.isSuccessful) return false
+            val text = res.text
+            if (!text.contains("#EXTM3U", ignoreCase = true)) return false
+            val hasStreams = text.contains("#EXT-X-STREAM-INF", ignoreCase = true)
+            val hasSegments = text.contains("#EXTINF", ignoreCase = true)
+            if (!hasStreams && !hasSegments) return false
+            if (hasSegments && !hasStreams) {
+                val totalDuration = Regex("""#EXTINF:([0-9.]+)""").findAll(text)
+                    .mapNotNull { it.groupValues[1].toDoubleOrNull() }
+                    .sum()
+                if (totalDuration <= 0.0) return false
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     suspend fun invoke2embed(
         imdbId: String?,
         season: Int?,
@@ -1872,7 +1905,9 @@ object StreamPlayExtractor : StreamPlay() {
         withTimeoutOrNull(9500L) {
             try {
                 val effectiveTitle = if (title.isNullOrBlank()) "Media" else title
-                if (tmdbId == null || (season != null && episode == null)) return@withTimeoutOrNull
+                val isSpecialMovieFallback = season == 0 && episode == null
+                if (tmdbId == null || (season != null && season != 0 && episode == null)) return@withTimeoutOrNull
+                val effectiveSeason = if (isSpecialMovieFallback) null else season
 
                 fun quote(text: String): String {
                     return URLEncoder.encode(text, "UTF-8")
@@ -1926,10 +1961,10 @@ object StreamPlayExtractor : StreamPlay() {
                 val yearParam = if (year != null) "&year=$year" else ""
 
                 servers.safeAmap { server ->
-                    val primaryUrl = if (season == null) {
+                    val primaryUrl = if (effectiveSeason == null) {
                         "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
                     } else {
-                        "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
+                        "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$effectiveSeason$imdbParam$seedParam"
                     }
 
                     var encdata = runCatching {
@@ -1947,10 +1982,10 @@ object StreamPlayExtractor : StreamPlay() {
                     }
 
                     if (encdata.isNullOrBlank() && activeApi != videasyFallbackAPI) {
-                        val fallbackUrl = if (season == null) {
+                        val fallbackUrl = if (effectiveSeason == null) {
                             "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
                         } else {
-                            "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
+                            "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$effectiveSeason$imdbParam$seedParam"
                         }
                         encdata = runCatching {
                             val resp = safeGet(fallbackUrl, headers = headers, timeout = 4L)
@@ -2023,7 +2058,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                 }
                                             )
                                         }
-                                    } else {
+                                    } else if (source.startsWith("http", ignoreCase = true) && isValidM3u8(source, headers)) {
                                         callback(
                                             newExtractorLink(
                                                 "VidEasy",
@@ -3296,7 +3331,7 @@ object StreamPlayExtractor : StreamPlay() {
                         async {
                             try {
                                 val candidateUrls = mutableListOf<String>()
-                                if (season == null) {
+                                if (season == null || (season == 0 && episode == null)) {
                                     if (id != null) {
                                         candidateUrls.add("$domain/embed/movie?imdb=$id")
                                         candidateUrls.add("$domain/embed/movie/$id")
@@ -3306,13 +3341,15 @@ object StreamPlayExtractor : StreamPlay() {
                                         candidateUrls.add("$domain/embed/movie/$tmdbId")
                                     }
                                 } else {
-                                    if (id != null) {
-                                        candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
-                                        candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
-                                    }
-                                    if (tmdbId != null) {
-                                        candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
-                                        candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
+                                    if (episode != null) {
+                                        if (id != null) {
+                                            candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
+                                            candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
+                                        }
+                                        if (tmdbId != null) {
+                                            candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
+                                            candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
+                                        }
                                     }
                                     // TV Special fallback to movie endpoints
                                     if (season == 0) {
@@ -3361,7 +3398,7 @@ object StreamPlayExtractor : StreamPlay() {
                                         if (!m3u8Links.isNullOrEmpty()) {
                                             found = true
                                             m3u8Links.forEach(callback)
-                                        } else {
+                                        } else if (streamUrl.startsWith("http", ignoreCase = true) && (isDirectVideo || isValidM3u8(streamUrl, streamHeaders))) {
                                             found = true
                                             callback(
                                                 newExtractorLink(
@@ -3371,6 +3408,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                     type = streamType
                                                 ) {
                                                     this.referer = referer
+                                                    this.quality = Qualities.P1080.value
                                                     this.headers = streamHeaders
                                                 }
                                             )
@@ -3642,18 +3680,19 @@ object StreamPlayExtractor : StreamPlay() {
                         async {
                             try {
                                 for (targetId in candidateIds) {
-                                    val embedUrls = if (season == null) {
+                                    val embedUrls = if (season == null || (season == 0 && episode == null)) {
                                         listOf(
                                             "$domain/v2/embed/movie/$targetId",
                                             "$domain/v3/embed/movie/$targetId",
                                             "$domain/embed/movie/$targetId"
                                         )
                                     } else {
-                                        val list = mutableListOf(
-                                            "$domain/v2/embed/tv/$targetId/$season/$episode",
-                                            "$domain/v3/embed/tv/$targetId/$season/$episode",
-                                            "$domain/embed/tv/$targetId/$season/$episode"
-                                        )
+                                        val list = mutableListOf<String>()
+                                        if (episode != null) {
+                                            list.add("$domain/v2/embed/tv/$targetId/$season/$episode")
+                                            list.add("$domain/v3/embed/tv/$targetId/$season/$episode")
+                                            list.add("$domain/embed/tv/$targetId/$season/$episode")
+                                        }
                                         if (season == 0) {
                                             list.add("$domain/v2/embed/movie/$targetId")
                                             list.add("$domain/v3/embed/movie/$targetId")
@@ -3717,7 +3756,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                                             if (!m3u8Links.isNullOrEmpty()) {
                                                 m3u8Links.forEach(callback)
-                                            } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
+                                            } else if (normalizedStream.startsWith("http", ignoreCase = true) && (isDirectVideo || isValidM3u8(normalizedStream, streamHeaders))) {
                                                 callback(
                                                     newExtractorLink(
                                                         source = "VidSrc CC",
@@ -3726,6 +3765,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                         type = streamType
                                                     ) {
                                                         this.referer = embedUrl
+                                                        this.quality = Qualities.P1080.value
                                                         this.headers = streamHeaders
                                                     }
                                                 )
@@ -3792,7 +3832,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                                             if (!m3u8Links.isNullOrEmpty()) {
                                                 m3u8Links.forEach(callback)
-                                            } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
+                                            } else if (normalizedStream.startsWith("http", ignoreCase = true) && (isDirectVideo || isValidM3u8(normalizedStream, iframeStreamHeaders))) {
                                                 callback(
                                                     newExtractorLink(
                                                         source = "VidSrc CC",
@@ -3801,6 +3841,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                         type = streamType
                                                     ) {
                                                         this.referer = fullIframeUrl
+                                                        this.quality = Qualities.P1080.value
                                                         this.headers = iframeStreamHeaders
                                                     }
                                                 )
@@ -3859,7 +3900,7 @@ object StreamPlayExtractor : StreamPlay() {
                         async {
                             try {
                                 val candidateUrls = mutableListOf<String>()
-                                if (season == null) {
+                                if (season == null || (season == 0 && episode == null)) {
                                     if (!id.isNullOrBlank()) {
                                         candidateUrls.add("$domain/embed/movie/$id")
                                         candidateUrls.add("$domain/embed/movie?imdb=$id")
@@ -3869,13 +3910,15 @@ object StreamPlayExtractor : StreamPlay() {
                                         candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
                                     }
                                 } else {
-                                    if (!id.isNullOrBlank()) {
-                                        candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
-                                        candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
-                                    }
-                                    if (tmdbId != null) {
-                                        candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
-                                        candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
+                                    if (episode != null) {
+                                        if (!id.isNullOrBlank()) {
+                                            candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
+                                            candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
+                                        }
+                                        if (tmdbId != null) {
+                                            candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
+                                            candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
+                                        }
                                     }
                                     if (season == 0) {
                                         if (!id.isNullOrBlank()) {
@@ -3944,7 +3987,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                                         if (!m3u8Links.isNullOrEmpty()) {
                                             m3u8Links.forEach(callback)
-                                        } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
+                                        } else if (normalizedStream.startsWith("http", ignoreCase = true) && (isDirectVideo || isValidM3u8(normalizedStream, streamHeaders))) {
                                             callback(
                                                 newExtractorLink(
                                                     source = "VidSrc To",
@@ -3953,6 +3996,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                     type = streamType
                                                 ) {
                                                     this.referer = embedUrl
+                                                    this.quality = Qualities.P1080.value
                                                     this.headers = streamHeaders
                                                 }
                                             )
@@ -4019,7 +4063,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                                         if (!m3u8Links.isNullOrEmpty()) {
                                             m3u8Links.forEach(callback)
-                                        } else if (normalizedStream.startsWith("http", ignoreCase = true)) {
+                                        } else if (normalizedStream.startsWith("http", ignoreCase = true) && (isDirectVideo || isValidM3u8(normalizedStream, iframeStreamHeaders))) {
                                             callback(
                                                 newExtractorLink(
                                                     source = "VidSrc To",
@@ -4028,6 +4072,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                     type = streamType
                                                 ) {
                                                     this.referer = fullIframeUrl
+                                                    this.quality = Qualities.P1080.value
                                                     this.headers = iframeStreamHeaders
                                                 }
                                             )
@@ -4847,11 +4892,13 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            if (tmdbId == null || (season != null && episode == null)) return
+            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(9000L) {
                 val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
-                val encResponse = runCatching { app.get(encUrl, timeout = 5L).text }.getOrNull() ?: return@withTimeoutOrNull
+                val encResponse = retryTransient(1, 200L) {
+                    app.get(encUrl, timeout = 5L).text
+                } ?: return@withTimeoutOrNull
 
                 val encData = runCatching {
                     JSONObject(encResponse).optString("result")
@@ -4866,7 +4913,7 @@ object StreamPlayExtractor : StreamPlay() {
                     "Origin" to base
                 )
 
-                val apiUrls = if (season == null) {
+                val apiUrls = if (season == null || (season == 0 && episode == null)) {
                     listOf("$base/api/b/movie/$encData")
                 } else {
                     if (episode == null) return@withTimeoutOrNull
@@ -4985,7 +5032,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 }
                             )
                         }
-                    } else if (cleanM3u8Url.startsWith("http", ignoreCase = true)) {
+                    } else if (cleanM3u8Url.startsWith("http", ignoreCase = true) && isValidM3u8(cleanM3u8Url, hlsHeaders)) {
                         // Empty playlist from generator, emit direct M3U8 link
                         callback(
                             newExtractorLink(
@@ -5058,13 +5105,13 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit,
     ) {
         try {
-            if (tmdbId == null || (season != null && episode == null)) return
+            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(9500L) {
                 val api = "https://enc-dec.app/api"
                 val version = "1"
 
-                val requestUrls = if (season == null) {
+                val requestUrls = if (season == null || (season == 0 && episode == null)) {
                     listOf("$vidfastProApi/movie/$tmdbId")
                 } else {
                     if (episode == null) return@withTimeoutOrNull
@@ -5101,17 +5148,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
 
                 if (encodedText.isNullOrBlank()) return@withTimeoutOrNull
-
-                suspend fun <T> retryTransient(maxRetries: Int = 1, delayMs: Long = 200L, block: suspend () -> T?): T? {
-                    var attempt = 0
-                    while (attempt <= maxRetries) {
-                        val res = runCatching { block() }.getOrNull()
-                        if (res != null) return res
-                        if (attempt < maxRetries) delay(delayMs)
-                        attempt++
-                    }
-                    return null
-                }
 
                 val encJson = retryTransient(1, 200L) {
                     safeGet("$api/enc-vidfast?text=$encodedText&version=$version", timeout = 5L)
@@ -5212,7 +5248,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                                     if (!m3u8Links.isNullOrEmpty()) {
                                         m3u8Links.forEach(callback)
-                                    } else if (finalUrl.startsWith("http", ignoreCase = true)) {
+                                    } else if (finalUrl.startsWith("http", ignoreCase = true) && isValidM3u8(finalUrl, linkHeaders)) {
                                         callback(
                                             newExtractorLink(
                                                 "VidFast",
@@ -5439,7 +5475,7 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            if (tmdbId == null || (season != null && episode == null)) return
+            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(9500L) {
                 val key = generateHexKey32()
@@ -5454,15 +5490,15 @@ object StreamPlayExtractor : StreamPlay() {
 
                 val apiBase = "https://enc-dec.app/api"
 
-                val token = runCatching {
-                    safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()?.result?.token
-                }.getOrNull() ?: return@withTimeoutOrNull
+                val token = retryTransient(1, 200L) {
+                    safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()
+                }?.result?.token ?: return@withTimeoutOrNull
 
                 val headers = baseHeaders + mapOf(
                     "X-Cap-Token" to token
                 )
 
-                val paths = if (season == null) {
+                val paths = if (season == null || (season == 0 && episode == null)) {
                     listOf("/api/tmdb/movie/$tmdbId/images")
                 } else {
                     if (episode == null) return@withTimeoutOrNull
@@ -5566,7 +5602,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                                 if (!generated.isNullOrEmpty()) {
                                     generated.forEach(callback)
-                                } else if (link.isNotBlank() && link.startsWith("http", ignoreCase = true)) {
+                                } else if (link.isNotBlank() && link.startsWith("http", ignoreCase = true) && (isDirectVideo || isValidM3u8(link, linkHeaders))) {
                                     callback(
                                         newExtractorLink(
                                             "HexaSU",
@@ -5610,11 +5646,13 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            if (tmdbId == null || (season != null && episode == null)) return
+            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
 
-            val paths = if (season == null) {
+            withTimeoutOrNull(9500L) {
+                val paths = if (season == null || (season == 0 && episode == null)) {
                     listOf("/embed/movie/$tmdbId", "/movie/$tmdbId")
                 } else {
+                    if (episode == null) return@withTimeoutOrNull
                     if (season == 0) {
                         listOf(
                             "/embed/tv/$tmdbId/$season/$episode",
@@ -5692,7 +5730,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                     if (!m3u8Links.isNullOrEmpty()) {
                         m3u8Links.forEach(callback)
-                    } else if (cleanedUrl.startsWith("http", ignoreCase = true)) {
+                    } else if (cleanedUrl.startsWith("http", ignoreCase = true) && isValidM3u8(cleanedUrl, linkHeaders)) {
                         val q = qualityHint ?: extractQuality(cleanedUrl)
                         callback(
                             newExtractorLink(
@@ -5860,6 +5898,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 if (foundOnDomain) break
             }
+        }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeAutoembed failed: ${e.message}")

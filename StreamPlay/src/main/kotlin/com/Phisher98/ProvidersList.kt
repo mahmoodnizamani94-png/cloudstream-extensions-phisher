@@ -313,10 +313,10 @@ private val providers by lazy {
             if (!res.isAnime) invokeDahmerMovies(res.title, res.year, res.season, res.episode, callback)
         },
         Provider("moviesapi", "MoviesApi Club") { res, _, callback, _, _ ->
-            invokeMoviesApi(res.id, res.season, res.episode, callback)
+            if (!res.isAnime) invokeMoviesApi(res.id, res.season, res.episode, callback)
         },
         Provider("CinemaCity", "CinemaCity") { res, _, callback, _, _ ->
-            invokecinemacity(res.imdbId, res.season,res.episode,  callback)
+            if (!res.isAnime) invokecinemacity(res.imdbId, res.season,res.episode,  callback)
         },
         Provider("Hindmoviez", "HindMoviez") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeHindmoviez(res.imdbId, res.season, res.episode, subtitleCallback, callback)

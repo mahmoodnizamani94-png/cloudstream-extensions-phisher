@@ -468,7 +468,7 @@ object StreamLinkOptimizer {
                 // PixelDrain & Hakunaymatata/VidLink streams must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
-                if (isVidlink || linkType == ExtractorLinkType.VIDEO || lowerUrl.contains(".mp4")) {
+                if (isVidlink) {
                     headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                     headers[HEADER_ACCEPT] = "*/*"
                 }
@@ -624,6 +624,17 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://whisperingpineslifestyle.com/"
                 headers[HEADER_ORIGIN] = "https://whisperingpineslifestyle.com"
             }
+            isVidSrc -> {
+                val vidsrcHost = when {
+                    source?.contains("vidsrccc", ignoreCase = true) == true || name?.contains("vidsrc cc", ignoreCase = true) == true -> "https://vidsrc.cc/"
+                    source?.contains("vidsrcto", ignoreCase = true) == true || name?.contains("vidsrc to", ignoreCase = true) == true -> "https://vidsrc.to/"
+                    source?.contains("vidsrcme", ignoreCase = true) == true || name?.contains("vidsrc me", ignoreCase = true) == true -> "https://vidsrc.me/"
+                    !referer.isNullOrBlank() && referer.contains("vidsrc", ignoreCase = true) -> referer
+                    else -> "https://vidsrc.xyz/"
+                }
+                headers[HEADER_REFERER] = vidsrcHost
+                headers[HEADER_ORIGIN] = vidsrcHost.removeSuffix("/")
+            }
             else -> {
                 val effectiveReferer = when {
                     !referer.isNullOrBlank() -> referer
@@ -644,6 +655,12 @@ object StreamLinkOptimizer {
                         }
                     }
                 }
+            }
+        }
+
+        if (linkType == ExtractorLinkType.VIDEO && !isVidlink) {
+            if (!headers.keys.any { it.equals("Accept-Ranges", ignoreCase = true) }) {
+                headers["Accept-Ranges"] = "bytes"
             }
         }
 
@@ -738,6 +755,15 @@ object StreamLinkOptimizer {
             lowerUrl.contains("thepixelpioneer.com") -> "https://thepixelpioneer.com/"
             lowerUrl.contains("putgate.org") -> "https://putgate.org/"
             lowerUrl.contains("whisperingpineslifestyle.com") -> "https://whisperingpineslifestyle.com/"
+            isVidSrc -> {
+                when {
+                    source?.contains("vidsrccc", ignoreCase = true) == true || name?.contains("vidsrc cc", ignoreCase = true) == true -> "https://vidsrc.cc/"
+                    source?.contains("vidsrcto", ignoreCase = true) == true || name?.contains("vidsrc to", ignoreCase = true) == true -> "https://vidsrc.to/"
+                    source?.contains("vidsrcme", ignoreCase = true) == true || name?.contains("vidsrc me", ignoreCase = true) == true -> "https://vidsrc.me/"
+                    !referer.isNullOrBlank() && referer.contains("vidsrc", ignoreCase = true) -> referer
+                    else -> "https://vidsrc.xyz/"
+                }
+            }
             !referer.isNullOrBlank() -> referer
             headers.entries.any { it.key.equals(HEADER_REFERER, ignoreCase = true) } -> {
                 headers.entries.firstOrNull { it.key.equals(HEADER_REFERER, ignoreCase = true) }?.value ?: ""
@@ -1376,6 +1402,25 @@ object StreamLinkOptimizer {
         return score
     }
 
+    /**
+     * Validates that a stream URL is syntactically valid and not an empty or error artifact.
+     */
+    fun isValidStreamUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) &&
+            !trimmed.startsWith("https://", ignoreCase = true) &&
+            !trimmed.startsWith("magnet:", ignoreCase = true)
+        ) return false
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (lower.contains("undefined") ||
+            lower.contains("/null") ||
+            lower.endsWith(".html") ||
+            lower == "about:blank"
+        ) return false
+        return true
+    }
+
     enum class DeduplicationResult {
         NEW,
         UPGRADED,
@@ -1400,7 +1445,7 @@ object StreamLinkOptimizer {
         }
 
         fun emitDetailed(link: ExtractorLink): DeduplicationResult {
-            if (link.url.isBlank()) return DeduplicationResult.DROPPED
+            if (!isValidStreamUrl(link.url)) return DeduplicationResult.DROPPED
             val key = canonicalStreamKey(link)
             if (key.isBlank()) return DeduplicationResult.DROPPED
             while (true) {

@@ -1374,4 +1374,177 @@ class StreamPlayTopTierSourceHierarchyTest {
         )
         assertFalse(linkEmitted)
     }
+
+    @Test
+    fun testVidSrcCdnRefererRouting() {
+        // Even if CDN URL is an external host, isVidSrc source correctly resolves VidSrc referer
+        val cdnUrl = "https://external-storage-cdn.net/hls/1080p/stream.m3u8"
+        val refCc = StreamLinkOptimizer.getEffectiveReferer(
+            url = cdnUrl,
+            referer = null,
+            headers = emptyMap(),
+            source = "VidSrc CC",
+            name = "VidSrc CC"
+        )
+        assertEquals("https://vidsrc.cc/", refCc)
+
+        val refTo = StreamLinkOptimizer.getEffectiveReferer(
+            url = cdnUrl,
+            referer = null,
+            headers = emptyMap(),
+            source = "VidSrc To",
+            name = "VidSrc To"
+        )
+        assertEquals("https://vidsrc.to/", refTo)
+
+        val refXyz = StreamLinkOptimizer.getEffectiveReferer(
+            url = cdnUrl,
+            referer = null,
+            headers = emptyMap(),
+            source = "VidSrc",
+            name = "VidSrc Server v1"
+        )
+        assertEquals("https://vidsrc.xyz/", refXyz)
+
+        val headers = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = cdnUrl,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc CC",
+            name = "VidSrc CC"
+        )
+        assertEquals("https://vidsrc.cc/", headers["Referer"])
+        assertEquals("https://vidsrc.cc", headers["Origin"])
+    }
+
+    @Test
+    fun testPixelDrainBrowserUAPreserved() {
+        val pixelDrainUrl = "https://pixeldrain.com/api/file/abc12345"
+        val pdHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = pixelDrainUrl,
+            referer = "https://pixeldrain.com/",
+            linkType = ExtractorLinkType.VIDEO,
+            source = "Direct",
+            name = "PixelDrain MP4"
+        )
+        // User-Agent must NOT be OneRoom Cronet UA for non-Vidlink progressive streams
+        val ua = pdHeaders["User-Agent"] ?: ""
+        assertFalse("Non-Vidlink PixelDrain MP4 must not use OneRoom UA", ua.contains("com.community.oneroom"))
+        // Referer and Origin must be stripped for PixelDrain
+        assertNull(pdHeaders["Referer"])
+        assertNull(pdHeaders["Origin"])
+        // Accept-Ranges should be present for progressive video
+        assertEquals("bytes", pdHeaders["Accept-Ranges"])
+    }
+
+    @Test
+    fun testProgressiveVideoAcceptRangesHeader() {
+        val mp4Url = "https://faststream.example/video.mp4"
+        val headers = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = mp4Url,
+            referer = null,
+            linkType = ExtractorLinkType.VIDEO,
+            source = "HexaSU",
+            name = "HexaSU Server 1"
+        )
+        assertEquals("bytes", headers["Accept-Ranges"])
+    }
+
+    @Test
+    fun testIsValidStreamUrlAndDeduplication() {
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl(null))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl(""))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl("   "))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl("about:blank"))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl("https://example.com/undefined"))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl("https://example.com/stream/null"))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl("https://example.com/page.html"))
+        assertFalse(StreamLinkOptimizer.isValidStreamUrl("ftp://example.com/file.mp4"))
+
+        assertTrue(StreamLinkOptimizer.isValidStreamUrl("https://example.com/master.m3u8"))
+        assertTrue(StreamLinkOptimizer.isValidStreamUrl("http://example.com/video.mp4?token=123"))
+        assertTrue(StreamLinkOptimizer.isValidStreamUrl("magnet:?xt=urn:btih:abc"))
+
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { }
+        val badLink = createLink(source = "Test", name = "Bad", url = "https://example.com/undefined")
+        val goodLink = createLink(source = "Test", name = "Good", url = "https://example.com/stream.m3u8")
+
+        assertEquals(StreamLinkOptimizer.DeduplicationResult.DROPPED, deduplicator.emitDetailed(badLink))
+        assertEquals(StreamLinkOptimizer.DeduplicationResult.NEW, deduplicator.emitDetailed(goodLink))
+    }
+
+    @Test
+    fun testCleanSubtitleLabelAndBCP47Normalization() {
+        // BCP-47 tag resolution
+        assertEquals("Spanish [Latin America]", cleanSubtitleLabel("es-419"))
+        assertEquals("Portuguese [Brazil]", cleanSubtitleLabel("pt-br"))
+        assertEquals("Chinese [Simplified]", cleanSubtitleLabel("zh-hans"))
+        assertEquals("Chinese [Traditional]", cleanSubtitleLabel("zh-hant"))
+        assertEquals("English", cleanSubtitleLabel("en-US"))
+
+        // Native script language resolution
+        assertEquals("Arabic", cleanSubtitleLabel("العربية"))
+        assertEquals("Hindi", cleanSubtitleLabel("हिन्दी"))
+        assertEquals("Hebrew", cleanSubtitleLabel("עברית"))
+        assertEquals("Thai", cleanSubtitleLabel("ไทย"))
+        assertEquals("Vietnamese", cleanSubtitleLabel("tiếng việt"))
+
+        // Modifiers formatting
+        assertEquals("Spanish [Forced]", cleanSubtitleLabel("Spanish (forced)"))
+        assertEquals("English [SDH]", cleanSubtitleLabel("English (sdh)"))
+        assertEquals("English [CC]", cleanSubtitleLabel("English [cc]"))
+        assertEquals("English [HI]", cleanSubtitleLabel("English (Hearing Impaired)"))
+        assertEquals("English [HI]", cleanSubtitleLabel("English [HI]"))
+
+        // Stripping uninformative badges like [Default] or (Full)
+        assertEquals("English", cleanSubtitleLabel("English [Default]"))
+        assertEquals("Spanish", cleanSubtitleLabel("Spanish (Full)"))
+
+        // HTML entity and percent decoding
+        assertEquals("Spanish", cleanSubtitleLabel("Espa&ntilde;ol"))
+        assertEquals("French", cleanSubtitleLabel("Fran&#231;ais"))
+        assertEquals("German", cleanSubtitleLabel("Deutsch"))
+        assertEquals("English", cleanSubtitleLabel("English%20%5BDefault%5D"))
+
+        // Invisible characters and BOM stripping
+        assertEquals("English", cleanSubtitleLabel("\uFEFFEnglish\u200B\u200C\u2060"))
+    }
+
+    @Test
+    fun testNonAnimeProvidersIncludesVidSrcToMoviesApiCinemaCity() {
+        assertTrue(NON_ANIME_PROVIDERS.contains("vidsrcto"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("moviesapi"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("CinemaCity"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("vidlink"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("HexaSU"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("autoembed"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("vidfast"))
+        assertTrue(NON_ANIME_PROVIDERS.contains("VidEasy"))
+    }
+
+    @Test
+    fun testIsValidM3u8ValidationHelper() = runBlocking {
+        // Null or blank URLs are immediately invalid
+        assertFalse(StreamPlayExtractor.isValidM3u8(null))
+        assertFalse(StreamPlayExtractor.isValidM3u8(""))
+        assertFalse(StreamPlayExtractor.isValidM3u8("not-a-url"))
+        // Non-existent domains fail gracefully and return false
+        assertFalse(StreamPlayExtractor.isValidM3u8("https://nonexistent-domain-xyz123987.org/test.m3u8"))
+    }
+
+    @Test
+    fun testTopSourcesTvSpecialsHandling() = runBlocking {
+        // Top sources invoked with TV special (season == 0) should not crash or throw unhandled exceptions
+        StreamPlayExtractor.invokeVidlink(tmdbId = 999999999, season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeHexa(tmdbId = 999999999, season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeAutoembed(tmdbId = 999999999, season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeVidFast(tmdbId = 999999999, season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeVideasy(title = "Media", tmdbId = 999999999, season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeVidSrcCc(id = "tt999999999", season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeVidSrcTo(id = "tt999999999", season = 0, episode = null, callback = {})
+        StreamPlayExtractor.invokeVidSrcXyz(id = "tt999999999", season = 0, episode = null, callback = {})
+    }
 }
