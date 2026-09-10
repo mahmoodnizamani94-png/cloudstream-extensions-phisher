@@ -394,7 +394,7 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
         val finalDisabled = if (existingDisabled.isNullOrEmpty()) {
             defaultDisabled
         } else {
-            ((existingDisabled + defaultDisabled) - DEFAULT_TOP_TIER_PROVIDERS) + "superstream"
+            ((existingDisabled + defaultDisabled) - DEFAULT_TOP_TIER_PROVIDERS) + "superstream" + "vaplayer"
         }
         sharedPref.edit {
             putStringSet("disabled_providers", finalDisabled)

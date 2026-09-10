@@ -214,6 +214,8 @@ object SpeculativePipeliner {
         "rivestream" to LatencyTier.TIER_1,
         "moviesapi" to LatencyTier.TIER_1,
         "moviebox" to LatencyTier.TIER_1,
+        "vidrock" to LatencyTier.TIER_1,
+        "Vidrock" to LatencyTier.TIER_1,
         "vidzeeapi" to LatencyTier.TIER_1,
         "2Embed" to LatencyTier.TIER_1,
         "Hianime" to LatencyTier.TIER_1,

@@ -81,6 +81,11 @@ class StreamPlayTopTierSourceHierarchyTest {
         }
         assertNull("SuperStream must be completely absent from providers list", superstream)
         assertFalse("SuperStream must not be in default top tier providers", DEFAULT_TOP_TIER_PROVIDERS.contains("superstream"))
+
+        assertNull("Vaplayer must not have an entry in FAST_PROVIDER_BOOST", FAST_PROVIDER_BOOST["vaplayer"])
+        assertNull("SuperStream must not have an entry in FAST_PROVIDER_BOOST", FAST_PROVIDER_BOOST["superstream"])
+        assertNull("Vaplayer must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["vaplayer"])
+        assertNull("Superstream must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["superstream"])
     }
 
     @Test
@@ -999,6 +1004,10 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertEquals(55f, FAST_PROVIDER_BOOST["vidsrccc"] ?: 0f, 0.001f)
         assertEquals(55f, FAST_PROVIDER_BOOST["vidsrcto"] ?: 0f, 0.001f)
         assertEquals(55f, FAST_PROVIDER_BOOST["vidsrcme"] ?: 0f, 0.001f)
+        assertEquals(50f, FAST_PROVIDER_BOOST["moviebox"] ?: 0f, 0.001f)
+        assertEquals(40f, FAST_PROVIDER_BOOST["rivestream"] ?: 0f, 0.001f)
+        assertEquals(30f, FAST_PROVIDER_BOOST["vidrock"] ?: 0f, 0.001f)
+        assertEquals(20f, FAST_PROVIDER_BOOST["moviesapi"] ?: 0f, 0.001f)
 
         // SpeculativePipeliner tier check
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrc"])
@@ -1006,6 +1015,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrccc"])
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcto"])
         assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcme"])
+        assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidrock"])
     }
 
     @Test
