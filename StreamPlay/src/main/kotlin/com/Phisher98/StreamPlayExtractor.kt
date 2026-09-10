@@ -78,6 +78,17 @@ private val normalizeAlphaNumRegex = Regex("[^a-z0-9]")
 object StreamPlayExtractor : StreamPlay() {
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
+    val encDecApiSemaphore = Semaphore(4)
+
+    suspend inline fun <T> suspendCancellable(crossinline block: suspend () -> T): T? {
+        return try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            null
+        }
+    }
 
     suspend fun <T> retryTransient(maxRetries: Int = 1, delayMs: Long = 200L, block: suspend () -> T?): T? {
         var attempt = 0
@@ -2013,14 +2024,16 @@ object StreamPlayExtractor : StreamPlay() {
                     if (encdata.isNullOrBlank()) return@safeAmap
 
                     val jsonBody = JSONObject().put("text", encdata).put("id", tmdbId).put("seed", seed ?: "")
-                    val response = runCatching {
-                        app.post(
-                            "https://enc-dec.app/api/dec-videasy",
-                            headers = mapOf("Content-Type" to "application/json"),
-                            requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType()),
-                            timeout = 4L
-                        )
-                    }.getOrNull() ?: return@safeAmap
+                    val response = encDecApiSemaphore.withPermit {
+                        suspendCancellable {
+                            app.post(
+                                "https://enc-dec.app/api/dec-videasy",
+                                headers = mapOf("Content-Type" to "application/json"),
+                                requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType()),
+                                timeout = 4L
+                            )
+                        }
+                    } ?: return@safeAmap
 
                     if (response.isSuccessful) {
                         val json = response.text
@@ -4905,8 +4918,10 @@ object StreamPlayExtractor : StreamPlay() {
 
             withTimeoutOrNull(9000L) {
                 val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
-                val encResponse = retryTransient(1, 200L) {
-                    app.get(encUrl, timeout = 5L).text
+                val encResponse = encDecApiSemaphore.withPermit {
+                    retryTransient(1, 200L) {
+                        app.get(encUrl, timeout = 5L).text
+                    }
                 } ?: return@withTimeoutOrNull
 
                 val encData = runCatching {
@@ -4938,9 +4953,9 @@ object StreamPlayExtractor : StreamPlay() {
 
                 var stream: VidlinkStream? = null
                 for (apiUrl in apiUrls) {
-                    val epResponse = runCatching {
+                    val epResponse = suspendCancellable {
                         app.get(apiUrl, headers = headers, timeout = 6L).text
-                    }.getOrNull() ?: continue
+                    } ?: continue
 
                     val data = runCatching {
                         Gson().fromJson(epResponse, VidlinkResponse::class.java)
@@ -5158,9 +5173,11 @@ object StreamPlayExtractor : StreamPlay() {
 
                 if (encodedText.isNullOrBlank()) return@withTimeoutOrNull
 
-                val encJson = retryTransient(1, 200L) {
-                    safeGet("$api/enc-vidfast?text=$encodedText&version=$version", timeout = 5L)
-                        .parsedSafe<VidFastRes>()
+                val encJson = encDecApiSemaphore.withPermit {
+                    retryTransient(1, 200L) {
+                        safeGet("$api/enc-vidfast?text=$encodedText&version=$version", timeout = 5L)
+                            .parsedSafe<VidFastRes>()
+                    }
                 } ?: return@withTimeoutOrNull
 
                 val result = encJson.result
@@ -5178,12 +5195,14 @@ object StreamPlayExtractor : StreamPlay() {
                     if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
                 } ?: return@withTimeoutOrNull
 
-                val serversRoot = retryTransient(1, 200L) {
-                    app.post(
-                        "$api/dec-vidfast",
-                        json = mapOf("text" to serversEncrypted, "version" to version),
-                        timeout = 5L
-                    ).parsedSafe<VidFastServers>()
+                val serversRoot = encDecApiSemaphore.withPermit {
+                    retryTransient(1, 200L) {
+                        app.post(
+                            "$api/dec-vidfast",
+                            json = mapOf("text" to serversEncrypted, "version" to version),
+                            timeout = 5L
+                        ).parsedSafe<VidFastServers>()
+                    }
                 } ?: return@withTimeoutOrNull
 
                 val serversList = serversRoot.result
@@ -5193,7 +5212,6 @@ object StreamPlayExtractor : StreamPlay() {
                 val quality = Qualities.P1080.value
 
                 coroutineScope {
-                    val decodeSemaphore = Semaphore(3)
                     serversList.mapIndexed { index, server ->
                         async {
                             try {
@@ -5211,7 +5229,7 @@ object StreamPlayExtractor : StreamPlay() {
                                     return@async
                                 }
 
-                                val streamRoot = decodeSemaphore.withPermit {
+                                val streamRoot = encDecApiSemaphore.withPermit {
                                     retryTransient(1, 200L) {
                                         app.post(
                                             "$api/dec-vidfast",
@@ -5502,8 +5520,10 @@ object StreamPlayExtractor : StreamPlay() {
 
                 val apiBase = "https://enc-dec.app/api"
 
-                val token = retryTransient(1, 200L) {
-                    safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()
+                val token = encDecApiSemaphore.withPermit {
+                    retryTransient(1, 200L) {
+                        safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 8L).parsedSafe<HexaEn>()
+                    }
                 }?.result?.token ?: return@withTimeoutOrNull
 
                 val headers = baseHeaders + mapOf(
@@ -5537,7 +5557,7 @@ object StreamPlayExtractor : StreamPlay() {
                     for ((domain, referer) in domainTargets) {
                         val url = "$domain$path"
                         val targetHeaders = headers + mapOf("Referer" to referer)
-                        val response = runCatching { safeGet(url, targetHeaders, timeout = 6L) }.getOrNull()
+                        val response = suspendCancellable { safeGet(url, targetHeaders, timeout = 6L) }
                         if (response != null && response.isSuccessful && response.code != 403 && response.code != 502 && response.text.isNotBlank()) {
                             encrypted = response.text
                             chosenReferer = referer
@@ -5554,14 +5574,16 @@ object StreamPlayExtractor : StreamPlay() {
                 val jsonBody = JSONObject().put("text", encrypted).put("key", key).toString()
                     .toRequestBody("application/json".toMediaType())
 
-                val decryptRes = runCatching {
-                    app.post(
-                        "$apiBase/dec-hexa",
-                        headers = mapOf("Content-Type" to "application/json"),
-                        requestBody = jsonBody,
-                        timeout = 8L
-                    ).parsedSafe<HexaResponse>()
-                }.getOrNull() ?: return@withTimeoutOrNull
+                val decryptRes = encDecApiSemaphore.withPermit {
+                    suspendCancellable {
+                        app.post(
+                            "$apiBase/dec-hexa",
+                            headers = mapOf("Content-Type" to "application/json"),
+                            requestBody = jsonBody,
+                            timeout = 8L
+                        ).parsedSafe<HexaResponse>()
+                    }
+                } ?: return@withTimeoutOrNull
 
                 if (decryptRes.status != 200) return@withTimeoutOrNull
 
@@ -5775,7 +5797,7 @@ object StreamPlayExtractor : StreamPlay() {
                 for (path in paths) {
                     val url = "$domain$path"
                     val headers = baseHeaders + mapOf("Referer" to "$domain/")
-                    val response = runCatching { safeGet(url, headers = headers, timeout = 3L) }.getOrNull() ?: continue
+                    val response = suspendCancellable { safeGet(url, headers = headers, timeout = 3L) } ?: continue
                     if (!response.isSuccessful || response.text.isBlank()) continue
 
                     val pageText = response.text
@@ -5889,7 +5911,7 @@ object StreamPlayExtractor : StreamPlay() {
                         }.getOrDefault(false)
 
                         if (!resolvedByExtractor) {
-                            val iframeResp = runCatching { safeGet(iframeSrc, headers = mapOf("Referer" to "$domain/"), timeout = 3L) }.getOrNull()
+                            val iframeResp = suspendCancellable { safeGet(iframeSrc, headers = mapOf("Referer" to "$domain/"), timeout = 3L) }
                             if (iframeResp != null && iframeResp.isSuccessful && iframeResp.text.isNotBlank()) {
                                 val iframeText = iframeResp.text
                                 streamRegex.findAll(iframeText).forEach { match ->

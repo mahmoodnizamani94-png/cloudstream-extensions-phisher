@@ -10,7 +10,12 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withPermit
 
 class StreamPlayTopTierSourceHierarchyTest {
 
@@ -1664,8 +1669,37 @@ class StreamPlayTopTierSourceHierarchyTest {
             source = embedsuLink.source,
             name = embedsuLink.name
         )
-        assertEquals("https://hexa.su/", embedsuHeaders["Referer"])
-        assertEquals("https://hexa.su", embedsuHeaders["Origin"])
+        assertEquals("https://embed.su/", embedsuHeaders["Referer"])
+        assertEquals("https://embed.su", embedsuHeaders["Origin"])
+
+        val flixerHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = flixerLink.url,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = flixerLink.source,
+            name = flixerLink.name
+        )
+        assertEquals("https://flixer.su/", flixerHeaders["Referer"])
+        assertEquals("https://flixer.su", flixerHeaders["Origin"])
+
+        val effEmbedRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = embedsuLink.url,
+            referer = null,
+            headers = emptyMap(),
+            source = embedsuLink.source,
+            name = embedsuLink.name
+        )
+        assertEquals("https://embed.su/", effEmbedRef)
+
+        val effFlixerRef = StreamLinkOptimizer.getEffectiveReferer(
+            url = flixerLink.url,
+            referer = null,
+            headers = emptyMap(),
+            source = flixerLink.source,
+            name = flixerLink.name
+        )
+        assertEquals("https://flixer.su/", effFlixerRef)
     }
 
     @Test
@@ -1740,5 +1774,132 @@ class StreamPlayTopTierSourceHierarchyTest {
             caughtCancellation = true
         }
         assertTrue("retryTransient must rethrow CancellationException", caughtCancellation)
+    }
+
+    @Test
+    fun testVidSrcSubExtractorsArbitraryCdnReferers() {
+        val arbitraryCdn = "https://fast-edge-node-77.cloud/master.m3u8"
+
+        val inHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = arbitraryCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc In",
+            name = "VidSrc In"
+        )
+        assertEquals("https://vidsrc.in/", inHeaders["Referer"])
+        assertEquals("https://vidsrc.in", inHeaders["Origin"])
+
+        val pmHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = arbitraryCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc Pm",
+            name = "VidSrc Pm"
+        )
+        assertEquals("https://vidsrc.pm/", pmHeaders["Referer"])
+        assertEquals("https://vidsrc.pm", pmHeaders["Origin"])
+
+        val netHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = arbitraryCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc Net",
+            name = "VidSrc Net"
+        )
+        assertEquals("https://vidsrc.to/", netHeaders["Referer"])
+        assertEquals("https://vidsrc.to", netHeaders["Origin"])
+
+        val ccHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = arbitraryCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc CC",
+            name = "VidSrc CC"
+        )
+        assertEquals("https://vidsrc.cc/", ccHeaders["Referer"])
+
+        val toHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = arbitraryCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc To",
+            name = "VidSrc To"
+        )
+        assertEquals("https://vidsrc.to/", toHeaders["Referer"])
+
+        val meHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = arbitraryCdn,
+            referer = null,
+            linkType = ExtractorLinkType.M3U8,
+            source = "VidSrc Me",
+            name = "VidSrc Me"
+        )
+        assertEquals("https://vidsrc.me/", meHeaders["Referer"])
+    }
+
+    @Test
+    fun testVidzeeAnd2EmbedHierarchyAndMonotonicity() {
+        val linkVidzee = createLink(source = "vidzeeapi", name = "Vidzee API 1080p", url = "https://cdn.example/vidzee.m3u8")
+        val link2Embed = createLink(source = "2Embed", name = "2Embed 1080p", url = "https://cdn.example/2embed.m3u8")
+        val linkScraper = createLink(source = "UnknownScraper", name = "Scraper 1080p", url = "https://cdn.example/scraper.m3u8")
+
+        assertEquals(15, StreamLinkOptimizer.getSourcePriorityRank(linkVidzee))
+        assertEquals(10, StreamLinkOptimizer.getSourcePriorityRank(link2Embed))
+        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(linkScraper))
+
+        assertTrue("Vidzee must be better than 2Embed", StreamLinkOptimizer.isBetterThan(linkVidzee, link2Embed))
+        assertTrue("2Embed must be better than generic scraper", StreamLinkOptimizer.isBetterThan(link2Embed, linkScraper))
+        assertFalse("2Embed must NOT be better than Vidzee", StreamLinkOptimizer.isBetterThan(link2Embed, linkVidzee))
+    }
+
+    @Test
+    fun testEncDecApiSemaphoreSharedRateLimiting() = runBlocking {
+        // Verify encDecApiSemaphore is available and bounds concurrency to 4
+        val sem = StreamPlayExtractor.encDecApiSemaphore
+        assertEquals(4, sem.availablePermits)
+
+        var maxConcurrent = 0
+        val activeCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+        val jobs = (1..10).map {
+            launch(Dispatchers.Default) {
+                sem.withPermit {
+                    val current = activeCount.incrementAndGet()
+                    synchronized(sem) {
+                        if (current > maxConcurrent) maxConcurrent = current
+                    }
+                    delay(20)
+                    activeCount.decrementAndGet()
+                }
+            }
+        }
+        jobs.joinAll()
+        assertEquals(4, sem.availablePermits)
+        assertTrue("Max concurrent enc-dec requests must not exceed 4, was $maxConcurrent", maxConcurrent <= 4)
+    }
+
+    @Test
+    fun testSuspendCancellableRethrowsCancellationException() = runBlocking {
+        var caughtCancellation = false
+        try {
+            StreamPlayExtractor.suspendCancellable {
+                throw kotlinx.coroutines.CancellationException("Explicit cooperative cancel")
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            caughtCancellation = true
+        }
+        assertTrue("suspendCancellable must rethrow CancellationException", caughtCancellation)
+
+        val swallowedResult = StreamPlayExtractor.suspendCancellable {
+            throw java.io.IOException("Socket timeout")
+        }
+        assertNull("suspendCancellable must safely return null on standard IOException", swallowedResult)
     }
 }
