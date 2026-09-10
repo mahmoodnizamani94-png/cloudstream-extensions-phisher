@@ -3228,64 +3228,210 @@ object StreamPlayExtractor : StreamPlay() {
         id: String? = null,
         season: Int? = null,
         episode: Int? = null,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int? = null
     ) {
-        val url = if (season == null) {
-            "$Vidsrcxyz/embed/movie?imdb=$id"
-        } else {
-            "$Vidsrcxyz/embed/tv?imdb=$id&season=$season&episode=$episode"
+        withTimeoutOrNull(8000L) {
+            try {
+                if (id == null && tmdbId == null) return@withTimeoutOrNull
+
+                val candidateUrls = mutableListOf<String>()
+                val domains = listOf(
+                    Vidsrcxyz,
+                    "https://vidsrc.xyz",
+                    "https://vidsrc.me",
+                    "https://vidsrc.in",
+                    "https://vidsrc.pm"
+                ).distinct()
+
+                for (domain in domains) {
+                    if (season == null) {
+                        if (id != null) candidateUrls.add("$domain/embed/movie?imdb=$id")
+                        if (tmdbId != null) candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
+                        if (id != null) candidateUrls.add("$domain/embed/movie/$id")
+                    } else {
+                        if (id != null) candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
+                        if (tmdbId != null) candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
+                        if (id != null) candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
+                    }
+                }
+
+                for (url in candidateUrls) {
+                    val iframeUrl = extractIframeUrl(url) ?: continue
+                    val prorcpUrl = extractProrcpUrl(iframeUrl) ?: continue
+                    val decryptedSource = extractAndDecryptSource(prorcpUrl, iframeUrl) ?: continue
+
+                    val referer = prorcpUrl.substringBefore("rcp").ifEmpty { getBaseUrl(prorcpUrl) }
+                    var found = false
+                    decryptedSource.forEach { (version, streamUrl) ->
+                        val links = generateM3u8(
+                            "VidSrc Server ${version.capitalize()}",
+                            streamUrl,
+                            referer
+                        )
+                        if (links.isNotEmpty()) {
+                            found = true
+                            links.forEach(callback)
+                        }
+                    }
+                    if (found) break
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e("StreamPlay", "invokeVidSrcXyz error: ${e.message}")
+            }
         }
-        val iframeUrl = extractIframeUrl(url) ?: return
-        val prorcpUrl = extractProrcpUrl(iframeUrl) ?: "Not Found 2"
-
-        val decryptedSource = extractAndDecryptSource(prorcpUrl, iframeUrl) ?: return
-
-        val referer = prorcpUrl.substringBefore("rcp")
-        decryptedSource.forEach { (version, url) ->
-            generateM3u8(
-                "VidsrcXYZ Server ${version.capitalize()}",
-                url,
-                referer
-            ).forEach(callback)
-        }
-
     }
 
     private suspend fun extractIframeUrl(url: String): String? {
-        return httpsify(
-            safeGet(url).document.select("iframe").attr("src")
-        ).takeIf { it.isNotEmpty() }
+        val baseHeaders = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Referer" to getBaseUrl(url),
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        )
+        val response = runCatching { safeGet(url, headers = baseHeaders, timeout = 6L) }.getOrNull() ?: return null
+        val doc = response.document
+
+        val iframe = doc.selectFirst("iframe#player_iframe") ?: doc.selectFirst("iframe")
+
+        // 1. Check data-api attribute (used by modern vidsrc-embed.su)
+        val dataApi = iframe?.attr("data-api")?.takeIf { it.isNotBlank() }
+            ?: Regex("""data-api="([^"]+)"""").find(response.text)?.groupValues?.get(1)
+            ?: Regex("""['"](/vs_src\.php\?[^'"]+)['"]""").find(response.text)?.groupValues?.get(1)
+
+        if (!dataApi.isNullOrBlank()) {
+            val fullApiUrl = if (dataApi.startsWith("http")) dataApi else getBaseUrl(url) + dataApi.replace("&amp;", "&")
+            val apiHeaders = baseHeaders + mapOf(
+                "Referer" to url,
+                "X-Requested-With" to "XMLHttpRequest",
+                "Accept" to "*/*"
+            )
+            val apiJson = runCatching {
+                safeGet(fullApiUrl, headers = apiHeaders, timeout = 5L).text
+            }.getOrNull()
+
+            if (!apiJson.isNullOrBlank()) {
+                val parsedSrc = runCatching {
+                    JSONObject(apiJson).optString("src")
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+
+                if (parsedSrc != null) {
+                    return httpsify(parsedSrc)
+                }
+            }
+        }
+
+        // 2. Check iframe src attribute
+        val src = iframe?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("about:blank") }
+        if (src != null) {
+            return httpsify(src)
+        }
+
+        // 3. Fallback: regex search on HTML
+        val regexSrc = Regex("""(?:data-src|src)\s*[:=]\s*['"]([^'"]+)['"]""").find(response.text)?.groupValues?.get(1)
+        if (!regexSrc.isNullOrBlank() && !regexSrc.startsWith("about:blank")) {
+            return httpsify(regexSrc)
+        }
+
+        return null
     }
 
     private suspend fun extractProrcpUrl(iframeUrl: String): String? {
-        val doc = safeGet(iframeUrl, referer = iframeUrl).document
-        val regex = Regex("src:\\s+'(.*?)'")
-        val matchedSrc = regex.find(doc.html())?.groupValues?.get(1) ?: return null
+        if (iframeUrl.contains("/rcp/") || iframeUrl.contains("/prorcp/")) {
+            return iframeUrl
+        }
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Referer" to iframeUrl
+        )
+        val doc = runCatching { safeGet(iframeUrl, headers = headers, referer = iframeUrl, timeout = 6L).document }.getOrNull() ?: return null
+        val html = doc.html()
+        val regex = Regex("""src:\s*['"](.*?)['"]""")
+        val matchedSrc = regex.find(html)?.groupValues?.get(1)
+            ?: Regex("""['"](/p?rcp/[a-zA-Z0-9_-]+)['"]""").find(html)?.groupValues?.get(1)
+            ?: doc.selectFirst("iframe")?.attr("src")
+            ?: return null
+
         val host = getBaseUrl(iframeUrl)
-        return host + matchedSrc
+        return if (matchedSrc.startsWith("http")) matchedSrc else host + matchedSrc
     }
 
     private suspend fun extractAndDecryptSource(
         prorcpUrl: String,
         referer: String
     ): List<Pair<String, String>>? {
-        val responseText = safeGet(prorcpUrl, referer = referer).text
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Referer" to referer
+        )
+        val responseText = runCatching { safeGet(prorcpUrl, headers = headers, referer = referer, timeout = 6L).text }.getOrNull() ?: return null
+
         val playerJsRegex = Regex("""Playerjs\(\{.*?file:"(.*?)".*?\}\)""")
         val temp = playerJsRegex.find(responseText)?.groupValues?.get(1)
 
-        val encryptedURLNode = if (!temp.isNullOrEmpty()) {
-            mapOf("id" to "playerjs", "content" to temp)
+        val encryptedURLNode: Pair<String, String>? = if (!temp.isNullOrEmpty()) {
+            "playerjs" to temp
         } else {
             val document = Jsoup.parse(responseText)
-            val reporting = document.selectFirst("#reporting_content") ?: return null
-            val node = reporting.nextElementSibling() ?: return null
-            mapOf("id" to node.attr("id"), "content" to node.text())
+            val reporting = document.selectFirst("#reporting_content")
+            val node = reporting?.nextElementSibling()
+            if (node != null && node.attr("id").isNotEmpty() && node.text().isNotEmpty()) {
+                node.attr("id") to node.text()
+            } else {
+                val hiddenDiv = document.select("div[id]").firstOrNull {
+                    it.id().length in 8..16 && it.text().length > 20
+                }
+                if (hiddenDiv != null) {
+                    hiddenDiv.id() to hiddenDiv.text()
+                } else {
+                    val fallbackMatch = Regex("""id="([a-zA-Z0-9]{8,16})"[^>]*>([a-zA-Z0-9+/=_-]{20,})<""").find(responseText)
+                    if (fallbackMatch != null) {
+                        fallbackMatch.groupValues[1] to fallbackMatch.groupValues[2]
+                    } else null
+                }
+            }
         }
 
-        val id = encryptedURLNode["id"] ?: return null
-        val content = encryptedURLNode["content"] ?: return null
+        val id = encryptedURLNode?.first ?: return null
+        val content = encryptedURLNode.second
 
-        val decrypted = decryptMethods[id]?.invoke(content) ?: return null
+        // 1. Native decryption methods
+        var decrypted: String? = decryptMethods[id]?.invoke(content)?.takeIf {
+            it.isNotBlank() && !it.startsWith("Failed to decode") && (it.contains("http") || it.contains("{v") || it.contains(".m3u8"))
+        }
+
+        // 2. Remote dec-cloudnestra from enc-dec.app fallback
+        if (decrypted == null) {
+            val encDecResp = runCatching {
+                app.post(
+                    "https://enc-dec.app/api/dec-cloudnestra",
+                    json = mapOf("text" to content, "div_id" to id),
+                    timeout = 5L
+                ).text
+            }.getOrNull()
+
+            if (!encDecResp.isNullOrBlank()) {
+                val encDecJson = runCatching { JSONObject(encDecResp) }.getOrNull()
+                val result = encDecJson?.optString("result")
+                if (!result.isNullOrBlank() && (result.contains("http") || result.contains("{v") || result.contains(".m3u8"))) {
+                    decrypted = result
+                }
+            }
+        }
+
+        // 3. Native fallback across all decryptMethods in case id mismatched
+        if (decrypted == null) {
+            for ((_, method) in decryptMethods) {
+                val candidate = runCatching { method(content) }.getOrNull()
+                if (candidate != null && !candidate.startsWith("Failed to decode") &&
+                    (candidate.contains("http") || candidate.contains("{v") || candidate.contains(".m3u8"))) {
+                    decrypted = candidate
+                    break
+                }
+            }
+        }
+
+        if (decrypted.isNullOrBlank()) return null
 
         // Domain mapping
         val vSubs = mapOf(
@@ -3293,20 +3439,19 @@ object StreamPlayExtractor : StreamPlay() {
             "v2" to "cloudnestra.com",
             "v3" to "thepixelpioneer.com",
             "v4" to "putgate.org",
-            "v5" to ""
+            "v5" to "whisperingpineslifestyle.com"
         )
         val placeholderRegex = "\\{(v\\d+)\\}".toRegex()
         val mirrors: List<Pair<String, String>> = decrypted
             .split(" or ")
             .map { it.trim() }
-            .filter { it.startsWith("http") }
+            .filter { it.startsWith("http") || placeholderRegex.containsMatchIn(it) }
             .map { rawUrl ->
                 val match = placeholderRegex.find(rawUrl)
-                val version = match?.groupValues?.get(1) ?: ""   // v1, v2, v3 etc or "" if none
-                val domain = vSubs[version] ?: ""
+                val version = match?.groupValues?.get(1) ?: "v1"
+                val domain = vSubs[version] ?: "cloudnestra.com"
 
-                // replace {vX} with actual domain
-                val finalUrl = if (domain.isNotEmpty()) {
+                val finalUrl = if (placeholderRegex.containsMatchIn(rawUrl)) {
                     placeholderRegex.replace(rawUrl) { domain }
                 } else {
                     rawUrl
@@ -3316,6 +3461,98 @@ object StreamPlayExtractor : StreamPlay() {
             }
 
         return mirrors.ifEmpty { null }
+    }
+
+    suspend fun invokeVidSrcCc(
+        id: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int? = null
+    ) {
+        withTimeoutOrNull(8000L) {
+            try {
+                if (id == null && tmdbId == null) return@withTimeoutOrNull
+
+                val targetId = id ?: tmdbId.toString()
+                val domains = listOf("https://vidsrc.cc", "https://vidsrc.in", "https://vidsrc.pm")
+                val mobileHeaders = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.97 Mobile Safari/537.36",
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+
+                for (domain in domains) {
+                    val embedUrls = if (season == null) {
+                        listOf(
+                            "$domain/v2/embed/movie/$targetId",
+                            "$domain/v3/embed/movie/$targetId",
+                            "$domain/embed/movie/$targetId"
+                        )
+                    } else {
+                        listOf(
+                            "$domain/v2/embed/tv/$targetId/$season/$episode",
+                            "$domain/v3/embed/tv/$targetId/$season/$episode",
+                            "$domain/embed/tv/$targetId/$season/$episode"
+                        )
+                    }
+
+                    for (embedUrl in embedUrls) {
+                        val resp = runCatching {
+                            safeGet(embedUrl, headers = mobileHeaders + ("Referer" to "$domain/"), timeout = 5L)
+                        }.getOrNull() ?: continue
+
+                        val iframeSrc = resp.document.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
+                            ?: Regex("""iframe\s+src=['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
+                            ?: continue
+
+                        val fullIframeUrl = if (iframeSrc.startsWith("http")) iframeSrc else getBaseUrl(embedUrl) + iframeSrc
+                        val iframeResp = runCatching {
+                            safeGet(fullIframeUrl, headers = mobileHeaders + ("Referer" to embedUrl), timeout = 5L)
+                        }.getOrNull() ?: continue
+
+                        val m3u8Match = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+
+                        if (!m3u8Match.isNullOrBlank() && m3u8Match.contains(".m3u8")) {
+                            generateM3u8("VidSrc CC", m3u8Match, fullIframeUrl).forEach(callback)
+                            return@withTimeoutOrNull
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e("StreamPlay", "invokeVidSrcCc error: ${e.message}")
+            }
+        }
+    }
+
+    suspend fun invokeVidSrc(
+        id: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int? = null
+    ) {
+        coroutineScope {
+            val j1 = async {
+                try {
+                    invokeVidSrcXyz(id, season, episode, callback, tmdbId)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.w("StreamPlay", "VidSrcXyz sub-job failed: ${e.message}")
+                }
+            }
+            val j2 = async {
+                try {
+                    invokeVidSrcCc(id, season, episode, callback, tmdbId)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.w("StreamPlay", "VidSrcCc sub-job failed: ${e.message}")
+                }
+            }
+            j1.await()
+            j2.await()
+        }
     }
 
 

@@ -48,6 +48,8 @@ import com.phisher98.StreamPlayExtractor.invokeTopMovies
 import com.phisher98.StreamPlayExtractor.invokeUhdmovies
 import com.phisher98.StreamPlayExtractor.invokeVegamovies
 import com.phisher98.StreamPlayExtractor.invokeVidFast
+import com.phisher98.StreamPlayExtractor.invokeVidSrc
+import com.phisher98.StreamPlayExtractor.invokeVidSrcCc
 import com.phisher98.StreamPlayExtractor.invokeVidSrcXyz
 import com.phisher98.StreamPlayExtractor.invokeVideasy
 import com.phisher98.StreamPlayExtractor.invokeVidlink
@@ -270,7 +272,13 @@ private val providers by lazy {
             invokeMoviesdrive(res.imdbId, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("vidsrcxyz", "VidSrcXyz") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcXyz(res.imdbId, res.season, res.episode, callback)
+            if (!res.isAnime) invokeVidSrcXyz(res.imdbId, res.season, res.episode, callback, res.id)
+        },
+        Provider("vidsrccc", "VidSrc CC") { res, _, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrcCc(res.imdbId, res.season, res.episode, callback, res.id)
+        },
+        Provider("vidsrc", "VidSrc (Unified)") { res, _, callback, _, _ ->
+            if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, callback, res.id)
         },
         Provider("vidzeeapi", "Vidzee API") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidzee(res.id, res.season, res.episode, subtitleCallback, callback)

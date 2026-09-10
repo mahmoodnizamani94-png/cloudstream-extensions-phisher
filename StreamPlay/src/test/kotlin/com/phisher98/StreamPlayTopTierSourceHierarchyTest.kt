@@ -917,4 +917,84 @@ class StreamPlayTopTierSourceHierarchyTest {
         )
         assertFalse("invokeAutoembed must not emit links for non-existent content", linkEmitted)
     }
+
+    @Test
+    fun testVidSrcRankAndHierarchyPlacement() {
+        val vidlinkLink = createLink("Vidlink", "Vidlink [1080p]", "https://vidlink.pro/stream/master.m3u8", type = ExtractorLinkType.M3U8)
+        val hexaLink = createLink("HexaSU", "HexaSU [1080p]", "https://theemoviedb.hexa.su/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val autoembedLink = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidfastLink = createLink("VidFast", "VidFast [1080p]", "https://vidfast.pro/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val videasyLink = createLink("VidEasy", "VidEasy [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidsrcLink = createLink("VidSrc", "VidSrc Server V1 [1080p]", "https://shadowlandschronicles.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidsrcCcLink = createLink("VidSrc CC", "VidSrc CC [1080p]", "https://vidsrc.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val cloudnestraLink = createLink("VidSrc", "VidSrc Server V2 [1080p]", "https://cloudnestra.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val movieboxLink = createLink("MovieBox", "MovieBox [1080p]", "https://moviebox.example/stream.mp4")
+        val rivestreamLink = createLink("RiveStream", "RiveStream [1080p]", "https://rivestream.example/stream.mp4")
+        val vidrockLink = createLink("Vidrock", "Vidrock [1080p]", "https://vidrock.example/stream.mp4")
+        val moviesapiLink = createLink("MoviesApi", "MoviesApi [1080p]", "https://moviesapi.example/stream.mp4")
+        val secondaryLink = createLink("UnknownProvider", "Scraped Link [1080p]", "https://secondary.example.com/video.mp4")
+
+        val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(vidlinkLink)
+        val rHexa = StreamLinkOptimizer.getSourcePriorityRank(hexaLink)
+        val rAutoembed = StreamLinkOptimizer.getSourcePriorityRank(autoembedLink)
+        val rVidfast = StreamLinkOptimizer.getSourcePriorityRank(vidfastLink)
+        val rVideasy = StreamLinkOptimizer.getSourcePriorityRank(videasyLink)
+        val rVidSrc = StreamLinkOptimizer.getSourcePriorityRank(vidsrcLink)
+        val rVidSrcCc = StreamLinkOptimizer.getSourcePriorityRank(vidsrcCcLink)
+        val rCloudnestra = StreamLinkOptimizer.getSourcePriorityRank(cloudnestraLink)
+        val rMoviebox = StreamLinkOptimizer.getSourcePriorityRank(movieboxLink)
+        val rRivestream = StreamLinkOptimizer.getSourcePriorityRank(rivestreamLink)
+        val rVidrock = StreamLinkOptimizer.getSourcePriorityRank(vidrockLink)
+        val rMoviesapi = StreamLinkOptimizer.getSourcePriorityRank(moviesapiLink)
+        val rSecondary = StreamLinkOptimizer.getSourcePriorityRank(secondaryLink)
+
+        // Exact rank validation
+        assertEquals("VidLink rank is 100", 100, rVidlink)
+        assertEquals("HexaSU rank is 90", 90, rHexa)
+        assertEquals("AutoEmbed rank is 80", 80, rAutoembed)
+        assertEquals("VidFast rank is 70", 70, rVidfast)
+        assertEquals("VidEasy rank is 60", 60, rVideasy)
+        assertEquals("VidSrc rank must be exactly 55 (King of Fallbacks)", 55, rVidSrc)
+        assertEquals("VidSrc CC rank must be exactly 55", 55, rVidSrcCc)
+        assertEquals("Cloudnestra mirror rank must be exactly 55", 55, rCloudnestra)
+        assertEquals("MovieBox rank is 50", 50, rMoviebox)
+        assertEquals("RiveStream rank is 40", 40, rRivestream)
+        assertEquals("Vidrock rank is 30", 30, rVidrock)
+        assertEquals("MoviesApi rank is 20", 20, rMoviesapi)
+        assertEquals("Secondary rank is 0", 0, rSecondary)
+
+        // Strict monotonicity check: VidLink (100) > HexaSU (90) > AutoEmbed (80) > VidFast (70) > VidEasy (60) > VidSrc (55) > MovieBox (50) > RiveStream (40) > Vidrock (30) > MoviesAPI (20)
+        assertTrue(rVidlink > rHexa)
+        assertTrue(rHexa > rAutoembed)
+        assertTrue(rAutoembed > rVidfast)
+        assertTrue(rVidfast > rVideasy)
+        assertTrue(rVideasy > rVidSrc)
+        assertTrue(rVidSrc > rMoviebox)
+        assertTrue(rMoviebox > rRivestream)
+        assertTrue(rRivestream > rVidrock)
+        assertTrue(rVidrock > rMoviesapi)
+        assertTrue(rMoviesapi > rSecondary)
+
+        // FAST_PROVIDER_BOOST checks
+        assertEquals(55f, FAST_PROVIDER_BOOST["vidsrc"] ?: 0f, 0.001f)
+        assertEquals(55f, FAST_PROVIDER_BOOST["vidsrcxyz"] ?: 0f, 0.001f)
+        assertEquals(55f, FAST_PROVIDER_BOOST["vidsrccc"] ?: 0f, 0.001f)
+
+        // SpeculativePipeliner tier check
+        assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrc"])
+        assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcxyz"])
+        assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrccc"])
+    }
+
+    @Test
+    fun testVidSrcGracefulFailureAndFaultIsolation() = kotlinx.coroutines.runBlocking {
+        var linkEmitted = false
+        StreamPlayExtractor.invokeVidSrc(
+            id = "tt9999999999nonexistent",
+            season = null,
+            episode = null,
+            callback = { linkEmitted = true }
+        )
+        assertFalse("invokeVidSrc must complete gracefully without emitting links for nonexistent id", linkEmitted)
+    }
 }

@@ -75,6 +75,8 @@ internal val NON_ANIME_PROVIDERS = setOf(
     "zshow",
     "nepu",
     "vidsrcxyz",
+    "vidsrccc",
+    "vidsrc",
     "vidzeeapi",
     "hdhub4u",
     "rivestream",
@@ -113,6 +115,16 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "VidFast" to 70f,
     "VidEasy" to 60f,
     "videasy" to 60f,
+    "vidsrc" to 55f,
+    "VidSrc" to 55f,
+    "vidsrcxyz" to 55f,
+    "VidSrcXyz" to 55f,
+    "vidsrccc" to 55f,
+    "VidSrcCc" to 55f,
+    "vidsrcto" to 55f,
+    "VidSrcTo" to 55f,
+    "vidsrcme" to 55f,
+    "VidSrcMe" to 55f,
     "WyZIESUB" to 50f,
     "SubtitleAPI" to 50f,
     "moviebox" to 40f,
@@ -123,7 +135,6 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "Vidrock" to 30f,
     "moviesapi" to 25f,
     "MoviesApi" to 25f,
-    "vidsrcxyz" to 20f,
     "vidzeeapi" to 15f,
     "2Embed" to 10f
 )
@@ -358,6 +369,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val RiveStreamAPI = "https://www.rivestream.app"
         const val KickassAPI = "https://kaa.lt"
         const val Vidsrcxyz = "https://vidsrc-embed.su"
+        const val Vidsrccc = "https://vidsrc.cc"
+        const val Vidsrcin = "https://vidsrc.in"
+        const val Vidsrcpm = "https://vidsrc.pm"
+        const val Vidsrcme = "https://vidsrc.me"
         const val movieBox= "https://api.inmoviebox.com"
         const val vidrock = "https://vidrock.ru"
         const val vidlink = "https://vidlink.pro"

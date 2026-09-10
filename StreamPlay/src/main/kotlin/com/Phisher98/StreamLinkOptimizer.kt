@@ -1212,6 +1212,7 @@ object StreamLinkOptimizer {
                 ((u.contains("peakstorm.top") || u.contains("hypergate.top")) && !s.contains("videasy") && !n.contains("videasy")) -> 70
             s.contains("videasy") || n.contains("videasy") || u.contains("videasy") || u.contains("speedracelight.com") || u.contains("videasy.to") || u.contains("videasy.net") || u.contains("cineby.sc") ||
                 (u.contains("peakstorm.top") && (s.contains("videasy") || n.contains("videasy"))) -> 60
+            s.contains("vidsrc") || n.contains("vidsrc") || u.contains("vidsrc") || u.contains("cloudnestra") || u.contains("shadowlandschronicles") -> 55
             s.contains("moviebox") || n.contains("moviebox") -> 50
             s.contains("rivestream") || n.contains("rivestream") -> 40
             s.contains("vidrock") || n.contains("vidrock") -> 30
