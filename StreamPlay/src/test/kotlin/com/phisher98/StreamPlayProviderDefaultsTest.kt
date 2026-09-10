@@ -9,24 +9,27 @@ import org.junit.Test
 class StreamPlayProviderDefaultsTest {
 
     @Test
-    fun testVaplayerIsCompletelyRemovedFromProviderList() {
+    fun testSuperStreamAndVaplayerAreCompletelyRemovedFromProviderList() {
         val providers = buildProviders()
         val vaplayer = providers.find { it.id.equals("vaplayer", ignoreCase = true) || it.name.equals("Vaplayer", ignoreCase = true) }
         assertNull("Vaplayer must be completely removed from providers list", vaplayer)
         assertFalse("Vaplayer id must not be in default top tier providers", DEFAULT_TOP_TIER_PROVIDERS.contains("vaplayer"))
+
+        val superstream = providers.find { it.id.equals("superstream", ignoreCase = true) || it.name.equals("SuperStream", ignoreCase = true) }
+        assertNull("SuperStream must be completely removed from providers list", superstream)
+        assertFalse("SuperStream id must not be in default top tier providers", DEFAULT_TOP_TIER_PROVIDERS.contains("superstream"))
     }
 
     @Test
     fun testDefaultTopTierProvidersContainsExpectedSources() {
         val expected = setOf(
-            "superstream",
             "vidlink",
             "HexaSU",
-            "vidfast",
             "autoembed",
+            "vidfast",
             "VidEasy"
         )
-        assertEquals("Top tier default providers must contain exactly 6 sources", 6, DEFAULT_TOP_TIER_PROVIDERS.size)
+        assertEquals("Top tier default providers must contain exactly 5 sources", 5, DEFAULT_TOP_TIER_PROVIDERS.size)
         assertEquals("Top tier default providers must match expected IDs", expected, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
@@ -56,7 +59,7 @@ class StreamPlayProviderDefaultsTest {
 
         // Active providers when applying default disabled set must be exactly top tier
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("Only top tier providers should be active by default", 6, activeProviders.size)
+        assertEquals("Only top tier providers should be active by default", 5, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,

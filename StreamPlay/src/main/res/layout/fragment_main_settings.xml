@@ -140,7 +140,7 @@
                 android:clickable="false" />
         </LinearLayout>
 
-        <!-- 3. Febbox Login Card -->
+        <!-- 3. Febbox Login Card (Deprecated / SuperStream Purged) -->
         <LinearLayout
             android:id="@+id/loginRow"
             android:layout_width="match_parent"
@@ -149,8 +149,9 @@
             android:orientation="horizontal"
             android:padding="16dp"
             android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
+            android:clickable="false"
+            android:focusable="false"
+            android:visibility="gone"
             android:nextFocusUp="@id/toggleprovidersRow">
 
             <LinearLayout
@@ -196,7 +197,7 @@
             android:gravity="center_vertical"
             android:clickable="true"
             android:focusable="true"
-            android:nextFocusUp="@id/loginRow">
+            android:nextFocusUp="@id/toggleprovidersRow">
 
             <LinearLayout
                 android:layout_width="0dp"

@@ -126,7 +126,6 @@ class EarlySatisfactionController(
             FHD_WORD_REGEX.containsMatchIn(name) ||
             (quality >= Qualities.P720.value && (
                 url.contains("pixeldrain", ignoreCase = true) ||
-                url.contains("febbox", ignoreCase = true) ||
                 url.contains("debrid", ignoreCase = true) ||
                 url.contains("real-debrid", ignoreCase = true)
             ))
@@ -179,22 +178,19 @@ object SpeculativePipeliner {
     val STATIC_COLD_START_TIERS: Map<String, LatencyTier> = mapOf(
         // Tier 0: Direct cache / instant player
         "streamplay_cache" to LatencyTier.TIER_0,
-        "febbox_player" to LatencyTier.TIER_0,
         "debrid_cache" to LatencyTier.TIER_0,
 
         // Tier 1: Fast reliable JSON APIs & resolvers
-        "superstream" to LatencyTier.TIER_1,
-        "SuperStream" to LatencyTier.TIER_1,
         "vidlink" to LatencyTier.TIER_1,
         "Vidlink" to LatencyTier.TIER_1,
         "HexaSU" to LatencyTier.TIER_1,
         "hexasu" to LatencyTier.TIER_1,
         "embedsu" to LatencyTier.TIER_1,
         "embed.su" to LatencyTier.TIER_1,
-        "vidfast" to LatencyTier.TIER_1,
-        "VidFast" to LatencyTier.TIER_1,
         "autoembed" to LatencyTier.TIER_1,
         "AutoEmbed" to LatencyTier.TIER_1,
+        "vidfast" to LatencyTier.TIER_1,
+        "VidFast" to LatencyTier.TIER_1,
         "VidEasy" to LatencyTier.TIER_1,
         "videasy" to LatencyTier.TIER_1,
         "vidsrcxyz" to LatencyTier.TIER_1,
@@ -241,7 +237,6 @@ object SpeculativePipeliner {
         "AllMovieland" to LatencyTier.TIER_2,
         "AllMovielandMediaProvider" to LatencyTier.TIER_2,
         "allmovieland" to LatencyTier.TIER_2,
-        "SuperStreamFebbox" to LatencyTier.TIER_2,
 
         // Tier 3: Slow / edge fallback
         "tokyoinsider" to LatencyTier.TIER_3,
@@ -308,6 +303,28 @@ object SpeculativePipeliner {
         val tier2Jobs = CopyOnWriteArrayList<Job>()
         val tier3Jobs = CopyOnWriteArrayList<Job>()
 
+        data class TrackedTaskInfo(
+            val job: Job,
+            val task: PipelinedTask,
+            val priorityScore: Float
+        )
+        val trackedTasks = CopyOnWriteArrayList<TrackedTaskInfo>()
+        val maxEmittedPriority = java.util.concurrent.atomic.AtomicReference<Float>(0f)
+
+        fun hasHigherPriorityInFlight(): Boolean {
+            val threshold = maxEmittedPriority.get()
+            return trackedTasks.any { it.job.isActive && it.priorityScore > threshold }
+        }
+
+        fun cancelLowerOrEqualPriorityJobs() {
+            val threshold = maxEmittedPriority.get()
+            for (info in trackedTasks) {
+                if (info.job.isActive && info.priorityScore <= threshold) {
+                    info.job.cancel(CancellationException("Early satisfaction achieved by higher tier source"))
+                }
+            }
+        }
+
         fun cancelAllActiveJobs() {
             for (job in activeJobs) {
                 if (job.isActive) {
@@ -316,12 +333,23 @@ object SpeculativePipeliner {
             }
         }
 
+        fun handleEarlySatisfaction() {
+            if (controller.isSatisfied()) {
+                if (!hasHigherPriorityInFlight()) {
+                    cancelAllActiveJobs()
+                } else {
+                    cancelLowerOrEqualPriorityJobs()
+                }
+            }
+        }
+
         fun launchTaskGroup(taskList: List<PipelinedTask>, targetList: CopyOnWriteArrayList<Job>): List<Job> {
-            if (controller.isSatisfied()) return emptyList()
+            if (controller.isSatisfied() && !hasHigherPriorityInFlight()) return emptyList()
             val allBroken = taskList.isNotEmpty() && taskList.all { ProviderTelemetryManager.isCircuitBroken(it.providerId) }
             return taskList.map { task ->
+                val taskPriority = ProviderTelemetryManager.getPriorityScore(task.providerId) + task.priorityBoost
                 launch(Dispatchers.IO) {
-                    if (controller.isSatisfied()) return@launch
+                    if (controller.isSatisfied() && !hasHigherPriorityInFlight()) return@launch
                     if (!allBroken && !ProviderTelemetryManager.canExecute(task.providerId)) {
                         Log.d(TAG, "Circuit breaker: skipping open provider ${task.providerId}")
                         return@launch
@@ -332,20 +360,22 @@ object SpeculativePipeliner {
                     val start = System.currentTimeMillis()
                     var success = false
                     val beforeLinks = controller.getLinksCount()
+                    val beforeQuality = controller.getQualityLinksCount()
                     val beforeSubs = controller.getSubtitlesCount()
 
                     try {
                         semaphore.withPermit {
-                            if (controller.isSatisfied()) {
+                            if (controller.isSatisfied() && (!hasHigherPriorityInFlight() || taskPriority <= maxEmittedPriority.get())) {
                                 throw CancellationException("Early satisfaction achieved")
                             }
                             withTimeoutOrNull(timeout.milliseconds) {
                                 task.execute()
                             }
-                            success = if (task.isVideo) {
-                                controller.getLinksCount() > beforeLinks
-                            } else {
-                                controller.getSubtitlesCount() > beforeSubs
+                            val emittedLinks = controller.getLinksCount() > beforeLinks
+                            val emittedQuality = controller.getQualityLinksCount() > beforeQuality
+                            success = if (task.isVideo) emittedLinks else controller.getSubtitlesCount() > beforeSubs
+                            if (emittedQuality || emittedLinks) {
+                                maxEmittedPriority.accumulateAndGet(taskPriority) { prev, cur -> maxOf(prev, cur) }
                             }
                         }
                     } catch (e: CancellationException) {
@@ -361,13 +391,12 @@ object SpeculativePipeliner {
                         } else {
                             ProviderTelemetryManager.releaseCanaryPermit(task.providerId)
                         }
-                        if (controller.isSatisfied()) {
-                            cancelAllActiveJobs()
-                        }
+                        handleEarlySatisfaction()
                     }
                 }.also {
                     activeJobs.add(it)
                     targetList.add(it)
+                    trackedTasks.add(TrackedTaskInfo(it, task, taskPriority))
                 }
             }
         }
@@ -393,11 +422,12 @@ object SpeculativePipeliner {
         val pipelineStartTime = System.currentTimeMillis()
         val firstLinkEmittedAt = java.util.concurrent.atomic.AtomicLong(0L)
         val satisfactionWatcher = launch {
-            while (isActive && !controller.isSatisfied()) {
+            while (isActive) {
                 val now = System.currentTimeMillis()
                 if (config.maxPipelineTimeoutMs > 0L && (now - pipelineStartTime) >= config.maxPipelineTimeoutMs) {
                     Log.d(TAG, "⏰ Max pipeline timeout (${config.maxPipelineTimeoutMs}ms) reached. Satisfying pipeline.")
                     controller.markSatisfied()
+                    cancelAllActiveJobs()
                     break
                 }
                 if (config.softGracePeriodAfterFirstLinkMs > 0L && controller.getLinksCount() > 0) {
@@ -406,13 +436,19 @@ object SpeculativePipeliner {
                     if (graceElapsed >= config.softGracePeriodAfterFirstLinkMs) {
                         Log.d(TAG, "⚡ Soft grace period (${config.softGracePeriodAfterFirstLinkMs}ms) expired after first link. Marking satisfied.")
                         controller.markSatisfied()
+                        cancelAllActiveJobs()
                         break
                     }
                 }
+                if (controller.isSatisfied()) {
+                    if (!hasHigherPriorityInFlight()) {
+                        cancelAllActiveJobs()
+                        break
+                    } else {
+                        cancelLowerOrEqualPriorityJobs()
+                    }
+                }
                 delay(config.checkIntervalMs.milliseconds)
-            }
-            if (controller.isSatisfied()) {
-                cancelAllActiveJobs()
             }
         }
 

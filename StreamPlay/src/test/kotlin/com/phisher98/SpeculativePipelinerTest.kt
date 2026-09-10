@@ -269,4 +269,56 @@ class SpeculativePipelinerTest {
         assertFalse(result)
         assertTrue("Empty tasks should return in < 20ms", duration < 20L)
     }
+
+    @Test
+    fun testInFlightHigherPriorityTaskNotCancelledOnLowerPriorityEarlySatisfaction() = runBlocking {
+        val higherPriorityFinished = AtomicBoolean(false)
+        val lowerPriorityFinished = AtomicBoolean(false)
+        val lowerTierSiblingCancelled = AtomicBoolean(false)
+
+        val config = EarlySatisfactionConfig(
+            minVerifiedLinks = 1,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            tier1DelayMs = 0L,
+            tier2DelayMs = 0L,
+            tier3DelayMs = 500L
+        )
+        val controller = EarlySatisfactionController(config)
+
+        val tasks = listOf(
+            // High priority task (e.g. VidLink - score 100) takes longer to finish (80ms)
+            PipelinedTask("vidlink", LatencyTier.TIER_0, isVideo = true, priorityBoost = 100f) {
+                delay(80)
+                controller.onLinkEmitted(createLink("Vidlink 1080p", Qualities.P1080.value))
+                higherPriorityFinished.set(true)
+            },
+            // Lower priority task (e.g. VidFast - score 70) finishes quickly (20ms) and satisfies controller
+            PipelinedTask("vidfast", LatencyTier.TIER_0, isVideo = true, priorityBoost = 70f) {
+                delay(20)
+                controller.onLinkEmitted(createLink("Vidfast 1080p", Qualities.P1080.value))
+                lowerPriorityFinished.set(true)
+            },
+            // Even lower priority task (e.g. VidEasy - score 60) should be cancelled
+            PipelinedTask("videasy", LatencyTier.TIER_0, isVideo = true, priorityBoost = 60f) {
+                try {
+                    delay(120)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    lowerTierSiblingCancelled.set(true)
+                    throw e
+                }
+            }
+        )
+
+        val result = SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = config,
+            controller = controller
+        )
+
+        assertTrue("Execution should return true", result)
+        assertTrue("Lower priority task should finish", lowerPriorityFinished.get())
+        assertTrue("Higher priority task must NOT be aborted and must finish to completion", higherPriorityFinished.get())
+        assertTrue("Lower/equal priority sibling should be cancelled", lowerTierSiblingCancelled.get())
+    }
 }

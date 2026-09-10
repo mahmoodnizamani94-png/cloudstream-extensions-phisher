@@ -3241,112 +3241,6 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
 
-    suspend fun invokeSuperstream(
-        token: String? = null,
-        imdbId: String? = null,
-        id: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        var success = false
-        if (!imdbId.isNullOrBlank()) {
-            try {
-                val searchUrl = "$fourthAPI/search?keyword=$imdbId"
-
-                val href: String? = app.get(searchUrl)
-                    .document
-                    .selectFirst("h2.film-name a")
-                    ?.attr("href")
-                    ?.let { fourthAPI + it }
-
-                val mediaId: Int? = href?.let { url ->
-                    app.get(url)
-                        .document
-                        .selectFirst("h2.heading-name a")
-                        ?.attr("href")
-                        ?.substringAfterLast("/")
-                        ?.toIntOrNull()
-                }
-
-                if (mediaId != null) {
-                    val seasonNumber = season ?: 1
-                    invokeExternalSource(
-                        mediaId,
-                        seasonNumber,
-                        season,
-                        episode,
-                        callback,
-                        token
-                    )
-                    success = true
-                }
-            } catch (_: Exception) {
-                // ignore and fallback
-            }
-        }
-
-        if (success) return
-        if (id == null || token.isNullOrBlank()) return
-
-        val encodedToken = withContext(Dispatchers.IO) {
-            URLEncoder.encode(token, "UTF-8")
-        }
-
-        val url = if (season == null) {
-            "$NuvFeb/api/media/movie/$id?cookie=$encodedToken"
-        } else {
-            "$NuvFeb/api/media/tv/$id/$season/$episode?cookie=$encodedToken"
-        }
-
-        val parsed = retryFetch(url) ?: return
-
-        parsed.versions.orEmpty().forEach { version ->
-            val baseTitle = version.name
-                ?.takeIf { it.isNotBlank() }
-                ?.let(::cleanTitle)
-                ?: "Stream"
-
-            version.links.orEmpty().forEach { link ->
-                val streamUrl = link.url ?: return@forEach
-                val qualityName = link.quality.orEmpty()
-
-                val name = if (qualityName.equals("ORG", true)) {
-                    "SuperStream • $baseTitle • ORG"
-                } else {
-                    "SuperStream • $baseTitle"
-                }
-
-                callback(
-                    newExtractorLink(
-                        source = "SuperStream",
-                        name = name,
-                        url = streamUrl,
-                        type = INFER_TYPE
-                    ) {
-                        quality = getQualityFromName(qualityName)
-                    }
-                )
-            }
-        }
-    }
-    private suspend fun retryFetch(url: String): FebResponse? {
-        try {
-            for (attempt in 0..1) {
-                val res = safeGet(url, timeout = 10L)
-
-                if (res.code == 500 && attempt == 0) {
-                    delay(1000L.milliseconds)
-                } else {
-                    return res.parsedSafe()
-                }
-            }
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-        }
-        return null
-    }
-
 
     suspend fun invoke4khdhub(
         title: String? = null,
@@ -3719,7 +3613,7 @@ object StreamPlayExtractor : StreamPlay() {
             )
 
             val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
-            val response = app.post(url, headers = headers, requestBody = requestBody)
+            val response = runCatching { app.post(url, headers = headers, requestBody = requestBody, timeout = 10L) }.getOrNull() ?: return false
             if (response.code != 200) return false
 
             val mapper = streamPlayExtractorMapper
@@ -3756,7 +3650,7 @@ object StreamPlayExtractor : StreamPlay() {
                         "x-client-token" to subjectXToken,
                         "x-tr-signature" to subjectXSign
                     )
-                    val subjectRes = safeGet(subjectUrl, headers = subjectHeaders)
+                    val subjectRes = safeGet(subjectUrl, headers = subjectHeaders, timeout = 8L)
 
                     val xUserHeader = subjectRes.headers["x-user"]
 
@@ -3975,88 +3869,100 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         callback: (ExtractorLink) -> Unit
     ) {
-        val type = if (season == null) "movie" else "tv"
-        val encoded = vidrockEncode(tmdbId, type, season, episode)
-        val response = safeGet("$vidrock/api/$type/$encoded").text
-        val sourcesJson = JSONObject(response)
+        try {
+            val type = if (season == null) "movie" else "tv"
+            val encoded = vidrockEncode(tmdbId, type, season, episode)
+            val response = runCatching { safeGet("$vidrock/api/$type/$encoded", timeout = 8L).text }.getOrNull() ?: return
+            val sourcesJson = runCatching { JSONObject(response) }.getOrNull() ?: return
 
-        val vidrockHeaders = mapOf(
-            "Origin" to vidrock
-        )
+            val vidrockHeaders = mapOf(
+                "Origin" to vidrock
+            )
 
-        sourcesJson.keys().asSequence().toList().safeAmap { key ->
-            val sourceObj = sourcesJson.optJSONObject(key) ?: return@safeAmap
+            sourcesJson.keys().asSequence().toList().safeAmap { key ->
+                try {
+                    val sourceObj = sourcesJson.optJSONObject(key) ?: return@safeAmap
 
-            val rawUrl = sourceObj.optString("url", "")
-            val lang = sourceObj.optString("language", "Unknown")
-            if (rawUrl.isNullOrBlank() || rawUrl == "null") return@safeAmap
+                    val rawUrl = sourceObj.optString("url", "")
+                    val lang = sourceObj.optString("language", "Unknown")
+                    if (rawUrl.isBlank() || rawUrl == "null") return@safeAmap
 
-            val safeUrl = if (rawUrl.contains("%")) {
-                URLDecoder.decode(rawUrl, "UTF-8")
-            } else rawUrl
+                    val safeUrl = if (rawUrl.contains("%")) {
+                        URLDecoder.decode(rawUrl, "UTF-8")
+                    } else rawUrl
 
-            val displayName = "Vidrock [$key] $lang"
+                    val displayName = "Vidrock [$key] $lang"
 
-            when {
-                safeUrl.contains("/playlist/") -> {
-                    val playlistResponse = safeGet(safeUrl, headers = vidrockHeaders).text
-                    val playlistArray = JSONArray(playlistResponse)
+                    when {
+                        safeUrl.contains("/playlist/") -> {
+                            val playlistResponse = runCatching { safeGet(safeUrl, headers = vidrockHeaders, timeout = 8L).text }.getOrNull() ?: return@safeAmap
+                            val playlistArray = runCatching { JSONArray(playlistResponse) }.getOrNull() ?: return@safeAmap
 
-                    for (j in 0 until playlistArray.length()) {
-                        val item = playlistArray.optJSONObject(j) ?: continue
-                        val itemUrl = item.optString("url", "") ?: continue
-                        val res = item.optInt("resolution", 0)
+                            for (j in 0 until playlistArray.length()) {
+                                val item = playlistArray.optJSONObject(j) ?: continue
+                                val itemUrl = item.optString("url", "") ?: continue
+                                val res = item.optInt("resolution", 0)
 
-                        callback.invoke(
-                            newExtractorLink(
-                                source = "Vidrock-$key",
-                                name = displayName,
-                                url = itemUrl,
-                                type = INFER_TYPE
-                            ) {
-                                this.headers = vidrockHeaders
-                                this.quality = getQualityFromName("$res")
+                                callback.invoke(
+                                    newExtractorLink(
+                                        source = "Vidrock-$key",
+                                        name = displayName,
+                                        url = itemUrl,
+                                        type = INFER_TYPE
+                                    ) {
+                                        this.headers = vidrockHeaders
+                                        this.quality = getQualityFromName("$res")
+                                    }
+                                )
                             }
-                        )
+                        }
+
+                        safeUrl.contains(".mp4", ignoreCase = true) -> {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = "Vidrock-$key",
+                                    name = "$displayName MP4",
+                                    url = safeUrl,
+                                    type = ExtractorLinkType.VIDEO
+                                ) {
+                                    this.headers = vidrockHeaders
+                                }
+                            )
+                        }
+
+                        safeUrl.contains(".m3u8", ignoreCase = true) -> {
+                            runCatching {
+                                generateM3u8(
+                                    source = "Vidrock-$key",
+                                    streamUrl = safeUrl,
+                                    referer = "",
+                                    quality = Qualities.P1080.value,
+                                    headers = vidrockHeaders
+                                ).forEach(callback)
+                            }
+                        }
+
+                        else -> {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = "Vidrock-$key",
+                                    name = displayName,
+                                    url = safeUrl,
+                                    type = ExtractorLinkType.VIDEO
+                                ) {
+                                    this.headers = vidrockHeaders
+                                }
+                            )
+                        }
                     }
-                }
-
-                safeUrl.contains(".mp4", ignoreCase = true) -> {
-                    callback.invoke(
-                        newExtractorLink(
-                            source = "Vidrock-$key",
-                            name = "$displayName MP4",
-                            url = safeUrl,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            this.headers = vidrockHeaders
-                        }
-                    )
-                }
-
-                safeUrl.contains(".m3u8", ignoreCase = true) -> {
-                    generateM3u8(
-                        source = "Vidrock-$key",
-                        streamUrl = safeUrl,
-                        referer = "",
-                        quality = Qualities.P1080.value,
-                        headers = vidrockHeaders
-                    ).forEach(callback)
-                }
-
-                else -> {
-                    callback.invoke(
-                        newExtractorLink(
-                            source = "Vidrock-$key",
-                            name = displayName,
-                            url = safeUrl,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            this.headers = vidrockHeaders
-                        }
-                    )
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.w("StreamPlay", "Vidrock source $key failed: ${e.message}")
                 }
             }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokevidrock failed: ${e.message}")
         }
     }
 
@@ -4067,116 +3973,190 @@ object StreamPlayExtractor : StreamPlay() {
         subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit
     ) {
-        if (tmdbId == null) return
+        try {
+            if (tmdbId == null) return
 
-        val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
-        val encResponse = runCatching { app.get(encUrl, timeout = 10L).text }.getOrNull() ?: return
+            val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
+            val encResponse = runCatching { app.get(encUrl, timeout = 5L).text }.getOrNull() ?: return
 
-        val encData = runCatching {
-            JSONObject(encResponse).optString("result")
-        }.getOrNull().takeIf { !it.isNullOrEmpty() } ?: return
+            val encData = runCatching {
+                JSONObject(encResponse).optString("result")
+            }.getOrNull().takeIf { !it.isNullOrEmpty() } ?: return
 
-        val base = vidlink
+            val base = vidlink
 
-        val headers = mapOf(
-            "User-Agent" to USER_AGENT,
-            "Connection" to "keep-alive",
-            "Referer" to "$base/",
-            "Origin" to base
-        )
+            val headers = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Connection" to "keep-alive",
+                "Referer" to "$base/",
+                "Origin" to base
+            )
 
-        val apiUrl = if (season == null) {
-            "$base/api/b/movie/$encData"
-        } else {
-            if (episode == null) return
-            "$base/api/b/tv/$encData/$season/$episode"
-        }
-
-        val epResponse = runCatching {
-            app.get(apiUrl, headers = headers, timeout = 10L).text
-        }.getOrNull() ?: return
-
-        val data = runCatching {
-            Gson().fromJson(epResponse, VidlinkResponse::class.java)
-        }.getOrNull() ?: return
-
-        val stream = data.stream ?: return
-
-        // 1. Parse captions / subtitles
-        stream.captions?.forEach { caption ->
-            val subUrl = caption.url
-            if (!subUrl.isNullOrBlank()) {
-                val lang = caption.language ?: "English"
-                subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+            val apiUrl = if (season == null) {
+                "$base/api/b/movie/$encData"
+            } else {
+                if (episode == null) return
+                "$base/api/b/tv/$encData/$season/$episode"
             }
-        }
 
-        // 2. Parse playlist (HLS m3u8)
-        val m3u8 = stream.playlist
-        if (!m3u8.isNullOrBlank()) {
-            val headersJson = Regex("""[?&]headers=([^&]+)""")
-                .find(m3u8)?.groupValues?.get(1)
-                ?.let { URLDecoder.decode(it, "UTF-8") }
+            val epResponse = runCatching {
+                app.get(apiUrl, headers = headers, timeout = 6L).text
+            }.getOrNull() ?: return
 
-            var referer = "$base/"
-            var origin  = base
+            val data = runCatching {
+                Gson().fromJson(epResponse, VidlinkResponse::class.java)
+            }.getOrNull() ?: return
 
-            if (!headersJson.isNullOrBlank()) {
-                runCatching {
-                    val obj = Gson().fromJson(headersJson, JsonObject::class.java)
-                    obj["referer"]?.asString?.let { referer = it }
-                    obj["origin"]?.asString?.let  { origin  = it }
+            val stream = data.stream ?: return
+
+            // 1. Parse captions / subtitles
+            stream.captions?.forEach { caption ->
+                val subUrl = caption?.url
+                if (!subUrl.isNullOrBlank()) {
+                    val lang = caption.language ?: "English"
+                    subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
                 }
             }
-            val m3u8url = m3u8.substringBefore("?")
-            headersJson?.toJson()?.let { Log.d("Phisher", m3u8url) }
-            generateM3u8(
-                "Vidlink",
-                m3u8url,
-                referer = referer,
-                headers = mapOf(
-                    "Origin"  to vidlink,
-                    "Referer" to "$vidlink/"
-                )
-            ).forEach(callback)
-        }
 
-        // 3. Parse direct MP4 stream qualities
-        stream.qualities?.forEach { (qualityKey, qualityObj) ->
-            val videoUrl = qualityObj.url
-            if (!videoUrl.isNullOrBlank()) {
-                val qual = getQualityFromName(qualityKey)
-                val isHakuna = videoUrl.contains("hakunaymatata", ignoreCase = true)
-                val qualHeaders = (qualityObj.headers ?: emptyMap()).toMutableMap()
-                if (isHakuna) {
-                    qualHeaders.remove("Referer")
-                    qualHeaders.remove("Origin")
-                    qualHeaders.remove("referer")
-                    qualHeaders.remove("origin")
-                    if (!qualHeaders.keys.any { it.equals("User-Agent", ignoreCase = true) }) {
-                        qualHeaders["User-Agent"] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+            // 2. Parse playlist (HLS m3u8)
+            val m3u8 = stream.playlist
+            if (!m3u8.isNullOrBlank()) {
+                val isHakuna = m3u8.contains("hakunaymatata", ignoreCase = true)
+                var referer = if (isHakuna) "" else "$base/"
+                var origin = if (isHakuna) "" else base
+
+                val headersJson = Regex("""[?&]headers=([^&]+)""")
+                    .find(m3u8)?.groupValues?.get(1)
+                    ?.let { URLDecoder.decode(it, "UTF-8") }
+
+                if (!headersJson.isNullOrBlank() && !isHakuna) {
+                    runCatching {
+                        val obj = Gson().fromJson(headersJson, JsonObject::class.java)
+                        obj["referer"]?.asString?.let { referer = it }
+                        obj["origin"]?.asString?.let { origin = it }
                     }
-                    if (!qualHeaders.keys.any { it.equals("Accept", ignoreCase = true) }) {
-                        qualHeaders["Accept"] = "*/*"
-                    }
+                }
+
+                // Preserve all CDN tokens and query params while stripping only embed wrapper headers param
+                val cleanM3u8Url = if (m3u8.contains("headers=")) {
+                    m3u8.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
                 } else {
-                    if (!qualHeaders.keys.any { it.equals("Origin", ignoreCase = true) }) qualHeaders["Origin"] = base
-                    if (!qualHeaders.keys.any { it.equals("Referer", ignoreCase = true) }) qualHeaders["Referer"] = "$base/"
-                    if (!qualHeaders.keys.any { it.equals("User-Agent", ignoreCase = true) }) qualHeaders["User-Agent"] = USER_AGENT
+                    m3u8
                 }
-                callback(
-                    newExtractorLink(
+
+                val hlsHeaders = if (isHakuna) {
+                    mutableMapOf(
+                        "User-Agent" to "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)",
+                        "Accept" to "*/*"
+                    )
+                } else {
+                    mutableMapOf(
+                        "Origin" to origin,
+                        "Referer" to referer,
+                        "User-Agent" to USER_AGENT
+                    )
+                }
+
+                runCatching {
+                    val generatedLinks = generateM3u8(
                         "Vidlink",
-                        "Vidlink $qualityKey",
-                        url = videoUrl,
-                        type = INFER_TYPE
-                    ) {
-                        this.referer = if (isHakuna) "" else "$base/"
-                        this.quality = qual
-                        this.headers = qualHeaders
+                        cleanM3u8Url,
+                        referer = if (isHakuna) "" else referer,
+                        headers = hlsHeaders
+                    )
+                    if (generatedLinks.isNotEmpty()) {
+                        generatedLinks.forEach { genLink ->
+                            val finalHeaders = genLink.headers.toMutableMap()
+                            val isGenHakuna = isHakuna || genLink.url.contains("hakunaymatata", ignoreCase = true)
+                            if (isGenHakuna) {
+                                finalHeaders.entries.removeIf {
+                                    it.key.equals("Referer", ignoreCase = true) || it.key.equals("Origin", ignoreCase = true)
+                                }
+                                finalHeaders["User-Agent"] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                                finalHeaders["Accept"] = "*/*"
+                                callback(
+                                    newExtractorLink(
+                                        genLink.source,
+                                        genLink.name,
+                                        genLink.url,
+                                        genLink.type
+                                    ) {
+                                        this.referer = ""
+                                        this.quality = genLink.quality
+                                        this.headers = finalHeaders
+                                    }
+                                )
+                            } else {
+                                callback(genLink)
+                            }
+                        }
+                    } else {
+                        // Empty playlist from generator, emit direct M3U8 link
+                        callback(
+                            newExtractorLink(
+                                "Vidlink",
+                                "Vidlink HLS",
+                                url = cleanM3u8Url,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = if (isHakuna) "" else referer
+                                this.quality = Qualities.P1080.value
+                                this.headers = hlsHeaders
+                            }
+                        )
                     }
-                )
+                }.onFailure { err ->
+                    Log.w("Vidlink", "generateM3u8 failed for $cleanM3u8Url: ${err.message}")
+                    callback(
+                        newExtractorLink(
+                            "Vidlink",
+                            "Vidlink HLS",
+                            url = cleanM3u8Url,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = if (isHakuna) "" else referer
+                            this.quality = Qualities.P1080.value
+                            this.headers = hlsHeaders
+                        }
+                    )
+                }
             }
+
+            // 3. Parse direct MP4 stream qualities (1080p, 720p, 480p)
+            stream.qualities?.forEach { (qualityKey, qualityObj) ->
+                val videoUrl = qualityObj?.url
+                if (!videoUrl.isNullOrBlank()) {
+                    val qual = getQualityFromName(qualityKey)
+                    val isHakuna = videoUrl.contains("hakunaymatata", ignoreCase = true)
+                    val qualHeaders = (qualityObj.headers ?: emptyMap()).toMutableMap()
+                    if (isHakuna) {
+                        qualHeaders.entries.removeIf {
+                            it.key.equals("Referer", ignoreCase = true) || it.key.equals("Origin", ignoreCase = true)
+                        }
+                        qualHeaders["User-Agent"] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                        qualHeaders["Accept"] = "*/*"
+                    } else {
+                        if (!qualHeaders.keys.any { it.equals("Origin", ignoreCase = true) }) qualHeaders["Origin"] = base
+                        if (!qualHeaders.keys.any { it.equals("Referer", ignoreCase = true) }) qualHeaders["Referer"] = "$base/"
+                        if (!qualHeaders.keys.any { it.equals("User-Agent", ignoreCase = true) }) qualHeaders["User-Agent"] = USER_AGENT
+                    }
+                    callback(
+                        newExtractorLink(
+                            "Vidlink",
+                            "Vidlink $qualityKey",
+                            url = videoUrl,
+                            type = if (videoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = if (isHakuna) "" else "$base/"
+                            this.quality = qual
+                            this.headers = qualHeaders
+                        }
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidlink failed: ${e.message}")
         }
     }
 

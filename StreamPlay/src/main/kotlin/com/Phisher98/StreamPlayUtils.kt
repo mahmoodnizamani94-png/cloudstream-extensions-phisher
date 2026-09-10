@@ -29,8 +29,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.RequestBodyTypes
 import com.phisher98.StreamPlay.Companion.anilistAPI
-import com.phisher98.StreamPlay.Companion.fourthAPI
-import com.phisher98.StreamPlay.Companion.thrirdAPI
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -552,99 +550,6 @@ object CryptoJS {
     private fun generateSalt(length: Int): ByteArray {
         return ByteArray(length).apply {
             SecureRandom().nextBytes(this)
-        }
-    }
-}
-
-
-suspend fun invokeExternalSource(
-    mediaId: Int? = null,
-    type: Int? = null,
-    season: Int? = null,
-    episode: Int? = null,
-    callback: (ExtractorLink) -> Unit,
-    token: String? = null,
-) {
-    val thirdAPI = thrirdAPI
-    val fourthAPI = fourthAPI
-    val (seasonSlug, episodeSlug) = getEpisodeSlug(season, episode)
-    val headers = mapOf("Accept-Language" to "en")
-    val shareKey =
-        app.get("$fourthAPI/index/share_link?id=${mediaId}&type=$type", headers = headers)
-            .parsedSafe<ER>()?.data?.link?.substringAfterLast("/") ?: return
-
-    val shareRes = app.get("$thirdAPI/file/file_share_list?share_key=$shareKey", headers = headers)
-        .parsedSafe<ExternalResponse>()?.data ?: return
-
-    val fids = if (season == null) {
-        shareRes.fileList
-    } else {
-        shareRes.fileList?.find {
-            it.fileName.equals(
-                "season $season",
-                true
-            )
-        }?.fid?.let { parentId ->
-            app.get(
-                "$thirdAPI/file/file_share_list?share_key=$shareKey&parent_id=$parentId&page=1",
-                headers = headers
-            )
-                .parsedSafe<ExternalResponse>()?.data?.fileList?.filter {
-                    it.fileName?.contains("s${seasonSlug}e${episodeSlug}", true) == true
-                }
-        }
-    } ?: return
-
-    fids.amapIndexed { index, fileList ->
-        val superToken = token ?: ""
-
-        val player = app.get(
-            "$thirdAPI/console/video_quality_list?fid=${fileList.fid}&share_key=$shareKey",
-            headers = mapOf("Cookie" to superToken)
-        ).text
-
-        val json = try {
-            JSONObject(player)
-        } catch (e: Exception) {
-            Log.e("Error:", "Invalid JSON response $e")
-            return@amapIndexed
-        }
-        val htmlContent = json.optString("html", "")
-        if (htmlContent.isEmpty()) return@amapIndexed
-
-        val sourcesWithQualities = ZeroAllocParser.extractSuperStreamQualities(htmlContent)
-
-        val sourcesJsonArray = JSONArray().apply {
-            sourcesWithQualities.forEach { item ->
-                put(JSONObject().apply {
-                    put("file", item.url)
-                    put("label", item.quality)
-                    put("type", "video/mp4")
-                    put("size", item.size)
-                })
-            }
-        }
-        val jsonObject = JSONObject().put("sources", sourcesJsonArray)
-        listOf(jsonObject.toString()).forEach {
-            val parsedSources = tryParseJson<ExternalSourcesWrapper>(it)?.sources ?: return@forEach
-            parsedSources.forEach org@{ source ->
-                val format =
-                    if (source.type == "video/mp4") ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
-                val label = if (format == ExtractorLinkType.M3U8) "Hls" else "Mp4"
-                if (!(source.label == "AUTO" || format == ExtractorLinkType.VIDEO)) return@org
-
-                callback.invoke(
-                    newExtractorLink(
-                        "⌜ SuperStream ⌟",
-                        "⌜ SuperStream ⌟ [Server ${index + 1}] ${source.size}",
-                        source.file?.replace("\\/", "/") ?: return@org,
-                        format
-                    )
-                    {
-                        this.quality = getIndexQuality(if (format == ExtractorLinkType.M3U8) fileList.fileName else source.label)
-                    }
-                )
-            }
         }
     }
 }

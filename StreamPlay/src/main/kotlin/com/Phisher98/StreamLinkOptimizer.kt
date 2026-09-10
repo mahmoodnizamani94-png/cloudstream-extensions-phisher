@@ -412,15 +412,12 @@ object StreamLinkOptimizer {
         // 7. Host-specific download optimizations and Referer / Origin handling
         val lowerUrl = url.lowercase(Locale.ROOT)
         when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata.com") -> {
-                // PixelDrain & Hakunaymatata direct downloads must NOT send third-party or arbitrary referers
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata") -> {
+                // PixelDrain & Hakunaymatata direct downloads must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
-                if (lowerUrl.contains("hakunaymatata.com")) {
-                    val currentUa = headers.entries.firstOrNull { it.key.equals(HEADER_USER_AGENT, ignoreCase = true) }?.value
-                    if (currentUa == null || currentUa.contains("Mozilla", ignoreCase = true)) {
-                        headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
-                    }
+                if (lowerUrl.contains("hakunaymatata")) {
+                    headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                     headers[HEADER_ACCEPT] = "*/*"
                 }
             }
@@ -531,9 +528,9 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://vidlink.pro/"
                 headers[HEADER_ORIGIN] = "https://vidlink.pro"
             }
-            lowerUrl.contains("vidfast.pro") -> {
-                headers[HEADER_REFERER] = "https://vidfast.pro/"
-                headers[HEADER_ORIGIN] = "https://vidfast.pro"
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> {
+                headers[HEADER_REFERER] = "https://vidfast.vc/"
+                headers[HEADER_ORIGIN] = "https://vidfast.vc"
             }
             else -> {
                 val effectiveReferer = when {
@@ -567,8 +564,8 @@ object StreamLinkOptimizer {
     fun getEffectiveReferer(url: String, referer: String?, headers: Map<String, String>): String {
         val lowerUrl = url.lowercase(Locale.ROOT)
         return when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata.com") -> ""
-            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> "https://vidfast.pro/"
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata") -> ""
+            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> "https://vidfast.vc/"
             headers.containsKey(HEADER_REFERER) -> headers[HEADER_REFERER] ?: ""
             lowerUrl.contains("gofile.io") -> "https://gofile.io/"
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"
@@ -584,12 +581,11 @@ object StreamLinkOptimizer {
             STREAMWISH_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamwish.to/"
             VOE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://voe.sx/"
             MP4UPLOAD_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://www.mp4upload.com/"
-            lowerUrl.contains("febbox.com") -> "https://www.febbox.com/"
             lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> "https://player.autoembed.cc/"
             lowerUrl.contains("embed.su") -> "https://embed.su/"
             lowerUrl.contains("hexa.su") -> "https://hexa.su/"
             lowerUrl.contains("vidlink.pro") -> "https://vidlink.pro/"
-            lowerUrl.contains("vidfast.pro") -> "https://vidfast.pro/"
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> "https://vidfast.vc/"
             !referer.isNullOrBlank() -> referer
             else -> getHostUrl(url) ?: ""
         }
@@ -1079,7 +1075,7 @@ object StreamLinkOptimizer {
      * 2. Higher resolution quality
      * 3. Direct endpoint rewrites
      * 4. Video source and HDR/codec score
-     * 5. Top-tier source priority rank (superstream > vidlink > HexaSU > vidfast > autoembed > VidEasy)
+     * 5. Top-tier source priority rank (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy > Secondary)
      * 6. Audio format and channel score
      * 7. Anti-throttling header completeness
      */
@@ -1102,7 +1098,7 @@ object StreamLinkOptimizer {
         }
 
         // 3. Top-Tier Source Priority Rank (Download and streaming reliability hierarchy)
-        // SuperStream (60) > Vidlink (50) > HexaSU/EmbedSU (40) > VidFast (30) > AutoEmbed (20) > VidEasy (10) > Secondary (0)
+        // VidLink (100) > HexaSU (90) > AutoEmbed (80) > VidFast (70) > VidEasy (60) > Secondary (< 60)
         val sourceRank1 = getSourcePriorityRank(candidate)
         val sourceRank2 = getSourcePriorityRank(current)
         if (sourceRank1 != sourceRank2) {
@@ -1148,27 +1144,34 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Definitive top-tier source priority ranking (§R1/R4):
-     * 1. SuperStream (Direct Febbox CDN MP4s with native Range-request chunking)
-     * 2. Vidlink (api.vidlink.pro fast HLS/m3u8 REST resolver)
-     * 3. HexaSU / embed.su (multi-cluster HLS resolver)
-     * 4. VidFast (vidfast.pro direct embed stream)
-     * 5. AutoEmbed (autoembed.cc direct embed stream)
-     * 6. VidEasy (multi-host aggregator for catalog depth)
+     * Definitive top-tier zero-setup source priority ranking:
+     * 1. VidLink (api.vidlink.pro fast HLS/m3u8 & direct Cronet CDN streams) -> 100
+     * 2. HexaSU / embed.su (multi-cluster HLS resolver) -> 90
+     * 3. AutoEmbed (player.autoembed.cc high reliability HLS/MP4 streams) -> 80
+     * 4. VidFast (vidfast.vc stream resolver) -> 70
+     * 5. VidEasy (api.videasy.net multi-server resolver) -> 60
+     * Secondary scrapers:
+     * 6. MovieBox (strict fallback) -> 50
+     * 7. RiveStream (strict fallback) -> 40
+     * 8. Vidrock (strict fallback) -> 30
+     * 9. MoviesAPI (strict fallback) -> 20
      */
     fun getSourcePriorityRank(link: ExtractorLink): Int {
         val s = link.source.lowercase(Locale.ROOT)
         val n = link.name.lowercase(Locale.ROOT)
         val u = link.url.lowercase(Locale.ROOT)
         return when {
-            s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") -> 60
+            s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
             s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") ||
                 n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") ||
-                u.contains("hexa.su") || u.contains("embed.su") -> 50
-            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") -> 40
-            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 30
-            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 20
-            s.contains("superstream") || n.contains("superstream") || u.contains("febbox.com") || u.contains("febbox") -> 10
+                u.contains("hexa.su") || u.contains("embed.su") -> 90
+            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 80
+            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") -> 70
+            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 60
+            s.contains("moviebox") || n.contains("moviebox") -> 50
+            s.contains("rivestream") || n.contains("rivestream") -> 40
+            s.contains("vidrock") || n.contains("vidrock") -> 30
+            s.contains("moviesapi") || n.contains("moviesapi") -> 20
             else -> 0
         }
     }

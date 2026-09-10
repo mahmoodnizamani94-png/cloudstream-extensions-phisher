@@ -119,9 +119,7 @@ class MainSettingsFragment(
             }
         }
 
-        loginRow.setOnClickListener {
-            showSubFragment({ cb -> SettingsFragment(plugin, sharedPref, cb) }, "settings_fragment")
-        }
+        loginRow.visibility = View.GONE
 
         wyzieRow.setOnClickListener {
             showSubFragment({ cb -> WyzieSettingsFragment(plugin, sharedPref, cb) }, "wyzie_settings_fragment")

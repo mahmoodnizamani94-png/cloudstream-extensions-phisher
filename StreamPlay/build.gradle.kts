@@ -2,7 +2,7 @@
 
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 657
+version = 659
 
 android {
     buildFeatures {
@@ -23,9 +23,6 @@ android {
         buildConfigField("String", "ANICHI_API", "\"${properties.getProperty("ANICHI_API")}\"")
         buildConfigField("String", "KissKh", "\"${properties.getProperty("KissKh")}\"")
         buildConfigField("String", "KisskhSub", "\"${properties.getProperty("KisskhSub")}\"")
-        buildConfigField("String", "SUPERSTREAM_THIRD_API", "\"${properties.getProperty("SUPERSTREAM_THIRD_API")}\"")
-        buildConfigField("String", "SUPERSTREAM_FOURTH_API", "\"${properties.getProperty("SUPERSTREAM_FOURTH_API")}\"")
-        buildConfigField("String", "SUPERSTREAM_FIRST_API", "\"${properties.getProperty("SUPERSTREAM_FIRST_API")}\"")
         buildConfigField("String", "PROXYAPI", "\"${properties.getProperty("PROXYAPI")}\"")
         buildConfigField("String", "KAISVA", "\"${properties.getProperty("KAISVA")}\"")
         buildConfigField("String", "MOVIEBOX_SECRET_KEY_ALT", "\"${properties.getProperty("MOVIEBOX_SECRET_KEY_ALT")}\"")

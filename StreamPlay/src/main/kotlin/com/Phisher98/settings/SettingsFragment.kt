@@ -92,8 +92,7 @@ class SettingsFragment(
         setupWebView(webView)
 
         loginButton.setOnClickListener {
-            webView.visibility = View.VISIBLE
-            webView.loadUrl("https://www.febbox.com/login/google?jump=%2F")
+            showToast("Febbox login is now managed via the standalone SuperStream plugin.")
         }
 
         addButton.setOnClickListener {

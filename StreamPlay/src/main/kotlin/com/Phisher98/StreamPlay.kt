@@ -97,28 +97,31 @@ private val NON_ANIME_PROVIDERS = setOf(
 )
 
 internal val FAST_PROVIDER_BOOST = mapOf(
-    "vidlink" to 70f,
-    "Vidlink" to 70f,
-    "HexaSU" to 65f,
-    "hexasu" to 65f,
-    "embedsu" to 65f,
-    "embed.su" to 65f,
-    "vidfast" to 60f,
-    "VidFast" to 60f,
-    "autoembed" to 55f,
-    "AutoEmbed" to 55f,
-    "VidEasy" to 50f,
-    "videasy" to 50f,
-    "superstream" to 20f,
-    "SuperStream" to 20f,
-    "WyZIESUB" to 40f,
-    "SubtitleAPI" to 40f,
-    "vidsrcxyz" to 18f,
-    "rivestream" to 15f,
-    "moviesapi" to 12f,
-    "moviebox" to 10f,
-    "vidzeeapi" to 8f,
-    "2Embed" to 5f
+    "vidlink" to 100f,
+    "Vidlink" to 100f,
+    "HexaSU" to 90f,
+    "hexasu" to 90f,
+    "embedsu" to 90f,
+    "embed.su" to 90f,
+    "autoembed" to 80f,
+    "AutoEmbed" to 80f,
+    "vidfast" to 70f,
+    "VidFast" to 70f,
+    "VidEasy" to 60f,
+    "videasy" to 60f,
+    "WyZIESUB" to 50f,
+    "SubtitleAPI" to 50f,
+    "moviebox" to 40f,
+    "MovieBox" to 40f,
+    "rivestream" to 35f,
+    "RiveStream" to 35f,
+    "vidrock" to 30f,
+    "Vidrock" to 30f,
+    "moviesapi" to 25f,
+    "MoviesApi" to 25f,
+    "vidsrcxyz" to 20f,
+    "vidzeeapi" to 15f,
+    "2Embed" to 10f
 )
 
 open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
@@ -349,9 +352,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val WyZIESUBAPI = "https://sub.wyzie.ru"
         const val WYZIESubsAPI = "https://sub.wyzie.ru"
         const val RiveStreamAPI = "https://www.rivestream.app"
-        const val thrirdAPI = BuildConfig.SUPERSTREAM_THIRD_API
-        const val fourthAPI = BuildConfig.SUPERSTREAM_FOURTH_API
-        const val NuvFeb = BuildConfig.NuvFeb
         const val KickassAPI = "https://kaa.lt"
         const val Vidsrcxyz = "https://vidsrc-embed.su"
         const val movieBox= "https://api.inmoviebox.com"
@@ -854,7 +854,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             return when {
                 id in ANIME_ONLY_PROVIDERS -> res.isAnime
                 id in NON_ANIME_PROVIDERS -> !res.isAnime
-                id == "superstream" -> res.imdbId != null && authToken.isNotEmpty() && (!res.isAnime || !res.isDub)
                 id == "Rogmovies" -> res.isBollywood
                 id == "vegamovies" -> !res.isBollywood
                 id == "Filmyfiy" -> !res.isAnime && res.season == null
@@ -864,7 +863,15 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val applicableProviders = activeProviders.filter { it.isApplicableTo(res) }
 
-        val prioritizedProviders = applicableProviders.sortedByDescending { provider ->
+        val primaryTopTierIds = DEFAULT_TOP_TIER_PROVIDERS
+
+        val (primaryProviders, fallbackProviders) = applicableProviders.partition { provider ->
+            provider.id in primaryTopTierIds ||
+                provider.kind == ProviderKind.SUBTITLE ||
+                (res.isAnime && provider.id in ANIME_ONLY_PROVIDERS)
+        }
+
+        val prioritizedPrimary = primaryProviders.sortedByDescending { provider ->
             StreamPlayCache.getProviderPriorityScore(provider.id) + (FAST_PROVIDER_BOOST[provider.id] ?: 0f)
         }
 
@@ -946,17 +953,15 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             { link -> emitLink(link) }
         )
 
-        if (prioritizedProviders.isEmpty() && stremioAddons.isEmpty()) {
+        if (prioritizedPrimary.isEmpty() && stremioAddons.isEmpty() && fallbackProviders.isEmpty()) {
             Log.w(TAG, "No StreamPlay sources enabled or applicable for this title")
             return@coroutineScope false
         }
 
-        val totalProviders = prioritizedProviders.size + stremioAddons.size
-        Log.d(TAG, "🚀 Starting $totalProviders providers with SpeculativePipeliner (concurrency: $concurrency)")
-
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        val tasks = prioritizedProviders.map { provider ->
+        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > MovieBox > RiveStream > Vidrock > HexaSU)
+        val primaryTasks = prioritizedPrimary.map { provider ->
             val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                 .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }
             PipelinedTask(
@@ -983,16 +988,54 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
         }
 
-        SpeculativePipeliner.executePipelined(
-            tasks = tasks,
-            config = earlySatisfactionConfig,
-            controller = earlyController,
-            maxConcurrencyOverride = concurrency
-        )
+        if (primaryTasks.isNotEmpty()) {
+            Log.d(TAG, "🚀 Starting ${primaryTasks.size} primary providers with SpeculativePipeliner (concurrency: $concurrency)")
+            SpeculativePipeliner.executePipelined(
+                tasks = primaryTasks,
+                config = earlySatisfactionConfig,
+                controller = earlyController,
+                maxConcurrencyOverride = concurrency
+            )
+        }
+
+        // Phase 2: Secondary / legacy fallback sources only invoked when all primary sources yield zero usable streams
+        val primaryLinksFound = linksFound.get()
+        if (primaryLinksFound == 0 && fallbackProviders.isNotEmpty()) {
+            Log.d(TAG, "⚠️ All primary sources yielded zero usable streams. Invoking ${fallbackProviders.size} strict fallback providers.")
+            val prioritizedFallback = fallbackProviders.sortedByDescending { provider ->
+                StreamPlayCache.getProviderPriorityScore(provider.id) + (FAST_PROVIDER_BOOST[provider.id] ?: 0f)
+            }
+            val fallbackTasks = prioritizedFallback.map { provider ->
+                val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
+                    .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }
+                PipelinedTask(
+                    providerId = provider.id,
+                    isVideo = provider.kind != ProviderKind.SUBTITLE,
+                    taskTimeoutMs = providerTimeout,
+                    priorityBoost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+                ) {
+                    provider.invoke(
+                        res,
+                        { subtitle -> emitSubtitle(subtitle) },
+                        { link -> emitLink(link) },
+                        authToken,
+                        dahmerMoviesAPI
+                    )
+                }
+            }
+            SpeculativePipeliner.executePipelined(
+                tasks = fallbackTasks,
+                config = earlySatisfactionConfig,
+                controller = earlyController,
+                maxConcurrencyOverride = concurrency
+            )
+        } else if (primaryLinksFound > 0) {
+            Log.d(TAG, "🎯 Primary sources successfully resolved $primaryLinksFound streams. Strict fallback providers skipped.")
+        }
 
         ProviderTelemetryManager.scheduleSave(sharedPref ?: companionSharedPref)
         val foundAnyResults = totalResultsFound() > 0
-        Log.d(TAG, "✅ Finished: $totalProviders providers checked, ${linksFound.get()} links and ${subtitlesFound.get()} subtitles found")
+        Log.d(TAG, "✅ Finished: checked sources, ${linksFound.get()} links and ${subtitlesFound.get()} subtitles found")
         foundAnyResults
     }
 

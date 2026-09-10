@@ -43,7 +43,6 @@ import com.phisher98.StreamPlayExtractor.invokeReAnime
 import com.phisher98.StreamPlayExtractor.invokeRiveStream
 import com.phisher98.StreamPlayExtractor.invokeRogmovies
 import com.phisher98.StreamPlayExtractor.invokeSubtitleAPI
-import com.phisher98.StreamPlayExtractor.invokeSuperstream
 import com.phisher98.StreamPlayExtractor.invokeTokyoInsider
 import com.phisher98.StreamPlayExtractor.invokeTopMovies
 import com.phisher98.StreamPlayExtractor.invokeUhdmovies
@@ -254,22 +253,6 @@ private val providers by lazy {
         Provider("moviesdrive", "MoviesDrive") { res, subtitleCallback, callback, _, _ ->
             invokeMoviesdrive(res.imdbId, res.season, res.episode, subtitleCallback, callback)
         },
-        Provider("superstream", "SuperStream") { res, _, callback, token, _ ->
-            val status = getDubStatus(res)
-            val isAnime = res.isAnime
-            if (isAnime && status != "SUB") return@Provider
-
-            if (res.imdbId != null && token.isNotEmpty()) {
-                invokeSuperstream(
-                    token,
-                    res.imdbId,
-                    res.id,
-                    res.season,
-                    res.episode,
-                    callback
-                )
-            }
-        },
         Provider("vidsrcxyz", "VidSrcXyz") { res, _, callback, _, _ ->
             if (!res.isAnime) invokeVidSrcXyz(res.imdbId, res.season, res.episode, callback)
         },
@@ -369,11 +352,10 @@ private val providers by lazy {
 }
 
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
-    "superstream",
     "vidlink",
     "HexaSU",
-    "vidfast",
     "autoembed",
+    "vidfast",
     "VidEasy"
 )
 
@@ -382,28 +364,30 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v2_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v5_initialized"
 
 /**
- * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS with all other sources disabled,
- * and seamlessly migrates upgrading users so newly promoted top-tier sources (such as AutoEmbed)
- * are enabled without overwriting custom user selections.
+ * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy)
+ * with all secondary sources disabled by default, and seamlessly migrates upgrading users so newly
+ * promoted primary sources are enabled while SuperStream is completely purged and disabled.
  */
 fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
     if (sharedPref == null) return getDefaultDisabledProviderIds()
 
-    val isTopTierV2Initialized = sharedPref.getBoolean(PREFS_TOP_TIER_INITIALIZED, false)
-    if (!isTopTierV2Initialized) {
+    val isTopTierInitialized = sharedPref.getBoolean(PREFS_TOP_TIER_INITIALIZED, false)
+    if (!isTopTierInitialized) {
         val defaultDisabled = getDefaultDisabledProviderIds()
         val existingDisabled = sharedPref.getStringSet("disabled_providers", null)
         val finalDisabled = if (existingDisabled.isNullOrEmpty()) {
             defaultDisabled
         } else {
-            (existingDisabled + defaultDisabled) - DEFAULT_TOP_TIER_PROVIDERS
+            ((existingDisabled + defaultDisabled) - DEFAULT_TOP_TIER_PROVIDERS) + "superstream"
         }
         sharedPref.edit {
             putStringSet("disabled_providers", finalDisabled)
             putBoolean("streamplay_top5_defaults_initialized", true)
+            putBoolean("streamplay_top_tier_v2_initialized", true)
+            putBoolean("streamplay_top_tier_v4_initialized", true)
             putBoolean(PREFS_TOP_TIER_INITIALIZED, true)
         }
         Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")

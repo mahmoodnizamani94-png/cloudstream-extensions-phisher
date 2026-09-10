@@ -199,8 +199,8 @@ class EarlySatisfactionTest {
         val config = EarlySatisfactionConfig(minQualityStreams = 1)
         val controller = EarlySatisfactionController(config)
 
-        val febboxLink = createLink("Febbox Direct", Qualities.P720.value, "https://febbox.com/file/direct.mp4")
-        assertTrue("Febbox at 720p+ qualifies as verified fast stream", controller.isHighQualityVerifiedStream(febboxLink))
+        val debridLink = createLink("Real-Debrid Direct", Qualities.P720.value, "https://real-debrid.com/file/direct.mp4")
+        assertTrue("Real-Debrid at 720p+ qualifies as verified fast stream", controller.isHighQualityVerifiedStream(debridLink))
 
         val pixelDrainLink = createLink("PixelDrain Direct", Qualities.P720.value, "https://pixeldrain.com/api/file/xyz")
         assertTrue("PixelDrain at 720p+ qualifies as verified fast stream", controller.isHighQualityVerifiedStream(pixelDrainLink))
