@@ -291,6 +291,58 @@ class StreamPlayTopTierSourceHierarchyTest {
     }
 
     @Test
+    fun testVidfastCdnPeakstormAndHypergateHeaders() {
+        for (host in listOf("https://stream.peakstorm.top/stream.m3u8", "https://cdn.hypergate.top/stream.m3u8")) {
+            val effectiveReferer = StreamLinkOptimizer.getEffectiveReferer(host, "", emptyMap())
+            assertEquals("https://vidfast.vc/", effectiveReferer)
+
+            val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), host, "")
+            assertEquals("https://vidfast.vc/", downloadHeaders["Referer"])
+            assertEquals("https://vidfast.vc", downloadHeaders["Origin"])
+
+            val link = createLink("UnknownSource", "Stream 1080p", host, type = ExtractorLinkType.M3U8)
+            assertEquals("Peakstorm/Hypergate streams must be recognized as VidFast tier (70)", 70, StreamLinkOptimizer.getSourcePriorityRank(link))
+        }
+    }
+
+    @Test
+    fun testVidlinkDirectMp4StrippingVidlinkProReferer() {
+        val directMp4Url = "https://sub.hakunaymatata.com/video.mp4"
+        val headersWithVidlinkPro = mapOf(
+            "Referer" to "https://vidlink.pro/",
+            "Origin" to "https://vidlink.pro",
+            "User-Agent" to "Desktop Browser UA"
+        )
+
+        val effectiveReferer = StreamLinkOptimizer.getEffectiveReferer(directMp4Url, "https://vidlink.pro/", headersWithVidlinkPro)
+        assertEquals("Referer for direct Hakunaymatata MP4 must be empty", "", effectiveReferer)
+
+        val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(headersWithVidlinkPro, directMp4Url, "https://vidlink.pro/", ExtractorLinkType.VIDEO)
+        assertTrue("Must inject mobile Cronet User-Agent", downloadHeaders["User-Agent"]?.contains("Cronet") == true)
+        assertEquals("*/*", downloadHeaders["Accept"])
+        assertFalse("Referer pointing to vidlink.pro must be stripped", downloadHeaders.containsKey("Referer"))
+        assertFalse("Origin pointing to vidlink.pro must be stripped", downloadHeaders.containsKey("Origin"))
+    }
+
+    @Test
+    fun testEarlySatisfactionControllerTracksMaxEmittedPriority() {
+        val config = EarlySatisfactionConfig()
+        val controller = EarlySatisfactionController(config)
+        assertEquals(0f, controller.getMaxEmittedPriority(), 0.001f)
+
+        val vidfastLink = createLink("VidFast", "VidFast [1080p]", "https://vidfast.vc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        controller.onLinkEmitted(vidfastLink)
+        assertEquals(70f, controller.getMaxEmittedPriority(), 0.001f)
+
+        val vidlinkLink = createLink("Vidlink", "Vidlink [1080p]", "https://hakunaymatata.com/stream.mp4", type = ExtractorLinkType.VIDEO)
+        controller.onLinkEmitted(vidlinkLink)
+        assertEquals(100f, controller.getMaxEmittedPriority(), 0.001f)
+
+        controller.reset()
+        assertEquals(0f, controller.getMaxEmittedPriority(), 0.001f)
+    }
+
+    @Test
     fun testDomainConstantsAreDefined() {
         assertEquals("https://theemoviedb.hexa.su", StreamPlay.hexaSU)
         assertEquals("https://embed.su", StreamPlay.embedSU)

@@ -412,18 +412,22 @@ object StreamLinkOptimizer {
         // 7. Host-specific download optimizations and Referer / Origin handling
         val lowerUrl = url.lowercase(Locale.ROOT)
         when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata") -> {
-                // PixelDrain & Hakunaymatata direct downloads must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
+            lowerUrl.contains("hakunaymatata") ||
+            ((linkType == ExtractorLinkType.VIDEO || lowerUrl.endsWith(".mp4") || lowerUrl.contains(".mp4?")) &&
+                (headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true || headers[HEADER_ORIGIN]?.contains("vidlink.pro", ignoreCase = true) == true)) -> {
+                // PixelDrain & Hakunaymatata/VidLink direct downloads must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
-                if (lowerUrl.contains("hakunaymatata")) {
+                if (lowerUrl.contains("hakunaymatata") || linkType == ExtractorLinkType.VIDEO || lowerUrl.contains(".mp4")) {
                     headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                     headers[HEADER_ACCEPT] = "*/*"
                 }
             }
-            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> {
-                headers[HEADER_REFERER] = "https://vidfast.pro/"
-                headers[HEADER_ORIGIN] = "https://vidfast.pro"
+            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> {
+                headers[HEADER_REFERER] = "https://vidfast.vc/"
+                headers[HEADER_ORIGIN] = "https://vidfast.vc"
             }
             lowerUrl.contains("gofile.io") -> {
                 headers[HEADER_REFERER] = "https://gofile.io/"
@@ -528,10 +532,6 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://vidlink.pro/"
                 headers[HEADER_ORIGIN] = "https://vidlink.pro"
             }
-            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> {
-                headers[HEADER_REFERER] = "https://vidfast.vc/"
-                headers[HEADER_ORIGIN] = "https://vidfast.vc"
-            }
             else -> {
                 val effectiveReferer = when {
                     !referer.isNullOrBlank() -> referer
@@ -564,8 +564,11 @@ object StreamLinkOptimizer {
     fun getEffectiveReferer(url: String, referer: String?, headers: Map<String, String>): String {
         val lowerUrl = url.lowercase(Locale.ROOT)
         return when {
-            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") || lowerUrl.contains("hakunaymatata") -> ""
-            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") -> "https://vidfast.vc/"
+            lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
+            lowerUrl.contains("hakunaymatata") ||
+            ((lowerUrl.endsWith(".mp4") || lowerUrl.contains(".mp4?")) && (referer?.contains("vidlink.pro", ignoreCase = true) == true || headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true)) -> ""
+            lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
+            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> "https://vidfast.vc/"
             headers.containsKey(HEADER_REFERER) -> headers[HEADER_REFERER] ?: ""
             lowerUrl.contains("gofile.io") -> "https://gofile.io/"
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"
@@ -585,7 +588,6 @@ object StreamLinkOptimizer {
             lowerUrl.contains("embed.su") -> "https://embed.su/"
             lowerUrl.contains("hexa.su") -> "https://hexa.su/"
             lowerUrl.contains("vidlink.pro") -> "https://vidlink.pro/"
-            lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> "https://vidfast.vc/"
             !referer.isNullOrBlank() -> referer
             else -> getHostUrl(url) ?: ""
         }
@@ -1166,7 +1168,8 @@ object StreamLinkOptimizer {
                 n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") ||
                 u.contains("hexa.su") || u.contains("embed.su") -> 90
             s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 80
-            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") -> 70
+            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") ||
+                u.contains("peakstorm.top") || u.contains("hypergate.top") -> 70
             s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 60
             s.contains("moviebox") || n.contains("moviebox") -> 50
             s.contains("rivestream") || n.contains("rivestream") -> 40

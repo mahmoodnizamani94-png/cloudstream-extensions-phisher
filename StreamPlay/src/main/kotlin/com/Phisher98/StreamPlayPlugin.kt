@@ -65,7 +65,7 @@ class StreamPlayPlugin: Plugin() {
             Log.d("StreamPlay", "⚙️ Set recommended concurrency: $recommended")
         }
 
-        // Initialize top tier defaults for providers (SuperStream, VidLink, HexaSU, VidFast, AutoEmbed, VidEasy)
+        // Initialize top tier defaults for providers (VidLink, HexaSU, AutoEmbed, VidFast, VidEasy)
         getOrInitializeDisabledProviders(sharedPref)
 
         val mainApis = listOf(

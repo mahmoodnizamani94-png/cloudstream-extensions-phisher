@@ -321,4 +321,45 @@ class SpeculativePipelinerTest {
         assertTrue("Higher priority task must NOT be aborted and must finish to completion", higherPriorityFinished.get())
         assertTrue("Lower/equal priority sibling should be cancelled", lowerTierSiblingCancelled.get())
     }
+
+    @Test
+    fun testSoftGracePeriodDoesNotAbortInFlightHigherPriorityTask() = runBlocking {
+        val higherPriorityFinished = AtomicBoolean(false)
+        val lowerPriorityFinished = AtomicBoolean(false)
+
+        val config = EarlySatisfactionConfig(
+            minVerifiedLinks = 1,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            softGracePeriodAfterFirstLinkMs = 30L, // Short grace period to fire while VidLink is in flight
+            tier1DelayMs = 0L,
+            tier2DelayMs = 0L
+        )
+        val controller = EarlySatisfactionController(config)
+
+        val tasks = listOf(
+            // High priority task (VidLink - score 100) takes longer (80ms)
+            PipelinedTask("vidlink", LatencyTier.TIER_0, isVideo = true, priorityBoost = 100f) {
+                delay(80)
+                controller.onLinkEmitted(createLink("Vidlink 1080p", Qualities.P1080.value))
+                higherPriorityFinished.set(true)
+            },
+            // Lower priority task (VidFast - score 70) finishes at 10ms and satisfies controller
+            PipelinedTask("vidfast", LatencyTier.TIER_0, isVideo = true, priorityBoost = 70f) {
+                delay(10)
+                controller.onLinkEmitted(createLink("Vidfast 1080p", Qualities.P1080.value))
+                lowerPriorityFinished.set(true)
+            }
+        )
+
+        val result = SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = config,
+            controller = controller
+        )
+
+        assertTrue("Execution should return true", result)
+        assertTrue("Lower priority task should finish", lowerPriorityFinished.get())
+        assertTrue("Higher priority task must finish even after soft grace period expires", higherPriorityFinished.get())
+    }
 }

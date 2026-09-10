@@ -85,6 +85,7 @@ class EarlySatisfactionController(
     private val qualityLinksFound = AtomicInteger(0)
     private val subtitlesFound = AtomicInteger(0)
     private val satisfied = AtomicBoolean(false)
+    private val maxEmittedPriority = java.util.concurrent.atomic.AtomicReference<Float>(0f)
 
     companion object {
         private val FOUR_K_WORD_REGEX = Regex("""\b(?:4k|2160p?|uhd)\b""", RegexOption.IGNORE_CASE)
@@ -93,6 +94,8 @@ class EarlySatisfactionController(
 
     fun onLinkEmitted(link: ExtractorLink): Boolean {
         linksFound.incrementAndGet()
+        val priority = StreamLinkOptimizer.getSourcePriorityRank(link).toFloat()
+        maxEmittedPriority.accumulateAndGet(priority) { prev, cur -> maxOf(prev, cur) }
         if (isHighQualityVerifiedStream(link)) {
             qualityLinksFound.incrementAndGet()
         }
@@ -101,12 +104,16 @@ class EarlySatisfactionController(
     }
 
     fun onLinkUpgraded(link: ExtractorLink): Boolean {
+        val priority = StreamLinkOptimizer.getSourcePriorityRank(link).toFloat()
+        maxEmittedPriority.accumulateAndGet(priority) { prev, cur -> maxOf(prev, cur) }
         if (isHighQualityVerifiedStream(link)) {
             qualityLinksFound.incrementAndGet()
         }
         checkSatisfaction()
         return isSatisfied()
     }
+
+    fun getMaxEmittedPriority(): Float = maxEmittedPriority.get()
 
     fun onSubtitleEmitted(subtitle: SubtitleFile): Boolean {
         subtitlesFound.incrementAndGet()
@@ -166,6 +173,7 @@ class EarlySatisfactionController(
         qualityLinksFound.set(0)
         subtitlesFound.set(0)
         satisfied.set(false)
+        maxEmittedPriority.set(0f)
     }
 }
 
@@ -311,13 +319,17 @@ object SpeculativePipeliner {
         val trackedTasks = CopyOnWriteArrayList<TrackedTaskInfo>()
         val maxEmittedPriority = java.util.concurrent.atomic.AtomicReference<Float>(0f)
 
+        fun getMaxPriorityThreshold(): Float {
+            return maxOf(maxEmittedPriority.get(), controller.getMaxEmittedPriority())
+        }
+
         fun hasHigherPriorityInFlight(): Boolean {
-            val threshold = maxEmittedPriority.get()
+            val threshold = getMaxPriorityThreshold()
             return trackedTasks.any { it.job.isActive && it.priorityScore > threshold }
         }
 
         fun cancelLowerOrEqualPriorityJobs() {
-            val threshold = maxEmittedPriority.get()
+            val threshold = getMaxPriorityThreshold()
             for (info in trackedTasks) {
                 if (info.job.isActive && info.priorityScore <= threshold) {
                     info.job.cancel(CancellationException("Early satisfaction achieved by higher tier source"))
@@ -349,7 +361,7 @@ object SpeculativePipeliner {
             return taskList.map { task ->
                 val taskPriority = ProviderTelemetryManager.getPriorityScore(task.providerId) + task.priorityBoost
                 launch(Dispatchers.IO) {
-                    if (controller.isSatisfied() && !hasHigherPriorityInFlight()) return@launch
+                    if (controller.isSatisfied() && (!hasHigherPriorityInFlight() || taskPriority <= getMaxPriorityThreshold())) return@launch
                     if (!allBroken && !ProviderTelemetryManager.canExecute(task.providerId)) {
                         Log.d(TAG, "Circuit breaker: skipping open provider ${task.providerId}")
                         return@launch
@@ -365,7 +377,7 @@ object SpeculativePipeliner {
 
                     try {
                         semaphore.withPermit {
-                            if (controller.isSatisfied() && (!hasHigherPriorityInFlight() || taskPriority <= maxEmittedPriority.get())) {
+                            if (controller.isSatisfied() && (!hasHigherPriorityInFlight() || taskPriority <= getMaxPriorityThreshold())) {
                                 throw CancellationException("Early satisfaction achieved")
                             }
                             withTimeoutOrNull(timeout.milliseconds) {
@@ -436,8 +448,12 @@ object SpeculativePipeliner {
                     if (graceElapsed >= config.softGracePeriodAfterFirstLinkMs) {
                         Log.d(TAG, "⚡ Soft grace period (${config.softGracePeriodAfterFirstLinkMs}ms) expired after first link. Marking satisfied.")
                         controller.markSatisfied()
-                        cancelAllActiveJobs()
-                        break
+                        if (!hasHigherPriorityInFlight()) {
+                            cancelAllActiveJobs()
+                            break
+                        } else {
+                            cancelLowerOrEqualPriorityJobs()
+                        }
                     }
                 }
                 if (controller.isSatisfied()) {

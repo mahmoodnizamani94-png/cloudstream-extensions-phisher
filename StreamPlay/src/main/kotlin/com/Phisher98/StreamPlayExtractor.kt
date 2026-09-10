@@ -4128,8 +4128,9 @@ object StreamPlayExtractor : StreamPlay() {
                 if (!videoUrl.isNullOrBlank()) {
                     val qual = getQualityFromName(qualityKey)
                     val isHakuna = videoUrl.contains("hakunaymatata", ignoreCase = true)
+                    val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
                     val qualHeaders = (qualityObj.headers ?: emptyMap()).toMutableMap()
-                    if (isHakuna) {
+                    if (isHakuna || isDirectVideo) {
                         qualHeaders.entries.removeIf {
                             it.key.equals("Referer", ignoreCase = true) || it.key.equals("Origin", ignoreCase = true)
                         }
@@ -4140,14 +4141,19 @@ object StreamPlayExtractor : StreamPlay() {
                         if (!qualHeaders.keys.any { it.equals("Referer", ignoreCase = true) }) qualHeaders["Referer"] = "$base/"
                         if (!qualHeaders.keys.any { it.equals("User-Agent", ignoreCase = true) }) qualHeaders["User-Agent"] = USER_AGENT
                     }
+                    val cleanVideoUrl = if (videoUrl.contains("headers=")) {
+                        videoUrl.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
+                    } else {
+                        videoUrl
+                    }
                     callback(
                         newExtractorLink(
                             "Vidlink",
                             "Vidlink $qualityKey",
-                            url = videoUrl,
-                            type = if (videoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            url = cleanVideoUrl,
+                            type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
                         ) {
-                            this.referer = if (isHakuna) "" else "$base/"
+                            this.referer = if (isHakuna || isDirectVideo) "" else "$base/"
                             this.quality = qual
                             this.headers = qualHeaders
                         }
