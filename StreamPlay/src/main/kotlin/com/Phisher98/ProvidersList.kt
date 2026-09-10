@@ -299,8 +299,8 @@ private val providers by lazy {
         Provider("CinemaCity", "CinemaCity") { res, _, callback, _, _ ->
             invokecinemacity(res.imdbId, res.season,res.episode,  callback)
         },
-        Provider("HexaSU", "HexaSU") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeHexa(res.id, res.season, res.episode, callback)
+        Provider("HexaSU", "HexaSU") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeHexa(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("Hindmoviez", "HindMoviez") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeHindmoviez(res.imdbId, res.season, res.episode, subtitleCallback, callback)

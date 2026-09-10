@@ -362,4 +362,71 @@ class SpeculativePipelinerTest {
         assertTrue("Lower priority task should finish", lowerPriorityFinished.get())
         assertTrue("Higher priority task must finish even after soft grace period expires", higherPriorityFinished.get())
     }
+
+    @Test
+    fun testFiveTierPriorityInFlightPreservation() = runBlocking {
+        val vidlinkFinished = AtomicBoolean(false)
+        val hexasuFinished = AtomicBoolean(false)
+        val autoembedFinished = AtomicBoolean(false)
+        val vidfastFinished = AtomicBoolean(false)
+        val videasyCancelled = AtomicBoolean(false)
+
+        val config = EarlySatisfactionConfig(
+            minVerifiedLinks = 1,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            tier1DelayMs = 0L,
+            tier2DelayMs = 0L
+        )
+        val controller = EarlySatisfactionController(config)
+
+        val tasks = listOf(
+            // VidLink (100) takes 80ms
+            PipelinedTask("vidlink", LatencyTier.TIER_0, isVideo = true, priorityBoost = 100f) {
+                delay(80)
+                controller.onLinkEmitted(createLink("Vidlink [1080p]", Qualities.P1080.value))
+                vidlinkFinished.set(true)
+            },
+            // HexaSU (90) takes 60ms
+            PipelinedTask("HexaSU", LatencyTier.TIER_0, isVideo = true, priorityBoost = 90f) {
+                delay(60)
+                controller.onLinkEmitted(createLink("HexaSU [1080p]", Qualities.P1080.value))
+                hexasuFinished.set(true)
+            },
+            // AutoEmbed (80) takes 40ms
+            PipelinedTask("autoembed", LatencyTier.TIER_0, isVideo = true, priorityBoost = 80f) {
+                delay(40)
+                controller.onLinkEmitted(createLink("AutoEmbed [1080p]", Qualities.P1080.value))
+                autoembedFinished.set(true)
+            },
+            // VidFast (70) finishes early at 10ms
+            PipelinedTask("vidfast", LatencyTier.TIER_0, isVideo = true, priorityBoost = 70f) {
+                delay(10)
+                controller.onLinkEmitted(createLink("VidFast [1080p]", Qualities.P1080.value))
+                vidfastFinished.set(true)
+            },
+            // VidEasy (60) takes 120ms and should be cancelled by VidFast
+            PipelinedTask("VidEasy", LatencyTier.TIER_0, isVideo = true, priorityBoost = 60f) {
+                try {
+                    delay(120)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    videasyCancelled.set(true)
+                    throw e
+                }
+            }
+        )
+
+        val result = SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = config,
+            controller = controller
+        )
+
+        assertTrue("Pipeline must succeed", result)
+        assertTrue("VidFast must finish", vidfastFinished.get())
+        assertTrue("AutoEmbed must NOT be aborted by VidFast and must finish", autoembedFinished.get())
+        assertTrue("HexaSU must NOT be aborted by VidFast and must finish", hexasuFinished.get())
+        assertTrue("VidLink must NOT be aborted by VidFast and must finish", vidlinkFinished.get())
+        assertTrue("VidEasy (priority 60 <= 70) must be cancelled", videasyCancelled.get())
+    }
 }

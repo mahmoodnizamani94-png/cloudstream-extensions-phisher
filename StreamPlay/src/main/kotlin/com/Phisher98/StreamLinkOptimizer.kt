@@ -413,13 +413,17 @@ object StreamLinkOptimizer {
         val lowerUrl = url.lowercase(Locale.ROOT)
         when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
-            lowerUrl.contains("hakunaymatata") ||
-            ((linkType == ExtractorLinkType.VIDEO || lowerUrl.endsWith(".mp4") || lowerUrl.contains(".mp4?")) &&
-                (headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true || headers[HEADER_ORIGIN]?.contains("vidlink.pro", ignoreCase = true) == true)) -> {
-                // PixelDrain & Hakunaymatata/VidLink direct downloads must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
+            lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
+            headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true ||
+            headers[HEADER_ORIGIN]?.contains("vidlink.pro", ignoreCase = true) == true ||
+            referer?.contains("vidlink.pro", ignoreCase = true) == true -> {
+                // PixelDrain & Hakunaymatata/VidLink streams must NOT send third-party or arbitrary referers (stripping vidlink.pro / embed wrappers)
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
-                if (lowerUrl.contains("hakunaymatata") || linkType == ExtractorLinkType.VIDEO || lowerUrl.contains(".mp4")) {
+                if (lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
+                    headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true ||
+                    referer?.contains("vidlink.pro", ignoreCase = true) == true ||
+                    linkType == ExtractorLinkType.VIDEO || lowerUrl.contains(".mp4")) {
                     headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                     headers[HEADER_ACCEPT] = "*/*"
                 }
@@ -528,9 +532,9 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://hexa.su/"
                 headers[HEADER_ORIGIN] = "https://hexa.su"
             }
-            lowerUrl.contains("vidlink.pro") -> {
-                headers[HEADER_REFERER] = "https://vidlink.pro/"
-                headers[HEADER_ORIGIN] = "https://vidlink.pro"
+            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> {
+                headers[HEADER_REFERER] = "https://www.cineby.sc/"
+                headers[HEADER_ORIGIN] = "https://www.cineby.sc"
             }
             else -> {
                 val effectiveReferer = when {
@@ -565,8 +569,9 @@ object StreamLinkOptimizer {
         val lowerUrl = url.lowercase(Locale.ROOT)
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") ||
-            lowerUrl.contains("hakunaymatata") ||
-            ((lowerUrl.endsWith(".mp4") || lowerUrl.contains(".mp4?")) && (referer?.contains("vidlink.pro", ignoreCase = true) == true || headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true)) -> ""
+            lowerUrl.contains("hakunaymatata") || lowerUrl.contains("vidlink.pro") ||
+            referer?.contains("vidlink.pro", ignoreCase = true) == true ||
+            headers[HEADER_REFERER]?.contains("vidlink.pro", ignoreCase = true) == true -> ""
             lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
             lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc") -> "https://vidfast.vc/"
             headers.containsKey(HEADER_REFERER) -> headers[HEADER_REFERER] ?: ""
@@ -587,7 +592,7 @@ object StreamLinkOptimizer {
             lowerUrl.contains("autoembed.cc") || lowerUrl.contains("player.autoembed.cc") -> "https://player.autoembed.cc/"
             lowerUrl.contains("embed.su") -> "https://embed.su/"
             lowerUrl.contains("hexa.su") -> "https://hexa.su/"
-            lowerUrl.contains("vidlink.pro") -> "https://vidlink.pro/"
+            lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> "https://www.cineby.sc/"
             !referer.isNullOrBlank() -> referer
             else -> getHostUrl(url) ?: ""
         }
@@ -1089,7 +1094,15 @@ object StreamLinkOptimizer {
             return q1 > q2
         }
 
-        // 2. Bitrate comparison (when resolutions are equivalent)
+        // 2. Top-Tier Source Priority Rank (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy > Secondary)
+        // Strictly prevents lower-tier sources (e.g. VidFast, VidEasy, or scrapers) from overriding top-tier sources at equivalent resolution
+        val sourceRank1 = getSourcePriorityRank(candidate)
+        val sourceRank2 = getSourcePriorityRank(current)
+        if (sourceRank1 != sourceRank2) {
+            return sourceRank1 > sourceRank2
+        }
+
+        // 3. Bitrate comparison (when resolutions and top-tier source ranks are equivalent)
         val b1 = parseBitrateKbpsFromText(candidate.name)
         val b2 = parseBitrateKbpsFromText(current.name)
         if (b1 != null && b2 != null && b1 != b2) {
@@ -1097,14 +1110,6 @@ object StreamLinkOptimizer {
         }
         if (b1 != null && b2 == null) {
             return true
-        }
-
-        // 3. Top-Tier Source Priority Rank (Download and streaming reliability hierarchy)
-        // VidLink (100) > HexaSU (90) > AutoEmbed (80) > VidFast (70) > VidEasy (60) > Secondary (< 60)
-        val sourceRank1 = getSourcePriorityRank(candidate)
-        val sourceRank2 = getSourcePriorityRank(current)
-        if (sourceRank1 != sourceRank2) {
-            return sourceRank1 > sourceRank2
         }
 
         // 4. Direct endpoint score
@@ -1164,13 +1169,13 @@ object StreamLinkOptimizer {
         val u = link.url.lowercase(Locale.ROOT)
         return when {
             s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
-            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") ||
-                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") ||
+            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") ||
+                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") ||
                 u.contains("hexa.su") || u.contains("embed.su") -> 90
             s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") -> 80
             s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") ||
                 u.contains("peakstorm.top") || u.contains("hypergate.top") -> 70
-            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") -> 60
+            s.contains("videasy") || n.contains("videasy") || u.contains("videasy.net") || u.contains("cineby.sc") -> 60
             s.contains("moviebox") || n.contains("moviebox") -> 50
             s.contains("rivestream") || n.contains("rivestream") -> 40
             s.contains("vidrock") || n.contains("vidrock") -> 30

@@ -661,7 +661,14 @@ data class HexaResponse(
 
 data class HexaResult(
     val sources: List<HexaSource>? = null,
+    val tracks: List<HexaTrack>? = null,
     val skipTime: Any? = null
+)
+
+data class HexaTrack(
+    val file: String? = null,
+    val label: String? = null,
+    val kind: String? = null
 )
 
 data class HexaSource(

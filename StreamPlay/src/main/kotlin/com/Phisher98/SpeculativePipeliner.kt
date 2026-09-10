@@ -292,7 +292,9 @@ object SpeculativePipeliner {
         // Group tasks into tiers, and sort tasks within each tier by priority score descending
         val classifiedTasks = tasks.map { task ->
             val tier = classifyProvider(task.providerId, task.initialTier)
-            val score = ProviderTelemetryManager.getPriorityScore(task.providerId) + task.priorityBoost
+            val baseBoost = if (task.priorityBoost > 0f) task.priorityBoost else (FAST_PROVIDER_BOOST[task.providerId] ?: 0f)
+            val telemetry = ProviderTelemetryManager.getPriorityScore(task.providerId)
+            val score = if (telemetry <= -500f) telemetry else (baseBoost * 100f + telemetry)
             Triple(task, tier, score)
         }
 
@@ -359,7 +361,7 @@ object SpeculativePipeliner {
             if (controller.isSatisfied() && !hasHigherPriorityInFlight()) return emptyList()
             val allBroken = taskList.isNotEmpty() && taskList.all { ProviderTelemetryManager.isCircuitBroken(it.providerId) }
             return taskList.map { task ->
-                val taskPriority = ProviderTelemetryManager.getPriorityScore(task.providerId) + task.priorityBoost
+                val taskPriority = if (task.priorityBoost > 0f) task.priorityBoost else (FAST_PROVIDER_BOOST[task.providerId] ?: 0f)
                 launch(Dispatchers.IO) {
                     if (controller.isSatisfied() && (!hasHigherPriorityInFlight() || taskPriority <= getMaxPriorityThreshold())) return@launch
                     if (!allBroken && !ProviderTelemetryManager.canExecute(task.providerId)) {

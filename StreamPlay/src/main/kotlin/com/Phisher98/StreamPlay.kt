@@ -872,7 +872,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         }
 
         val prioritizedPrimary = primaryProviders.sortedByDescending { provider ->
-            StreamPlayCache.getProviderPriorityScore(provider.id) + (FAST_PROVIDER_BOOST[provider.id] ?: 0f)
+            val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+            val score = StreamPlayCache.getProviderPriorityScore(provider.id)
+            if (score <= -500f) score else (boost * 100f + score)
         }
 
         val brokenCount = applicableProviders.count {
@@ -1003,7 +1005,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         if (primaryLinksFound == 0 && fallbackProviders.isNotEmpty()) {
             Log.d(TAG, "⚠️ All primary sources yielded zero usable streams. Invoking ${fallbackProviders.size} strict fallback providers.")
             val prioritizedFallback = fallbackProviders.sortedByDescending { provider ->
-                StreamPlayCache.getProviderPriorityScore(provider.id) + (FAST_PROVIDER_BOOST[provider.id] ?: 0f)
+                val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+                val score = StreamPlayCache.getProviderPriorityScore(provider.id)
+                if (score <= -500f) score else (boost * 100f + score)
             }
             val fallbackTasks = prioritizedFallback.map { provider ->
                 val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)

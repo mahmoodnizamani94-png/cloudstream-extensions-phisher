@@ -349,4 +349,170 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertEquals("https://player.autoembed.cc", StreamPlay.autoembedPlayer)
         assertEquals("https://autoembed.cc", StreamPlay.autoembedDomain)
     }
+
+    @Test
+    fun testVideasyCdnContract() {
+        for (host in listOf("https://api.videasy.net/stream.m3u8", "https://cdn.cineby.sc/video.mp4")) {
+            val effectiveReferer = StreamLinkOptimizer.getEffectiveReferer(host, "", emptyMap())
+            assertEquals("https://www.cineby.sc/", effectiveReferer)
+
+            val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), host, "")
+            assertEquals("https://www.cineby.sc/", downloadHeaders["Referer"])
+            assertEquals("https://www.cineby.sc", downloadHeaders["Origin"])
+
+            val link = createLink("UnknownSource", "Stream 1080p", host, type = ExtractorLinkType.M3U8)
+            assertEquals("Videasy/Cineby streams must be recognized as VidEasy tier (60)", 60, StreamLinkOptimizer.getSourcePriorityRank(link))
+        }
+    }
+
+    @Test
+    fun testHexaWordMatchesHexaTier() {
+        val link1 = createLink("Hexa", "Hexa Server 1 [1080p]", "https://example.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val link2 = createLink("HexaSU", "HexaSU [1080p]", "https://example.com/stream.m3u8", type = ExtractorLinkType.M3U8)
+        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(link1))
+        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(link2))
+    }
+
+    @Test
+    fun testAutoembedStrictlyDominatesVidfastEvenWithBitrateTags() {
+        val autoembedStream = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidfastWithBitrate = createLink("VidFast", "VidFast [1080p] (4500 kbps)", "https://vidfast.vc/stream.m3u8", type = ExtractorLinkType.M3U8)
+
+        // AutoEmbed MUST beat VidFast even if VidFast claims higher bitrate
+        assertTrue("AutoEmbed beats VidFast with bitrate", StreamLinkOptimizer.isBetterThan(autoembedStream, vidfastWithBitrate))
+        assertFalse("VidFast with bitrate must NOT beat AutoEmbed", StreamLinkOptimizer.isBetterThan(vidfastWithBitrate, autoembedStream))
+
+        // VidFast MUST beat VidEasy even if VidEasy claims higher bitrate
+        val videasyWithBitrate = createLink("VidEasy", "VidEasy [1080p] (5000 kbps)", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidfastPlain = createLink("VidFast", "VidFast [1080p]", "https://vidfast.vc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        assertTrue("VidFast beats VidEasy with bitrate", StreamLinkOptimizer.isBetterThan(vidfastPlain, videasyWithBitrate))
+        assertFalse("VidEasy with bitrate must NOT beat VidFast", StreamLinkOptimizer.isBetterThan(videasyWithBitrate, vidfastPlain))
+    }
+
+    @Test
+    fun testFullFiveTierStrictMonotonicity() {
+        val vidlink = createLink("Vidlink", "Vidlink [1080p]", "https://vidlink.pro/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val hexasu = createLink("HexaSU", "HexaSU [1080p]", "https://hexa.su/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val autoembed = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val vidfast = createLink("VidFast", "VidFast [1080p]", "https://vidfast.vc/stream.m3u8", type = ExtractorLinkType.M3U8)
+        val videasy = createLink("VidEasy", "VidEasy [1080p]", "https://api.videasy.net/stream.m3u8", type = ExtractorLinkType.M3U8)
+
+        val links = listOf(vidlink, hexasu, autoembed, vidfast, videasy)
+        val ranks = links.map { StreamLinkOptimizer.getSourcePriorityRank(it) }
+
+        assertEquals(listOf(100, 90, 80, 70, 60), ranks)
+
+        // Verify pairwise transitive dominance: link[i] beats link[j] for all i < j
+        for (i in 0 until links.size) {
+            for (j in (i + 1) until links.size) {
+                assertTrue("${links[i].name} must beat ${links[j].name}", StreamLinkOptimizer.isBetterThan(links[i], links[j]))
+                assertFalse("${links[j].name} must NOT beat ${links[i].name}", StreamLinkOptimizer.isBetterThan(links[j], links[i]))
+            }
+        }
+    }
+
+    @Test
+    fun testVidlinkProUrlStrippedToEmptyRefererUnderAllConditions() {
+        val urls = listOf(
+            "https://vidlink.pro/stream/playlist.m3u8",
+            "https://vidlink.pro/video/movie.mp4",
+            "https://cdn.example.com/stream.mp4?origin=vidlink.pro",
+            "https://sub.hakunaymatata.com/video.mp4"
+        )
+        for (u in urls) {
+            val effRef = StreamLinkOptimizer.getEffectiveReferer(u, "https://vidlink.pro/", mapOf("Referer" to "https://vidlink.pro/"))
+            assertEquals("Effective referer must be empty for vidlink.pro stream: $u", "", effRef)
+
+            val headers = StreamLinkOptimizer.buildDownloadHeaders(
+                mapOf("Referer" to "https://vidlink.pro/", "Origin" to "https://vidlink.pro"),
+                u,
+                "https://vidlink.pro/",
+                ExtractorLinkType.VIDEO
+            )
+            assertFalse("Referer must be stripped from $u", headers.containsKey("Referer"))
+            assertFalse("Origin must be stripped from $u", headers.containsKey("Origin"))
+            assertTrue("Mobile Cronet UA must be attached to $u", headers["User-Agent"]?.contains("Cronet") == true)
+        }
+    }
+
+    @Test
+    fun testInFlightHigherPriorityTasksPreservedUnderTelemetryVariance() = kotlinx.coroutines.runBlocking {
+        val higherPriorityFinished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val lowerTierSiblingCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val lowerPriorityFinished = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val config = EarlySatisfactionConfig(
+            minVerifiedLinks = 1,
+            minQualityStreams = 1,
+            qualityThreshold = Qualities.P1080.value,
+            tier1DelayMs = 0L,
+            tier2DelayMs = 0L
+        )
+        val controller = EarlySatisfactionController(config)
+
+        // Give videasy an artificial telemetry boost
+        ProviderTelemetryManager.recordExecution("videasy", true, 200L)
+        ProviderTelemetryManager.recordExecution("videasy", true, 200L)
+
+        val tasks = listOf(
+            // High priority task: VidLink (100)
+            PipelinedTask("vidlink", LatencyTier.TIER_0, isVideo = true, priorityBoost = 100f) {
+                kotlinx.coroutines.delay(80)
+                controller.onLinkEmitted(createLink("Vidlink", "Vidlink 1080p", "https://hakunaymatata.com/stream.mp4", Qualities.P1080.value, ExtractorLinkType.VIDEO))
+                higherPriorityFinished.set(true)
+            },
+            // Lower priority task: VidEasy (60) finishes at 10ms and satisfies controller early
+            PipelinedTask("videasy", LatencyTier.TIER_0, isVideo = true, priorityBoost = 60f) {
+                kotlinx.coroutines.delay(10)
+                controller.onLinkEmitted(createLink("VidEasy", "VidEasy 1080p", "https://api.videasy.net/stream.m3u8", Qualities.P1080.value, ExtractorLinkType.M3U8))
+                lowerPriorityFinished.set(true)
+            },
+            // Secondary scraper: MovieBox (40) should be cancelled
+            PipelinedTask("moviebox", LatencyTier.TIER_0, isVideo = true, priorityBoost = 40f) {
+                try {
+                    kotlinx.coroutines.delay(120)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    lowerTierSiblingCancelled.set(true)
+                    throw e
+                }
+            }
+        )
+
+        val result = SpeculativePipeliner.executePipelined(
+            tasks = tasks,
+            config = config,
+            controller = controller
+        )
+
+        assertTrue("Execution should succeed", result)
+        assertTrue("Lower priority task (VidEasy) should finish", lowerPriorityFinished.get())
+        assertTrue("Higher priority task (VidLink) must NOT be cancelled despite VidEasy telemetry", higherPriorityFinished.get())
+        assertTrue("Lower priority secondary task (MovieBox) should be cancelled", lowerTierSiblingCancelled.get())
+    }
+
+    @Test
+    fun testOperationalProvidersStrictSortingPreservedRegardlessOfTelemetry() {
+        val providers = listOf(
+            Provider("vidlink", "Vidlink") { _, _, _, _, _ -> },
+            Provider("HexaSU", "HexaSU") { _, _, _, _, _ -> },
+            Provider("autoembed", "AutoEmbed") { _, _, _, _, _ -> },
+            Provider("vidfast", "VidFast") { _, _, _, _, _ -> },
+            Provider("VidEasy", "VidEasy") { _, _, _, _, _ -> },
+            Provider("moviebox", "MovieBox") { _, _, _, _, _ -> }
+        )
+
+        // Give low tier providers high telemetry
+        ProviderTelemetryManager.recordExecution("VidEasy", true, 100L)
+        ProviderTelemetryManager.recordExecution("vidfast", true, 100L)
+        ProviderTelemetryManager.recordExecution("moviebox", true, 100L)
+
+        val sorted = providers.sortedByDescending { provider ->
+            val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+            val score = ProviderTelemetryManager.getPriorityScore(provider.id)
+            if (score <= -500f) score else (boost * 100f + score)
+        }
+
+        val expectedOrder = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy", "moviebox")
+        assertEquals("Operational providers must strictly preserve priority order", expectedOrder, sorted.map { it.id })
+    }
 }
