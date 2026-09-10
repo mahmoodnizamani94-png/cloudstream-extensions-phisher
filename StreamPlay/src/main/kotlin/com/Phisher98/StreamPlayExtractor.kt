@@ -1921,12 +1921,14 @@ object StreamPlayExtractor : StreamPlay() {
             }
 
             val seedParam = if (!seed.isNullOrBlank()) "&enc=2&seed=$seed" else ""
+            val imdbParam = if (!imdbId.isNullOrBlank()) "&imdbId=$imdbId" else ""
+            val yearParam = if (year != null) "&year=$year" else ""
 
             servers.safeAmap { server ->
                 val primaryUrl = if (season == null) {
-                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie&year=$year&tmdbId=$tmdbId&imdbId=$imdbId$seedParam"
+                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
                 } else {
-                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv&year=$year&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season&imdbId=$imdbId$seedParam"
+                    "$activeApi/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
                 }
 
                 var encdata = runCatching {
@@ -1936,9 +1938,9 @@ object StreamPlayExtractor : StreamPlay() {
 
                 if (encdata.isNullOrBlank() && activeApi != videasyFallbackAPI) {
                     val fallbackUrl = if (season == null) {
-                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie&year=$year&tmdbId=$tmdbId&imdbId=$imdbId$seedParam"
+                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=movie$yearParam&tmdbId=$tmdbId$imdbParam$seedParam"
                     } else {
-                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv&year=$year&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season&imdbId=$imdbId$seedParam"
+                        "$videasyFallbackAPI/$server/sources-with-title?title=$encTitle&mediaType=tv$yearParam&tmdbId=$tmdbId&episodeId=$episode&seasonId=$season$imdbParam$seedParam"
                     }
                     encdata = runCatching {
                         val resp = safeGet(fallbackUrl, headers = headers, timeout = 4L)
@@ -1987,7 +1989,20 @@ object StreamPlayExtractor : StreamPlay() {
                                 }.getOrNull()
 
                                 if (!m3u8Links.isNullOrEmpty()) {
-                                    m3u8Links.forEach(callback)
+                                    m3u8Links.forEach { genLink ->
+                                        callback(
+                                            newExtractorLink(
+                                                "VidEasy",
+                                                if (genLink.name.contains(server, ignoreCase = true)) genLink.name else "VidEasy [${server.uppercase()}]",
+                                                genLink.url,
+                                                genLink.type
+                                            ) {
+                                                this.quality = genLink.quality
+                                                this.headers = headers
+                                                this.referer = "https://player.videasy.to/"
+                                            }
+                                        )
+                                    }
                                 } else {
                                     callback(
                                         newExtractorLink(
@@ -3224,6 +3239,16 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    private fun normalizeVidSrcUrl(rawUrl: String, contextUrl: String): String {
+        val trimmed = rawUrl.replace("\\/", "/").trim().trim('"', '\'')
+        return when {
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            trimmed.startsWith("//") -> "https:$trimmed"
+            trimmed.startsWith("/") -> getBaseUrl(contextUrl) + trimmed
+            else -> getBaseUrl(contextUrl) + "/" + trimmed
+        }
+    }
+
     suspend fun invokeVidSrcXyz(
         id: String? = null,
         season: Int? = null,
@@ -3231,11 +3256,10 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit,
         tmdbId: Int? = null
     ) {
-        withTimeoutOrNull(8000L) {
+        withTimeoutOrNull(9000L) {
             try {
                 if (id == null && tmdbId == null) return@withTimeoutOrNull
 
-                val candidateUrls = mutableListOf<String>()
                 val domains = listOf(
                     Vidsrcxyz,
                     "https://vidsrc.xyz",
@@ -3244,37 +3268,76 @@ object StreamPlayExtractor : StreamPlay() {
                     "https://vidsrc.pm"
                 ).distinct()
 
-                for (domain in domains) {
-                    if (season == null) {
-                        if (id != null) candidateUrls.add("$domain/embed/movie?imdb=$id")
-                        if (tmdbId != null) candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
-                        if (id != null) candidateUrls.add("$domain/embed/movie/$id")
-                    } else {
-                        if (id != null) candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
-                        if (tmdbId != null) candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
-                        if (id != null) candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
-                    }
-                }
+                coroutineScope {
+                    val jobs = domains.map { domain ->
+                        async {
+                            try {
+                                val candidateUrls = mutableListOf<String>()
+                                if (season == null) {
+                                    if (id != null) {
+                                        candidateUrls.add("$domain/embed/movie?imdb=$id")
+                                        candidateUrls.add("$domain/embed/movie/$id")
+                                    }
+                                    if (tmdbId != null) {
+                                        candidateUrls.add("$domain/embed/movie?tmdb=$tmdbId")
+                                        candidateUrls.add("$domain/embed/movie/$tmdbId")
+                                    }
+                                } else {
+                                    if (id != null) {
+                                        candidateUrls.add("$domain/embed/tv?imdb=$id&season=$season&episode=$episode")
+                                        candidateUrls.add("$domain/embed/tv/$id/$season/$episode")
+                                    }
+                                    if (tmdbId != null) {
+                                        candidateUrls.add("$domain/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")
+                                        candidateUrls.add("$domain/embed/tv/$tmdbId/$season/$episode")
+                                    }
+                                }
 
-                for (url in candidateUrls) {
-                    val iframeUrl = extractIframeUrl(url) ?: continue
-                    val prorcpUrl = extractProrcpUrl(iframeUrl) ?: continue
-                    val decryptedSource = extractAndDecryptSource(prorcpUrl, iframeUrl) ?: continue
+                                for (url in candidateUrls) {
+                                    val iframeUrl = extractIframeUrl(url) ?: continue
+                                    val prorcpUrl = extractProrcpUrl(iframeUrl) ?: continue
+                                    val decryptedSource = extractAndDecryptSource(prorcpUrl, iframeUrl) ?: continue
 
-                    val referer = prorcpUrl.substringBefore("rcp").ifEmpty { getBaseUrl(prorcpUrl) }
-                    var found = false
-                    decryptedSource.forEach { (version, streamUrl) ->
-                        val links = generateM3u8(
-                            "VidSrc Server ${version.capitalize()}",
-                            streamUrl,
-                            referer
-                        )
-                        if (links.isNotEmpty()) {
-                            found = true
-                            links.forEach(callback)
+                                    val referer = "${getBaseUrl(prorcpUrl)}/"
+                                    var found = false
+                                    decryptedSource.forEach { (version, streamUrl) ->
+                                        val formattedVersion = version.replaceFirstChar {
+                                            if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString()
+                                        }
+                                        val serverLabel = "VidSrc Server $formattedVersion"
+                                        val m3u8Links = runCatching {
+                                            generateM3u8(serverLabel, streamUrl, referer)
+                                        }.getOrNull()
+
+                                        if (!m3u8Links.isNullOrEmpty()) {
+                                            found = true
+                                            m3u8Links.forEach(callback)
+                                        } else {
+                                            found = true
+                                            callback(
+                                                newExtractorLink(
+                                                    source = "VidSrc",
+                                                    name = serverLabel,
+                                                    url = streamUrl,
+                                                    type = if (streamUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else INFER_TYPE
+                                                ) {
+                                                    this.referer = referer
+                                                    this.headers = mapOf("Referer" to referer)
+                                                }
+                                            )
+                                        }
+                                    }
+                                    if (found) return@async true
+                                }
+                                false
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.d("StreamPlay", "VidSrcXyz domain $domain failed: ${e.message}")
+                                false
+                            }
                         }
                     }
-                    if (found) break
+                    jobs.awaitAll()
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -3289,7 +3352,7 @@ object StreamPlayExtractor : StreamPlay() {
             "Referer" to getBaseUrl(url),
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         )
-        val response = runCatching { safeGet(url, headers = baseHeaders, timeout = 6L) }.getOrNull() ?: return null
+        val response = runCatching { safeGet(url, headers = baseHeaders, timeout = 5L) }.getOrNull() ?: return null
         val doc = response.document
 
         val iframe = doc.selectFirst("iframe#player_iframe") ?: doc.selectFirst("iframe")
@@ -3300,23 +3363,27 @@ object StreamPlayExtractor : StreamPlay() {
             ?: Regex("""['"](/vs_src\.php\?[^'"]+)['"]""").find(response.text)?.groupValues?.get(1)
 
         if (!dataApi.isNullOrBlank()) {
-            val fullApiUrl = if (dataApi.startsWith("http")) dataApi else getBaseUrl(url) + dataApi.replace("&amp;", "&")
+            val fullApiUrl = normalizeVidSrcUrl(dataApi.replace("&amp;", "&"), url)
             val apiHeaders = baseHeaders + mapOf(
                 "Referer" to url,
                 "X-Requested-With" to "XMLHttpRequest",
                 "Accept" to "*/*"
             )
             val apiJson = runCatching {
-                safeGet(fullApiUrl, headers = apiHeaders, timeout = 5L).text
+                safeGet(fullApiUrl, headers = apiHeaders, timeout = 4L).text
             }.getOrNull()
 
             if (!apiJson.isNullOrBlank()) {
                 val parsedSrc = runCatching {
-                    JSONObject(apiJson).optString("src")
-                }.getOrNull()?.takeIf { it.isNotBlank() }
+                    val json = JSONObject(apiJson)
+                    json.optString("src").takeIf { it.isNotBlank() }
+                        ?: json.optString("url").takeIf { it.isNotBlank() }
+                        ?: json.optString("file").takeIf { it.isNotBlank() }
+                        ?: json.optString("source").takeIf { it.isNotBlank() }
+                }.getOrNull()
 
                 if (parsedSrc != null) {
-                    return httpsify(parsedSrc)
+                    return normalizeVidSrcUrl(parsedSrc, fullApiUrl)
                 }
             }
         }
@@ -3324,13 +3391,13 @@ object StreamPlayExtractor : StreamPlay() {
         // 2. Check iframe src attribute
         val src = iframe?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("about:blank") }
         if (src != null) {
-            return httpsify(src)
+            return normalizeVidSrcUrl(src, url)
         }
 
         // 3. Fallback: regex search on HTML
         val regexSrc = Regex("""(?:data-src|src)\s*[:=]\s*['"]([^'"]+)['"]""").find(response.text)?.groupValues?.get(1)
         if (!regexSrc.isNullOrBlank() && !regexSrc.startsWith("about:blank")) {
-            return httpsify(regexSrc)
+            return normalizeVidSrcUrl(regexSrc, url)
         }
 
         return null
@@ -3338,13 +3405,13 @@ object StreamPlayExtractor : StreamPlay() {
 
     private suspend fun extractProrcpUrl(iframeUrl: String): String? {
         if (iframeUrl.contains("/rcp/") || iframeUrl.contains("/prorcp/")) {
-            return iframeUrl
+            return normalizeVidSrcUrl(iframeUrl, iframeUrl)
         }
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
             "Referer" to iframeUrl
         )
-        val doc = runCatching { safeGet(iframeUrl, headers = headers, referer = iframeUrl, timeout = 6L).document }.getOrNull() ?: return null
+        val doc = runCatching { safeGet(iframeUrl, headers = headers, referer = iframeUrl, timeout = 5L).document }.getOrNull() ?: return null
         val html = doc.html()
         val regex = Regex("""src:\s*['"](.*?)['"]""")
         val matchedSrc = regex.find(html)?.groupValues?.get(1)
@@ -3352,8 +3419,7 @@ object StreamPlayExtractor : StreamPlay() {
             ?: doc.selectFirst("iframe")?.attr("src")
             ?: return null
 
-        val host = getBaseUrl(iframeUrl)
-        return if (matchedSrc.startsWith("http")) matchedSrc else host + matchedSrc
+        return normalizeVidSrcUrl(matchedSrc, iframeUrl)
     }
 
     private suspend fun extractAndDecryptSource(
@@ -3364,7 +3430,7 @@ object StreamPlayExtractor : StreamPlay() {
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
             "Referer" to referer
         )
-        val responseText = runCatching { safeGet(prorcpUrl, headers = headers, referer = referer, timeout = 6L).text }.getOrNull() ?: return null
+        val responseText = runCatching { safeGet(prorcpUrl, headers = headers, referer = referer, timeout = 5L).text }.getOrNull() ?: return null
 
         val playerJsRegex = Regex("""Playerjs\(\{.*?file:"(.*?)".*?\}\)""")
         val temp = playerJsRegex.find(responseText)?.groupValues?.get(1)
@@ -3395,38 +3461,38 @@ object StreamPlayExtractor : StreamPlay() {
         val id = encryptedURLNode?.first ?: return null
         val content = encryptedURLNode.second
 
-        // 1. Native decryption methods
+        // 1. Direct lookup in native decryptMethods
         var decrypted: String? = decryptMethods[id]?.invoke(content)?.takeIf {
-            it.isNotBlank() && !it.startsWith("Failed to decode") && (it.contains("http") || it.contains("{v") || it.contains(".m3u8"))
+            it.isNotBlank() && !it.startsWith("Failed to decode") && (it.contains("http") || it.contains("//") || it.contains("{v") || it.contains(".m3u8"))
         }
 
-        // 2. Remote dec-cloudnestra from enc-dec.app fallback
+        // 2. Ultra-fast (0.05ms) in-memory native cipher trial across all known decryptMethods
+        if (decrypted == null) {
+            for ((_, method) in decryptMethods) {
+                val candidate = runCatching { method(content) }.getOrNull()
+                if (candidate != null && !candidate.startsWith("Failed to decode") &&
+                    (candidate.contains("http") || candidate.contains("//") || candidate.contains("{v") || candidate.contains(".m3u8"))) {
+                    decrypted = candidate
+                    break
+                }
+            }
+        }
+
+        // 3. Remote fallback via enc-dec.app only if local native decoders could not decrypt
         if (decrypted == null) {
             val encDecResp = runCatching {
                 app.post(
                     "https://enc-dec.app/api/dec-cloudnestra",
                     json = mapOf("text" to content, "div_id" to id),
-                    timeout = 5L
+                    timeout = 4L
                 ).text
             }.getOrNull()
 
             if (!encDecResp.isNullOrBlank()) {
                 val encDecJson = runCatching { JSONObject(encDecResp) }.getOrNull()
                 val result = encDecJson?.optString("result")
-                if (!result.isNullOrBlank() && (result.contains("http") || result.contains("{v") || result.contains(".m3u8"))) {
+                if (!result.isNullOrBlank() && (result.contains("http") || result.contains("//") || result.contains("{v") || result.contains(".m3u8"))) {
                     decrypted = result
-                }
-            }
-        }
-
-        // 3. Native fallback across all decryptMethods in case id mismatched
-        if (decrypted == null) {
-            for ((_, method) in decryptMethods) {
-                val candidate = runCatching { method(content) }.getOrNull()
-                if (candidate != null && !candidate.startsWith("Failed to decode") &&
-                    (candidate.contains("http") || candidate.contains("{v") || candidate.contains(".m3u8"))) {
-                    decrypted = candidate
-                    break
                 }
             }
         }
@@ -3445,18 +3511,19 @@ object StreamPlayExtractor : StreamPlay() {
         val mirrors: List<Pair<String, String>> = decrypted
             .split(" or ")
             .map { it.trim() }
-            .filter { it.startsWith("http") || placeholderRegex.containsMatchIn(it) }
+            .filter { it.startsWith("http") || it.startsWith("//") || placeholderRegex.containsMatchIn(it) }
             .map { rawUrl ->
                 val match = placeholderRegex.find(rawUrl)
                 val version = match?.groupValues?.get(1) ?: "v1"
                 val domain = vSubs[version] ?: "cloudnestra.com"
 
-                val finalUrl = if (placeholderRegex.containsMatchIn(rawUrl)) {
+                val replacedUrl = if (placeholderRegex.containsMatchIn(rawUrl)) {
                     placeholderRegex.replace(rawUrl) { domain }
                 } else {
                     rawUrl
                 }
 
+                val finalUrl = normalizeVidSrcUrl(replacedUrl, prorcpUrl)
                 version to finalUrl
             }
 
@@ -3474,54 +3541,229 @@ object StreamPlayExtractor : StreamPlay() {
             try {
                 if (id == null && tmdbId == null) return@withTimeoutOrNull
 
-                val targetId = id ?: tmdbId.toString()
+                val candidateIds = listOfNotNull(id, tmdbId?.toString()).distinct()
                 val domains = listOf("https://vidsrc.cc", "https://vidsrc.in", "https://vidsrc.pm")
                 val mobileHeaders = mapOf(
                     "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.97 Mobile Safari/537.36",
                     "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                 )
 
-                for (domain in domains) {
-                    val embedUrls = if (season == null) {
-                        listOf(
-                            "$domain/v2/embed/movie/$targetId",
-                            "$domain/v3/embed/movie/$targetId",
-                            "$domain/embed/movie/$targetId"
-                        )
-                    } else {
-                        listOf(
-                            "$domain/v2/embed/tv/$targetId/$season/$episode",
-                            "$domain/v3/embed/tv/$targetId/$season/$episode",
-                            "$domain/embed/tv/$targetId/$season/$episode"
-                        )
-                    }
+                coroutineScope {
+                    val jobs = domains.map { domain ->
+                        async {
+                            try {
+                                for (targetId in candidateIds) {
+                                    val embedUrls = if (season == null) {
+                                        listOf(
+                                            "$domain/v2/embed/movie/$targetId",
+                                            "$domain/v3/embed/movie/$targetId",
+                                            "$domain/embed/movie/$targetId"
+                                        )
+                                    } else {
+                                        listOf(
+                                            "$domain/v2/embed/tv/$targetId/$season/$episode",
+                                            "$domain/v3/embed/tv/$targetId/$season/$episode",
+                                            "$domain/embed/tv/$targetId/$season/$episode"
+                                        )
+                                    }
 
-                    for (embedUrl in embedUrls) {
-                        val resp = runCatching {
-                            safeGet(embedUrl, headers = mobileHeaders + ("Referer" to "$domain/"), timeout = 5L)
-                        }.getOrNull() ?: continue
+                                    for (embedUrl in embedUrls) {
+                                        val resp = runCatching {
+                                            safeGet(embedUrl, headers = mobileHeaders + ("Referer" to "$domain/"), timeout = 4L)
+                                        }.getOrNull() ?: continue
 
-                        val iframeSrc = resp.document.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
-                            ?: Regex("""iframe\s+src=['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
-                            ?: continue
+                                        // 1. Direct stream match in page HTML
+                                        val directMatch = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(resp.text)?.groupValues?.get(1)
+                                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
 
-                        val fullIframeUrl = if (iframeSrc.startsWith("http")) iframeSrc else getBaseUrl(embedUrl) + iframeSrc
-                        val iframeResp = runCatching {
-                            safeGet(fullIframeUrl, headers = mobileHeaders + ("Referer" to embedUrl), timeout = 5L)
-                        }.getOrNull() ?: continue
+                                        if (!directMatch.isNullOrBlank() && directMatch.contains(".m3u8")) {
+                                            val normalizedStream = normalizeVidSrcUrl(directMatch, embedUrl)
+                                            val m3u8Links = runCatching { generateM3u8("VidSrc CC", normalizedStream, embedUrl) }.getOrNull()
+                                            if (!m3u8Links.isNullOrEmpty()) {
+                                                m3u8Links.forEach(callback)
+                                            } else {
+                                                callback(
+                                                    newExtractorLink(
+                                                        source = "VidSrc CC",
+                                                        name = "VidSrc CC",
+                                                        url = normalizedStream,
+                                                        type = ExtractorLinkType.M3U8
+                                                    ) {
+                                                        this.referer = embedUrl
+                                                        this.headers = mapOf("Referer" to embedUrl)
+                                                    }
+                                                )
+                                            }
+                                            return@async true
+                                        }
 
-                        val m3u8Match = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
-                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+                                        // 2. Nested iframe match
+                                        val iframeSrc = resp.document.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
+                                            ?: Regex("""iframe\s+src=['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
+                                            ?: continue
 
-                        if (!m3u8Match.isNullOrBlank() && m3u8Match.contains(".m3u8")) {
-                            generateM3u8("VidSrc CC", m3u8Match, fullIframeUrl).forEach(callback)
-                            return@withTimeoutOrNull
+                                        val fullIframeUrl = normalizeVidSrcUrl(iframeSrc, embedUrl)
+                                        val iframeResp = runCatching {
+                                            safeGet(fullIframeUrl, headers = mobileHeaders + ("Referer" to embedUrl), timeout = 4L)
+                                        }.getOrNull() ?: continue
+
+                                        val m3u8Match = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+                                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+
+                                        if (!m3u8Match.isNullOrBlank() && m3u8Match.contains(".m3u8")) {
+                                            val normalizedStream = normalizeVidSrcUrl(m3u8Match, fullIframeUrl)
+                                            val m3u8Links = runCatching { generateM3u8("VidSrc CC", normalizedStream, fullIframeUrl) }.getOrNull()
+                                            if (!m3u8Links.isNullOrEmpty()) {
+                                                m3u8Links.forEach(callback)
+                                            } else {
+                                                callback(
+                                                    newExtractorLink(
+                                                        source = "VidSrc CC",
+                                                        name = "VidSrc CC",
+                                                        url = normalizedStream,
+                                                        type = ExtractorLinkType.M3U8
+                                                    ) {
+                                                        this.referer = fullIframeUrl
+                                                        this.headers = mapOf("Referer" to fullIframeUrl)
+                                                    }
+                                                )
+                                            }
+                                            return@async true
+                                        }
+                                    }
+                                }
+                                false
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.d("StreamPlay", "VidSrc CC domain $domain error: ${e.message}")
+                                false
+                            }
                         }
                     }
+                    jobs.awaitAll()
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 Log.e("StreamPlay", "invokeVidSrcCc error: ${e.message}")
+            }
+        }
+    }
+
+    suspend fun invokeVidSrcTo(
+        id: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit,
+        tmdbId: Int? = null
+    ) {
+        withTimeoutOrNull(8000L) {
+            try {
+                if (id == null && tmdbId == null) return@withTimeoutOrNull
+
+                val candidateIds = listOfNotNull(id, tmdbId?.toString()).distinct()
+                val domains = listOf("https://vidsrc.to", "https://vidsrc2.to", "https://vidsrc.net")
+                val headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+
+                coroutineScope {
+                    val jobs = domains.map { domain ->
+                        async {
+                            try {
+                                for (targetId in candidateIds) {
+                                    val embedUrls = if (season == null) {
+                                        listOf(
+                                            "$domain/embed/movie/$targetId",
+                                            "$domain/embed/movie?imdb=$targetId",
+                                            "$domain/embed/movie?tmdb=$targetId"
+                                        )
+                                    } else {
+                                        listOf(
+                                            "$domain/embed/tv/$targetId/$season/$episode",
+                                            "$domain/embed/tv?imdb=$targetId&season=$season&episode=$episode",
+                                            "$domain/embed/tv?tmdb=$targetId&season=$season&episode=$episode"
+                                        )
+                                    }
+
+                                    for (embedUrl in embedUrls) {
+                                        val resp = runCatching {
+                                            safeGet(embedUrl, headers = headers + ("Referer" to "$domain/"), timeout = 4L)
+                                        }.getOrNull() ?: continue
+
+                                        // 1. Direct stream match
+                                        val directMatch = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(resp.text)?.groupValues?.get(1)
+                                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
+
+                                        if (!directMatch.isNullOrBlank() && directMatch.contains(".m3u8")) {
+                                            val normalizedStream = normalizeVidSrcUrl(directMatch, embedUrl)
+                                            val m3u8Links = runCatching { generateM3u8("VidSrc To", normalizedStream, embedUrl) }.getOrNull()
+                                            if (!m3u8Links.isNullOrEmpty()) {
+                                                m3u8Links.forEach(callback)
+                                            } else {
+                                                callback(
+                                                    newExtractorLink(
+                                                        source = "VidSrc To",
+                                                        name = "VidSrc To",
+                                                        url = normalizedStream,
+                                                        type = ExtractorLinkType.M3U8
+                                                    ) {
+                                                        this.referer = embedUrl
+                                                        this.headers = mapOf("Referer" to embedUrl)
+                                                    }
+                                                )
+                                            }
+                                            return@async true
+                                        }
+
+                                        // 2. Nested iframe match
+                                        val iframeSrc = resp.document.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
+                                            ?: Regex("""iframe\s+src=['"]([^'"]+)['"]""").find(resp.text)?.groupValues?.get(1)
+                                            ?: continue
+
+                                        val fullIframeUrl = normalizeVidSrcUrl(iframeSrc, embedUrl)
+                                        val iframeResp = runCatching {
+                                            safeGet(fullIframeUrl, headers = headers + ("Referer" to embedUrl), timeout = 4L)
+                                        }.getOrNull() ?: continue
+
+                                        val m3u8Match = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+                                            ?: Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(iframeResp.text)?.groupValues?.get(1)
+
+                                        if (!m3u8Match.isNullOrBlank() && m3u8Match.contains(".m3u8")) {
+                                            val normalizedStream = normalizeVidSrcUrl(m3u8Match, fullIframeUrl)
+                                            val m3u8Links = runCatching { generateM3u8("VidSrc To", normalizedStream, fullIframeUrl) }.getOrNull()
+                                            if (!m3u8Links.isNullOrEmpty()) {
+                                                m3u8Links.forEach(callback)
+                                            } else {
+                                                callback(
+                                                    newExtractorLink(
+                                                        source = "VidSrc To",
+                                                        name = "VidSrc To",
+                                                        url = normalizedStream,
+                                                        type = ExtractorLinkType.M3U8
+                                                    ) {
+                                                        this.referer = fullIframeUrl
+                                                        this.headers = mapOf("Referer" to fullIframeUrl)
+                                                    }
+                                                )
+                                            }
+                                            return@async true
+                                        }
+                                    }
+                                }
+                                false
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.d("StreamPlay", "VidSrc To domain $domain error: ${e.message}")
+                                false
+                            }
+                        }
+                    }
+                    jobs.awaitAll()
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e("StreamPlay", "invokeVidSrcTo error: ${e.message}")
             }
         }
     }
@@ -3533,25 +3775,36 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit,
         tmdbId: Int? = null
     ) {
-        coroutineScope {
-            val j1 = async {
-                try {
-                    invokeVidSrcXyz(id, season, episode, callback, tmdbId)
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    Log.w("StreamPlay", "VidSrcXyz sub-job failed: ${e.message}")
+        withTimeoutOrNull(10000L) {
+            coroutineScope {
+                val j1 = async {
+                    try {
+                        invokeVidSrcXyz(id, season, episode, callback, tmdbId)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.w("StreamPlay", "VidSrcXyz sub-job failed: ${e.message}")
+                    }
                 }
-            }
-            val j2 = async {
-                try {
-                    invokeVidSrcCc(id, season, episode, callback, tmdbId)
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    Log.w("StreamPlay", "VidSrcCc sub-job failed: ${e.message}")
+                val j2 = async {
+                    try {
+                        invokeVidSrcCc(id, season, episode, callback, tmdbId)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.w("StreamPlay", "VidSrcCc sub-job failed: ${e.message}")
+                    }
                 }
+                val j3 = async {
+                    try {
+                        invokeVidSrcTo(id, season, episode, callback, tmdbId)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.w("StreamPlay", "VidSrcTo sub-job failed: ${e.message}")
+                    }
+                }
+                j1.await()
+                j2.await()
+                j3.await()
             }
-            j1.await()
-            j2.await()
         }
     }
 

@@ -297,11 +297,19 @@ object StreamLinkOptimizer {
             existingHeaders = link.headers,
             url = optimizedUrl,
             referer = link.referer,
-            linkType = resolvedType
+            linkType = resolvedType,
+            source = link.source,
+            name = link.name
         )
 
         // 8. Effective referer
-        val effectiveReferer = getEffectiveReferer(optimizedUrl, link.referer, optimizedHeaders)
+        val effectiveReferer = getEffectiveReferer(
+            optimizedUrl,
+            link.referer,
+            optimizedHeaders,
+            source = link.source,
+            name = link.name
+        )
 
         @Suppress("DEPRECATION")
         return ExtractorLink(
@@ -363,7 +371,9 @@ object StreamLinkOptimizer {
         existingHeaders: Map<String, String>,
         url: String,
         referer: String?,
-        linkType: ExtractorLinkType = ExtractorLinkType.VIDEO
+        linkType: ExtractorLinkType = ExtractorLinkType.VIDEO,
+        source: String? = null,
+        name: String? = null
     ): Map<String, String> {
         if (url.startsWith("magnet:", ignoreCase = true) ||
             (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true))
@@ -415,7 +425,9 @@ object StreamLinkOptimizer {
             (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
                 it.value.contains("vidlink.pro", ignoreCase = true)
         } || referer?.contains("vidlink.pro", ignoreCase = true) == true
-        val isVideasy = referer?.contains("videasy", ignoreCase = true) == true ||
+        val isVideasy = source?.contains("videasy", ignoreCase = true) == true ||
+            name?.contains("videasy", ignoreCase = true) == true ||
+            referer?.contains("videasy", ignoreCase = true) == true ||
             referer?.contains("cineby", ignoreCase = true) == true ||
             referer?.contains("speedracelight", ignoreCase = true) == true ||
             headers.entries.any {
@@ -459,6 +471,7 @@ object StreamLinkOptimizer {
                 headers[HEADER_ORIGIN] = "https://vidfast.vc"
             }
             lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
+            (lowerUrl.contains("videasy") && !lowerUrl.contains("videasy.net")) ||
             (lowerUrl.contains("peakstorm.top") && isVideasy) -> {
                 headers[HEADER_REFERER] = "https://player.videasy.to/"
                 headers[HEADER_ORIGIN] = "https://player.videasy.to"
@@ -583,9 +596,17 @@ object StreamLinkOptimizer {
     /**
      * Computes the effective Referer header string for ExtractorLink.referer.
      */
-    fun getEffectiveReferer(url: String, referer: String?, headers: Map<String, String>): String {
+    fun getEffectiveReferer(
+        url: String,
+        referer: String?,
+        headers: Map<String, String>,
+        source: String? = null,
+        name: String? = null
+    ): String {
         val lowerUrl = url.lowercase(Locale.ROOT)
-        val isVideasy = referer?.contains("videasy", ignoreCase = true) == true ||
+        val isVideasy = source?.contains("videasy", ignoreCase = true) == true ||
+            name?.contains("videasy", ignoreCase = true) == true ||
+            referer?.contains("videasy", ignoreCase = true) == true ||
             referer?.contains("cineby", ignoreCase = true) == true ||
             referer?.contains("speedracelight", ignoreCase = true) == true ||
             headers.entries.any {
@@ -608,6 +629,7 @@ object StreamLinkOptimizer {
             (lowerUrl.contains("peakstorm.top") || lowerUrl.contains("hypergate.top") ||
             lowerUrl.contains("vidfast.pro") || lowerUrl.contains("vidfast.vc")) && !isVideasy -> "https://vidfast.vc/"
             lowerUrl.contains("speedracelight.com") || lowerUrl.contains("videasy.to") ||
+            (lowerUrl.contains("videasy") && !lowerUrl.contains("videasy.net")) ||
             (lowerUrl.contains("peakstorm.top") && isVideasy) -> "https://player.videasy.to/"
             lowerUrl.contains("videasy.net") || lowerUrl.contains("cineby.sc") -> "https://www.cineby.sc/"
             lowerUrl.contains("gofile.io") -> "https://gofile.io/"

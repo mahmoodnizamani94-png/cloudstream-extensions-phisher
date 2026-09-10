@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -17,17 +18,19 @@ class StreamPlayTopTierSourceHierarchyTest {
         name: String,
         url: String,
         quality: Int = Qualities.P1080.value,
-        type: ExtractorLinkType = ExtractorLinkType.VIDEO
+        type: ExtractorLinkType = ExtractorLinkType.VIDEO,
+        referer: String = "https://example.com/",
+        headers: Map<String, String> = emptyMap()
     ): ExtractorLink {
         @Suppress("DEPRECATION")
         return ExtractorLink(
             source = source,
             name = name,
             url = url,
-            referer = "https://example.com/",
+            referer = referer,
             quality = quality,
             type = type,
-            headers = emptyMap()
+            headers = headers
         )
     }
 
@@ -996,5 +999,74 @@ class StreamPlayTopTierSourceHierarchyTest {
             callback = { linkEmitted = true }
         )
         assertFalse("invokeVidSrc must complete gracefully without emitting links for nonexistent id", linkEmitted)
+    }
+
+    @Test
+    fun testVidEasyPeakstormStreamOptimizerProtection() {
+        // Raw VidEasy link with empty initial referer and headers
+        val videasyLink = createLink(
+            source = "VidEasy",
+            name = "VidEasy [CDN]",
+            url = "https://moon.peakstorm.top/vd/abc/index-s1080p-v1-a1.m3u8",
+            referer = "",
+            headers = emptyMap(),
+            type = ExtractorLinkType.M3U8
+        )
+
+        val optimized = StreamLinkOptimizer.optimize(videasyLink)
+
+        // Must retain VidEasy rank 60
+        assertEquals(60, StreamLinkOptimizer.getSourcePriorityRank(optimized))
+
+        // Must NOT be hijacked by VidFast referer (vidfast.vc)
+        assertEquals("https://player.videasy.to/", optimized.referer)
+        assertEquals("https://player.videasy.to/", optimized.headers["Referer"])
+        assertEquals("https://player.videasy.to", optimized.headers["Origin"])
+        assertNotEquals("https://vidfast.vc/", optimized.referer)
+        assertNotEquals("https://vidfast.vc/", optimized.headers["Referer"])
+    }
+
+    @Test
+    fun testVidFastPeakstormStreamOptimizerRouting() {
+        // Raw VidFast link with empty initial referer and headers
+        val vidfastLink = createLink(
+            source = "VidFast",
+            name = "VidFast [1080p]",
+            url = "https://moon.peakstorm.top/vd/xyz/index-s1080p-v1-a1.m3u8",
+            referer = "",
+            headers = emptyMap(),
+            type = ExtractorLinkType.M3U8
+        )
+
+        val optimized = StreamLinkOptimizer.optimize(vidfastLink)
+
+        // Must have VidFast rank 70
+        assertEquals(70, StreamLinkOptimizer.getSourcePriorityRank(optimized))
+
+        // Must be routed to vidfast.vc
+        assertEquals("https://vidfast.vc/", optimized.referer)
+        assertEquals("https://vidfast.vc/", optimized.headers["Referer"])
+        assertEquals("https://vidfast.vc", optimized.headers["Origin"])
+    }
+
+    @Test
+    fun testBuildDownloadHeadersAndEffectiveRefererWithSource() {
+        val peakstormUrl = "https://moon.peakstorm.top/stream.m3u8"
+
+        // Passing source = "VidEasy"
+        val videasyRef = StreamLinkOptimizer.getEffectiveReferer(peakstormUrl, null, emptyMap(), source = "VidEasy")
+        assertEquals("https://player.videasy.to/", videasyRef)
+
+        val videasyHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), peakstormUrl, null, source = "VidEasy")
+        assertEquals("https://player.videasy.to/", videasyHeaders["Referer"])
+        assertEquals("https://player.videasy.to", videasyHeaders["Origin"])
+
+        // Passing source = "VidFast"
+        val vidfastRef = StreamLinkOptimizer.getEffectiveReferer(peakstormUrl, null, emptyMap(), source = "VidFast")
+        assertEquals("https://vidfast.vc/", vidfastRef)
+
+        val vidfastHeaders = StreamLinkOptimizer.buildDownloadHeaders(emptyMap(), peakstormUrl, null, source = "VidFast")
+        assertEquals("https://vidfast.vc/", vidfastHeaders["Referer"])
+        assertEquals("https://vidfast.vc", vidfastHeaders["Origin"])
     }
 }
