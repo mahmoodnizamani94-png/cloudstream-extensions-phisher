@@ -309,14 +309,14 @@ fun getKisskhTitle(str: String?): String? {
 
 fun getIndexQualityTags(str: String?, fullTag: Boolean = false): String {
     return if (fullTag) Regex("(?i)(.*)\\.(?:mkv|mp4|avi)").find(str ?: "")?.groupValues?.get(1)
-        ?.trim() ?: str ?: "" else Regex("(?i)\\d{3,4}[pP]\\.?(.*?)\\.(mkv|mp4|avi)").find(
+        ?.trim() ?: str ?: "" else Regex("(?i)\\d{3,4}[pP]?\\.?(.*?)\\.(mkv|mp4|avi)").find(
         str ?: ""
     )?.groupValues?.getOrNull(1)
         ?.replace(".", " ")?.trim() ?: str ?: ""
 }
 
 fun getIndexQuality(str: String?): Int {
-    return Regex("""\b(2160|1440|1080|720|576|540|480)\s*[pP]\b""").find(str.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
+    return Regex("""\b(2160|1440|1080|720|576|540|480)\s*[pP]?\b""").find(str.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
         ?: Qualities.Unknown.value
 }
 

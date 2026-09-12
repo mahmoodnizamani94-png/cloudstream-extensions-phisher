@@ -162,13 +162,13 @@ object StreamLinkOptimizer {
     private val TEXT_PLAYLIST_REGEX = Regex("""/(?:master|playlist|index|list)\.txt$""", RegexOption.IGNORE_CASE)
 
     // Quality Tag Regexes
-    private val QUALITY_EXPLICIT_REGEX = Regex("""\b(2160|1440|1080|720|480|360)\s*[pP]\b""")
-    private val FOUR_K_REGEX = Regex("""\b(4K|UHD|2160P|3840[xX]2160|ULTRA[\s-_.]?HD)\b""", RegexOption.IGNORE_CASE)
-    private val QHD_REGEX = Regex("""\b(1440P|2560[xX]1440|QHD|2K)\b""", RegexOption.IGNORE_CASE)
-    private val FHD_REGEX = Regex("""\b(FHD|1080P|1920[xX]1080|FULL[\s-_.]?HD)\b""", RegexOption.IGNORE_CASE)
-    private val HD_REGEX = Regex("""\b(720P|1280[xX]720|\bHD\b)\b""", RegexOption.IGNORE_CASE)
-    private val SD_REGEX = Regex("""\b(480P|854[xX]480|\bSD\b)\b""", RegexOption.IGNORE_CASE)
-    private val P360_REGEX = Regex("""\b(360P|640[xX]360)\b""", RegexOption.IGNORE_CASE)
+    private val QUALITY_EXPLICIT_REGEX = Regex("""\b(2160|1440|1080|720|576|540|480|360)\s*[pP]?\b""")
+    private val FOUR_K_REGEX = Regex("""\b(4K|UHD|2160P?|3840[xX]2160|ULTRA[\s-_.]?HD)\b""", RegexOption.IGNORE_CASE)
+    private val QHD_REGEX = Regex("""\b(1440P?|2560[xX]1440|QHD|2K)\b""", RegexOption.IGNORE_CASE)
+    private val FHD_REGEX = Regex("""\b(FHD|1080P?|1920[xX]1080|FULL[\s-_.]?HD)\b""", RegexOption.IGNORE_CASE)
+    private val HD_REGEX = Regex("""\b(720P?|1280[xX]720|\bHD\b)\b""", RegexOption.IGNORE_CASE)
+    private val SD_REGEX = Regex("""\b(480P?|854[xX]480|\bSD\b)\b""", RegexOption.IGNORE_CASE)
+    private val P360_REGEX = Regex("""\b(360P?|640[xX]360)\b""", RegexOption.IGNORE_CASE)
 
     // Bitrate & Size Regexes
     private val SIZE_REGEX = Regex("""\b(\d+(?:\.\d+)?)\s*(GB|GIB|MB|MIB|KB|KIB|B)\b""", RegexOption.IGNORE_CASE)
@@ -243,7 +243,7 @@ object StreamLinkOptimizer {
         if (rawUrl.startsWith("magnet:", ignoreCase = true) ||
             (!rawUrl.startsWith("http://", ignoreCase = true) && !rawUrl.startsWith("https://", ignoreCase = true))
         ) {
-            val resolvedQuality = if (link.quality <= Qualities.Unknown.value) {
+            val resolvedQuality = if (link.quality <= 0 || link.quality == Qualities.Unknown.value) {
                 extractQualityFromText(link.name, rawUrl)
             } else {
                 link.quality
@@ -288,8 +288,8 @@ object StreamLinkOptimizer {
         // 4. Quality resolution
         val extractedQuality = extractQualityFromText(link.name, optimizedUrl)
         val resolvedQuality = when {
-            link.quality > Qualities.Unknown.value -> link.quality
-            extractedQuality > Qualities.Unknown.value -> extractedQuality
+            link.quality > 0 && link.quality != Qualities.Unknown.value -> link.quality
+            extractedQuality > 0 && extractedQuality != Qualities.Unknown.value -> extractedQuality
             estimatedBitrate != null -> inferQualityFromBitrate(estimatedBitrate)
             else -> Qualities.Unknown.value
         }
@@ -1326,7 +1326,7 @@ object StreamLinkOptimizer {
             return "magnet:${xt ?: rawUrl}"
         }
 
-        return runCatching {
+        val baseKey = runCatching {
             val uri = URI(rawUrl)
             val rawHost = uri.host ?: ""
             val normalizedHost = normalizeHostCluster(rawHost)
@@ -1355,6 +1355,19 @@ object StreamLinkOptimizer {
             val normalizedPath = if (path.isNotEmpty() && !path.startsWith("/")) "/$path" else path
             "$host$normalizedPath$queryPart"
         }
+
+        // For M3U8 adaptive manifests, differentiate variants by resolution quality so 1080p and 720p streams coexist
+        val isM3u8 = link.type == ExtractorLinkType.M3U8 || rawUrl.contains(".m3u8", ignoreCase = true)
+        return if (isM3u8) {
+            val q = if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
+                link.quality
+            } else {
+                extractQualityFromText(link.name, rawUrl)
+            }
+            if (q > 0 && q != Qualities.Unknown.value) "$baseKey#$q" else baseKey
+        } else {
+            baseKey
+        }
     }
 
     // ==================== Stream Comparison & Deduplicator ====================
@@ -1371,9 +1384,11 @@ object StreamLinkOptimizer {
      * 8. Anti-throttling header completeness
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Resolution Quality comparison: higher resolution quality strictly takes precedence
-        val q1 = if (candidate.quality > Qualities.Unknown.value) candidate.quality else extractQualityFromText(candidate.name, candidate.url)
-        val q2 = if (current.quality > Qualities.Unknown.value) current.quality else extractQualityFromText(current.name, current.url)
+        // 1. Resolution Quality comparison: higher resolution strictly takes precedence for stream upgrading
+        val rawQ1 = if (candidate.quality > 0 && candidate.quality != Qualities.Unknown.value) candidate.quality else extractQualityFromText(candidate.name, candidate.url)
+        val rawQ2 = if (current.quality > 0 && current.quality != Qualities.Unknown.value) current.quality else extractQualityFromText(current.name, current.url)
+        val q1 = if (rawQ1 == Qualities.Unknown.value) 0 else rawQ1
+        val q2 = if (rawQ2 == Qualities.Unknown.value) 0 else rawQ2
         if (q1 != q2) {
             return q1 > q2
         }
@@ -1471,6 +1486,57 @@ object StreamLinkOptimizer {
             s.contains("2embed") || n.contains("2embed") || u.contains("2embed") -> 10
             else -> 0
         }
+    }
+
+    /**
+     * Definitive quality priority ranking (§SOTA Quality Hierarchy):
+     * 1. 1080p (Tier 1: FHD) -> Score 10000
+     * 2. 720p (Tier 1: HD) -> Score 9000
+     *    Users must get these 2 qualities as highest prioritized.
+     * 3. Below 720p (Tier 2: 576p, 540p, 480p, 360p, 240p) -> Score 5000 + quality
+     * 4. Above 1080p (Tier 3: 1440p, 2160p/4K, 4320p/8K) -> Score 2000 - (quality - 1080)
+     * 5. Unknown -> Score 0
+     */
+    fun getQualityPriorityScore(quality: Int): Int {
+        return when {
+            quality <= 0 || quality == Qualities.Unknown.value -> 0
+            quality == Qualities.P1080.value -> 10000
+            quality == Qualities.P720.value -> 9000
+            quality in 1 until Qualities.P720.value -> 5000 + quality
+            quality > Qualities.P1080.value -> maxOf(100, 2000 - (quality - Qualities.P1080.value))
+            else -> 0
+        }
+    }
+
+    /**
+     * Checks if resolution is within the top-prioritized user tier (720p or 1080p).
+     */
+    fun isQualityPrioritized(quality: Int): Boolean {
+        return quality == Qualities.P1080.value || quality == Qualities.P720.value
+    }
+
+    /**
+     * Computes the overall stream score combining:
+     * 1. Top-tier source priority rank (VidLink 100 > HexaSU 90 > AutoEmbed 80 > VidFast 70 > VidEasy 60 > VidSrc 55)
+     * 2. Resolution quality priority rank (1080p > 720p > below 720 > above 1080)
+     * 3. Bitrate, video codecs, audio channels, and direct container optimizations
+     */
+    fun getStreamCompositeScore(link: ExtractorLink): Float {
+        val sourceRank = getSourcePriorityRank(link)
+        val quality = if (link.quality > 0 && link.quality != Qualities.Unknown.value) link.quality else extractQualityFromText(link.name, link.url)
+        val qualityScore = getQualityPriorityScore(quality)
+        val bitrate = parseBitrateKbpsFromText(link.name) ?: 0L
+        val videoScore = calculateVideoScore(link)
+        val audioScore = calculateAudioScore(link)
+        val headerScore = calculateHeaderScore(link)
+
+        // Tier 1: Quality priority (1080p 10,000 -> 100M, 720p 9,000 -> 90M, 480p 5,480 -> 54.8M, 4K 920 -> 9.2M)
+        // Tier 2: Top source priority (VidLink 100 -> 10K, HexaSU 90 -> 9K, AutoEmbed 80 -> 8K, VidFast 70 -> 7K, VidEasy 60 -> 6K, VidSrc 55 -> 5.5K)
+        return (qualityScore * 10_000f) + (sourceRank * 100f) + (bitrate / 100f) + videoScore + audioScore + headerScore
+    }
+
+    val STREAM_PRIORITY_COMPARATOR = Comparator<ExtractorLink> { a, b ->
+        getStreamCompositeScore(b).compareTo(getStreamCompositeScore(a))
     }
 
     private fun calculateVideoScore(link: ExtractorLink): Int {

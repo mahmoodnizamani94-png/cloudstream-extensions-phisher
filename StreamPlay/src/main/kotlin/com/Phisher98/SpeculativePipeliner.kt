@@ -66,6 +66,7 @@ data class EarlySatisfactionConfig(
     val minSubtitles: Int = 1,
     val satisfyWithOneLinkIfSubsFound: Boolean = true,
     val requireSubtitles: Boolean = false,
+    val requireDualQualities: Boolean = false,
     val tier1DelayMs: Long = 150L,
     val tier2DelayMs: Long = 1500L,
     val tier3DelayMs: Long = 3500L,
@@ -85,6 +86,8 @@ class EarlySatisfactionController(
     private val candidateLinksFound = AtomicInteger(0)
     private val qualityLinksFound = AtomicInteger(0)
     private val subtitlesFound = AtomicInteger(0)
+    private val has1080Stream = AtomicBoolean(false)
+    private val has720Stream = AtomicBoolean(false)
     private val satisfied = AtomicBoolean(false)
     private val maxEmittedPriority = java.util.concurrent.atomic.AtomicReference<Float>(0f)
 
@@ -96,10 +99,22 @@ class EarlySatisfactionController(
         private val FHD_WORD_REGEX = Regex("""\b(?:1080p?|fhd)\b""", RegexOption.IGNORE_CASE)
     }
 
+    private fun trackLinkQuality(link: ExtractorLink) {
+        val q = link.quality
+        val textQ = StreamLinkOptimizer.extractQualityFromText(link.name)
+        if (q == Qualities.P1080.value || textQ == Qualities.P1080.value || link.name.contains("1080", ignoreCase = true)) {
+            has1080Stream.set(true)
+        }
+        if (q == Qualities.P720.value || textQ == Qualities.P720.value || link.name.contains("720", ignoreCase = true)) {
+            has720Stream.set(true)
+        }
+    }
+
     fun onLinkEmitted(link: ExtractorLink): Boolean {
         linksFound.incrementAndGet()
         val priority = StreamLinkOptimizer.getSourcePriorityRank(link).toFloat()
         maxEmittedPriority.accumulateAndGet(priority) { prev, cur -> maxOf(prev, cur) }
+        trackLinkQuality(link)
         if (isHighQualityVerifiedStream(link)) {
             qualityLinksFound.incrementAndGet()
         }
@@ -110,6 +125,7 @@ class EarlySatisfactionController(
     fun onLinkUpgraded(link: ExtractorLink): Boolean {
         val priority = StreamLinkOptimizer.getSourcePriorityRank(link).toFloat()
         maxEmittedPriority.accumulateAndGet(priority) { prev, cur -> maxOf(prev, cur) }
+        trackLinkQuality(link)
         if (isHighQualityVerifiedStream(link)) {
             qualityLinksFound.incrementAndGet()
         }
@@ -118,6 +134,11 @@ class EarlySatisfactionController(
     }
 
     fun getMaxEmittedPriority(): Float = maxEmittedPriority.get()
+
+    fun has1080p(): Boolean = has1080Stream.get()
+    fun has720p(): Boolean = has720Stream.get()
+    fun hasBoth720And1080(): Boolean = has1080Stream.get() && has720Stream.get()
+    fun hasSubtitles(): Boolean = subtitlesFound.get() >= config.minSubtitles
 
     fun onSubtitleEmitted(subtitle: SubtitleFile): Boolean {
         subtitlesFound.incrementAndGet()
@@ -150,6 +171,13 @@ class EarlySatisfactionController(
         val subs = subtitlesFound.get()
 
         val isEarlySatisfied = when {
+            config.requireDualQualities -> {
+                val dualMet = has1080Stream.get() && has720Stream.get()
+                val subsMet = !config.requireSubtitles || subs >= config.minSubtitles
+                (dualMet && subsMet && links >= config.minVerifiedLinks) ||
+                (links >= 4 && subsMet) ||
+                (links >= 6)
+            }
             // 1. 1 high-bitrate/quality stream (>=1080p)
             qualityLinks >= config.minQualityStreams -> true
             // 2. 2 verified streams
@@ -187,6 +215,8 @@ class EarlySatisfactionController(
         candidateLinksFound.set(0)
         qualityLinksFound.set(0)
         subtitlesFound.set(0)
+        has1080Stream.set(false)
+        has720Stream.set(false)
         satisfied.set(false)
         maxEmittedPriority.set(0f)
     }
@@ -365,8 +395,16 @@ object SpeculativePipeliner {
         fun cancelLowerOrEqualPriorityJobs() {
             val threshold = getMaxPriorityThreshold()
             for (info in trackedTasks) {
-                if (info.job.isActive && info.priorityScore <= threshold) {
+                if (info.job.isActive && info.task.isVideo && info.priorityScore <= threshold) {
                     info.job.cancel(CancellationException("Early satisfaction achieved by higher tier source"))
+                }
+            }
+        }
+
+        fun cancelActiveVideoJobs() {
+            for (info in trackedTasks) {
+                if (info.job.isActive && info.task.isVideo) {
+                    info.job.cancel(CancellationException("Early video satisfaction achieved"))
                 }
             }
         }
@@ -382,7 +420,7 @@ object SpeculativePipeliner {
         fun handleEarlySatisfaction() {
             if (controller.isSatisfied()) {
                 if (!hasHigherPriorityInFlight()) {
-                    cancelAllActiveJobs()
+                    cancelActiveVideoJobs()
                 } else {
                     cancelLowerOrEqualPriorityJobs()
                 }
@@ -499,7 +537,7 @@ object SpeculativePipeliner {
                 }
                 if (controller.isSatisfied()) {
                     if (!hasHigherPriorityInFlight()) {
-                        cancelAllActiveJobs()
+                        cancelActiveVideoJobs()
                         break
                     } else {
                         cancelLowerOrEqualPriorityJobs()
