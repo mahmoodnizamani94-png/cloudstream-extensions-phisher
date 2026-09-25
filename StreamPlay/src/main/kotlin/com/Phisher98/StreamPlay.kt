@@ -85,6 +85,8 @@ internal val NON_ANIME_PROVIDERS = setOf(
     "rivestream",
     "vidrock",
     "vidlink",
+    "vidcore",
+    "vidup",
     "yflix",
     "cinejoy",
     "kisskh",

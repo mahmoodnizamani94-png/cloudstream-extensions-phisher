@@ -1789,56 +1789,62 @@ class DualQualityAndSotaHierarchyTest {
     }
 
     @Test
-    fun testSettingsMigrationCleanInstallV7() {
+    fun testSettingsMigrationCleanInstallV8() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
 
         val allProviders = buildProviders()
         val active = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install v7 must activate exactly 6 top-tier providers", 6, active.size)
+        assertEquals("Clean install v8 must activate exactly 4 top-tier providers", 4, active.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue("vidlink must be active", active.contains("vidlink"))
-        assertTrue("yflix must be active", active.contains("yflix"))
+        assertTrue("vidcore must be active", active.contains("vidcore"))
+        assertTrue("vidup must be active", active.contains("vidup"))
         assertTrue("cinejoy must be active", active.contains("cinejoy"))
-        assertTrue("vidfast must be active", active.contains("vidfast"))
-        assertTrue("VidEasy must be active", active.contains("VidEasy"))
-        assertTrue("vidsrc must be active", active.contains("vidsrc"))
 
         // Dead registered providers must be disabled
         assertTrue("HexaSU must be disabled", disabled.contains("HexaSU"))
         assertTrue("autoembed must be disabled", disabled.contains("autoembed"))
+        assertTrue("vidfast must be disabled", disabled.contains("vidfast"))
+        assertTrue("VidEasy must be disabled", disabled.contains("VidEasy"))
+        assertTrue("yflix must be disabled", disabled.contains("yflix"))
 
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
     @Test
-    fun testSettingsMigrationUpgradeFromV6PreservesUserOverrides() {
+    fun testSettingsMigrationUpgradeFromV7PreservesUserOverrides() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // Simulate legacy user who had:
-        // 1. Explicitly disabled "vidsrc" (a top-tier provider override)
+        // 1. Explicitly disabled "vidlink" (a top-tier provider override)
         // 2. Explicitly enabled "moviebox" (a secondary provider override)
-        // 3. HexaSU and autoembed were active under v6
-        val oldDisabled = (getDefaultDisabledProviderIds() + "vidsrc") - "moviebox"
+        // 3. vidfast and VidEasy were active under v7
+        val oldDisabled = (getDefaultDisabledProviderIds() + "vidlink") - "moviebox"
         mockPrefs.edit()
             .putStringSet("disabled_providers", oldDisabled)
-            .putBoolean("streamplay_top_tier_v6_initialized", true)
+            .putBoolean("streamplay_top_tier_v7_initialized", true)
             .apply()
 
         val finalDisabled = getOrInitializeDisabledProviders(mockPrefs)
 
         // Dead providers must be purged and added to disabled_providers
-        assertTrue("HexaSU must be disabled in v7", finalDisabled.contains("HexaSU"))
-        assertTrue("autoembed must be disabled in v7", finalDisabled.contains("autoembed"))
-        assertTrue("superstream must be disabled in v7", finalDisabled.contains("superstream"))
-        assertTrue("vaplayer must be disabled in v7", finalDisabled.contains("vaplayer"))
+        assertTrue("HexaSU must be disabled in v8", finalDisabled.contains("HexaSU"))
+        assertTrue("autoembed must be disabled in v8", finalDisabled.contains("autoembed"))
+        assertTrue("superstream must be disabled in v8", finalDisabled.contains("superstream"))
+        assertTrue("vaplayer must be disabled in v8", finalDisabled.contains("vaplayer"))
+        assertTrue("vidfast must be disabled in v8", finalDisabled.contains("vidfast"))
+        assertTrue("VidEasy must be disabled in v8", finalDisabled.contains("VidEasy"))
+        assertTrue("yflix must be disabled in v8", finalDisabled.contains("yflix"))
+        assertTrue("vidsrc must be disabled in v8", finalDisabled.contains("vidsrc"))
 
         // Newly promoted SOTA providers must be enabled
-        assertFalse("yflix must be enabled in v7", finalDisabled.contains("yflix"))
-        assertFalse("cinejoy must be enabled in v7", finalDisabled.contains("cinejoy"))
+        assertFalse("vidcore must be enabled in v8", finalDisabled.contains("vidcore"))
+        assertFalse("vidup must be enabled in v8", finalDisabled.contains("vidup"))
+        assertFalse("cinejoy must be enabled in v8", finalDisabled.contains("cinejoy"))
 
         // User custom overrides MUST be strictly preserved
-        assertTrue("User's custom disable of vidsrc must be preserved", finalDisabled.contains("vidsrc"))
+        assertTrue("User's custom disable of vidlink must be preserved", finalDisabled.contains("vidlink"))
         assertFalse("User's custom enable of moviebox must be preserved", finalDisabled.contains("moviebox"))
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }

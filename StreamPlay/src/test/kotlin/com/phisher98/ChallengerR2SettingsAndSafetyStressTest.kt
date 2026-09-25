@@ -45,52 +45,55 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val allProviders = buildProviders()
         val activeProviders = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 6 top-tier providers", 6, activeProviders.size)
+        assertEquals("Clean install must activate exactly 4 top-tier providers", 4, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        // Verify the 6 specific providers
-        val expectedTopSix = setOf("vidlink", "yflix", "cinejoy", "vidfast", "VidEasy", "vidsrc")
-        assertEquals(expectedTopSix, activeProviders)
+        // Verify the 4 specific providers
+        val expectedTopFour = setOf("vidlink", "vidcore", "vidup", "cinejoy")
+        assertEquals(expectedTopFour, activeProviders)
 
         // Dead registered providers must be disabled
         assertTrue("HexaSU must be disabled", disabled.contains("HexaSU"))
         assertTrue("autoembed must be disabled", disabled.contains("autoembed"))
+        assertTrue("vidfast must be disabled", disabled.contains("vidfast"))
+        assertTrue("VidEasy must be disabled", disabled.contains("VidEasy"))
+        assertTrue("yflix must be disabled", disabled.contains("yflix"))
 
         // Preference flag must be written
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
     @Test
-    fun testCleanInstallEmptyDisabledProvidersActivatesExactlySixTopTier() {
+    fun testCleanInstallEmptyDisabledProvidersActivatesExactlyFourTopTier() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
-        // Stale or empty set stored without v7 initialized flag
+        // Stale or empty set stored without v8 initialized flag
         mockPrefs.edit().putStringSet("disabled_providers", emptySet()).apply()
 
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val allProviders = buildProviders()
         val activeProviders = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 6 top-tier providers", 6, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 4 top-tier providers", 4, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
     @Test
-    fun testUpgradeFromV6DisablesDeadAndEnablesSotaAndPreservesOverrides() {
+    fun testUpgradeFromV7DisablesDeadAndEnablesSotaAndPreservesOverrides() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
 
-        // Simulate a v6 installation:
-        // In v6: HexaSU and autoembed were enabled (not in disabled set).
-        // yflix and cinejoy were disabled (in disabled set).
+        // Simulate a v7 installation:
+        // In v7: yflix, vidfast, VidEasy, vidsrc were enabled.
+        // vidcore and vidup were disabled.
         // User custom overrides:
-        // - User explicitly DISABLED top-tier providers "vidlink" and "vidsrc"
+        // - User explicitly DISABLED top-tier providers "vidlink" and "cinejoy"
         // - User explicitly ENABLED secondary providers "moviebox", "uhdmovies", "allmovieland"
-        val v6DefaultDisabled = (getDefaultDisabledProviderIds() - setOf("HexaSU", "autoembed")) + setOf("yflix", "cinejoy")
-        val v6UserDisabled = (v6DefaultDisabled + setOf("vidlink", "vidsrc")) - setOf("moviebox", "uhdmovies", "allmovieland")
+        val v7DefaultDisabled = (getDefaultDisabledProviderIds() - setOf("yflix", "vidfast", "VidEasy", "vidsrc")) + setOf("vidcore", "vidup")
+        val v7UserDisabled = (v7DefaultDisabled + setOf("vidlink", "cinejoy")) - setOf("moviebox", "uhdmovies", "allmovieland")
 
         mockPrefs.edit()
-            .putStringSet("disabled_providers", v6UserDisabled)
-            .putBoolean("streamplay_top_tier_v6_initialized", true)
+            .putStringSet("disabled_providers", v7UserDisabled)
+            .putBoolean("streamplay_top_tier_v7_initialized", true)
             .apply()
 
         val migratedDisabled = getOrInitializeDisabledProviders(mockPrefs)
@@ -100,41 +103,45 @@ class ChallengerR2SettingsAndSafetyStressTest {
         assertTrue("autoembed must be disabled", migratedDisabled.contains("autoembed"))
         assertTrue("superstream must be disabled", migratedDisabled.contains("superstream"))
         assertTrue("vaplayer must be disabled", migratedDisabled.contains("vaplayer"))
+        assertTrue("vidfast must be disabled", migratedDisabled.contains("vidfast"))
+        assertTrue("VidEasy must be disabled", migratedDisabled.contains("VidEasy"))
+        assertTrue("yflix must be disabled", migratedDisabled.contains("yflix"))
+        assertTrue("vidsrc must be disabled", migratedDisabled.contains("vidsrc"))
 
         // 2. Newly promoted top-tier providers MUST be enabled
-        assertFalse("yflix must be enabled", migratedDisabled.contains("yflix"))
-        assertFalse("cinejoy must be enabled", migratedDisabled.contains("cinejoy"))
+        assertFalse("vidcore must be enabled", migratedDisabled.contains("vidcore"))
+        assertFalse("vidup must be enabled", migratedDisabled.contains("vidup"))
 
         // 3. User custom disabled overrides MUST be strictly preserved
         assertTrue("User custom disable of vidlink must be preserved", migratedDisabled.contains("vidlink"))
-        assertTrue("User custom disable of vidsrc must be preserved", migratedDisabled.contains("vidsrc"))
+        assertTrue("User custom disable of cinejoy must be preserved", migratedDisabled.contains("cinejoy"))
 
         // 4. User custom enabled overrides MUST be strictly preserved
         assertFalse("User custom enable of moviebox must be preserved", migratedDisabled.contains("moviebox"))
         assertFalse("User custom enable of uhdmovies must be preserved", migratedDisabled.contains("uhdmovies"))
         assertFalse("User custom enable of allmovieland must be preserved", migratedDisabled.contains("allmovieland"))
 
-        // 5. Version flag must be v7
+        // 5. Version flag must be v8
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
     @Test
-    fun testUpgradeFromV6UserAlreadyDisabledDeadOrEnabledSotaEdgeCase() {
+    fun testUpgradeFromV7UserAlreadyDisabledDeadOrEnabledSotaEdgeCase() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
 
-        // Case where user had already disabled HexaSU and already enabled yflix in v6
-        val customDisabled = (getDefaultDisabledProviderIds() + "HexaSU") - "yflix"
+        // Case where user had already disabled vidfast and already enabled vidcore in v7
+        val customDisabled = (getDefaultDisabledProviderIds() + "vidfast") - "vidcore"
         mockPrefs.edit()
             .putStringSet("disabled_providers", customDisabled)
-            .putBoolean("streamplay_top_tier_v6_initialized", true)
+            .putBoolean("streamplay_top_tier_v7_initialized", true)
             .apply()
 
         val migratedDisabled = getOrInitializeDisabledProviders(mockPrefs)
 
-        assertTrue("HexaSU remains disabled", migratedDisabled.contains("HexaSU"))
-        assertFalse("yflix remains enabled", migratedDisabled.contains("yflix"))
-        assertFalse("cinejoy becomes enabled", migratedDisabled.contains("cinejoy"))
-        assertTrue("autoembed becomes disabled", migratedDisabled.contains("autoembed"))
+        assertTrue("vidfast remains disabled", migratedDisabled.contains("vidfast"))
+        assertFalse("vidcore remains enabled", migratedDisabled.contains("vidcore"))
+        assertFalse("vidup becomes enabled", migratedDisabled.contains("vidup"))
+        assertTrue("VidEasy becomes disabled", migratedDisabled.contains("VidEasy"))
     }
 
     @Test

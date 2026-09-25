@@ -823,3 +823,91 @@ data class AnikageSubtitle(
 data class AnikageEmbed(
     val url: String? = null
 )
+
+// Vidcore & Vidup Models
+data class VidcoreEncResponse(
+    @param:JsonProperty("status") val status: Int? = null,
+    @param:JsonProperty("result") val result: VidcoreEncResult? = null
+)
+
+data class VidcoreEncResult(
+    @param:JsonProperty("servers") val servers: String = "",
+    @param:JsonProperty("stream") val stream: String = "",
+    @param:JsonProperty("token") val token: String = ""
+)
+
+data class VidcoreServersResponse(
+    @param:JsonProperty("status") val status: Int? = null,
+    @param:JsonProperty("result") val result: List<VidcoreServerItem> = emptyList()
+)
+
+data class VidcoreServerItem(
+    @param:JsonProperty("name") val name: String = "",
+    @param:JsonProperty("data") val data: String = ""
+)
+
+data class VidcoreStreamResponse(
+    @param:JsonProperty("status") val status: Int? = null,
+    @param:JsonProperty("result") val result: VidcoreStreamResult? = null
+)
+
+data class VidcoreStreamResult(
+    @param:JsonProperty("url") val url: String? = null,
+    @param:JsonProperty("noReferrer") val noReferrer: Boolean? = null,
+    @param:JsonProperty("tracks") val tracks: List<VidcoreTrack>? = null,
+    @param:JsonProperty("4kAvailable") val fourKAvailable: Boolean? = null
+)
+
+data class VidcoreTrack(
+    @param:JsonProperty("file") val file: String? = null,
+    @param:JsonProperty("label") val label: String? = null
+)
+
+// CineJoy & Wing Models
+data class CinejoyServersResponse(
+    @param:JsonProperty("servers") val servers: List<CinejoyServerItem>? = null
+)
+
+data class CinejoyServerItem(
+    @param:JsonProperty("name") val name: String = "",
+    @param:JsonProperty("status") val status: String? = null
+)
+
+data class CinejoyEncResponse(
+    @param:JsonProperty("status") val status: Int? = null,
+    @param:JsonProperty("result") val result: CinejoyEncResult? = null
+)
+
+data class CinejoyEncResult(
+    @param:JsonProperty("data") val data: String = "",
+    @param:JsonProperty("state") val state: Any? = null
+)
+
+data class CinejoyDecResponse(
+    @param:JsonProperty("status") val status: Int? = null,
+    @param:JsonProperty("result") val result: CinejoyDecResult? = null
+)
+
+data class CinejoyDecResult(
+    @param:JsonProperty("data") val data: CinejoyDecData? = null,
+    @param:JsonProperty("status") val status: Int? = null
+)
+
+data class CinejoyDecData(
+    @param:JsonProperty("stream") val stream: List<CinejoyStreamItem>? = null
+)
+
+data class CinejoyStreamItem(
+    @param:JsonProperty("id") val id: String? = null,
+    @param:JsonProperty("type") val type: String? = null,
+    @param:JsonProperty("playlist") val playlist: String? = null,
+    @param:JsonProperty("url") val url: String? = null,
+    @param:JsonProperty("captions") val captions: List<CinejoyCaption>? = null
+)
+
+data class CinejoyCaption(
+    @param:JsonProperty("id") val id: String? = null,
+    @param:JsonProperty("url") val url: String? = null,
+    @param:JsonProperty("language") val language: String? = null,
+    @param:JsonProperty("type") val type: String? = null
+)

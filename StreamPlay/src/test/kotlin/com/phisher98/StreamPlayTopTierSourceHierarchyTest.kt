@@ -44,16 +44,14 @@ class StreamPlayTopTierSourceHierarchyTest {
     fun testDefinitiveTopTierSourcesOrderAndRegistration() {
         val expectedOrder = listOf(
             "vidlink",
-            "yflix",
-            "cinejoy",
-            "vidfast",
-            "VidEasy",
-            "vidsrc"
+            "vidcore",
+            "vidup",
+            "cinejoy"
         )
         val expectedSet = expectedOrder.toSet()
 
-        // 1. Verify DEFAULT_TOP_TIER_PROVIDERS contains all 6 sources
-        assertEquals(6, DEFAULT_TOP_TIER_PROVIDERS.size)
+        // 1. Verify DEFAULT_TOP_TIER_PROVIDERS contains all 4 sources
+        assertEquals(4, DEFAULT_TOP_TIER_PROVIDERS.size)
         assertEquals(expectedSet, DEFAULT_TOP_TIER_PROVIDERS)
 
         // 2. Verify all are registered in buildProviders()
@@ -68,10 +66,15 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertFalse("SuperStream must NOT be registered in buildProviders()", providerMap.containsKey("superstream"))
 
         // 4. Verify SOTA provider details
-        val yflix = providerMap["yflix"]
-        assertNotNull("YFlix provider must exist", yflix)
-        assertEquals("YFlix", yflix?.name)
-        assertEquals(ProviderKind.VIDEO, yflix?.kind)
+        val vidcore = providerMap["vidcore"]
+        assertNotNull("Vidcore provider must exist", vidcore)
+        assertEquals("Vidcore", vidcore?.name)
+        assertEquals(ProviderKind.VIDEO, vidcore?.kind)
+
+        val vidup = providerMap["vidup"]
+        assertNotNull("Vidup provider must exist", vidup)
+        assertEquals("Vidup", vidup?.name)
+        assertEquals(ProviderKind.VIDEO, vidup?.kind)
 
         val cinejoy = providerMap["cinejoy"]
         assertNotNull("CineJoy provider must exist", cinejoy)
@@ -110,15 +113,15 @@ class StreamPlayTopTierSourceHierarchyTest {
             assertFalse("Top tier provider '$topId' must NOT be disabled", disabledIds.contains(topId))
         }
 
-        // Active providers must be exactly the 6 top-tier providers
+        // Active providers must be exactly the 4 top-tier providers
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals(6, activeProviders.size)
+        assertEquals(4, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders.map { it.id }.toSet())
     }
 
     @Test
     fun testColdStartLatencyTiersMatchPriority() {
-        val topTierSources = listOf("vidlink", "HexaSU", "autoembed", "vidfast", "VidEasy", "vidsrc")
+        val topTierSources = listOf("vidlink", "vidcore", "vidup", "cinejoy")
 
         for (source in topTierSources) {
             val tier = SpeculativePipeliner.STATIC_COLD_START_TIERS[source]
@@ -255,7 +258,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         val allProviders = buildProviders()
         val active = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 6 top-tier providers", 6, active.size)
+        assertEquals("Clean install must activate exactly 4 top-tier providers", 4, active.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue(mockPrefs.getBoolean("streamplay_top5_defaults_initialized", false))
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
@@ -264,12 +267,12 @@ class StreamPlayTopTierSourceHierarchyTest {
     @Test
     fun testMigrationForUpgradingUserEnablesAutoembedAndDisablesSuperStream() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
-        // Simulate legacy user who had old defaults initialized (HexaSU & autoembed present, yflix & cinejoy disabled)
-        val oldDisabled = getDefaultDisabledProviderIds() + "yflix" + "cinejoy"
+        // Simulate legacy user who had old defaults initialized (vidfast, VidEasy, yflix, vidsrc present, vidcore & vidup disabled)
+        val oldDisabled = getDefaultDisabledProviderIds() + "vidcore" + "vidup"
         mockPrefs.edit()
             .putStringSet("disabled_providers", oldDisabled)
             .putBoolean("streamplay_top5_defaults_initialized", true)
-            .putBoolean("streamplay_top_tier_v6_initialized", true)
+            .putBoolean("streamplay_top_tier_v7_initialized", true)
             .apply()
 
         // Run unified initialization/migration
@@ -278,13 +281,18 @@ class StreamPlayTopTierSourceHierarchyTest {
         val active = allProviders.map { it.id }.filterNot { finalDisabled.contains(it) }.toSet()
 
         // SOTA providers must be enabled (removed from disabled_providers)
-        assertFalse("YFlix must not be disabled after migration", finalDisabled.contains("yflix"))
-        assertFalse("CineJoy must not be disabled after migration", finalDisabled.contains("cinejoy"))
+        assertFalse("vidcore must not be disabled after migration", finalDisabled.contains("vidcore"))
+        assertFalse("vidup must not be disabled after migration", finalDisabled.contains("vidup"))
+        assertFalse("cinejoy must not be disabled after migration", finalDisabled.contains("cinejoy"))
         // Dead providers must be explicitly disabled in migration
         assertTrue("AutoEmbed must be in disabled_providers after migration", finalDisabled.contains("autoembed"))
         assertTrue("HexaSU must be in disabled_providers after migration", finalDisabled.contains("HexaSU"))
         assertTrue("SuperStream must be in disabled_providers after migration", finalDisabled.contains("superstream"))
-        assertEquals("All 6 top-tier providers must be active after migration", DEFAULT_TOP_TIER_PROVIDERS, active)
+        assertTrue("vidfast must be in disabled_providers after migration", finalDisabled.contains("vidfast"))
+        assertTrue("VidEasy must be in disabled_providers after migration", finalDisabled.contains("VidEasy"))
+        assertTrue("yflix must be in disabled_providers after migration", finalDisabled.contains("yflix"))
+        assertTrue("vidsrc must be in disabled_providers after migration", finalDisabled.contains("vidsrc"))
+        assertEquals("All 4 top-tier providers must be active after migration", DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
@@ -726,9 +734,9 @@ class StreamPlayTopTierSourceHierarchyTest {
     @Test
     fun testTopTierProvidersOrderInProvidersList() {
         val allProviders = buildProviders()
-        val top5 = allProviders.take(5).map { it.id }
-        val expected = listOf("vidlink", "yflix", "cinejoy", "vidfast", "VidEasy")
-        assertEquals("ProvidersList must define top-tier providers in strict priority order", expected, top5)
+        val top4 = allProviders.take(4).map { it.id }
+        val expected = listOf("vidlink", "vidcore", "vidup", "cinejoy")
+        assertEquals("ProvidersList must define top-tier providers in strict priority order", expected, top4)
     }
 
     @Test
@@ -1910,5 +1918,109 @@ class StreamPlayTopTierSourceHierarchyTest {
             throw java.io.IOException("Socket timeout")
         }
         assertNull("suspendCancellable must safely return null on standard IOException", swallowedResult)
+    }
+
+    @Test
+    fun testCinejoyEncResponseObjectStateDeserializationAndPayloadSerialization() {
+        val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+
+        // Real-world response structure from https://enc-dec.app/api/enc-cinejoy
+        val encPayload = """
+            {
+                "status": 200,
+                "result": {
+                    "data": "AgIEt9hEmKqZK5dkbpPTopKcGbhuylIyprSbdJu7VrqiBZ6JNRH3Gek2qsPsKKqH9d73yFfLXzWZr4ZT36DgHvbdEwPKNZfkC1",
+                    "state": {
+                        "responseKey": "BbK8I0AINBnUZ8ZYOEF_Ft5l0F1rWGVh_OKz6Fkzogs",
+                        "aad": "bHVtZW4tZ2F0ZS12MgACAgS32ESYqpkrl2Ruk9OikpwZuG7KUjKmtJt0m7tWuqIFnok1EfcZ6Taqw-woqof13vfIV8tfNZmvhlPfoOAe9t0T"
+                    }
+                }
+            }
+        """.trimIndent()
+
+        val parsed = mapper.readValue(encPayload, CinejoyEncResponse::class.java)
+        assertNotNull("CinejoyEncResponse must deserialize successfully", parsed)
+        assertEquals(200, parsed.status)
+        val result = parsed.result
+        assertNotNull("Result must not be null", result)
+        assertEquals("AgIEt9hEmKqZK5dkbpPTopKcGbhuylIyprSbdJu7VrqiBZ6JNRH3Gek2qsPsKKqH9d73yFfLXzWZr4ZT36DgHvbdEwPKNZfkC1", result?.data)
+        assertNotNull("State object must not be null", result?.state)
+        assertTrue("State must be parsed as a Map/Object structure", result?.state is Map<*, *>)
+
+        @Suppress("UNCHECKED_CAST")
+        val stateMap = result?.state as Map<String, Any?>
+        assertEquals("BbK8I0AINBnUZ8ZYOEF_Ft5l0F1rWGVh_OKz6Fkzogs", stateMap["responseKey"])
+
+        // Test round-trip serialization for dec-cinejoy POST body
+        val decRequestBody = mapOf(
+            "text" to "dummyBase64",
+            "state" to result.state
+        )
+        val serialized = mapper.writeValueAsString(decRequestBody)
+        assertTrue("Serialized body must contain text", serialized.contains("\"text\":\"dummyBase64\""))
+        assertTrue("Serialized body must contain state as nested object", serialized.contains("\"state\":{"))
+        assertTrue("Serialized body must retain responseKey", serialized.contains("\"responseKey\":\"BbK8I0AINBnUZ8ZYOEF_Ft5l0F1rWGVh_OKz6Fkzogs\""))
+    }
+
+    @Test
+    fun testStreamLinkOptimizerTopTierRanksIncludeVidcoreAndVidup() {
+        val linkVidcore = createLink("Vidcore", "Vidcore Supreme [1080p]", "https://moon.quietridge.top/vd/master.m3u8")
+        val linkVidup = createLink("Vidup", "Vidup Euro [1080p]", "https://moon.quietridge.top/vd/master.m3u8")
+        val linkCinejoy = createLink("CineJoy", "CineJoy Lisbon [1080p]", "https://ok.solarpanelcleaning.cc/playlist.m3u8")
+
+        val rVidcore = StreamLinkOptimizer.getSourcePriorityRank(linkVidcore)
+        val rVidup = StreamLinkOptimizer.getSourcePriorityRank(linkVidup)
+        val rCinejoy = StreamLinkOptimizer.getSourcePriorityRank(linkCinejoy)
+
+        assertEquals("Vidcore priority rank is 95", 95, rVidcore)
+        assertEquals("Vidup priority rank is 92", 92, rVidup)
+        assertEquals("CineJoy priority rank is 80", 80, rCinejoy)
+
+        assertTrue("Vidcore (95) beats Vidup (92)", rVidcore > rVidup)
+        assertTrue("Vidup (92) beats CineJoy (80)", rVidup > rCinejoy)
+
+        // Verify dispatcher in-flight coordination with active top ranks containing 95 and 92
+        val emittedLinks = mutableListOf<ExtractorLink>()
+        val activeRanks = setOf(100, 95, 92, 80)
+        var vidcoreInFlight = true
+
+        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)
+        val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
+            upstreamCallback = { emittedLinks.add(it) },
+            scope = scope,
+            stageWindowMs = 0L,
+            topSourceGraceMs = 5000L,
+            activeTopRanks = activeRanks,
+            isRankInFlight = { rank -> if (rank == 95) vidcoreInFlight else false }
+        )
+
+        // Cinejoy 720p emitted while Vidcore is in-flight: should wait for Vidcore
+        val cinejoy720 = createLink("CineJoy", "CineJoy Lisbon [720p]", "https://ok.solarpanelcleaning.cc/720.m3u8", quality = Qualities.P720.value)
+        dispatcher.onSubtitleReceived()
+        dispatcher.onLinkAccepted(cinejoy720)
+        assertTrue("CineJoy 720p must be held while higher-priority Vidcore (95) is in flight", emittedLinks.isEmpty())
+
+        // Mark Vidcore as completed
+        vidcoreInFlight = false
+        dispatcher.markProviderCompleted("vidcore")
+
+        assertTrue("CineJoy 720p must be released once higher-priority Vidcore completes", emittedLinks.isNotEmpty())
+    }
+
+    @Test
+    fun testVidcoreAndVidupSinglePassTokenExtractionRegex() {
+        val regex = Regex("""\\?"(?:en|token)\\?"\s*:\s*\\?"([^"\\]+)""")
+
+        // Standard unescaped JSON
+        val unescaped = """{"en":"TokenUnescaped123","title":"Movie"}"""
+        assertEquals("TokenUnescaped123", regex.find(unescaped)?.groupValues?.get(1))
+
+        // Next.js RSC escaped payload (single backslash in string)
+        val escapedNextJs = """11\",null,{\"en\":\"TokenEscaped456\",\"host\":\"vidcore.io\"}"""
+        assertEquals("TokenEscaped456", regex.find(escapedNextJs)?.groupValues?.get(1))
+
+        // Alternate "token" attribute name
+        val tokenAttr = """{\"token\":\"TokenAlt789\"}"""
+        assertEquals("TokenAlt789", regex.find(tokenAttr)?.groupValues?.get(1))
     }
 }

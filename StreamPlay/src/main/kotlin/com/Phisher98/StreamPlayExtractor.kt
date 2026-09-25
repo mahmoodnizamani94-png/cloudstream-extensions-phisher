@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.base64DecodeArray
+import com.lagradost.cloudstream3.base64Encode
 import com.lagradost.cloudstream3.extractors.helper.AesHelper.cryptoAESHandler
 import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -5250,6 +5251,385 @@ object StreamPlayExtractor : StreamPlay() {
         invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
+    private fun base64UrlDecodeSafe(input: String): ByteArray {
+        return try {
+            java.util.Base64.getUrlDecoder().decode(input)
+        } catch (_: Throwable) {
+            val fixed = input.replace('-', '+').replace('_', '/')
+            val pad = (4 - fixed.length % 4) % 4
+            base64DecodeArray(fixed + "=".repeat(pad))
+        }
+    }
+
+    private fun base64UrlEncodeSafe(input: ByteArray): String {
+        return try {
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(input)
+        } catch (_: Throwable) {
+            base64Encode(input).replace('+', '-').replace('/', '_').replace("=", "")
+        }
+    }
+
+    suspend fun invokeVidcore(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
+
+            withTimeoutOrNull(9500L) {
+                val base = "https://vidcore.io"
+                val api = "https://enc-dec.app/api"
+
+                val requestUrls = if (season == null || (season == 0 && episode == null)) {
+                    listOf("$base/movie/$tmdbId")
+                } else {
+                    if (episode == null) return@withTimeoutOrNull
+                    if (season == 0) {
+                        listOf(
+                            "$base/tv/$tmdbId/$season/$episode/",
+                            "$base/movie/$tmdbId"
+                        )
+                    } else {
+                        listOf("$base/tv/$tmdbId/$season/$episode/")
+                    }
+                }
+
+                val baseHeaders = mutableMapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "$base/"
+                )
+
+                var encodedToken: String? = null
+                for (requestUrl in requestUrls) {
+                    val pageText = retryTransient(2, 200L) {
+                        runCatching {
+                            app.get(requestUrl, headers = baseHeaders, timeout = 5L).text
+                        }.getOrNull()
+                    } ?: continue
+
+                    val token = Regex("""\\?"(?:en|token)\\?"\s*:\s*\\?"([^"\\]+)""").find(pageText)?.groupValues?.get(1)
+
+                    if (!token.isNullOrBlank()) {
+                        encodedToken = token
+                        break
+                    }
+                }
+
+                if (encodedToken.isNullOrBlank()) return@withTimeoutOrNull
+
+                val encJson = encDecApiSemaphore.withPermit {
+                    retryTransient(2, 300L) {
+                        runCatching {
+                            app.get("$api/enc-vidcore?text=$encodedToken", timeout = 6L)
+                                .parsedSafe<VidcoreEncResponse>()
+                        }.getOrNull()
+                    }
+                } ?: return@withTimeoutOrNull
+
+                val encResult = encJson.result ?: return@withTimeoutOrNull
+                val serversUrl = encResult.servers
+                val streamBase = encResult.stream
+                val csrfToken = encResult.token
+
+                if (serversUrl.isBlank() || streamBase.isBlank()) return@withTimeoutOrNull
+
+                baseHeaders["X-CSRF-Token"] = csrfToken
+                baseHeaders["X-Requested-With"] = "XMLHttpRequest"
+
+                val serversEncrypted = retryTransient(2, 250L) {
+                    val resp = app.post(serversUrl, headers = baseHeaders, timeout = 6L)
+                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                } ?: return@withTimeoutOrNull
+
+                val serversRoot = encDecApiSemaphore.withPermit {
+                    retryTransient(2, 300L) {
+                        runCatching {
+                            app.post(
+                                "$api/dec-vidcore",
+                                json = mapOf("text" to serversEncrypted),
+                                timeout = 6L
+                            ).parsedSafe<VidcoreServersResponse>()
+                        }.getOrNull()
+                    }
+                } ?: return@withTimeoutOrNull
+
+                val serversList = serversRoot.result
+                if (serversList.isEmpty()) return@withTimeoutOrNull
+
+                val vidcoreServerSemaphore = Semaphore(2)
+                coroutineScope {
+                    serversList.take(3).mapIndexed { index, server ->
+                        async {
+                            try {
+                                val name = server.name.ifBlank { "Server ${index + 1}" }
+                                val data = server.data
+                                if (data.isBlank()) return@async
+
+                                val streamUrl = "$streamBase/$data"
+                                val streamEncrypted = retryTransient(1, 150L) {
+                                    runCatching {
+                                        val resp = app.post(streamUrl, headers = baseHeaders, timeout = 5L)
+                                        if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                                    }.getOrNull()
+                                } ?: return@async
+
+                                val streamRoot = vidcoreServerSemaphore.withPermit {
+                                    encDecApiSemaphore.withPermit {
+                                        retryTransient(2, 250L) {
+                                            runCatching {
+                                                app.post(
+                                                    "$api/dec-vidcore",
+                                                    json = mapOf("text" to streamEncrypted),
+                                                    timeout = 6L
+                                                ).parsedSafe<VidcoreStreamResponse>()
+                                            }.getOrNull()
+                                        }
+                                    }
+                                } ?: return@async
+
+                                val streamResult = streamRoot.result ?: return@async
+                                val finalUrl = streamResult.url?.trim() ?: return@async
+                                if (!finalUrl.startsWith("http", ignoreCase = true)) return@async
+
+                                // Extract subtitles
+                                streamResult.tracks?.forEach { track ->
+                                    val subUrl = track.file?.trim()
+                                    val subLabel = track.label?.trim() ?: "English"
+                                    if (!subUrl.isNullOrBlank() && subUrl.startsWith("http", ignoreCase = true)) {
+                                        subtitleCallback?.invoke(newSubtitleFile(cleanSubtitleLabel(subLabel), subUrl))
+                                    }
+                                }
+
+                                val streamHeaders = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Referer" to "$base/",
+                                    "Origin" to base
+                                )
+
+                                val isM3u8 = finalUrl.contains(".m3u8", ignoreCase = true)
+                                val variants = if (isM3u8) {
+                                    runCatching {
+                                        generateM3u8("Vidcore", finalUrl, referer = "$base/", headers = streamHeaders)
+                                    }.getOrNull()
+                                } else null
+
+                                emitTopTierDualQualityStreamLinks(
+                                    source = "Vidcore",
+                                    baseName = "Vidcore $name",
+                                    url = finalUrl,
+                                    referer = "$base/",
+                                    headers = streamHeaders,
+                                    streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                    generatedLinks = variants,
+                                    callback = callback
+                                )
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.w("StreamPlay", "Vidcore server ${server.name} failed: ${e.message}")
+                            }
+                        }
+                    }.awaitAll()
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidcore failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVidcore(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVidcore(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+
+    suspend fun invokeVidup(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
+
+            withTimeoutOrNull(9500L) {
+                val base = "https://vidup.to"
+                val api = "https://enc-dec.app/api"
+
+                val requestUrls = if (season == null || (season == 0 && episode == null)) {
+                    listOf("$base/movie/$tmdbId")
+                } else {
+                    if (episode == null) return@withTimeoutOrNull
+                    if (season == 0) {
+                        listOf(
+                            "$base/tv/$tmdbId/$season/$episode/",
+                            "$base/movie/$tmdbId"
+                        )
+                    } else {
+                        listOf("$base/tv/$tmdbId/$season/$episode/")
+                    }
+                }
+
+                val baseHeaders = mutableMapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "$base/"
+                )
+
+                var encodedToken: String? = null
+                for (requestUrl in requestUrls) {
+                    val pageText = retryTransient(2, 200L) {
+                        runCatching {
+                            app.get(requestUrl, headers = baseHeaders, timeout = 5L).text
+                        }.getOrNull()
+                    } ?: continue
+
+                    val token = Regex("""\\?"(?:en|token)\\?"\s*:\s*\\?"([^"\\]+)""").find(pageText)?.groupValues?.get(1)
+
+                    if (!token.isNullOrBlank()) {
+                        encodedToken = token
+                        break
+                    }
+                }
+
+                if (encodedToken.isNullOrBlank()) return@withTimeoutOrNull
+
+                val encJson = encDecApiSemaphore.withPermit {
+                    retryTransient(2, 300L) {
+                        runCatching {
+                            app.get("$api/enc-vidup?text=$encodedToken", timeout = 6L)
+                                .parsedSafe<VidcoreEncResponse>()
+                        }.getOrNull()
+                    }
+                } ?: return@withTimeoutOrNull
+
+                val encResult = encJson.result ?: return@withTimeoutOrNull
+                val serversUrl = encResult.servers
+                val streamBase = encResult.stream
+                val csrfToken = encResult.token
+
+                if (serversUrl.isBlank() || streamBase.isBlank()) return@withTimeoutOrNull
+
+                baseHeaders["X-CSRF-Token"] = csrfToken
+                baseHeaders["X-Requested-With"] = "XMLHttpRequest"
+
+                val serversEncrypted = retryTransient(2, 250L) {
+                    val resp = app.post(serversUrl, headers = baseHeaders, timeout = 6L)
+                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                } ?: return@withTimeoutOrNull
+
+                val serversRoot = encDecApiSemaphore.withPermit {
+                    retryTransient(2, 300L) {
+                        runCatching {
+                            app.post(
+                                "$api/dec-vidup",
+                                json = mapOf("text" to serversEncrypted),
+                                timeout = 6L
+                            ).parsedSafe<VidcoreServersResponse>()
+                        }.getOrNull()
+                    }
+                } ?: return@withTimeoutOrNull
+
+                val serversList = serversRoot.result
+                if (serversList.isEmpty()) return@withTimeoutOrNull
+
+                val vidupServerSemaphore = Semaphore(2)
+                coroutineScope {
+                    serversList.take(3).mapIndexed { index, server ->
+                        async {
+                            try {
+                                val name = server.name.ifBlank { "Server ${index + 1}" }
+                                val data = server.data
+                                if (data.isBlank()) return@async
+
+                                val streamUrl = "$streamBase/$data"
+                                val streamEncrypted = retryTransient(1, 150L) {
+                                    runCatching {
+                                        val resp = app.post(streamUrl, headers = baseHeaders, timeout = 5L)
+                                        if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                                    }.getOrNull()
+                                } ?: return@async
+
+                                val streamRoot = vidupServerSemaphore.withPermit {
+                                    encDecApiSemaphore.withPermit {
+                                        retryTransient(2, 250L) {
+                                            runCatching {
+                                                app.post(
+                                                    "$api/dec-vidup",
+                                                    json = mapOf("text" to streamEncrypted),
+                                                    timeout = 6L
+                                                ).parsedSafe<VidcoreStreamResponse>()
+                                            }.getOrNull()
+                                        }
+                                    }
+                                } ?: return@async
+
+                                val streamResult = streamRoot.result ?: return@async
+                                val finalUrl = streamResult.url?.trim() ?: return@async
+                                if (!finalUrl.startsWith("http", ignoreCase = true)) return@async
+
+                                // Extract subtitles
+                                streamResult.tracks?.forEach { track ->
+                                    val subUrl = track.file?.trim()
+                                    val subLabel = track.label?.trim() ?: "English"
+                                    if (!subUrl.isNullOrBlank() && subUrl.startsWith("http", ignoreCase = true)) {
+                                        subtitleCallback?.invoke(newSubtitleFile(cleanSubtitleLabel(subLabel), subUrl))
+                                    }
+                                }
+
+                                val streamHeaders = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Referer" to "$base/",
+                                    "Origin" to base
+                                )
+
+                                val isM3u8 = finalUrl.contains(".m3u8", ignoreCase = true)
+                                val variants = if (isM3u8) {
+                                    runCatching {
+                                        generateM3u8("Vidup", finalUrl, referer = "$base/", headers = streamHeaders)
+                                    }.getOrNull()
+                                } else null
+
+                                emitTopTierDualQualityStreamLinks(
+                                    source = "Vidup",
+                                    baseName = "Vidup $name",
+                                    url = finalUrl,
+                                    referer = "$base/",
+                                    headers = streamHeaders,
+                                    streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                    generatedLinks = variants,
+                                    callback = callback
+                                )
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.w("StreamPlay", "Vidup server ${server.name} failed: ${e.message}")
+                            }
+                        }
+                    }.awaitAll()
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidup failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVidup(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVidup(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+
+
     private data class YFlixCandidateResult(
         val domain: String,
         val videoUrl: String,
@@ -5506,95 +5886,211 @@ object StreamPlayExtractor : StreamPlay() {
                     ).filterNotNull()
                 }
 
-                if (apiPaths.isEmpty()) return@withTimeoutOrNull
+                var directHandled = false
+                if (apiPaths.isNotEmpty()) {
+                    val winnerDeferred = CompletableDeferred<CineJoyCandidateResult?>()
+                    coroutineScope {
+                        val jobs = apiPaths.map { path ->
+                            launch(Dispatchers.IO) {
+                                if (winnerDeferred.isCompleted) return@launch
+                                try {
+                                    val fullUrl = "$cinejoyBase$path"
+                                    val response = withTimeoutOrNull(2200L) {
+                                        app.get(fullUrl, headers = cinejoyHeaders, timeout = 3L).text
+                                    } ?: return@launch
 
-                val winnerDeferred = CompletableDeferred<CineJoyCandidateResult?>()
+                                    if (response.isBlank() || response.contains("404 Not Found", ignoreCase = true)) return@launch
 
-                val winner = coroutineScope {
-                    val jobs = apiPaths.map { path ->
-                        launch(Dispatchers.IO) {
-                            if (winnerDeferred.isCompleted) return@launch
-                            try {
-                                val fullUrl = "$cinejoyBase$path"
-                                val response = withTimeoutOrNull(2200L) {
-                                    app.get(fullUrl, headers = cinejoyHeaders, timeout = 3L).text
-                                } ?: return@launch
+                                    val json = runCatching { JSONObject(response) }.getOrNull() ?: return@launch
+                                    val streamUrl = json.optString("url").takeIf { it.isNotBlank() }
+                                        ?: json.optString("stream").takeIf { it.isNotBlank() }
+                                        ?: json.optString("file").takeIf { it.isNotBlank() }
+                                        ?: return@launch
 
-                                if (response.isBlank() || response.contains("404 Not Found", ignoreCase = true)) return@launch
-
-                                val json = runCatching { JSONObject(response) }.getOrNull() ?: return@launch
-                                val streamUrl = json.optString("url").takeIf { it.isNotBlank() }
-                                    ?: json.optString("stream").takeIf { it.isNotBlank() }
-                                    ?: json.optString("file").takeIf { it.isNotBlank() }
-                                    ?: return@launch
-
-                                winnerDeferred.complete(CineJoyCandidateResult(streamUrl, json))
-                            } catch (e: Throwable) {
-                                if (e is CancellationException) throw e
+                                    winnerDeferred.complete(CineJoyCandidateResult(streamUrl, json))
+                                } catch (e: Throwable) {
+                                    if (e is CancellationException) throw e
+                                }
                             }
                         }
-                    }
 
-                    val supervisor = launch {
-                        jobs.joinAll()
-                        winnerDeferred.complete(null)
-                    }
+                        val supervisor = launch {
+                            jobs.joinAll()
+                            winnerDeferred.complete(null)
+                        }
 
-                    try {
-                        winnerDeferred.await()
-                    } finally {
-                        jobs.forEach { it.cancel() }
-                        supervisor.cancel()
+                        try {
+                            val winner = winnerDeferred.await()
+                            if (winner != null) {
+                                directHandled = true
+                                val (streamUrl, json) = winner
+
+                                val tracksArray = json.optJSONArray("subtitles") ?: json.optJSONArray("tracks")
+                                if (tracksArray != null && subtitleCallback != null) {
+                                    for (i in 0 until tracksArray.length()) {
+                                        val trackObj = tracksArray.optJSONObject(i) ?: continue
+                                        val trackUrl = trackObj.optString("file").takeIf { it.isNotBlank() }
+                                            ?: trackObj.optString("url").takeIf { it.isNotBlank() } ?: continue
+                                        val trackLabel = trackObj.optString("label").takeIf { it.isNotBlank() }
+                                            ?: trackObj.optString("lang").takeIf { it.isNotBlank() } ?: "English"
+                                        val trackKind = trackObj.optString("kind", "subtitles")
+                                        if (!trackUrl.contains("thumbnail", ignoreCase = true) && !trackKind.equals("thumbnails", ignoreCase = true)) {
+                                            subtitleCallback(
+                                                newSubtitleFile(
+                                                    cleanSubtitleLabel(trackLabel),
+                                                    trackUrl
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+
+                                val isM3u8 = streamUrl.contains(".m3u8", ignoreCase = true)
+                                val streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                val streamHeaders = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Referer" to "$cinejoyBase/",
+                                    "Origin" to cinejoyBase
+                                )
+
+                                val variants = if (isM3u8) {
+                                    runCatching {
+                                        generateM3u8("CineJoy", streamUrl, "$cinejoyBase/", headers = streamHeaders)
+                                    }.getOrNull()
+                                } else null
+
+                                emitTopTierDualQualityStreamLinks(
+                                    source = "CineJoy",
+                                    baseName = "CineJoy",
+                                    url = streamUrl,
+                                    referer = "$cinejoyBase/",
+                                    headers = streamHeaders,
+                                    streamType = streamType,
+                                    generatedLinks = variants,
+                                    callback = callback
+                                )
+                            }
+                        } finally {
+                            jobs.forEach { it.cancel() }
+                            supervisor.cancel()
+                        }
                     }
                 }
 
-                if (winner != null) {
-                    val (streamUrl, json) = winner
+                if (directHandled) return@withTimeoutOrNull
 
-                    val tracksArray = json.optJSONArray("subtitles") ?: json.optJSONArray("tracks")
-                    if (tracksArray != null && subtitleCallback != null) {
-                        for (i in 0 until tracksArray.length()) {
-                            val trackObj = tracksArray.optJSONObject(i) ?: continue
-                            val trackUrl = trackObj.optString("file").takeIf { it.isNotBlank() }
-                                ?: trackObj.optString("url").takeIf { it.isNotBlank() } ?: continue
-                            val trackLabel = trackObj.optString("label").takeIf { it.isNotBlank() }
-                                ?: trackObj.optString("lang").takeIf { it.isNotBlank() } ?: "English"
-                            val trackKind = trackObj.optString("kind", "subtitles")
-                            if (!trackUrl.contains("thumbnail", ignoreCase = true) && !trackKind.equals("thumbnails", ignoreCase = true)) {
-                                subtitleCallback(
-                                    newSubtitleFile(
-                                        cleanSubtitleLabel(trackLabel),
-                                        trackUrl
+                // Fall back to live Wing engine (https://api.wing.st + https://enc-dec.app)
+                val origin = "https://cinejoy.pk"
+                val wingHeaders = mapOf(
+                    "Origin" to origin,
+                    "Referer" to "$origin/",
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "*/*"
+                )
+
+                val availableServers = runCatching {
+                    app.get("https://api.wing.st/servers", headers = wingHeaders, timeout = 2L)
+                        .parsedSafe<CinejoyServersResponse>()?.servers?.map { it.name }?.filter { it.isNotBlank() }
+                }.getOrNull()?.takeIf { it.isNotEmpty() } ?: listOf("Lisbon", "Nebula", "Solara", "Athens")
+
+                val cleanTitleWing = title?.replace(Regex("[^a-zA-Z0-9\\s]"), " ")?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+                val encodedTitle = URLEncoder.encode(cleanTitleWing, "UTF-8")
+
+                val cinejoySemaphore = Semaphore(2)
+                coroutineScope {
+                    availableServers.take(3).map { serverName ->
+                        async {
+                            try {
+                                val encodedServer = URLEncoder.encode(serverName, "UTF-8")
+                                val targetUrl = if (isTv) {
+                                    "https://api.wing.st/?title=$encodedTitle&type=series&year=${year ?: ""}&imdb=${imdbId ?: ""}&tmdb=${tmdbId ?: ""}&server=$encodedServer&season=$season&episode=$episode"
+                                } else {
+                                    "https://api.wing.st/?title=$encodedTitle&type=movie&year=${year ?: ""}&imdb=${imdbId ?: ""}&tmdb=${tmdbId ?: ""}&server=$encodedServer"
+                                }
+
+                                val encUrl = "https://enc-dec.app/api/enc-cinejoy?url=${URLEncoder.encode(targetUrl, "UTF-8")}"
+                                val encJson = encDecApiSemaphore.withPermit {
+                                    retryTransient(2, 250L) {
+                                        runCatching {
+                                            app.get(encUrl, timeout = 3L).parsedSafe<CinejoyEncResponse>()
+                                        }.getOrNull()
+                                    }
+                                } ?: return@async
+
+                                val encResult = encJson.result ?: return@async
+                                val rawData = encResult.data
+                                val state = encResult.state
+                                if (rawData.isBlank() || state == null || (state is String && state.isBlank())) return@async
+
+                                val requestBytes = base64UrlDecodeSafe(rawData)
+                                val postBody = requestBytes.toRequestBody("application/octet-stream".toMediaType())
+
+                                val gResp = app.post("https://api.wing.st/g", headers = wingHeaders, requestBody = postBody, timeout = 3L)
+                                if (!gResp.isSuccessful) return@async
+                                val gBytes = gResp.body.bytes()
+                                if (gBytes.isEmpty()) return@async
+
+                                val gBase64 = base64UrlEncodeSafe(gBytes)
+
+                                val decResp = cinejoySemaphore.withPermit {
+                                    encDecApiSemaphore.withPermit {
+                                        retryTransient(2, 250L) {
+                                            runCatching {
+                                                app.post(
+                                                    "https://enc-dec.app/api/dec-cinejoy",
+                                                    json = mapOf("text" to gBase64, "state" to state),
+                                                    timeout = 3L
+                                                ).parsedSafe<CinejoyDecResponse>()
+                                            }.getOrNull()
+                                        }
+                                    }
+                                } ?: return@async
+
+                                val streamList = decResp.result?.data?.stream
+                                if (streamList.isNullOrEmpty()) return@async
+
+                                for (item in streamList) {
+                                    item.captions?.forEach { cap ->
+                                        val capUrl = cap.url?.trim()
+                                        val capLang = cap.language?.trim() ?: "English"
+                                        if (!capUrl.isNullOrBlank() && capUrl.startsWith("http", ignoreCase = true)) {
+                                            subtitleCallback?.invoke(newSubtitleFile(cleanSubtitleLabel(capLang), capUrl))
+                                        }
+                                    }
+
+                                    val streamUrl = item.playlist?.takeIf { it.isNotBlank() } ?: item.url?.takeIf { it.isNotBlank() } ?: continue
+                                    if (!streamUrl.startsWith("http", ignoreCase = true)) continue
+
+                                    val streamHeaders = mapOf(
+                                        "User-Agent" to USER_AGENT,
+                                        "Referer" to "$origin/",
+                                        "Origin" to origin
                                     )
-                                )
+
+                                    val isM3u8 = streamUrl.contains(".m3u8", ignoreCase = true) || item.type.equals("hls", ignoreCase = true)
+                                    val variants = if (isM3u8) {
+                                        runCatching {
+                                            generateM3u8("CineJoy", streamUrl, "$origin/", headers = streamHeaders)
+                                        }.getOrNull()
+                                    } else null
+
+                                    emitTopTierDualQualityStreamLinks(
+                                        source = "CineJoy",
+                                        baseName = "CineJoy $serverName",
+                                        url = streamUrl,
+                                        referer = "$origin/",
+                                        headers = streamHeaders,
+                                        streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                        generatedLinks = variants,
+                                        callback = callback
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.w("StreamPlay", "CineJoy server $serverName error: ${e.message}")
                             }
                         }
-                    }
-
-                    val isM3u8 = streamUrl.contains(".m3u8", ignoreCase = true)
-                    val streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    val streamHeaders = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to "$cinejoyBase/",
-                        "Origin" to cinejoyBase
-                    )
-
-                    val variants = if (isM3u8) {
-                        runCatching {
-                            generateM3u8("CineJoy", streamUrl, "$cinejoyBase/", headers = streamHeaders)
-                        }.getOrNull()
-                    } else null
-
-                    emitTopTierDualQualityStreamLinks(
-                        source = "CineJoy",
-                        baseName = "CineJoy",
-                        url = streamUrl,
-                        referer = "$cinejoyBase/",
-                        headers = streamHeaders,
-                        streamType = streamType,
-                        generatedLinks = variants,
-                        callback = callback
-                    )
+                    }.awaitAll()
                 }
             }
         } catch (e: Exception) {
