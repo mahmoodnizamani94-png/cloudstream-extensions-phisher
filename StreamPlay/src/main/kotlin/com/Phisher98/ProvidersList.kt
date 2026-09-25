@@ -385,8 +385,7 @@ private val providers by lazy {
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
     "vidcore",
-    "vidup",
-    "cinejoy"
+    "vidup"
 )
 
 val DEAD_PROVIDER_IDS = setOf(
@@ -397,7 +396,8 @@ val DEAD_PROVIDER_IDS = setOf(
     "vidfast",
     "VidEasy",
     "yflix",
-    "vidsrc"
+    "vidsrc",
+    "cinejoy"
 )
 
 val NEWLY_PROMOTED_TOP_TIER_IDS = setOf(
@@ -410,13 +410,13 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v8_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v9_initialized"
 
 /**
- * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (VidLink > Vidcore > Vidup > CineJoy)
- * with all secondary and dead sources disabled by default, and seamlessly migrates upgrading users to v8:
- * disables dead/bloated providers (HexaSU, autoembed, superstream, vaplayer, vidfast, VidEasy, yflix, vidsrc),
- * enables newly promoted SOTA providers (vidcore, vidup, cinejoy), and strictly preserves existing user customizations.
+ * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (VidLink > Vidcore > Vidup)
+ * with all secondary and dead sources disabled by default, and seamlessly migrates upgrading users to v9:
+ * disables dead/bloated providers (HexaSU, autoembed, superstream, vaplayer, vidfast, VidEasy, yflix, vidsrc, cinejoy),
+ * enables newly promoted SOTA providers (vidcore, vidup), and strictly preserves existing user customizations.
  */
 fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
     if (sharedPref == null) return getDefaultDisabledProviderIds()
@@ -428,9 +428,9 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
         val finalDisabled = if (existingDisabled.isNullOrEmpty()) {
             defaultDisabled
         } else {
-            // Override-preserving migration to v8:
-            // 1. Add dead providers to disabled set
-            // 2. Remove newly promoted top-tier providers from disabled set
+            // Override-preserving migration to v9:
+            // 1. Add dead providers to disabled set (including cinejoy)
+            // 2. Remove newly promoted top-tier providers from disabled set (vidcore, vidup)
             // 3. Retain user's custom enabling/disabling of existing providers intact
             (existingDisabled + DEAD_PROVIDER_IDS) - NEWLY_PROMOTED_TOP_TIER_IDS
         }
@@ -441,9 +441,10 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
             putBoolean("streamplay_top_tier_v4_initialized", true)
             putBoolean("streamplay_top_tier_v6_initialized", true)
             putBoolean("streamplay_top_tier_v7_initialized", true)
+            putBoolean("streamplay_top_tier_v8_initialized", true)
             putBoolean(PREFS_TOP_TIER_INITIALIZED, true)
         }
-        Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults v8: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")
+        Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults v9: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")
         return finalDisabled
     }
     return sharedPref.getStringSet("disabled_providers", null) ?: getDefaultDisabledProviderIds()

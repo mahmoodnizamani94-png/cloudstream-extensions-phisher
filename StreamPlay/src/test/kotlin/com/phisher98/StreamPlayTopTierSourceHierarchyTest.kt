@@ -45,13 +45,12 @@ class StreamPlayTopTierSourceHierarchyTest {
         val expectedOrder = listOf(
             "vidlink",
             "vidcore",
-            "vidup",
-            "cinejoy"
+            "vidup"
         )
         val expectedSet = expectedOrder.toSet()
 
-        // 1. Verify DEFAULT_TOP_TIER_PROVIDERS contains all 4 sources
-        assertEquals(4, DEFAULT_TOP_TIER_PROVIDERS.size)
+        // 1. Verify DEFAULT_TOP_TIER_PROVIDERS contains all 3 sources
+        assertEquals(3, DEFAULT_TOP_TIER_PROVIDERS.size)
         assertEquals(expectedSet, DEFAULT_TOP_TIER_PROVIDERS)
 
         // 2. Verify all are registered in buildProviders()
@@ -77,9 +76,11 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertEquals(ProviderKind.VIDEO, vidup?.kind)
 
         val cinejoy = providerMap["cinejoy"]
-        assertNotNull("CineJoy provider must exist", cinejoy)
+        assertNotNull("CineJoy provider must exist in buildProviders()", cinejoy)
         assertEquals("CineJoy", cinejoy?.name)
         assertEquals(ProviderKind.VIDEO, cinejoy?.kind)
+        assertFalse("CineJoy must NOT be in DEFAULT_TOP_TIER_PROVIDERS", DEFAULT_TOP_TIER_PROVIDERS.contains("cinejoy"))
+        assertTrue("CineJoy must be in DEAD_PROVIDER_IDS", DEAD_PROVIDER_IDS.contains("cinejoy"))
     }
 
     @Test
@@ -113,15 +114,15 @@ class StreamPlayTopTierSourceHierarchyTest {
             assertFalse("Top tier provider '$topId' must NOT be disabled", disabledIds.contains(topId))
         }
 
-        // Active providers must be exactly the 4 top-tier providers
+        // Active providers must be exactly the 3 top-tier providers
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals(4, activeProviders.size)
+        assertEquals(3, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders.map { it.id }.toSet())
     }
 
     @Test
     fun testColdStartLatencyTiersMatchPriority() {
-        val topTierSources = listOf("vidlink", "vidcore", "vidup", "cinejoy")
+        val topTierSources = listOf("vidlink", "vidcore", "vidup")
 
         for (source in topTierSources) {
             val tier = SpeculativePipeliner.STATIC_COLD_START_TIERS[source]
@@ -258,7 +259,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         val allProviders = buildProviders()
         val active = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 4 top-tier providers", 4, active.size)
+        assertEquals("Clean install must activate exactly 3 top-tier providers", 3, active.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue(mockPrefs.getBoolean("streamplay_top5_defaults_initialized", false))
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
@@ -283,7 +284,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         // SOTA providers must be enabled (removed from disabled_providers)
         assertFalse("vidcore must not be disabled after migration", finalDisabled.contains("vidcore"))
         assertFalse("vidup must not be disabled after migration", finalDisabled.contains("vidup"))
-        assertFalse("cinejoy must not be disabled after migration", finalDisabled.contains("cinejoy"))
+        assertTrue("cinejoy must be disabled after migration", finalDisabled.contains("cinejoy"))
         // Dead providers must be explicitly disabled in migration
         assertTrue("AutoEmbed must be in disabled_providers after migration", finalDisabled.contains("autoembed"))
         assertTrue("HexaSU must be in disabled_providers after migration", finalDisabled.contains("HexaSU"))
@@ -292,7 +293,7 @@ class StreamPlayTopTierSourceHierarchyTest {
         assertTrue("VidEasy must be in disabled_providers after migration", finalDisabled.contains("VidEasy"))
         assertTrue("yflix must be in disabled_providers after migration", finalDisabled.contains("yflix"))
         assertTrue("vidsrc must be in disabled_providers after migration", finalDisabled.contains("vidsrc"))
-        assertEquals("All 4 top-tier providers must be active after migration", DEFAULT_TOP_TIER_PROVIDERS, active)
+        assertEquals("All 3 top-tier providers must be active after migration", DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
 
@@ -734,9 +735,9 @@ class StreamPlayTopTierSourceHierarchyTest {
     @Test
     fun testTopTierProvidersOrderInProvidersList() {
         val allProviders = buildProviders()
-        val top4 = allProviders.take(4).map { it.id }
-        val expected = listOf("vidlink", "vidcore", "vidup", "cinejoy")
-        assertEquals("ProvidersList must define top-tier providers in strict priority order", expected, top4)
+        val top3 = allProviders.take(3).map { it.id }
+        val expected = listOf("vidlink", "vidcore", "vidup")
+        assertEquals("ProvidersList must define top-tier providers in strict priority order", expected, top3)
     }
 
     @Test

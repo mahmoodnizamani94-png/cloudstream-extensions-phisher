@@ -5307,7 +5307,11 @@ object StreamPlayExtractor : StreamPlay() {
                 val baseHeaders = mutableMapOf(
                     "User-Agent" to USER_AGENT,
                     "Referer" to "$base/",
-                    "Accept" to "*/*"
+                    "Accept" to "application/json, text/plain, */*",
+                    "Accept-Language" to "en-US,en;q=0.9",
+                    "Sec-Ch-Ua" to "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"132\", \"Google Chrome\";v=\"132\"",
+                    "Sec-Ch-Ua-Mobile" to "?0",
+                    "Sec-Ch-Ua-Platform" to "\"Windows\""
                 )
 
                 var encodedToken: String? = null
@@ -5344,12 +5348,16 @@ object StreamPlayExtractor : StreamPlay() {
 
                 if (serversUrl.isBlank() || streamBase.isBlank()) return@withTimeoutOrNull
 
-                baseHeaders["X-CSRF-Token"] = csrfToken
+                if (csrfToken.isNotBlank()) {
+                    baseHeaders["X-CSRF-Token"] = csrfToken
+                }
                 baseHeaders["X-Requested-With"] = "XMLHttpRequest"
 
                 val serversEncrypted = retryTransient(2, 250L) {
-                    val resp = app.post(serversUrl, headers = baseHeaders, timeout = 6L)
-                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                    runCatching {
+                        val resp = app.post(serversUrl, headers = baseHeaders, timeout = 6L)
+                        if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                    }.getOrNull()
                 } ?: return@withTimeoutOrNull
 
                 val serversRoot = encDecApiSemaphore.withPermit {
@@ -5495,7 +5503,11 @@ object StreamPlayExtractor : StreamPlay() {
                 val baseHeaders = mutableMapOf(
                     "User-Agent" to USER_AGENT,
                     "Referer" to "$base/",
-                    "Accept" to "*/*"
+                    "Accept" to "application/json, text/plain, */*",
+                    "Accept-Language" to "en-US,en;q=0.9",
+                    "Sec-Ch-Ua" to "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"132\", \"Google Chrome\";v=\"132\"",
+                    "Sec-Ch-Ua-Mobile" to "?0",
+                    "Sec-Ch-Ua-Platform" to "\"Windows\""
                 )
 
                 var encodedToken: String? = null
@@ -5532,12 +5544,16 @@ object StreamPlayExtractor : StreamPlay() {
 
                 if (serversUrl.isBlank() || streamBase.isBlank()) return@withTimeoutOrNull
 
-                baseHeaders["X-CSRF-Token"] = csrfToken
+                if (csrfToken.isNotBlank()) {
+                    baseHeaders["X-CSRF-Token"] = csrfToken
+                }
                 baseHeaders["X-Requested-With"] = "XMLHttpRequest"
 
                 val serversEncrypted = retryTransient(2, 250L) {
-                    val resp = app.post(serversUrl, headers = baseHeaders, timeout = 6L)
-                    if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                    runCatching {
+                        val resp = app.post(serversUrl, headers = baseHeaders, timeout = 6L)
+                        if (resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                    }.getOrNull()
                 } ?: return@withTimeoutOrNull
 
                 val serversRoot = encDecApiSemaphore.withPermit {

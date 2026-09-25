@@ -463,10 +463,12 @@ object StreamLinkOptimizer {
         val isVidcore = source?.contains("vidcore", ignoreCase = true) == true ||
             name?.contains("vidcore", ignoreCase = true) == true ||
             lowerUrl.contains("vidcore.io") ||
+            (lowerUrl.contains("quietridge.top") && source?.contains("vidup", ignoreCase = true) != true && name?.contains("vidup", ignoreCase = true) != true) ||
             referer?.contains("vidcore.io", ignoreCase = true) == true
         val isVidup = source?.contains("vidup", ignoreCase = true) == true ||
             name?.contains("vidup", ignoreCase = true) == true ||
             lowerUrl.contains("vidup.to") ||
+            lowerUrl.contains("keenanchor.top") ||
             referer?.contains("vidup.to", ignoreCase = true) == true
         val isCineJoy = source?.contains("cinejoy", ignoreCase = true) == true ||
             name?.contains("cinejoy", ignoreCase = true) == true ||
@@ -818,10 +820,12 @@ object StreamLinkOptimizer {
         val isVidcore = source?.contains("vidcore", ignoreCase = true) == true ||
             name?.contains("vidcore", ignoreCase = true) == true ||
             lowerUrl.contains("vidcore.io") ||
+            (lowerUrl.contains("quietridge.top") && source?.contains("vidup", ignoreCase = true) != true && name?.contains("vidup", ignoreCase = true) != true) ||
             referer?.contains("vidcore.io", ignoreCase = true) == true
         val isVidup = source?.contains("vidup", ignoreCase = true) == true ||
             name?.contains("vidup", ignoreCase = true) == true ||
             lowerUrl.contains("vidup.to") ||
+            lowerUrl.contains("keenanchor.top") ||
             referer?.contains("vidup.to", ignoreCase = true) == true
         val isCineJoy = source?.contains("cinejoy", ignoreCase = true) == true ||
             name?.contains("cinejoy", ignoreCase = true) == true ||
@@ -1823,8 +1827,9 @@ object StreamLinkOptimizer {
         val u = link.url.lowercase(Locale.ROOT)
         return when {
             s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
-            s.contains("vidcore") || n.contains("vidcore") || u.contains("vidcore.io") -> 95
-            s.contains("vidup") || n.contains("vidup") || u.contains("vidup.to") -> 92
+            (s.contains("vidcore") || n.contains("vidcore") || u.contains("vidcore.io") ||
+                (u.contains("quietridge.top") && !s.contains("vidup") && !n.contains("vidup"))) -> 95
+            s.contains("vidup") || n.contains("vidup") || u.contains("vidup.to") || u.contains("keenanchor.top") -> 92
             s.contains("yflix") || s.contains("moviesflix") || n.contains("yflix") || n.contains("moviesflix") || u.contains("yflix") || u.contains("moviesflix") ||
                 s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") || s.contains("flixer") ||
                 n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") || n.contains("flixer") ||

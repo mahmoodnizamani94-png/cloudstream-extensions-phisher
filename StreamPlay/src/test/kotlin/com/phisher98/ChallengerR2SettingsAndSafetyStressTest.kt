@@ -45,12 +45,12 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val allProviders = buildProviders()
         val activeProviders = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 4 top-tier providers", 4, activeProviders.size)
+        assertEquals("Clean install must activate exactly 3 top-tier providers", 3, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        // Verify the 4 specific providers
-        val expectedTopFour = setOf("vidlink", "vidcore", "vidup", "cinejoy")
-        assertEquals(expectedTopFour, activeProviders)
+        // Verify the 3 specific providers
+        val expectedTopThree = setOf("vidlink", "vidcore", "vidup")
+        assertEquals(expectedTopThree, activeProviders)
 
         // Dead registered providers must be disabled
         assertTrue("HexaSU must be disabled", disabled.contains("HexaSU"))
@@ -58,6 +58,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         assertTrue("vidfast must be disabled", disabled.contains("vidfast"))
         assertTrue("VidEasy must be disabled", disabled.contains("VidEasy"))
         assertTrue("yflix must be disabled", disabled.contains("yflix"))
+        assertTrue("cinejoy must be disabled", disabled.contains("cinejoy"))
 
         // Preference flag must be written
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
@@ -73,7 +74,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val allProviders = buildProviders()
         val activeProviders = allProviders.map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 4 top-tier providers", 4, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 3 top-tier providers", 3, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
@@ -107,6 +108,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         assertTrue("VidEasy must be disabled", migratedDisabled.contains("VidEasy"))
         assertTrue("yflix must be disabled", migratedDisabled.contains("yflix"))
         assertTrue("vidsrc must be disabled", migratedDisabled.contains("vidsrc"))
+        assertTrue("cinejoy must be disabled", migratedDisabled.contains("cinejoy"))
 
         // 2. Newly promoted top-tier providers MUST be enabled
         assertFalse("vidcore must be enabled", migratedDisabled.contains("vidcore"))
