@@ -194,35 +194,35 @@ class ChallengerM2EmpiricalAdversarialTest {
             )
         )
 
-        // Construct a bare minimum 720p stream from the lowest ranked top-tier provider (VidSrc rank 55)
-        val bareVidSrc720 = createLink(
-            source = "VidSrc",
-            name = "VidSrc [720p]",
-            url = "https://vidsrc.xyz/bare_stream.m3u8",
+        // Construct a bare minimum 720p stream from the lowest ranked top-tier provider (VidEasy rank 70)
+        val bareVidEasy720 = createLink(
+            source = "VidEasy",
+            name = "VidEasy [720p]",
+            url = "https://player.videasy.to/bare_stream.m3u8",
             quality = Qualities.P720.value
         )
 
         val scoreSpoofed1080 = StreamLinkOptimizer.getStreamCompositeScore(spoofed1080)
-        val scoreBare720 = StreamLinkOptimizer.getStreamCompositeScore(bareVidSrc720)
+        val scoreBare720 = StreamLinkOptimizer.getStreamCompositeScore(bareVidEasy720)
 
-        // VidSrc 720p base is 10,000 + 550 = 10,550.0
-        // VidLink 1080p max is 8,000 (or 9,000) + 1,000 + 9.9 = 9,009.9 (or 10,009.9)
+        // VidEasy 720p base is 10,000 + 700 = 10,700.0
+        // VidLink 1080p max is 8,000 + 1,000 + 9.9 = 9,009.9
         assertTrue(
-            "Bare VidSrc 720p ($scoreBare720) must strictly beat spoofed VidLink 1080p ($scoreSpoofed1080)",
+            "Bare VidEasy 720p ($scoreBare720) must strictly beat spoofed VidLink 1080p ($scoreSpoofed1080)",
             scoreBare720 > scoreSpoofed1080
         )
 
         assertTrue(
             "isStreamBetter must return true for bare 720p over spoofed 1080p",
-            StreamLinkOptimizer.isStreamBetter(bareVidSrc720, spoofed1080)
+            StreamLinkOptimizer.isStreamBetter(bareVidEasy720, spoofed1080)
         )
         assertFalse(
             "isStreamBetter must return false for spoofed 1080p over bare 720p",
-            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareVidSrc720)
+            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareVidEasy720)
         )
 
-        val sorted = listOf(spoofed1080, bareVidSrc720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
-        assertEquals("Comparator must sort bare 720p first", bareVidSrc720, sorted[0])
+        val sorted = listOf(spoofed1080, bareVidEasy720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+        assertEquals("Comparator must sort bare 720p first", bareVidEasy720, sorted[0])
         assertEquals("Comparator must sort spoofed 1080p second", spoofed1080, sorted[1])
     }
 
@@ -312,31 +312,31 @@ class ChallengerM2EmpiricalAdversarialTest {
 
         dispatcher.onSubtitleReceived()
 
-        val vidfast720 = createLink("VidFast", "VidFast [720p]", "https://vidfast.vc/720.m3u8", Qualities.P720.value)
+        val vidcore720 = createLink("Vidcore", "Vidcore [720p]", "https://vidcore.io/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
-        val yflix1080 = createLink("YFlix", "YFlix [1080p]", "https://yflix.to/1080.m3u8", Qualities.P1080.value)
+        val rivestream1080 = createLink("RiveStream", "RiveStream [1080p]", "https://rivestream.live/1080.m3u8", Qualities.P1080.value)
         val cinejoy480 = createLink("CineJoy", "CineJoy [480p]", "https://cinejoy.to/480.m3u8", Qualities.P480.value)
 
         // Lower-tier 720p arrives first -> staged waiting for pinnacle VidLink (rank 100)
-        dispatcher.onLinkAccepted(vidfast720)
-        assertTrue("VidFast 720p staged waiting for top source grace period", dispatched.isEmpty())
+        dispatcher.onLinkAccepted(vidcore720)
+        assertTrue("Vidcore 720p staged waiting for top source grace period", dispatched.isEmpty())
 
         // Pinnacle VidLink 720p arrives within grace period -> dispatched as #1 immediately!
         delay(20)
         dispatcher.onLinkAccepted(vidlink720)
-        // VidLink 720p is emitted as #1, unblocking staged VidFast 720p as #2
+        // VidLink 720p is emitted as #1, unblocking staged Vidcore 720p as #2
         assertEquals("Both 720p streams must be emitted in rank priority order", 2, dispatched.size)
         assertEquals("VidLink 720p (rank 100) must be first", vidlink720, dispatched[0])
-        assertEquals("VidFast 720p (rank 70) must be second", vidfast720, dispatched[1])
+        assertEquals("Vidcore 720p (rank 95) must be second", vidcore720, dispatched[1])
 
         // 480p arrives before 1080p -> staged waiting for 1080p
         dispatcher.onLinkAccepted(cinejoy480)
         assertEquals("480p must not be emitted before 1080p", 2, dispatched.size)
 
         // 1080p arrives -> emitted as #3, flushes 480p as #4
-        dispatcher.onLinkAccepted(yflix1080)
+        dispatcher.onLinkAccepted(rivestream1080)
         assertEquals("1080p emitted and flushes 480p", 4, dispatched.size)
-        assertEquals("YFlix 1080p must be third", yflix1080, dispatched[2])
+        assertEquals("RiveStream 1080p must be third", rivestream1080, dispatched[2])
         assertEquals("CineJoy 480p must be fourth", cinejoy480, dispatched[3])
 
         dispatcher.flush()
@@ -354,8 +354,8 @@ class ChallengerM2EmpiricalAdversarialTest {
                 type = ExtractorLinkType.M3U8
             )
             val bare720 = createLink(
-                source = "VidSrc",
-                name = "VidSrc [720p]",
+                source = "VidEasy",
+                name = "VidEasy [720p]",
                 url = "https://cdn.example.com/hls/master.m3u8",
                 quality = Qualities.P720.value,
                 type = ExtractorLinkType.M3U8
@@ -366,10 +366,10 @@ class ChallengerM2EmpiricalAdversarialTest {
                     val localEmitted = mutableListOf<ExtractorLink>()
                     val input = if (threadIdx % 2 == 0) listOf(spoofed1080, bare720) else listOf(bare720, spoofed1080)
                     StreamLinkOptimizer.emitTopTierDualQualityStreamLinks(
-                        source = "YFlix",
-                        baseName = "YFlix",
+                        source = "CineJoy",
+                        baseName = "CineJoy",
                         url = "https://cdn.example.com/hls/master.m3u8",
-                        referer = "https://cdn.example.com/",
+                        referer = "https://solarpanelcleaning.cc/",
                         generatedLinks = input
                     ) { link ->
                         localEmitted.add(link)

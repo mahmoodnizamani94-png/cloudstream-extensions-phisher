@@ -644,7 +644,11 @@ object StreamLinkOptimizer {
                 headers[HEADER_REFERER] = "https://vidup.to/"
                 headers[HEADER_ORIGIN] = "https://vidup.to"
             }
-            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") || isCineJoy -> {
+            lowerUrl.contains("solarpanelcleaning") || referer?.contains("solarpanelcleaning") == true || isCineJoy -> {
+                headers[HEADER_REFERER] = "https://solarpanelcleaning.cc/"
+                headers[HEADER_ORIGIN] = "https://solarpanelcleaning.cc"
+            }
+            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") -> {
                 headers[HEADER_REFERER] = "https://cinejoy.pk/"
                 headers[HEADER_ORIGIN] = "https://cinejoy.pk"
             }
@@ -907,7 +911,8 @@ object StreamLinkOptimizer {
             lowerUrl.contains("yflix.to") || isYFlix -> "https://yflix.to/"
             lowerUrl.contains("vidcore.io") || isVidcore -> "https://vidcore.io/"
             lowerUrl.contains("vidup.to") || isVidup -> "https://vidup.to/"
-            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") || isCineJoy -> "https://cinejoy.pk/"
+            lowerUrl.contains("solarpanelcleaning") || referer?.contains("solarpanelcleaning") == true || isCineJoy -> "https://solarpanelcleaning.cc/"
+            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") -> "https://cinejoy.pk/"
             lowerUrl.contains("embed.su") || lowerUrl.contains("hexa.su") || lowerUrl.contains("flixer.su") || isHexa -> {
                 when {
                     lowerUrl.contains("embed.su") || referer?.contains("embed.su") == true ||
@@ -1433,7 +1438,7 @@ object StreamLinkOptimizer {
      * Checks if a stream link belongs to one of the top-tier zero-setup primary sources
      * (VidLink 100 > HexaSU 90 > AutoEmbed 80 > VidFast 70 > VidEasy 60 > VidSrc 55).
      */
-    fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 55
+    fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 70
 
     /**
      * Checks if a provider ID matches one of the top-tier primary sources.
@@ -1443,13 +1448,10 @@ object StreamLinkOptimizer {
         return p.contains("vidlink") ||
             p.contains("vidcore") ||
             p.contains("vidup") ||
+            p.contains("rivestream") ||
             p.contains("cinejoy") ||
-            p.contains("yflix") || p.contains("moviesflix") ||
-            p.contains("hexasu") || p.contains("embedsu") || p.contains("flixer") || p == "hexa" ||
-            p.contains("autoembed") ||
-            p.contains("vidfast") ||
-            p.contains("videasy") ||
-            p.contains("vidsrc")
+            p.contains("peachify") ||
+            p.contains("videasy")
     }
 
     /**
@@ -1830,23 +1832,27 @@ object StreamLinkOptimizer {
             (s.contains("vidcore") || n.contains("vidcore") || u.contains("vidcore.io") ||
                 (u.contains("quietridge.top") && !s.contains("vidup") && !n.contains("vidup"))) -> 95
             s.contains("vidup") || n.contains("vidup") || u.contains("vidup.to") || u.contains("keenanchor.top") -> 92
+            s.contains("rivestream") || n.contains("rivestream") || u.contains("rivestream") -> 90
+            s.contains("cinejoy") || n.contains("cinejoy") || u.contains("cinejoy") || u.contains("solarpanelcleaning") || u.contains("api.wing.st") -> 88
+            s.contains("peachify") || n.contains("peachify") || u.contains("peachify") -> 80
+            s.contains("videasy") || n.contains("videasy") || u.contains("videasy") || u.contains("speedracelight.com") || u.contains("videasy.to") || u.contains("videasy.net") || u.contains("cineby.sc") ||
+                (u.contains("peakstorm.top") && (s.contains("videasy") || n.contains("videasy"))) -> 70
             s.contains("yflix") || s.contains("moviesflix") || n.contains("yflix") || n.contains("moviesflix") || u.contains("yflix") || u.contains("moviesflix") ||
                 s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") || s.contains("flixer") ||
                 n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") || n.contains("flixer") ||
-                u.contains("hexa.su") || u.contains("embed.su") || u.contains("flixer.su") || u.contains("flixer") -> 90
-            s.contains("cinejoy") || n.contains("cinejoy") || u.contains("cinejoy") || u.contains("solarpanelcleaning") || u.contains("api.wing.st") ||
-                s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") || u.contains("autoembed.to") || u.contains("autoembed.co") -> 80
+                u.contains("hexa.su") || u.contains("embed.su") || u.contains("flixer.su") || u.contains("flixer") -> 45
+            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") || u.contains("autoembed.to") || u.contains("autoembed.co") -> 40
+            s.contains("moviebox") || n.contains("moviebox") || u.contains("moviebox") -> 35
+            s.contains("4khdhub") || n.contains("4khdhub") || u.contains("4khdhub") -> 35
+            s.contains("multimovies") || n.contains("multimovies") || u.contains("multimovies") -> 35
+            s.contains("uhdmovies") || n.contains("uhdmovies") || u.contains("uhdmovies") -> 35
             s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") ||
-                ((u.contains("peakstorm.top") || u.contains("hypergate.top")) && !s.contains("videasy") && !n.contains("videasy")) -> 70
-            s.contains("videasy") || n.contains("videasy") || u.contains("videasy") || u.contains("speedracelight.com") || u.contains("videasy.to") || u.contains("videasy.net") || u.contains("cineby.sc") ||
-                (u.contains("peakstorm.top") && (s.contains("videasy") || n.contains("videasy"))) -> 60
+                ((u.contains("peakstorm.top") || u.contains("hypergate.top")) && !s.contains("videasy") && !n.contains("videasy")) -> 30
             s.contains("vidsrc") || n.contains("vidsrc") || u.contains("vidsrc") || u.contains("cloudnestra") || u.contains("shadowlandschronicles") ||
-                u.contains("thepixelpioneer") || u.contains("putgate") || u.contains("whisperingpines") || u.contains("vidsrc.in") || u.contains("vidsrc.pm") || u.contains("vidsrc.net") -> 55
-            s.contains("moviebox") || n.contains("moviebox") || u.contains("moviebox") -> 50
-            s.contains("rivestream") || n.contains("rivestream") || u.contains("rivestream") -> 40
-            s.contains("vidrock") || n.contains("vidrock") || u.contains("vidrock") -> 30
-            s.contains("moviesapi") || n.contains("moviesapi") || u.contains("moviesapi") -> 20
-            s.contains("vidzee") || n.contains("vidzee") || u.contains("vidzee") -> 15
+                u.contains("thepixelpioneer") || u.contains("putgate") || u.contains("whisperingpines") || u.contains("vidsrc.in") || u.contains("vidsrc.pm") || u.contains("vidsrc.net") -> 25
+            s.contains("vidrock") || n.contains("vidrock") || u.contains("vidrock") -> 20
+            s.contains("moviesapi") || n.contains("moviesapi") || u.contains("moviesapi") -> 15
+            s.contains("vidzee") || n.contains("vidzee") || u.contains("vidzee") -> 12
             s.contains("2embed") || n.contains("2embed") || u.contains("2embed") -> 10
             else -> 0
         }
@@ -2401,13 +2407,16 @@ object StreamLinkOptimizer {
                 providerId.contains("vidlink", ignoreCase = true) -> 100
                 providerId.contains("vidcore", ignoreCase = true) -> 95
                 providerId.contains("vidup", ignoreCase = true) -> 92
-                providerId.contains("yflix", ignoreCase = true) || providerId.contains("moviesflix", ignoreCase = true) -> 90
-                providerId.contains("hexa", ignoreCase = true) -> 90
-                providerId.contains("cinejoy", ignoreCase = true) -> 80
-                providerId.contains("autoembed", ignoreCase = true) -> 80
-                providerId.contains("vidfast", ignoreCase = true) -> 70
-                providerId.contains("videasy", ignoreCase = true) -> 60
-                providerId.contains("vidsrc", ignoreCase = true) -> 55
+                providerId.contains("rivestream", ignoreCase = true) -> 90
+                providerId.contains("cinejoy", ignoreCase = true) -> 88
+                providerId.contains("peachify", ignoreCase = true) -> 80
+                providerId.contains("videasy", ignoreCase = true) -> 70
+                providerId.contains("yflix", ignoreCase = true) || providerId.contains("moviesflix", ignoreCase = true) -> 45
+                providerId.contains("hexa", ignoreCase = true) -> 45
+                providerId.contains("autoembed", ignoreCase = true) -> 40
+                providerId.contains("moviebox", ignoreCase = true) -> 35
+                providerId.contains("vidfast", ignoreCase = true) -> 30
+                providerId.contains("vidsrc", ignoreCase = true) -> 25
                 else -> 0
             }
             if (rank > 0) {
@@ -2701,8 +2710,8 @@ object StreamLinkOptimizer {
         fun hasTopStreamEmitted(): Boolean = hasEmittedTopStream
 
         companion object {
-            private val LEGACY_TOP_TIER_RANKS = listOf(100, 90, 80, 70, 60, 55)
-            private val TOP_TIER_RANKS = listOf(100, 95, 92, 90, 80, 70, 60, 55)
+            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 92, 90, 88, 70)
+            private val TOP_TIER_RANKS = listOf(100, 95, 92, 90, 88, 70)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

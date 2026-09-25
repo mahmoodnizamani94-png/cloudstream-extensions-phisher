@@ -281,12 +281,12 @@ class StreamPlayM2DeadHostAndStarvationChallengerTest {
             val url = req.url.toString()
 
             when {
-                // Primary TMDB direct API endpoint throws 404
-                url.contains("/api/stream/movie/603") -> {
+                // Primary Lisbon endpoint throws 404
+                url.contains("Lisbon") || url.contains("/api/stream/movie/603") -> {
                     jsonResponse(req, "{\"status\": 404, \"message\": \"Stream endpoint missing\"}", code = 404)
                 }
-                // Secondary fallback path (/api/v1/watch/movie) succeeds
-                url.contains("/api/v1/watch/movie") -> {
+                // Secondary fallback path (Nebula server) succeeds
+                url.contains("Nebula") || url.contains("/api/v1/watch/movie") -> {
                     val validJson = """
                         {
                             "url": "https://cinejoy.cdn/hls/matrix_v1.mp4",
@@ -474,7 +474,7 @@ class StreamPlayM2DeadHostAndStarvationChallengerTest {
             val req = chain.request()
             val url = req.url.toString()
 
-            if (url.contains("/api/v1/watch/movie")) {
+            if (url.contains("Lisbon") || url.contains("/api/v1/watch/movie")) {
                 // Fast winner in ~20ms
                 Thread.sleep(20L)
                 val validJson = """
@@ -527,7 +527,7 @@ class StreamPlayM2DeadHostAndStarvationChallengerTest {
             val req = chain.request()
             val url = req.url.toString()
             // Provide fast interleaved responses
-            if (url.contains("moviesflix") || url.contains("/api/v1/watch")) {
+            if (url.contains("moviesflix") || url.contains("/api/v1/watch") || url.contains("enc-cinejoy") || url.contains("wing.st")) {
                 jsonResponse(req, "{\"streamUrl\":\"https://cdn.test/shared.mp4\",\"url\":\"https://cdn.test/shared.mp4\"}", code = 200)
             } else {
                 jsonResponse(req, "404 Not Found", code = 404)

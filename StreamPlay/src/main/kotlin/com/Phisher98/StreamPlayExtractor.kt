@@ -3224,6 +3224,16 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         callback: (ExtractorLink) -> Unit,
     ) {
+        invokeRiveStream(id, season, episode, null, callback)
+    }
+
+    suspend fun invokeRiveStream(
+        id: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+    ) {
         val headers = mapOf("User-Agent" to USER_AGENT)
 
         suspend fun <T> retry(times: Int = 3, block: suspend () -> T): T? {
@@ -3289,8 +3299,32 @@ object StreamPlayExtractor : StreamPlay() {
 
                 try {
                     val json = JSONObject(responseString)
-                    val sourcesArray =
-                        json.optJSONObject("data")?.optJSONArray("sources") ?: return@safeAmap
+                    val dataObj = json.optJSONObject("data") ?: return@safeAmap
+
+                    // Extract multilingual subtitles
+                    val captionsArray = dataObj.optJSONArray("captions")
+                    if (captionsArray != null && subtitleCallback != null) {
+                        for (c in 0 until captionsArray.length()) {
+                            val capObj = captionsArray.optJSONObject(c) ?: continue
+                            var capUrl = capObj.optString("file").takeIf { it.isNotBlank() } ?: continue
+                            val label = capObj.optString("label").takeIf { it.isNotBlank() }
+                                ?: capObj.optString("language").takeIf { it.isNotBlank() }
+                                ?: "English"
+                            if (capUrl.contains("destination=")) {
+                                try {
+                                    val dest = URLDecoder.decode(capUrl.substringAfter("destination=").substringBefore("&headers="), "UTF-8")
+                                    if (dest.startsWith("http", ignoreCase = true)) {
+                                        capUrl = dest
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                            if (capUrl.startsWith("http", ignoreCase = true)) {
+                                subtitleCallback.invoke(newSubtitleFile(cleanSubtitleLabel(label), capUrl))
+                            }
+                        }
+                    }
+
+                    val sourcesArray = dataObj.optJSONArray("sources") ?: return@safeAmap
 
                     for (i in 0 until sourcesArray.length()) {
                         val src = sourcesArray.getJSONObject(i)
@@ -3309,22 +3343,17 @@ object StreamPlayExtractor : StreamPlay() {
                         try {
                             if (url.contains("proxy?url=")) {
                                 try {
-                                    val fullyDecoded = URLDecoder.decode(url, "UTF-8")
+                                    val rawTarget = url.substringAfter("proxy?url=")
+                                    val rawUrl = rawTarget.substringBefore("&headers=")
+                                    val rawHeaders = if (rawTarget.contains("&headers=")) rawTarget.substringAfter("&headers=") else null
 
-                                    val encodedUrl = fullyDecoded.substringAfter("proxy?url=")
-                                        .substringBefore("&headers=")
-                                    val decodedUrl = URLDecoder.decode(
-                                        encodedUrl,
-                                        "UTF-8"
-                                    ) // decode again if needed
-
-                                    val encodedHeaders = fullyDecoded.substringAfter("&headers=")
+                                    val decodedUrl = URLDecoder.decode(rawUrl, "UTF-8")
                                     val headersMap = try {
-                                        val jsonStr = URLDecoder.decode(encodedHeaders, "UTF-8")
-                                        JSONObject(jsonStr).let { json ->
-                                            json.keys().asSequence()
-                                                .associateWith { json.getString(it) }
-                                        }
+                                        if (!rawHeaders.isNullOrBlank()) {
+                                            val jsonStr = URLDecoder.decode(rawHeaders, "UTF-8")
+                                            val jsonHeaders = JSONObject(jsonStr)
+                                            jsonHeaders.keys().asSequence().associateWith { jsonHeaders.getString(it) }
+                                        } else emptyMap()
                                     } catch (_: Exception) {
                                         emptyMap()
                                     }
@@ -5315,27 +5344,46 @@ object StreamPlayExtractor : StreamPlay() {
                 )
 
                 var encodedToken: String? = null
+                var matchedUrl: String? = null
                 for (requestUrl in requestUrls) {
-                    val pageText = retryTransient(2, 200L) {
+                    val pageResp = retryTransient(2, 200L) {
                         runCatching {
-                            app.get(requestUrl, headers = baseHeaders, timeout = 5L).text
+                            app.get(requestUrl, headers = baseHeaders, timeout = 5L)
                         }.getOrNull()
                     } ?: continue
 
+                    val pageText = pageResp.text
                     val token = Regex("""\\?"(?:en|token)\\?"\s*:\s*\\?"([^"\\]+)""").find(pageText)?.groupValues?.get(1)
 
                     if (!token.isNullOrBlank()) {
                         encodedToken = token
+                        matchedUrl = requestUrl
+                        val cookieHeader = if (pageResp.cookies.isNotEmpty()) {
+                            pageResp.cookies.map { "${it.key}=${it.value}" }.joinToString("; ")
+                        } else {
+                            pageResp.headers.values("Set-Cookie").mapNotNull {
+                                it.substringBefore(";").trim().takeIf { c -> c.isNotEmpty() }
+                            }.joinToString("; ")
+                        }
+                        if (cookieHeader.isNotBlank()) {
+                            baseHeaders["Cookie"] = cookieHeader
+                        }
                         break
                     }
                 }
 
                 if (encodedToken.isNullOrBlank()) return@withTimeoutOrNull
 
+                baseHeaders["Origin"] = base
+                if (matchedUrl != null) {
+                    baseHeaders["Referer"] = matchedUrl
+                }
+
+                val encodedParam = URLEncoder.encode(encodedToken, "UTF-8")
                 val encJson = encDecApiSemaphore.withPermit {
                     retryTransient(2, 300L) {
                         runCatching {
-                            app.get("$api/enc-vidcore?text=$encodedToken", timeout = 6L)
+                            app.get("$api/enc-vidcore?text=$encodedParam", timeout = 6L)
                                 .parsedSafe<VidcoreEncResponse>()
                         }.getOrNull()
                     }
@@ -5511,27 +5559,46 @@ object StreamPlayExtractor : StreamPlay() {
                 )
 
                 var encodedToken: String? = null
+                var matchedUrl: String? = null
                 for (requestUrl in requestUrls) {
-                    val pageText = retryTransient(2, 200L) {
+                    val pageResp = retryTransient(2, 200L) {
                         runCatching {
-                            app.get(requestUrl, headers = baseHeaders, timeout = 5L).text
+                            app.get(requestUrl, headers = baseHeaders, timeout = 5L)
                         }.getOrNull()
                     } ?: continue
 
+                    val pageText = pageResp.text
                     val token = Regex("""\\?"(?:en|token)\\?"\s*:\s*\\?"([^"\\]+)""").find(pageText)?.groupValues?.get(1)
 
                     if (!token.isNullOrBlank()) {
                         encodedToken = token
+                        matchedUrl = requestUrl
+                        val cookieHeader = if (pageResp.cookies.isNotEmpty()) {
+                            pageResp.cookies.map { "${it.key}=${it.value}" }.joinToString("; ")
+                        } else {
+                            pageResp.headers.values("Set-Cookie").mapNotNull {
+                                it.substringBefore(";").trim().takeIf { c -> c.isNotEmpty() }
+                            }.joinToString("; ")
+                        }
+                        if (cookieHeader.isNotBlank()) {
+                            baseHeaders["Cookie"] = cookieHeader
+                        }
                         break
                     }
                 }
 
                 if (encodedToken.isNullOrBlank()) return@withTimeoutOrNull
 
+                baseHeaders["Origin"] = base
+                if (matchedUrl != null) {
+                    baseHeaders["Referer"] = matchedUrl
+                }
+
+                val encodedParam = URLEncoder.encode(encodedToken, "UTF-8")
                 val encJson = encDecApiSemaphore.withPermit {
                     retryTransient(2, 300L) {
                         runCatching {
-                            app.get("$api/enc-vidup?text=$encodedToken", timeout = 6L)
+                            app.get("$api/enc-vidup?text=$encodedParam", timeout = 6L)
                                 .parsedSafe<VidcoreEncResponse>()
                         }.getOrNull()
                     }
@@ -5670,7 +5737,11 @@ object StreamPlayExtractor : StreamPlay() {
 
     private data class CineJoyCandidateResult(
         val streamUrl: String,
-        val json: JSONObject
+        val json: JSONObject? = null,
+        val referer: String = "https://solarpanelcleaning.cc/",
+        val headers: Map<String, String>? = null,
+        val captions: List<SubtitleFile> = emptyList(),
+        val server: String = ""
     )
 
     suspend fun invokeYFlix(
@@ -5891,73 +5962,154 @@ object StreamPlayExtractor : StreamPlay() {
             if (season != null && season != 0 && episode == null) return
 
             withTimeoutOrNull(2800L) {
-                val cinejoyBase = "https://cinejoy.to"
-                val cinejoyHeaders = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to "$cinejoyBase/",
-                    "Origin" to cinejoyBase,
-                    "Accept" to "application/json, text/plain, */*"
-                )
-
                 val isTv = (season != null && season > 0) || (episode != null && episode > 0)
-                val cleanTitle = title?.replace(Regex("[^a-zA-Z0-9\\s]"), " ")?.trim()?.replace(Regex("\\s+"), "-")?.lowercase(Locale.ROOT) ?: ""
+                val encodedTitle = URLEncoder.encode(title ?: "", "UTF-8")
+                val wingType = if (isTv) "series" else "movie"
+                val seasonStr = if (isTv && season != null) season.toString() else ""
+                val episodeStr = if (isTv && episode != null) episode.toString() else ""
+                val yearStr = year?.toString() ?: ""
+                val imdbStr = imdbId ?: ""
+                val tmdbStr = tmdbId?.toString() ?: ""
 
-                val apiPaths = if (isTv) {
-                    listOf(
-                        if (tmdbId != null) "/api/stream/tv/$tmdbId/$season/$episode" else null,
-                        if (!imdbId.isNullOrBlank()) "/api/stream/tv/$imdbId/$season/$episode" else null,
-                        "/api/v1/watch/tv?title=$cleanTitle&s=$season&e=$episode",
-                        "/api/watch?title=$cleanTitle&season=$season&episode=$episode"
-                    ).filterNotNull()
-                } else {
-                    listOf(
-                        if (tmdbId != null) "/api/stream/movie/$tmdbId" else null,
-                        if (!imdbId.isNullOrBlank()) "/api/stream/movie/$imdbId" else null,
-                        "/api/v1/watch/movie?title=$cleanTitle&y=${year ?: ""}",
-                        "/api/watch?title=$cleanTitle&year=${year ?: ""}"
-                    ).filterNotNull()
-                }
+                val servers = listOf("Lisbon", "Nebula", "Solara")
+                val winnerDeferred = CompletableDeferred<CineJoyCandidateResult?>()
 
-                var directHandled = false
-                if (apiPaths.isNotEmpty()) {
-                    val winnerDeferred = CompletableDeferred<CineJoyCandidateResult?>()
-                    coroutineScope {
-                        val jobs = apiPaths.map { path ->
-                            launch(Dispatchers.IO) {
-                                if (winnerDeferred.isCompleted) return@launch
-                                try {
-                                    val fullUrl = "$cinejoyBase$path"
-                                    val response = withTimeoutOrNull(2200L) {
-                                        app.get(fullUrl, headers = cinejoyHeaders, timeout = 3L).text
-                                    } ?: return@launch
+                coroutineScope {
+                    val serverJobs = servers.map { server ->
+                        launch(Dispatchers.IO) {
+                            if (winnerDeferred.isCompleted) return@launch
+                            try {
+                                val targetUrl = "https://api.wing.st/?title=$encodedTitle&type=$wingType&year=$yearStr&imdb=$imdbStr&tmdb=$tmdbStr&server=$server&season=$seasonStr&episode=$episodeStr"
+                                val encUrl = "https://enc-dec.app/api/enc-cinejoy?url=${URLEncoder.encode(targetUrl, "UTF-8")}"
 
-                                    if (response.isBlank() || response.contains("404 Not Found", ignoreCase = true)) return@launch
+                                val encResp = encDecApiSemaphore.withPermit {
+                                    withTimeoutOrNull(2200L) {
+                                        runCatching {
+                                            app.get(encUrl, timeout = 3L).text
+                                        }.getOrNull()
+                                    }
+                                } ?: return@launch
 
-                                    val json = runCatching { JSONObject(response) }.getOrNull() ?: return@launch
-                                    val streamUrl = json.optString("url").takeIf { it.isNotBlank() }
-                                        ?: json.optString("stream").takeIf { it.isNotBlank() }
-                                        ?: json.optString("file").takeIf { it.isNotBlank() }
-                                        ?: return@launch
+                                if (encResp.isBlank()) return@launch
+                                val encJson = runCatching { JSONObject(encResp) }.getOrNull() ?: return@launch
 
-                                    winnerDeferred.complete(CineJoyCandidateResult(streamUrl, json))
-                                } catch (e: Throwable) {
-                                    if (e is CancellationException) throw e
+                                // Support direct mock or fallback response with direct url
+                                val directUrl = encJson.optString("url").takeIf { it.isNotBlank() }
+                                    ?: encJson.optString("streamUrl").takeIf { it.isNotBlank() }
+                                if (directUrl != null) {
+                                    winnerDeferred.complete(
+                                        CineJoyCandidateResult(
+                                            streamUrl = directUrl,
+                                            json = encJson,
+                                            referer = "https://solarpanelcleaning.cc/",
+                                            server = server
+                                        )
+                                    )
+                                    return@launch
                                 }
+
+                                val resObj = encJson.optJSONObject("result") ?: return@launch
+                                val encData = resObj.optString("data").takeIf { it.isNotBlank() } ?: return@launch
+                                val stateObj = resObj.optJSONObject("state") ?: return@launch
+
+                                val binaryData = runCatching { base64UrlDecodeSafe(encData) }.getOrNull() ?: return@launch
+
+                                val wingHeaders = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Referer" to "https://cinejoy.pk/",
+                                    "Origin" to "https://cinejoy.pk"
+                                )
+
+                                val gResp = withTimeoutOrNull(2200L) {
+                                    runCatching {
+                                        app.post(
+                                            "https://api.wing.st/g",
+                                            headers = wingHeaders,
+                                            requestBody = binaryData.toRequestBody("application/octet-stream".toMediaType()),
+                                            timeout = 3L
+                                        )
+                                    }.getOrNull()
+                                } ?: return@launch
+
+                                if (!gResp.isSuccessful) return@launch
+                                val gBytes = runCatching { gResp.body.bytes() }.getOrNull() ?: return@launch
+                                if (gBytes.isEmpty()) return@launch
+
+                                val gB64 = base64UrlEncodeSafe(gBytes)
+                                val decReqBody = JSONObject().apply {
+                                    put("text", gB64)
+                                    put("state", stateObj)
+                                }.toString()
+
+                                val decResp = encDecApiSemaphore.withPermit {
+                                    withTimeoutOrNull(2200L) {
+                                        runCatching {
+                                            app.post(
+                                                "https://enc-dec.app/api/dec-cinejoy",
+                                                headers = mapOf("Content-Type" to "application/json", "User-Agent" to USER_AGENT),
+                                                requestBody = decReqBody.toRequestBody("application/json".toMediaType()),
+                                                timeout = 3L
+                                            ).text
+                                        }.getOrNull()
+                                    }
+                                } ?: return@launch
+
+                                if (decResp.isBlank()) return@launch
+                                val decJson = runCatching { JSONObject(decResp) }.getOrNull() ?: return@launch
+                                val dataObj = decJson.optJSONObject("result")?.optJSONObject("data") ?: return@launch
+                                val streamArray = dataObj.optJSONArray("stream") ?: return@launch
+                                if (streamArray.length() == 0) return@launch
+
+                                val primaryStream = streamArray.optJSONObject(0) ?: return@launch
+                                val playlistUrl = primaryStream.optString("playlist").takeIf { it.isNotBlank() } ?: return@launch
+
+                                val solarHeaders = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Referer" to "https://solarpanelcleaning.cc/",
+                                    "Origin" to "https://solarpanelcleaning.cc"
+                                )
+
+                                val captionsList = mutableListOf<SubtitleFile>()
+                                val captionsArray = primaryStream.optJSONArray("captions")
+                                if (captionsArray != null) {
+                                    for (cIdx in 0 until captionsArray.length()) {
+                                        val capObj = captionsArray.optJSONObject(cIdx) ?: continue
+                                        val capUrl = capObj.optString("url").takeIf { it.isNotBlank() }
+                                            ?: capObj.optString("file").takeIf { it.isNotBlank() } ?: continue
+                                        val capLang = capObj.optString("language").takeIf { it.isNotBlank() }
+                                            ?: capObj.optString("label").takeIf { it.isNotBlank() } ?: "English"
+                                        captionsList.add(newSubtitleFile(cleanSubtitleLabel(capLang), capUrl))
+                                    }
+                                }
+
+                                winnerDeferred.complete(
+                                    CineJoyCandidateResult(
+                                        streamUrl = playlistUrl,
+                                        json = null,
+                                        referer = "https://solarpanelcleaning.cc/",
+                                        headers = solarHeaders,
+                                        captions = captionsList,
+                                        server = server
+                                    )
+                                )
+                            } catch (e: Throwable) {
+                                if (e is CancellationException) throw e
                             }
                         }
+                    }
 
-                        val supervisor = launch {
-                            jobs.joinAll()
-                            winnerDeferred.complete(null)
-                        }
+                    val supervisor = launch {
+                        serverJobs.joinAll()
+                        winnerDeferred.complete(null)
+                    }
 
-                        try {
-                            val winner = winnerDeferred.await()
-                            if (winner != null) {
-                                directHandled = true
-                                val (streamUrl, json) = winner
+                    try {
+                        val winner = winnerDeferred.await()
+                        if (winner != null) {
+                            winner.captions.forEach { subtitleCallback?.invoke(it) }
 
-                                val tracksArray = json.optJSONArray("subtitles") ?: json.optJSONArray("tracks")
+                            if (winner.json != null) {
+                                val tracksArray = winner.json.optJSONArray("subtitles") ?: winner.json.optJSONArray("tracks")
                                 if (tracksArray != null && subtitleCallback != null) {
                                     for (i in 0 until tracksArray.length()) {
                                         val trackObj = tracksArray.optJSONObject(i) ?: continue
@@ -5967,162 +6119,42 @@ object StreamPlayExtractor : StreamPlay() {
                                             ?: trackObj.optString("lang").takeIf { it.isNotBlank() } ?: "English"
                                         val trackKind = trackObj.optString("kind", "subtitles")
                                         if (!trackUrl.contains("thumbnail", ignoreCase = true) && !trackKind.equals("thumbnails", ignoreCase = true)) {
-                                            subtitleCallback(
-                                                newSubtitleFile(
-                                                    cleanSubtitleLabel(trackLabel),
-                                                    trackUrl
-                                                )
-                                            )
+                                            subtitleCallback(newSubtitleFile(cleanSubtitleLabel(trackLabel), trackUrl))
                                         }
                                     }
                                 }
-
-                                val isM3u8 = streamUrl.contains(".m3u8", ignoreCase = true)
-                                val streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                val streamHeaders = mapOf(
-                                    "User-Agent" to USER_AGENT,
-                                    "Referer" to "$cinejoyBase/",
-                                    "Origin" to cinejoyBase
-                                )
-
-                                val variants = if (isM3u8) {
-                                    runCatching {
-                                        generateM3u8("CineJoy", streamUrl, "$cinejoyBase/", headers = streamHeaders)
-                                    }.getOrNull()
-                                } else null
-
-                                emitTopTierDualQualityStreamLinks(
-                                    source = "CineJoy",
-                                    baseName = "CineJoy",
-                                    url = streamUrl,
-                                    referer = "$cinejoyBase/",
-                                    headers = streamHeaders,
-                                    streamType = streamType,
-                                    generatedLinks = variants,
-                                    callback = callback
-                                )
                             }
-                        } finally {
-                            jobs.forEach { it.cancel() }
-                            supervisor.cancel()
+
+                            val streamHeaders = winner.headers ?: mapOf(
+                                "User-Agent" to USER_AGENT,
+                                "Referer" to winner.referer,
+                                "Origin" to winner.referer.removeSuffix("/")
+                            )
+
+                            val isM3u8 = winner.streamUrl.contains(".m3u8", ignoreCase = true)
+                            val streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
+                            val variants = if (isM3u8) {
+                                runCatching {
+                                    generateM3u8("CineJoy", winner.streamUrl, winner.referer, headers = streamHeaders)
+                                }.getOrNull()
+                            } else null
+
+                            emitTopTierDualQualityStreamLinks(
+                                source = "CineJoy",
+                                baseName = "CineJoy",
+                                url = winner.streamUrl,
+                                referer = winner.referer,
+                                headers = streamHeaders,
+                                streamType = streamType,
+                                generatedLinks = variants,
+                                callback = callback
+                            )
                         }
+                    } finally {
+                        serverJobs.forEach { it.cancel() }
+                        supervisor.cancel()
                     }
-                }
-
-                if (directHandled) return@withTimeoutOrNull
-
-                // Fall back to live Wing engine (https://api.wing.st + https://enc-dec.app)
-                val origin = "https://cinejoy.pk"
-                val wingHeaders = mapOf(
-                    "Origin" to origin,
-                    "Referer" to "$origin/",
-                    "User-Agent" to USER_AGENT,
-                    "Accept" to "*/*"
-                )
-
-                val availableServers = runCatching {
-                    app.get("https://api.wing.st/servers", headers = wingHeaders, timeout = 2L)
-                        .parsedSafe<CinejoyServersResponse>()?.servers?.map { it.name }?.filter { it.isNotBlank() }
-                }.getOrNull()?.takeIf { it.isNotEmpty() } ?: listOf("Lisbon", "Nebula", "Solara", "Athens")
-
-                val cleanTitleWing = title?.replace(Regex("[^a-zA-Z0-9\\s]"), " ")?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-                val encodedTitle = URLEncoder.encode(cleanTitleWing, "UTF-8")
-
-                val cinejoySemaphore = Semaphore(2)
-                coroutineScope {
-                    availableServers.take(3).map { serverName ->
-                        async {
-                            try {
-                                val encodedServer = URLEncoder.encode(serverName, "UTF-8")
-                                val targetUrl = if (isTv) {
-                                    "https://api.wing.st/?title=$encodedTitle&type=series&year=${year ?: ""}&imdb=${imdbId ?: ""}&tmdb=${tmdbId ?: ""}&server=$encodedServer&season=$season&episode=$episode"
-                                } else {
-                                    "https://api.wing.st/?title=$encodedTitle&type=movie&year=${year ?: ""}&imdb=${imdbId ?: ""}&tmdb=${tmdbId ?: ""}&server=$encodedServer"
-                                }
-
-                                val encUrl = "https://enc-dec.app/api/enc-cinejoy?url=${URLEncoder.encode(targetUrl, "UTF-8")}"
-                                val encJson = encDecApiSemaphore.withPermit {
-                                    retryTransient(2, 250L) {
-                                        runCatching {
-                                            app.get(encUrl, timeout = 3L).parsedSafe<CinejoyEncResponse>()
-                                        }.getOrNull()
-                                    }
-                                } ?: return@async
-
-                                val encResult = encJson.result ?: return@async
-                                val rawData = encResult.data
-                                val state = encResult.state
-                                if (rawData.isBlank() || state == null || (state is String && state.isBlank())) return@async
-
-                                val requestBytes = base64UrlDecodeSafe(rawData)
-                                val postBody = requestBytes.toRequestBody("application/octet-stream".toMediaType())
-
-                                val gResp = app.post("https://api.wing.st/g", headers = wingHeaders, requestBody = postBody, timeout = 3L)
-                                if (!gResp.isSuccessful) return@async
-                                val gBytes = gResp.body.bytes()
-                                if (gBytes.isEmpty()) return@async
-
-                                val gBase64 = base64UrlEncodeSafe(gBytes)
-
-                                val decResp = cinejoySemaphore.withPermit {
-                                    encDecApiSemaphore.withPermit {
-                                        retryTransient(2, 250L) {
-                                            runCatching {
-                                                app.post(
-                                                    "https://enc-dec.app/api/dec-cinejoy",
-                                                    json = mapOf("text" to gBase64, "state" to state),
-                                                    timeout = 3L
-                                                ).parsedSafe<CinejoyDecResponse>()
-                                            }.getOrNull()
-                                        }
-                                    }
-                                } ?: return@async
-
-                                val streamList = decResp.result?.data?.stream
-                                if (streamList.isNullOrEmpty()) return@async
-
-                                for (item in streamList) {
-                                    item.captions?.forEach { cap ->
-                                        val capUrl = cap.url?.trim()
-                                        val capLang = cap.language?.trim() ?: "English"
-                                        if (!capUrl.isNullOrBlank() && capUrl.startsWith("http", ignoreCase = true)) {
-                                            subtitleCallback?.invoke(newSubtitleFile(cleanSubtitleLabel(capLang), capUrl))
-                                        }
-                                    }
-
-                                    val streamUrl = item.playlist?.takeIf { it.isNotBlank() } ?: item.url?.takeIf { it.isNotBlank() } ?: continue
-                                    if (!streamUrl.startsWith("http", ignoreCase = true)) continue
-
-                                    val streamHeaders = mapOf(
-                                        "User-Agent" to USER_AGENT,
-                                        "Referer" to "$origin/",
-                                        "Origin" to origin
-                                    )
-
-                                    val isM3u8 = streamUrl.contains(".m3u8", ignoreCase = true) || item.type.equals("hls", ignoreCase = true)
-                                    val variants = if (isM3u8) {
-                                        runCatching {
-                                            generateM3u8("CineJoy", streamUrl, "$origin/", headers = streamHeaders)
-                                        }.getOrNull()
-                                    } else null
-
-                                    emitTopTierDualQualityStreamLinks(
-                                        source = "CineJoy",
-                                        baseName = "CineJoy $serverName",
-                                        url = streamUrl,
-                                        referer = "$origin/",
-                                        headers = streamHeaders,
-                                        streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                        generatedLinks = variants,
-                                        callback = callback
-                                    )
-                                }
-                            } catch (e: Exception) {
-                                if (e is CancellationException) throw e
-                                Log.w("StreamPlay", "CineJoy server $serverName error: ${e.message}")
-                            }
-                        }
-                    }.awaitAll()
                 }
             }
         } catch (e: Exception) {

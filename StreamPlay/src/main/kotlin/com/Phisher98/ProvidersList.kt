@@ -162,9 +162,16 @@ private val providers by lazy {
         Provider("vidup", "Vidup") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidup(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
         },
+        Provider("rivestream", "RiveStream") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) invokeRiveStream(res.id, res.season, res.episode, subtitleCallback, callback)
+        },
         Provider("cinejoy", "CineJoy") { res, subtitleCallback, callback, _, _ ->
             val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
             if (!res.isAnime) invokeCineJoy(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
+        },
+        Provider("VidEasy", "VidEasy") { res, subtitleCallback, callback, _, _ ->
+            val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
+            if (!res.isAnime) invokeVideasy(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("yflix", "YFlix") { res, subtitleCallback, callback, _, _ ->
             val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
@@ -172,10 +179,6 @@ private val providers by lazy {
         },
         Provider("vidfast", "VidFast") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("VidEasy", "VidEasy") { res, subtitleCallback, callback, _, _ ->
-            val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
-            if (!res.isAnime) invokeVideasy(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("vidsrc", "VidSrc (Unified)") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
@@ -318,9 +321,6 @@ private val providers by lazy {
         Provider("moviebox", "MovieBox (Multi)") { res, subtitleCallback, callback, _, _ ->
             invokeMovieBox(res.title, res.season, res.episode, subtitleCallback, callback)
         },
-        Provider("rivestream", "RiveStream") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeRiveStream(res.id, res.season, res.episode, callback)
-        },
         Provider("vidrock", "Vidrock") { res, _, callback, _, _ ->
             if (!res.isAnime) invokevidrock(res.id, res.season, res.episode, callback)
         },
@@ -385,7 +385,10 @@ private val providers by lazy {
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
     "vidcore",
-    "vidup"
+    "vidup",
+    "rivestream",
+    "cinejoy",
+    "VidEasy"
 )
 
 val DEAD_PROVIDER_IDS = setOf(
@@ -394,15 +397,16 @@ val DEAD_PROVIDER_IDS = setOf(
     "superstream",
     "vaplayer",
     "vidfast",
-    "VidEasy",
     "yflix",
-    "vidsrc",
-    "cinejoy"
+    "vidsrc"
 )
 
 val NEWLY_PROMOTED_TOP_TIER_IDS = setOf(
     "vidcore",
-    "vidup"
+    "vidup",
+    "rivestream",
+    "cinejoy",
+    "VidEasy"
 )
 
 fun getDefaultDisabledProviderIds(): Set<String> =
@@ -410,13 +414,13 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v9_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v11_initialized"
 
 /**
- * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (VidLink > Vidcore > Vidup)
- * with all secondary and dead sources disabled by default, and seamlessly migrates upgrading users to v9:
- * disables dead/bloated providers (HexaSU, autoembed, superstream, vaplayer, vidfast, VidEasy, yflix, vidsrc, cinejoy),
- * enables newly promoted SOTA providers (vidcore, vidup), and strictly preserves existing user customizations.
+ * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (Vidlink > Vidcore > Vidup > RiveStream > CineJoy > VidEasy)
+ * with all secondary and dead sources disabled by default, and seamlessly migrates upgrading users to v11:
+ * disables dead/bloated providers (HexaSU, autoembed, superstream, vaplayer, vidfast, yflix, vidsrc),
+ * enables newly promoted SOTA providers (vidcore, vidup, rivestream, cinejoy, VidEasy), and strictly preserves existing user customizations.
  */
 fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
     if (sharedPref == null) return getDefaultDisabledProviderIds()
@@ -428,9 +432,9 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
         val finalDisabled = if (existingDisabled.isNullOrEmpty()) {
             defaultDisabled
         } else {
-            // Override-preserving migration to v9:
-            // 1. Add dead providers to disabled set (including cinejoy)
-            // 2. Remove newly promoted top-tier providers from disabled set (vidcore, vidup)
+            // Override-preserving migration to v11:
+            // 1. Add dead providers to disabled set (including vidfast, vidsrc, yflix, etc.)
+            // 2. Remove newly promoted top-tier providers from disabled set (vidcore, vidup, rivestream, cinejoy, VidEasy)
             // 3. Retain user's custom enabling/disabling of existing providers intact
             (existingDisabled + DEAD_PROVIDER_IDS) - NEWLY_PROMOTED_TOP_TIER_IDS
         }
@@ -442,9 +446,11 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
             putBoolean("streamplay_top_tier_v6_initialized", true)
             putBoolean("streamplay_top_tier_v7_initialized", true)
             putBoolean("streamplay_top_tier_v8_initialized", true)
+            putBoolean("streamplay_top_tier_v9_initialized", true)
+            putBoolean("streamplay_top_tier_v10_initialized", true)
             putBoolean(PREFS_TOP_TIER_INITIALIZED, true)
         }
-        Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults v9: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")
+        Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults v11: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")
         return finalDisabled
     }
     return sharedPref.getStringSet("disabled_providers", null) ?: getDefaultDisabledProviderIds()

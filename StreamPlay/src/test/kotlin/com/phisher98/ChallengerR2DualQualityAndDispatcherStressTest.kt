@@ -60,15 +60,15 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMathematicalSeparationAcrossAllTiebreakerPermutations() {
-        // Minimal possible 720p stream: Lowest top-tier provider (VidSrc, rank 55), 0 bitrate, 0 badges, 0 headers
-        val minVidSrc720 = createLink(
-            source = "VidSrc",
-            name = "VidSrc [720p]",
-            url = "https://vidsrc.xyz/stream_minimal.m3u8",
+        // Minimal possible 720p stream: Lowest top-tier provider (VidEasy, rank 70), 0 bitrate, 0 badges, 0 headers
+        val minVidEasy720 = createLink(
+            source = "VidEasy",
+            name = "VidEasy [720p]",
+            url = "https://player.videasy.to/stream_minimal.m3u8",
             quality = Qualities.P720.value
         )
-        val minScore720 = StreamLinkOptimizer.getStreamCompositeScore(minVidSrc720)
-        assertEquals("Lowest top-tier 720p score must be exactly 10,550.0f", 10550.0f, minScore720, 0.001f)
+        val minScore720 = StreamLinkOptimizer.getStreamCompositeScore(minVidEasy720)
+        assertEquals("Lowest top-tier 720p score must be exactly 10,700.0f", 10700.0f, minScore720, 0.001f)
 
         // Maximal possible 1080p stream: Pinnacle top-tier provider (VidLink, rank 100), max bitrate (50k), all video badges, all audio badges, all headers
         val maxHeaders = mapOf(
@@ -90,20 +90,20 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
         val separationMargin = minScore720 - maxScore1080
         assertTrue(
-            "Separation margin must be at least 1,540.0f (observed: $separationMargin)",
-            separationMargin >= 1540.0f
+            "Separation margin must be at least 1,690.0f (observed: $separationMargin)",
+            separationMargin >= 1690.0f
         )
-        assertTrue(StreamLinkOptimizer.isStreamBetter(minVidSrc720, maxVidLink1080))
+        assertTrue(StreamLinkOptimizer.isStreamBetter(minVidEasy720, maxVidLink1080))
 
         // Permute all top-tier providers across 720p vs 1080p with randomized or edge-case badge sets
         val providers = listOf(
             "VidLink" to 100,
-            "YFlix" to 90,
-            "MoviesFlix" to 90,
-            "CineJoy" to 80,
-            "VidFast" to 70,
-            "VidEasy" to 60,
-            "VidSrc" to 55
+            "Vidcore" to 95,
+            "Vidup" to 92,
+            "RiveStream" to 90,
+            "CineJoy" to 88,
+            "Peachify" to 80,
+            "VidEasy" to 70
         )
 
         val sampleBitrates = listOf(0, 1000, 5000, 10000, 25000, 50000, 100000)
@@ -151,11 +151,12 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
         val providersInOrder = listOf(
             "VidLink" to 100,
-            "YFlix" to 90,
-            "CineJoy" to 80,
-            "VidFast" to 70,
-            "VidEasy" to 60,
-            "VidSrc" to 55
+            "Vidcore" to 95,
+            "Vidup" to 92,
+            "RiveStream" to 90,
+            "CineJoy" to 88,
+            "Peachify" to 80,
+            "VidEasy" to 70
         )
 
         val maxHeaders = mapOf(
@@ -218,7 +219,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     fun testPriorityStreamDispatcherReversedArrivalStrictlySorted() = runBlocking {
         // Feed streams in completely reverse order: lowest rank first
         val emitted = mutableListOf<ExtractorLink>()
-        val inFlightRanks = mutableSetOf(100, 90, 80, 70, 60, 55)
+        val inFlightRanks = mutableSetOf(100, 95, 92, 90, 88, 80, 70)
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -227,25 +228,27 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 300L,
             top720GraceMs = 1500L,
-            activeTopRanks = setOf(100, 90, 80, 70, 60, 55),
+            activeTopRanks = setOf(100, 95, 92, 90, 88, 80, 70),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
-        val vidsrc720 = createLink("VidSrc", "VidSrc [720p]", "https://vidsrc.xyz/720.m3u8", Qualities.P720.value)
-        val videasy720 = createLink("VidEasy", "VidEasy [720p]", "https://videasy.net/720.m3u8", Qualities.P720.value)
-        val vidfast720 = createLink("VidFast", "VidFast [720p]", "https://vidfast.vc/720.m3u8", Qualities.P720.value)
+        val videasy720 = createLink("VidEasy", "VidEasy [720p]", "https://player.videasy.to/720.m3u8", Qualities.P720.value)
+        val peachify720 = createLink("Peachify", "Peachify [720p]", "https://peachify.com/720.m3u8", Qualities.P720.value)
         val cinejoy720 = createLink("CineJoy", "CineJoy [720p]", "https://cinejoy.to/720.m3u8", Qualities.P720.value)
-        val yflix720 = createLink("YFlix", "YFlix [720p]", "https://yflix.to/720.m3u8", Qualities.P720.value)
+        val rivestream720 = createLink("RiveStream", "RiveStream [720p]", "https://rivestream.live/720.m3u8", Qualities.P720.value)
+        val vidup720 = createLink("Vidup", "Vidup [720p]", "https://vidup.to/720.m3u8", Qualities.P720.value)
+        val vidcore720 = createLink("Vidcore", "Vidcore [720p]", "https://vidcore.io/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
 
-        // Arrive in reverse order: VidSrc -> VidEasy -> VidFast -> CineJoy -> YFlix -> VidLink
-        dispatcher.onLinkAccepted(vidsrc720)
+        // Arrive in reverse order
         dispatcher.onLinkAccepted(videasy720)
-        dispatcher.onLinkAccepted(vidfast720)
+        dispatcher.onLinkAccepted(peachify720)
         dispatcher.onLinkAccepted(cinejoy720)
-        dispatcher.onLinkAccepted(yflix720)
+        dispatcher.onLinkAccepted(rivestream720)
+        dispatcher.onLinkAccepted(vidup720)
+        dispatcher.onLinkAccepted(vidcore720)
 
         // All should be buffered in pendingTop720Links waiting for VidLink (100) which is still in flight (within topSourceGraceMs 300ms)
         delay(50L)
@@ -258,19 +261,21 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
         // Mark remaining completed
         inFlightRanks.clear()
+        dispatcher.markRankCompleted(95)
+        dispatcher.markRankCompleted(92)
         dispatcher.markRankCompleted(90)
+        dispatcher.markRankCompleted(88)
         dispatcher.markRankCompleted(80)
         dispatcher.markRankCompleted(70)
-        dispatcher.markRankCompleted(60)
-        dispatcher.markRankCompleted(55)
 
-        assertEquals("All 6 streams must be emitted", 6, emitted.size)
+        assertEquals("All 7 streams must be emitted", 7, emitted.size)
         assertEquals("1st must be VidLink 720p", vidlink720, emitted[0])
-        assertEquals("2nd must be YFlix 720p", yflix720, emitted[1])
-        assertEquals("3rd must be CineJoy 720p", cinejoy720, emitted[2])
-        assertEquals("4th must be VidFast 720p", vidfast720, emitted[3])
-        assertEquals("5th must be VidEasy 720p", videasy720, emitted[4])
-        assertEquals("6th must be VidSrc 720p", vidsrc720, emitted[5])
+        assertEquals("2nd must be Vidcore 720p", vidcore720, emitted[1])
+        assertEquals("3rd must be Vidup 720p", vidup720, emitted[2])
+        assertEquals("4th must be RiveStream 720p", rivestream720, emitted[3])
+        assertEquals("5th must be CineJoy 720p", cinejoy720, emitted[4])
+        assertEquals("6th must be Peachify 720p", peachify720, emitted[5])
+        assertEquals("7th must be VidEasy 720p", videasy720, emitted[6])
     }
 
     @Test
@@ -351,7 +356,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     @Test
     fun testFlushReleasesAllHeldStreamsSafelyInOrder() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
-        val inFlightRanks = mutableSetOf(100, 90, 80)
+        val inFlightRanks = mutableSetOf(100, 90, 88, 70)
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -360,28 +365,28 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 1000L,
             topSourceGraceMs = 1000L,
             top720GraceMs = 5000L,
-            activeTopRanks = setOf(100, 90, 80),
+            activeTopRanks = setOf(100, 90, 88, 70),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         val vidlink1080 = createLink("VidLink", "VidLink [1080p]", "https://vidlink.pro/1080.m3u8", Qualities.P1080.value)
-        val yflix720 = createLink("YFlix", "YFlix [720p]", "https://yflix.to/720.m3u8", Qualities.P720.value)
+        val rivestream720 = createLink("RiveStream", "RiveStream [720p]", "https://rivestream.live/720.m3u8", Qualities.P720.value)
         val cinejoy4k = createLink("CineJoy", "CineJoy [4K]", "https://cinejoy.to/4k.m3u8", Qualities.P2160.value)
-        val vidfast480 = createLink("VidFast", "VidFast [480p]", "https://vidfast.vc/480.m3u8", Qualities.P480.value)
+        val videasy480 = createLink("VidEasy", "VidEasy [480p]", "https://player.videasy.to/480.m3u8", Qualities.P480.value)
 
         // Add various streams while everything is held
         dispatcher.onLinkAccepted(cinejoy4k)
-        dispatcher.onLinkAccepted(vidfast480)
+        dispatcher.onLinkAccepted(videasy480)
         dispatcher.onLinkAccepted(vidlink1080)
-        dispatcher.onLinkAccepted(yflix720)
+        dispatcher.onLinkAccepted(rivestream720)
 
         // Call flush() immediately
         dispatcher.flush()
 
         assertEquals("All 4 streams must be emitted on flush()", 4, emitted.size)
-        assertEquals("Priority #1 on flush must be YFlix 720p", yflix720, emitted[0])
+        assertEquals("Priority #1 on flush must be RiveStream 720p", rivestream720, emitted[0])
         assertEquals("Priority #2 on flush must be VidLink 1080p", vidlink1080, emitted[1])
-        assertEquals("Priority #3 on flush must be VidFast 480p", vidfast480, emitted[2])
+        assertEquals("Priority #3 on flush must be VidEasy 480p", videasy480, emitted[2])
         assertEquals("Priority #4 on flush must be CineJoy 4K", cinejoy4k, emitted[3])
 
         // Calling flush() again must be safe and idempotent

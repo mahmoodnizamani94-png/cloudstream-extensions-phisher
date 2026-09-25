@@ -29,9 +29,12 @@ class StreamPlayProviderDefaultsTest {
         val expected = setOf(
             "vidlink",
             "vidcore",
-            "vidup"
+            "vidup",
+            "rivestream",
+            "cinejoy",
+            "VidEasy"
         )
-        assertEquals("Top tier default providers must contain exactly 3 sources", 3, DEFAULT_TOP_TIER_PROVIDERS.size)
+        assertEquals("Top tier default providers must contain exactly 6 sources", 6, DEFAULT_TOP_TIER_PROVIDERS.size)
         assertEquals("Top tier default providers must match expected IDs", expected, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
@@ -61,7 +64,7 @@ class StreamPlayProviderDefaultsTest {
 
         // Active providers when applying default disabled set must be exactly top tier
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("Only top tier providers should be active by default", 3, activeProviders.size)
+        assertEquals("Only top tier providers should be active by default", 6, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,
@@ -77,10 +80,10 @@ class StreamPlayProviderDefaultsTest {
         }
     }
 
-    // ==================== v9 Migration Idempotency Stress Tests ====================
+    // ==================== v11 Migration Idempotency Stress Tests ====================
 
     @Test
-    fun testV9MigrationCleanInstallActivatesExactlyTopTierIdempotently() {
+    fun testV11MigrationCleanInstallActivatesExactlyTopTierIdempotently() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
 
         // 1. Initial clean install execution
@@ -88,14 +91,15 @@ class StreamPlayProviderDefaultsTest {
         val allProviders = buildProviders()
         val activeProviders = allProviders.map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 3 top-tier providers", 3, activeProviders.size)
+        assertEquals("Clean install must activate exactly 6 top-tier providers", 6, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue("HexaSU must be in disabled set", initialDisabled.contains("HexaSU"))
         assertTrue("autoembed must be in disabled set", initialDisabled.contains("autoembed"))
         assertTrue("vidfast must be in disabled set", initialDisabled.contains("vidfast"))
-        assertTrue("VidEasy must be in disabled set", initialDisabled.contains("VidEasy"))
+        assertFalse("VidEasy must NOT be in disabled set", initialDisabled.contains("VidEasy"))
         assertTrue("yflix must be in disabled set", initialDisabled.contains("yflix"))
-        assertTrue("cinejoy must be in disabled set", initialDisabled.contains("cinejoy"))
+        assertTrue("vidsrc must be in disabled set", initialDisabled.contains("vidsrc"))
+        assertFalse("cinejoy must NOT be in disabled set", initialDisabled.contains("cinejoy"))
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // 2. Repeated invocation must be strictly idempotent
@@ -112,34 +116,34 @@ class StreamPlayProviderDefaultsTest {
     }
 
     @Test
-    fun testV9MigrationUpgradeFromV8PreservesOverridesAndIsIdempotent() {
+    fun testV11MigrationUpgradeFromV10PreservesOverridesAndIsIdempotent() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
 
-        // Setup legacy v8 state: vidfast, VidEasy, vidsrc disabled, cinejoy was active,
-        // with custom user overrides (user disabled vidlink, user enabled moviebox)
-        val v8Disabled = (getDefaultDisabledProviderIds() - setOf("cinejoy") + setOf("vidlink")) - "moviebox"
+        // Setup legacy state with custom user overrides (user disabled vidlink, user enabled moviebox)
+        val v10Disabled = (getDefaultDisabledProviderIds() + setOf("vidlink")) - "moviebox"
         mockPrefs.edit()
-            .putStringSet("disabled_providers", v8Disabled)
-            .putBoolean("streamplay_top_tier_v8_initialized", true)
+            .putStringSet("disabled_providers", v10Disabled)
+            .putBoolean("streamplay_top_tier_v10_initialized", true)
             .apply()
 
-        // Run v9 migration
+        // Run v11 migration
         val migratedDisabled = getOrInitializeDisabledProviders(mockPrefs)
 
-        // Dead providers must be disabled (including cinejoy)
+        // Dead providers must be disabled (including vidfast, vidsrc)
         assertTrue("HexaSU must be disabled", migratedDisabled.contains("HexaSU"))
         assertTrue("autoembed must be disabled", migratedDisabled.contains("autoembed"))
         assertTrue("superstream must be disabled", migratedDisabled.contains("superstream"))
         assertTrue("vaplayer must be disabled", migratedDisabled.contains("vaplayer"))
         assertTrue("vidfast must be disabled", migratedDisabled.contains("vidfast"))
-        assertTrue("VidEasy must be disabled", migratedDisabled.contains("VidEasy"))
+        assertFalse("VidEasy must be enabled", migratedDisabled.contains("VidEasy"))
         assertTrue("yflix must be disabled", migratedDisabled.contains("yflix"))
         assertTrue("vidsrc must be disabled", migratedDisabled.contains("vidsrc"))
-        assertTrue("cinejoy must be disabled", migratedDisabled.contains("cinejoy"))
+        assertFalse("cinejoy must be enabled", migratedDisabled.contains("cinejoy"))
 
         // Promoted SOTA providers must be enabled
         assertFalse("vidcore must be enabled", migratedDisabled.contains("vidcore"))
         assertFalse("vidup must be enabled", migratedDisabled.contains("vidup"))
+        assertFalse("rivestream must be enabled", migratedDisabled.contains("rivestream"))
 
         // User overrides must be preserved
         assertTrue("User custom disable of vidlink must be preserved", migratedDisabled.contains("vidlink"))
@@ -153,7 +157,7 @@ class StreamPlayProviderDefaultsTest {
     }
 
     @Test
-    fun testV9MigrationConcurrentInitializationIsThreadSafeAndIdempotent() {
+    fun testV10MigrationConcurrentInitializationIsThreadSafeAndIdempotent() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         val threadCount = 20
         val executor = Executors.newFixedThreadPool(threadCount)
@@ -178,7 +182,7 @@ class StreamPlayProviderDefaultsTest {
         val allProviders = buildProviders()
         for (res in results) {
             val active = allProviders.map { it.id }.filterNot { res.contains(it) }.toSet()
-            assertEquals("Every concurrent call must activate exactly 3 top-tier providers", DEFAULT_TOP_TIER_PROVIDERS, active)
+            assertEquals("Every concurrent call must activate exactly 6 top-tier providers", DEFAULT_TOP_TIER_PROVIDERS, active)
             for (top in DEFAULT_TOP_TIER_PROVIDERS) {
                 assertFalse("Top tier provider $top must not be disabled", res.contains(top))
             }

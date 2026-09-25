@@ -277,7 +277,7 @@ class Milestone1Challenger2EmpiricalTest {
     fun testPriorityStreamDispatcher_VidFast1080pHeldDuring2500msGraceUntil720pCompletes() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
         val inFlightRanks = ConcurrentHashMap.newKeySet<Int>()
-        inFlightRanks.addAll(listOf(100, 90, 80, 70))
+        inFlightRanks.addAll(listOf(100, 95, 90, 70))
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -286,46 +286,46 @@ class Milestone1Challenger2EmpiricalTest {
             subtitleGraceMs = 100L,
             topSourceGraceMs = 200L,
             top720GraceMs = 2500L, // Exact 2500ms specified in prompt
-            activeTopRanks = setOf(100, 90, 80, 70),
+            activeTopRanks = setOf(100, 95, 90, 70),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
-        val vidfast1080 = createLink("VidFast", "VidFast [1080p]", "https://vidfast.vc/1080.m3u8", Qualities.P1080.value)
-        val yflix720 = createLink("YFlix", "YFlix [720p]", "https://yflix.to/720.m3u8", Qualities.P720.value)
+        val videasy1080 = createLink("VidEasy", "VidEasy [1080p]", "https://videasy.net/1080.m3u8", Qualities.P1080.value)
+        val rivestream720 = createLink("RiveStream", "RiveStream [720p]", "https://rivestream.org/720.m3u8", Qualities.P720.value)
 
-        // t = 0: VidFast 1080p arrives. Higher ranks (100 VidLink, 90 YFlix, 80 CineJoy) are in flight.
-        dispatcher.onLinkAccepted(vidfast1080)
+        // t = 0: VidEasy 1080p arrives. Higher ranks (100 VidLink, 95 Vidcore, 90 RiveStream) are in flight.
+        dispatcher.onLinkAccepted(videasy1080)
         inFlightRanks.remove(70)
         dispatcher.markRankCompleted(70)
 
         // Verify that after 300ms (past stageWindowMs 200ms), 1080p is NOT emitted
         delay(350L)
-        assertTrue("VidFast 1080p must be strictly held during top720GraceMs (2500ms)", emitted.isEmpty())
+        assertTrue("VidEasy 1080p must be strictly held during top720GraceMs (2500ms)", emitted.isEmpty())
 
-        // t = 500ms: YFlix 720p arrives (well within 2500ms grace window)
+        // t = 500ms: RiveStream 720p arrives (well within 2500ms grace window)
         delay(150L)
-        dispatcher.onLinkAccepted(yflix720)
+        dispatcher.onLinkAccepted(rivestream720)
         inFlightRanks.remove(90)
         dispatcher.markRankCompleted(90)
 
-        // VidLink (100) and CineJoy (80) complete with no links
+        // VidLink (100) and Vidcore (95) complete with no links
         inFlightRanks.clear()
         dispatcher.markRankCompleted(100)
-        dispatcher.markRankCompleted(80)
+        dispatcher.markRankCompleted(95)
 
         // Check emissions
         assertEquals("Both streams must be emitted", 2, emitted.size)
-        assertEquals("720p MUST be dispatched as link #1", yflix720, emitted[0])
-        assertEquals("1080p MUST follow 720p as link #2", vidfast1080, emitted[1])
+        assertEquals("720p MUST be dispatched as link #1", rivestream720, emitted[0])
+        assertEquals("1080p MUST follow 720p as link #2", videasy1080, emitted[1])
     }
 
     @Test
     fun testPriorityStreamDispatcher_VidLink1080pArrivesFirst_MustHoldFor720p() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
         val inFlightRanks = ConcurrentHashMap.newKeySet<Int>()
-        inFlightRanks.addAll(listOf(100, 90, 80))
+        inFlightRanks.addAll(listOf(100, 95, 90))
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -334,27 +334,27 @@ class Milestone1Challenger2EmpiricalTest {
             subtitleGraceMs = 100L,
             topSourceGraceMs = 200L,
             top720GraceMs = 2500L,
-            activeTopRanks = setOf(100, 90, 80),
+            activeTopRanks = setOf(100, 95, 90),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
         val vidlink1080 = createLink("VidLink", "VidLink [1080p]", "https://vidlink.pro/1080.m3u8", Qualities.P1080.value)
-        val yflix720 = createLink("YFlix", "YFlix [720p]", "https://yflix.to/720.m3u8", Qualities.P720.value)
+        val rivestream720 = createLink("RiveStream", "RiveStream [720p]", "https://rivestream.org/720.m3u8", Qualities.P720.value)
 
-        // t = 0: VidLink emits 1080p, but VidLink 720p or YFlix 720p is still resolving/in-flight
+        // t = 0: VidLink emits 1080p, but VidLink 720p or RiveStream 720p is still resolving/in-flight
         dispatcher.onLinkAccepted(vidlink1080)
 
         // Check after stageWindowMs (200ms)
         delay(350L)
 
-        // t = 500ms: YFlix 720p arrives
-        dispatcher.onLinkAccepted(yflix720)
+        // t = 500ms: RiveStream 720p arrives
+        dispatcher.onLinkAccepted(rivestream720)
         inFlightRanks.clear()
         dispatcher.markRankCompleted(100)
+        dispatcher.markRankCompleted(95)
         dispatcher.markRankCompleted(90)
-        dispatcher.markRankCompleted(80)
 
         delay(100L)
         dispatcher.flush()
@@ -368,7 +368,7 @@ class Milestone1Challenger2EmpiricalTest {
     fun testPriorityStreamDispatcher_1080pHeldForFullGraceTimeoutWhenNo720p() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
         val inFlightRanks = ConcurrentHashMap.newKeySet<Int>()
-        inFlightRanks.addAll(listOf(80, 70))
+        inFlightRanks.addAll(listOf(88, 70))
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -377,15 +377,15 @@ class Milestone1Challenger2EmpiricalTest {
             subtitleGraceMs = 50L,
             topSourceGraceMs = 50L,
             top720GraceMs = 500L, // Scaled down for fast unit test execution (500ms grace)
-            activeTopRanks = setOf(80, 70),
+            activeTopRanks = setOf(88, 70),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
-        val vidfast1080 = createLink("VidFast", "VidFast [1080p]", "https://vidfast.vc/1080.m3u8", Qualities.P1080.value)
+        val videasy1080 = createLink("VidEasy", "VidEasy [1080p]", "https://videasy.net/1080.m3u8", Qualities.P1080.value)
 
-        dispatcher.onLinkAccepted(vidfast1080)
+        dispatcher.onLinkAccepted(videasy1080)
         inFlightRanks.remove(70)
         dispatcher.markRankCompleted(70)
 
@@ -396,6 +396,6 @@ class Milestone1Challenger2EmpiricalTest {
         // At t = 650ms: after grace timer expires (500ms + margin), 1080p should be released as fallback
         delay(450L)
         assertEquals("1080p must be released after grace timer expires", 1, emitted.size)
-        assertEquals(vidfast1080, emitted[0])
+        assertEquals(videasy1080, emitted[0])
     }
 }

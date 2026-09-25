@@ -886,10 +886,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val providersCompleted = java.util.concurrent.atomic.AtomicInteger(0)
         val activeTopRanks = applicableProviders.mapNotNull {
             val boost = FAST_PROVIDER_BOOST[it.id] ?: 0f
-            if (boost >= 55f) boost.toInt() else null
+            if (boost >= 70f) boost.toInt() else null
         }.toSet()
         val runningTopProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        runningTopProviders.addAll(applicableProviders.filter { (FAST_PROVIDER_BOOST[it.id] ?: 0f) >= 55f }.map { it.id })
+        runningTopProviders.addAll(applicableProviders.filter { (FAST_PROVIDER_BOOST[it.id] ?: 0f) >= 70f }.map { it.id })
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
@@ -1012,7 +1012,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     )
                 } finally {
                     val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
-                    if (boost >= 55f) {
+                    if (boost >= 70f) {
                         runningTopProviders.remove(provider.id)
                         val rank = boost.toInt()
                         val hasRemainingWithRank = runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank }
