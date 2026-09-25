@@ -157,10 +157,10 @@ private val providers by lazy {
             if (!res.isAnime) invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback)
         },
         Provider("vidcore", "Vidcore") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidcore(res.id, res.season, res.episode, subtitleCallback, callback)
+            if (!res.isAnime) invokeVidcore(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
         },
         Provider("vidup", "Vidup") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidup(res.id, res.season, res.episode, subtitleCallback, callback)
+            if (!res.isAnime) invokeVidup(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
         },
         Provider("cinejoy", "CineJoy") { res, subtitleCallback, callback, _, _ ->
             val titleToUse = res.title ?: res.orgTitle ?: res.nametitle

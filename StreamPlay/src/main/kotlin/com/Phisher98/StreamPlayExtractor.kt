@@ -5274,32 +5274,40 @@ object StreamPlayExtractor : StreamPlay() {
         season: Int? = null,
         episode: Int? = null,
         subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
     ) {
         try {
-            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
+            if ((tmdbId == null && imdbId.isNullOrBlank()) || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(9500L) {
                 val base = "https://vidcore.io"
                 val api = "https://enc-dec.app/api"
 
-                val requestUrls = if (season == null || (season == 0 && episode == null)) {
-                    listOf("$base/movie/$tmdbId")
-                } else {
-                    if (episode == null) return@withTimeoutOrNull
-                    if (season == 0) {
-                        listOf(
-                            "$base/tv/$tmdbId/$season/$episode/",
-                            "$base/movie/$tmdbId"
-                        )
+                val idCandidates = mutableListOf<String>()
+                if (tmdbId != null) idCandidates.add(tmdbId.toString())
+                if (!imdbId.isNullOrBlank() && imdbId != tmdbId?.toString()) idCandidates.add(imdbId)
+
+                val requestUrls = mutableListOf<String>()
+                for (mediaId in idCandidates) {
+                    if (season == null || (season == 0 && episode == null)) {
+                        requestUrls.add("$base/movie/$mediaId")
                     } else {
-                        listOf("$base/tv/$tmdbId/$season/$episode/")
+                        if (episode == null) continue
+                        if (season == 0) {
+                            requestUrls.add("$base/tv/$mediaId/$season/$episode/")
+                            requestUrls.add("$base/movie/$mediaId")
+                        } else {
+                            requestUrls.add("$base/tv/$mediaId/$season/$episode/")
+                        }
                     }
                 }
+                if (requestUrls.isEmpty()) return@withTimeoutOrNull
 
                 val baseHeaders = mutableMapOf(
                     "User-Agent" to USER_AGENT,
-                    "Referer" to "$base/"
+                    "Referer" to "$base/",
+                    "Accept" to "*/*"
                 )
 
                 var encodedToken: String? = null
@@ -5454,32 +5462,40 @@ object StreamPlayExtractor : StreamPlay() {
         season: Int? = null,
         episode: Int? = null,
         subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
     ) {
         try {
-            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
+            if ((tmdbId == null && imdbId.isNullOrBlank()) || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(9500L) {
                 val base = "https://vidup.to"
                 val api = "https://enc-dec.app/api"
 
-                val requestUrls = if (season == null || (season == 0 && episode == null)) {
-                    listOf("$base/movie/$tmdbId")
-                } else {
-                    if (episode == null) return@withTimeoutOrNull
-                    if (season == 0) {
-                        listOf(
-                            "$base/tv/$tmdbId/$season/$episode/",
-                            "$base/movie/$tmdbId"
-                        )
+                val idCandidates = mutableListOf<String>()
+                if (tmdbId != null) idCandidates.add(tmdbId.toString())
+                if (!imdbId.isNullOrBlank() && imdbId != tmdbId?.toString()) idCandidates.add(imdbId)
+
+                val requestUrls = mutableListOf<String>()
+                for (mediaId in idCandidates) {
+                    if (season == null || (season == 0 && episode == null)) {
+                        requestUrls.add("$base/movie/$mediaId")
                     } else {
-                        listOf("$base/tv/$tmdbId/$season/$episode/")
+                        if (episode == null) continue
+                        if (season == 0) {
+                            requestUrls.add("$base/tv/$mediaId/$season/$episode/")
+                            requestUrls.add("$base/movie/$mediaId")
+                        } else {
+                            requestUrls.add("$base/tv/$mediaId/$season/$episode/")
+                        }
                     }
                 }
+                if (requestUrls.isEmpty()) return@withTimeoutOrNull
 
                 val baseHeaders = mutableMapOf(
                     "User-Agent" to USER_AGENT,
-                    "Referer" to "$base/"
+                    "Referer" to "$base/",
+                    "Accept" to "*/*"
                 )
 
                 var encodedToken: String? = null
