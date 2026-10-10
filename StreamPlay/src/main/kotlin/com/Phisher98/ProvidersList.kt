@@ -5,67 +5,9 @@ import android.util.Log
 import androidx.core.content.edit
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.phisher98.StreamPlayExtractor.invoke2embed
-import com.phisher98.StreamPlayExtractor.invoke4khdhub
-import com.phisher98.StreamPlayExtractor.invokeAllMovieland
-import com.phisher98.StreamPlayExtractor.invokeAnichi
-import com.phisher98.StreamPlayExtractor.invokeAnikage
-import com.phisher98.StreamPlayExtractor.invokeAnineko
 import com.phisher98.StreamPlayExtractor.invokeAnimepahe
-import com.phisher98.StreamPlayExtractor.invokeAnimetosho
-import com.phisher98.StreamPlayExtractor.invokeAnimex
-import com.phisher98.StreamPlayExtractor.invokeAnizone
-import com.phisher98.StreamPlayExtractor.invokeAutoembed
-import com.phisher98.StreamPlayExtractor.invokeBollyflix
-import com.phisher98.StreamPlayExtractor.invokeCineJoy
-import com.phisher98.StreamPlayExtractor.invokeCineVood
-import com.phisher98.StreamPlayExtractor.invokeDahmerMovies
-import com.phisher98.StreamPlayExtractor.invokeDooflix
-import com.phisher98.StreamPlayExtractor.invokeDudefilms
-import com.phisher98.StreamPlayExtractor.invokeFilmyfiy
-import com.phisher98.StreamPlayExtractor.invokeHdmovie2
-import com.phisher98.StreamPlayExtractor.invokeHexa
-import com.phisher98.StreamPlayExtractor.invokeHianime
-import com.phisher98.StreamPlayExtractor.invokeHindmoviez
-import com.phisher98.StreamPlayExtractor.invokeKickAssAnime
-import com.phisher98.StreamPlayExtractor.invokeKisskh
-import com.phisher98.StreamPlayExtractor.invokeM4uhd
-import com.phisher98.StreamPlayExtractor.invokeMapple
-import com.phisher98.StreamPlayExtractor.invokeMovieBox
-import com.phisher98.StreamPlayExtractor.invokeMovies4u
-import com.phisher98.StreamPlayExtractor.invokeMoviesApi
-import com.phisher98.StreamPlayExtractor.invokeMoviesdrive
-import com.phisher98.StreamPlayExtractor.invokeMoviesmod
-import com.phisher98.StreamPlayExtractor.invokeMultimovies
-import com.phisher98.StreamPlayExtractor.invokeNepu
-import com.phisher98.StreamPlayExtractor.invokeNinetv
-import com.phisher98.StreamPlayExtractor.invokePeachify
-import com.phisher98.StreamPlayExtractor.invokeReAnime
-import com.phisher98.StreamPlayExtractor.invokeRiveStream
-import com.phisher98.StreamPlayExtractor.invokeRogmovies
-import com.phisher98.StreamPlayExtractor.invokeSubtitleAPI
-import com.phisher98.StreamPlayExtractor.invokeTokyoInsider
-import com.phisher98.StreamPlayExtractor.invokeTopMovies
-import com.phisher98.StreamPlayExtractor.invokeUhdmovies
-import com.phisher98.StreamPlayExtractor.invokeVegamovies
-import com.phisher98.StreamPlayExtractor.invokeVidFast
-import com.phisher98.StreamPlayExtractor.invokeVidSrc
-import com.phisher98.StreamPlayExtractor.invokeVidSrcCc
-import com.phisher98.StreamPlayExtractor.invokeVidSrcTo
-import com.phisher98.StreamPlayExtractor.invokeVidSrcXyz
-import com.phisher98.StreamPlayExtractor.invokeVideasy
 import com.phisher98.StreamPlayExtractor.invokeVidlink
-import com.phisher98.StreamPlayExtractor.invokeVidup
-import com.phisher98.StreamPlayExtractor.invokeVidzee
-import com.phisher98.StreamPlayExtractor.invokeWatchsomuch
-import com.phisher98.StreamPlayExtractor.invokeWYZIESubs
-import com.phisher98.StreamPlayExtractor.invokeXpass
-import com.phisher98.StreamPlayExtractor.invokeYFlix
-import com.phisher98.StreamPlayExtractor.invokeZinkmovies
-import com.phisher98.StreamPlayExtractor.invokeZshow
-import com.phisher98.StreamPlayExtractor.invokecinemacity
-import com.phisher98.StreamPlayExtractor.invokehdhub4u
-import com.phisher98.StreamPlayExtractor.invokevidrock
+import com.phisher98.StreamPlayExtractor.invokeVixSrc
 import com.phisher98.StreamPlayExtractor.resolveAnimeIds
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -150,250 +92,97 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
     return ids
 }
 
+/**
+ * ===================== StreamPlay SOTA Provider Registry (v18) =====================
+ *
+ * Empirically researched against live endpoints. Every entry below was verified to
+ * resolve with plain HTTP (no browser, no JS, no Cloudflare challenge) before being
+ * registered:
+ *
+ *   1. VidLink   - vidlink.pro  | Movie/TV | XSalsa20-Poly1305 token API -> direct 360/480/1080
+ *                                            MP4 ladder + 7 native caption tracks. Primary.
+ *   2. VixSrc    - vixsrc.to    | Movie/TV | `/api/{movie|tv}` -> embed page -> `masterPlaylist`
+ *                                            HLS master (multi-audio + soft-subs). Verified backup.
+ *   3. AnimePahe - animepahe.pw | Anime    | kwik.cx resolver + soft-sub tracks.
+ *
+ * VixSrc was previously decommissioned as "dead"; live research re-validated that
+ * vixsrc.to is alive and serving a real multi-variant HLS master, so it is restored as
+ * the verified secondary movie/TV source (giving VidLink a working fallback instead of
+ * leaving a single point of failure).
+ *
+ * Candidates that were researched and then REJECTED, because they cannot be resolved
+ * with a plain request, are recorded here so they are not re-introduced on a later
+ * "find SOTA sources" pass:
+ *
+ *   - Dead / parked DNS: moviesapi.club, embed.su, vidsrc.icu, movie-box, flicks.so,
+ *     vidsrc.net, vidsrc.io, vidsrc.cloud, vidsrc.xyz, vidsrc.cc, 2embed.to.
+ *   - Cloudflare / browser only: multiembed.mov (302 -> streamingnow.mov Turnstile),
+ *     superembed (docs shell only), vidsrc.pm (origin 502), animepahe kwik via plain
+ *     curl (403; works in-app via the __ddg2 cookie).
+ *   - Works but only through a fragile multi-hop + WASM/ChaCha20 + IP-bound token chain
+ *     (vidsrc.to -> vsembed.ru -> data.vidsrc.sh): deliberately NOT ported, because that
+ *     is a workaround rather than a production solution.
+ *   - Unreachable from a clean probe: net51.cc, api.videasy.net, animekai.to.
+ *
+ * Consequently the whole legacy tier (rivestream, vidfast, videasy, vidflix, animegg,
+ * hexasu, autoembed, vidup, vidnest, cinejoy, yflix, the vidsrc family, and the entire
+ * Indian/Hindi download-only scraper tier) stays removed.
+ */
 private val providers by lazy {
     listOf(
-        Provider("vidlink", "Vidlink") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
-        },
-        Provider("vidup", "Vidup") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidup(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
-        },
-        Provider("cinejoy", "CineJoy") { res, subtitleCallback, callback, _, _ ->
-            val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
-            if (!res.isAnime) invokeCineJoy(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("HexaSU", "HexaSU") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeHexa(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("autoembed", "AutoEmbed") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeAutoembed(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("moviebox", "MovieBox (Multi)") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeMovieBox(res.title, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("yflix", "YFlix") { res, subtitleCallback, callback, _, _ ->
-            val titleToUse = res.title ?: res.orgTitle ?: res.nametitle
-            if (!res.isAnime) invokeYFlix(titleToUse, res.id, res.imdbId, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("vidsrc", "VidSrc (Unified)") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
-        },
-        Provider("uhdmovies", "UHD Movies") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeUhdmovies(res.title, res.year, res.season, res.episode, callback, subtitleCallback)
-        },
-        Provider("hianime", "HiAnime") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                ids.malId?.let { invokeHianime(it, res.episode, subtitleCallback, callback, getDubStatus(res)) }
+        Provider("vidlink", "VidLink") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) {
+                invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
-        Provider("animetosho", "AnimeTosho") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                ids.malId?.let { invokeAnimetosho(
-                    subtitleCallback, callback, getDubStatus(res), ids.anidbEid) }
-            }
-        },
-        Provider("ReAnime", "ReAnime") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                ids.anilistId?.let { invokeReAnime(it, res.episode, subtitleCallback, callback, getDubStatus(res)) }
-            }
-        },
-        Provider("Animex", "Animex") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                invokeAnimex(ids.malId, ids.anilistId, res.jpTitle, res.episode, subtitleCallback, callback, getDubStatus(res))
-            }
-        },
-        Provider("kickass", "KickAssAnime") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                ids.kaasSlug?.let { invokeKickAssAnime(res.title, it, res.episode, subtitleCallback, callback, getDubStatus(res)) }
+        Provider("vixsrc", "VixSrc") { res, subtitleCallback, callback, _, _ ->
+            if (!res.isAnime) {
+                invokeVixSrc(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
         Provider("animepahe", "AnimePahe") { res, subtitleCallback, callback, _, _ ->
             if (res.isAnime) {
                 val ids = getAnimeIds(res)
-                ids.animepaheUrl?.let { invokeAnimepahe(it, res.episode, subtitleCallback, callback, getDubStatus(res)) }
+                ids.animepaheUrl?.let {
+                    invokeAnimepahe(it, res.episode, subtitleCallback, callback, getDubStatus(res))
+                }
             }
-        },
-        Provider("anichi", "Anichi / AllAnime") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                invokeAnichi(res.jpTitle, res.title, ids.tmdbYear, res.episode, subtitleCallback, callback, getDubStatus(res))
-            }
-        },
-        Provider("anikage", "Anikage") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                val ids = getAnimeIds(res)
-                invokeAnikage(ids.anilistId, res.title ?: res.jpTitle, res.episode, subtitleCallback, callback, getDubStatus(res))
-            }
-        },
-        Provider("anineko", "AniNeko") { res, subtitleCallback, callback, _, _ ->
-            if (res.isAnime) {
-                invokeAnineko(res.title, res.jpTitle, res.episode, subtitleCallback, callback, getDubStatus(res))
-            }
-        },
-        Provider("tokyoinsider", "Tokyo Insider") { res, _, callback, _, _ ->
-            if (res.isAnime) {
-                invokeTokyoInsider(res.jpTitle, res.title, res.episode, callback, getDubStatus(res))
-            }
-        },
-        Provider("anizone", "AniZone") { res, subtitleCallback, callback, _, _ ->
-            Log.d("Phisher",res.jpTitle.toString())
-            if (res.isAnime) {
-                invokeAnizone(res.jpTitle, res.episode, subtitleCallback , callback, getDubStatus(res))
-            }
-        },
-        Provider("topmovies", "Top Movies") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeTopMovies(res.imdbId,
-                res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("moviesmod", "MoviesMod") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeMoviesmod(
-                res.imdbId,
-                res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("bollyflix", "Bollyflix") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeBollyflix(res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("watchsomuch", "WatchSoMuch", ProviderKind.SUBTITLE) { res, subtitleCallback, _, _, _ ->
-            if (!res.isAnime) invokeWatchsomuch(res.imdbId, res.season, res.episode, subtitleCallback)
-        },
-        Provider("ninetv", "NineTV") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeNinetv(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("allmovieland", "AllMovieland") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeAllMovieland(res.imdbId, res.season, res.episode, callback)
-        },
-        Provider("vegamovies", "VegaMovies") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isBollywood) invokeVegamovies(res.title, res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("Rogmovies", "RogMovies") { res, subtitleCallback, callback, _, _ ->
-            if (res.isBollywood) invokeRogmovies(res.title, res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("multimovies", "MultiMovies") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeMultimovies(res.title, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("zshow", "ZShow") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeZshow(res.title, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("nepu", "Nepu") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeNepu(res.title, res.airedYear ?: res.year, res.season, res.episode, callback)
-        },
-        Provider("moviesdrive", "MoviesDrive") { res, subtitleCallback, callback, _, _ ->
-            invokeMoviesdrive(res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("vidsrcxyz", "VidSrcXyz") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcXyz(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
-        },
-        Provider("vidsrccc", "VidSrc CC") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcCc(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
-        },
-        Provider("vidsrcto", "VidSrc To") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidSrcTo(res.imdbId, res.season, res.episode, subtitleCallback, callback, res.id)
-        },
-        Provider("vidzeeapi", "Vidzee API") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeVidzee(res.id, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("4khdhub", "4kHdhub (Multi)") { res, subtitleCallback, callback, _, _ ->
-            invoke4khdhub(res.title, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("hdhub4u", "Hdhub4u (Multi)") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokehdhub4u(res.imdbId, res.title, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("hdmovie2", "Hdmovie2") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeHdmovie2(res.title, res.year,
-                res.episode, subtitleCallback, callback)
-        },
-        Provider("vidrock", "Vidrock") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokevidrock(res.id, res.season, res.episode, callback)
-        },
-        Provider("kisskh", "KissKH (Asian Drama)") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeKisskh(res.title, res.season, res.episode, res.lastSeason, subtitleCallback, callback)
-        },
-        Provider("dahmermovies", "DahmerMovies") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeDahmerMovies(res.title, res.year, res.season, res.episode, callback)
-        },
-        Provider("moviesapi", "MoviesApi Club") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeMoviesApi(res.id, res.season, res.episode, callback)
-        },
-        Provider("CinemaCity", "CinemaCity") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokecinemacity(res.imdbId, res.season,res.episode,  callback)
-        },
-        Provider("Hindmoviez", "HindMoviez") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeHindmoviez(res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("Movies4u", "Movies4u") { res, subtitleCallback, callback, _, _ ->
-            invokeMovies4u(res.imdbId, res.title,res.year, res.season, res.episode, subtitleCallback ,callback)
-        },
-        Provider("M4uhd", "M4uhd") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeM4uhd(res.title,
-                res.season, res.episode, subtitleCallback ,callback)
-        },
-        Provider("MappleTV", "MappleTV") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeMapple(res.id, res.season, res.episode ,callback)
-        },
-        Provider("WyZIESUB", "WyZIESUB (Subtitles)", ProviderKind.SUBTITLE) { res, subtitleCallback, _, _, _ ->
-            invokeWYZIESubs(res.imdbId, res.season, res.episode, subtitleCallback)
-        },
-        Provider("SubtitleAPI", "SubtitleAPI (Subtitles)", ProviderKind.SUBTITLE) { res, subtitleCallback, _, _, _ ->
-            invokeSubtitleAPI(res.imdbId, res.season, res.episode, subtitleCallback)
-        },
-        Provider("CineVood", "CineVood (Movies Only)") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeCineVood(res.imdbId, subtitleCallback, callback)
-        },
-        Provider("Filmyfiy", "Filmyfiy (Movies Only)") { res, sub, cb, _, _ ->
-            if (!res.isAnime && res.season == null) invokeFilmyfiy(res.title, sub, cb)
-        },
-        Provider("2Embed", "2Embed") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invoke2embed(res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("DooFlix", "DooFlix") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeDooflix(res.id, res.season, res.episode, callback)
-        },
-        Provider("Xpass", "Xpass") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokeXpass(res.id, res.season, res.episode, callback, )
-        },
-        Provider("Dudefilms", "Dudefilms") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeDudefilms(res.imdbId, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("Zinkmovies", "Zinkmovies") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) invokeZinkmovies(res.title, res.year, res.season, res.episode, subtitleCallback, callback)
-        },
-        Provider("Peachify", "Peachify") { res, _, callback, _, _ ->
-            if (!res.isAnime) invokePeachify(res.id, res.season, res.episode, callback)
         }
     )
 }
 
+/**
+ * The curated SOTA set. Order defines the authoritative source hierarchy:
+ * VidLink (100) primary, VixSrc (95) verified backup for Movie/TV, and AnimePahe (90)
+ * for Anime. VidLink and VixSrc both serve Movie/TV, so source rank decides which wins;
+ * AnimePahe is anime-only and never races them.
+ */
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
-    "vidup",
-    "cinejoy",
-    "HexaSU",
-    "autoembed",
-    "moviebox"
+    "vixsrc",
+    "animepahe"
 )
 
-val DEAD_PROVIDER_IDS = setOf(
-    "rivestream",
-    "vidfast",
-    "VidEasy",
-    "videasy",
-    "superstream",
-    "vaplayer",
-    "vidcore",
-    "vidsrc"
-)
-
-val NEWLY_PROMOTED_TOP_TIER_IDS = setOf(
-    "vidup",
-    "cinejoy",
-    "HexaSU",
-    "autoembed",
-    "moviebox"
+/**
+ * Identifiers of every provider that has ever shipped in StreamPlay but is now
+ * decommissioned. Retained so that upgrades of existing installs can scrub stale
+ * user preferences entries. `vixsrc`/`VixSrc` are deliberately absent because that
+ * source is active again.
+ */
+val REMOVED_PROVIDER_IDS = setOf(
+    "rivestream", "RiveStream", "vidfast", "VidFast", "videasy", "VidEasy",
+    "vidflix", "Vidflix", "Vidflix (Multi)", "animegg", "AnimeGG",
+    "superstream", "vaplayer", "vidcore", "Vidcore", "vidsrc", "vidsrcxyz", "vidsrccc",
+    "vidsrcto", "vidnest", "VidNest", "vidup", "Vidup",
+    "cinejoy", "CineJoy", "HexaSU", "autoembed", "moviebox", "yflix", "YFlix",
+    "vidsrcme", "vidsrcin", "vidsrcpm", "vidsrcnet", "peachify", "vidrock", "moviesapi",
+    "vidzeeapi", "2Embed", "2embed", "uhdmovies", "multimovies", "4khdhub", "hdhub4u",
+    "hdmovie2", "topmovies", "moviesmod", "bollyflix", "vegamovies", "Rogmovies",
+    "nepu", "moviesdrive", "hianime", "animetosho", "ReAnime", "Animex", "kickass",
+    "anichi", "anikage", "anineko", "tokyoinsider", "anizone", "watchsomuch", "ninetv",
+    "allmovieland", "zshow", "kisskh", "dahmermovies", "CinemaCity", "Hindmoviez",
+    "Movies4u", "M4uhd", "MappleTV", "WyZIESUB", "SubtitleAPI", "CineVood", "Filmyfiy",
+    "DooFlix", "Xpass", "Dudefilms", "Zinkmovies", "Filmyfiy", "OpenSubs"
 )
 
 fun getDefaultDisabledProviderIds(): Set<String> =
@@ -401,48 +190,50 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v15_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v18_initialized"
 
 /**
- * Ensures clean installs enable DEFAULT_TOP_TIER_PROVIDERS (Vidlink > Vidup > CineJoy > HexaSU > AutoEmbed > MovieBox)
- * with all secondary and dead sources disabled by default, and seamlessly migrates upgrading users to v15:
- * permanently disables dead/unreliable providers (rivestream, vidfast, VidEasy, videasy, superstream, vaplayer, vidcore, vidsrc),
- * enables newly promoted SOTA providers (vidlink, vidup, cinejoy, HexaSU, autoembed, moviebox), and strictly preserves existing user customizations.
+ * Provider settings bootstrap + migration to the curated v18 SOTA registry.
+ *
+ * Clean installs: enable exactly [DEFAULT_TOP_TIER_PROVIDERS], disable nothing else
+ * (the registry no longer contains anything else).
+ *
+ * Upgrading installs: the key is versioned, so a build that shrinks the registry forces
+ * one re-migration. The stored `disabled_providers` set is rebuilt from scratch instead
+ * of being merged, which is the only way to guarantee that a user who had enabled
+ * rivestream / vidfast / videasy / vidflix / animegg / HexaSU / AutoEmbed / the
+ * download-only scraper tier in an older build never sees those sources again.
  */
 fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
     if (sharedPref == null) return getDefaultDisabledProviderIds()
 
     val isTopTierInitialized = sharedPref.getBoolean(PREFS_TOP_TIER_INITIALIZED, false)
-    if (!isTopTierInitialized) {
-        val defaultDisabled = getDefaultDisabledProviderIds()
-        val existingDisabled = sharedPref.getStringSet("disabled_providers", null)
-        val finalDisabled = if (existingDisabled.isNullOrEmpty()) {
-            defaultDisabled + DEAD_PROVIDER_IDS
-        } else {
-            // Override-preserving migration to v15:
-            // 1. Add dead providers to disabled set (including rivestream, vidfast, VidEasy, vidcore, vidsrc, etc.)
-            // 2. Remove newly promoted top-tier providers from disabled set (vidlink, vidup, cinejoy, HexaSU, autoembed, moviebox)
-            // 3. Retain user's custom enabling/disabling of existing providers intact
-            (existingDisabled + DEAD_PROVIDER_IDS) - NEWLY_PROMOTED_TOP_TIER_IDS
-        }
-        sharedPref.edit {
-            putStringSet("disabled_providers", finalDisabled)
-            putBoolean("streamplay_top5_defaults_initialized", true)
-            putBoolean("streamplay_top_tier_v2_initialized", true)
-            putBoolean("streamplay_top_tier_v4_initialized", true)
-            putBoolean("streamplay_top_tier_v6_initialized", true)
-            putBoolean("streamplay_top_tier_v7_initialized", true)
-            putBoolean("streamplay_top_tier_v8_initialized", true)
-            putBoolean("streamplay_top_tier_v9_initialized", true)
-            putBoolean("streamplay_top_tier_v10_initialized", true)
-            putBoolean("streamplay_top_tier_v11_initialized", true)
-            putBoolean("streamplay_top_tier_v12_initialized", true)
-            putBoolean("streamplay_top_tier_v13_initialized", true)
-            putBoolean("streamplay_top_tier_v14_initialized", true)
-            putBoolean(PREFS_TOP_TIER_INITIALIZED, true)
-        }
-        Log.d("StreamPlay", "🎯 Initialized top-tier provider defaults v15: ${DEFAULT_TOP_TIER_PROVIDERS.size} active, ${finalDisabled.size} disabled")
-        return finalDisabled
+    if (isTopTierInitialized) {
+        val persisted = sharedPref.getStringSet("disabled_providers", null)
+        if (persisted == null) return getDefaultDisabledProviderIds()
+        // Never let a stale identifier from a decommissioned provider linger.
+        return persisted.filterNot { it in REMOVED_PROVIDER_IDS }.toSet()
     }
-    return sharedPref.getStringSet("disabled_providers", null) ?: getDefaultDisabledProviderIds()
+
+    val previousDisabled = sharedPref.getStringSet("disabled_providers", null)
+
+    // Preserve an explicit user opt-out only for providers that still exist; every
+    // legacy entry is dropped because the provider itself is gone.
+    val registeredIds = buildProviders().map { it.id }.toSet()
+    val carriedOver = previousDisabled.orEmpty()
+        .filter { it in registeredIds && it !in DEFAULT_TOP_TIER_PROVIDERS }
+        .toSet()
+
+    val finalDisabled = (registeredIds - DEFAULT_TOP_TIER_PROVIDERS) + carriedOver
+
+    sharedPref.edit {
+        putStringSet("disabled_providers", finalDisabled)
+        putBoolean(PREFS_TOP_TIER_INITIALIZED, true)
+    }
+    Log.d(
+        "StreamPlay",
+        "🎯 Migrated to curated SOTA registry v18: ${DEFAULT_TOP_TIER_PROVIDERS.size} source(s) active, " +
+            "scrubbed ${REMOVED_PROVIDER_IDS.size} decommissioned provider identifiers"
+    )
+    return finalDisabled
 }

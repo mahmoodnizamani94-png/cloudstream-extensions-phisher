@@ -233,78 +233,23 @@ class EarlySatisfactionController(
     }
 }
 
+/**
+ * Authoritative cold-start priority boost for the curated v18 SOTA registry.
+ *
+ * The hierarchy is deliberately flat and small: every entry is a source that has been
+ * verified live with a plain HTTP probe, and the ordering is the order a well-behaved
+ * player should surface them in. Anything not listed here scores 0 and is treated as a
+ * non-preferred fallback.
+ */
 internal val FAST_PROVIDER_BOOST = mapOf(
     "vidlink" to 100f,
     "Vidlink" to 100f,
-    "vidup" to 95f,
-    "Vidup" to 95f,
-    "cinejoy" to 90f,
-    "CineJoy" to 90f,
-    "HexaSU" to 88f,
-    "hexasu" to 88f,
-    "flixersu" to 88f,
-    "flixer.su" to 88f,
-    "flixer" to 88f,
-    "embedsu" to 88f,
-    "embed.su" to 88f,
-    "autoembed" to 85f,
-    "AutoEmbed" to 85f,
-    "moviebox" to 80f,
-    "MovieBox" to 80f,
-    "MovieBox (Multi)" to 80f,
-    "yflix" to 75f,
-    "YFlix" to 75f,
-    "rivestream" to 70f,
-    "RiveStream" to 70f,
-    "vidfast" to 65f,
-    "VidFast" to 65f,
-    "videasy" to 60f,
-    "VidEasy" to 60f,
-    "WyZIESUB" to 50f,
-    "SubtitleAPI" to 50f,
-    "peachify" to 50f,
-    "Peachify" to 50f,
-    "moviesflix" to 45f,
-    "MoviesFlix" to 45f,
-    "4khdhub" to 35f,
-    "4kHdhub" to 35f,
-    "4kHdhub (Multi)" to 35f,
-    "multimovies" to 35f,
-    "MultiMovies" to 35f,
-    "uhdmovies" to 35f,
-    "UHDMovies" to 35f,
-    "UHD Movies" to 35f,
-    "vidsrc" to 25f,
-    "VidSrc" to 25f,
-    "VidSrc (Unified)" to 25f,
-    "vidsrcxyz" to 25f,
-    "VidSrcXyz" to 25f,
-    "vidsrccc" to 25f,
-    "VidSrcCc" to 25f,
-    "vidsrcto" to 25f,
-    "VidSrcTo" to 25f,
-    "vidsrcme" to 25f,
-    "VidSrcMe" to 25f,
-    "vidsrcin" to 25f,
-    "VidSrcIn" to 25f,
-    "VidSrc In" to 25f,
-    "vidsrcpm" to 25f,
-    "VidSrcPm" to 25f,
-    "VidSrc Pm" to 25f,
-    "vidsrcnet" to 25f,
-    "VidSrcNet" to 25f,
-    "VidSrc Net" to 25f,
-    "vidrock" to 20f,
-    "Vidrock" to 20f,
-    "moviesapi" to 15f,
-    "MoviesApi" to 15f,
-    "MoviesApi Club" to 15f,
-    "vidzeeapi" to 12f,
-    "vidzee" to 12f,
-    "Vidzee" to 12f,
-    "Vidzee API" to 12f,
-    "2Embed" to 10f,
-    "2embed" to 10f
+    "VidLink" to 100f,
+    "vixsrc" to 95f,
+    "VixSrc" to 95f,
+    "animepahe" to 90f,
+    "Animepahe" to 90f,
+    "AnimePahe" to 90f
 )
 
 /**
@@ -313,115 +258,29 @@ internal val FAST_PROVIDER_BOOST = mapOf(
 object SpeculativePipeliner {
     private const val TAG = "SpeculativePipeliner"
 
+    /**
+     * Cold-start latency expectation for the curated registry. Both surviving sources
+     * are single-round-trip JSON APIs, so they live in TIER_1; the intent is that the
+     * pipeline starts them together instead of serialising them.
+     */
     val STATIC_COLD_START_TIERS: Map<String, LatencyTier> = mapOf(
         // Tier 0: Direct cache / instant player
         "streamplay_cache" to LatencyTier.TIER_0,
         "debrid_cache" to LatencyTier.TIER_0,
 
-        // Tier 1: Fast reliable JSON APIs & resolvers
+        // Tier 1: Fast, verified JSON APIs & resolvers
         "vidlink" to LatencyTier.TIER_1,
         "Vidlink" to LatencyTier.TIER_1,
-        "vidup" to LatencyTier.TIER_1,
-        "Vidup" to LatencyTier.TIER_1,
-        "4khdhub" to LatencyTier.TIER_1,
-        "4kHdhub" to LatencyTier.TIER_1,
-        "4kHdhub (Multi)" to LatencyTier.TIER_1,
-        "multimovies" to LatencyTier.TIER_1,
-        "MultiMovies" to LatencyTier.TIER_1,
-        "uhdmovies" to LatencyTier.TIER_1,
-        "UHDMovies" to LatencyTier.TIER_1,
-        "UHD Movies" to LatencyTier.TIER_1,
-        "cinejoy" to LatencyTier.TIER_1,
-        "CineJoy" to LatencyTier.TIER_1,
-        "yflix" to LatencyTier.TIER_1,
-        "YFlix" to LatencyTier.TIER_1,
-        "moviesflix" to LatencyTier.TIER_1,
-        "MoviesFlix" to LatencyTier.TIER_1,
-        "HexaSU" to LatencyTier.TIER_1,
-        "hexasu" to LatencyTier.TIER_1,
-        "flixersu" to LatencyTier.TIER_1,
-        "flixer.su" to LatencyTier.TIER_1,
-        "flixer" to LatencyTier.TIER_1,
-        "embedsu" to LatencyTier.TIER_1,
-        "embed.su" to LatencyTier.TIER_1,
-        "autoembed" to LatencyTier.TIER_1,
-        "AutoEmbed" to LatencyTier.TIER_1,
-        "vidfast" to LatencyTier.TIER_1,
-        "VidFast" to LatencyTier.TIER_1,
-        "VidEasy" to LatencyTier.TIER_1,
-        "videasy" to LatencyTier.TIER_1,
-        "vidsrc" to LatencyTier.TIER_1,
-        "VidSrc" to LatencyTier.TIER_1,
-        "VidSrc (Unified)" to LatencyTier.TIER_1,
-        "vidsrcxyz" to LatencyTier.TIER_1,
-        "VidSrcXyz" to LatencyTier.TIER_1,
-        "vidsrccc" to LatencyTier.TIER_1,
-        "VidSrcCc" to LatencyTier.TIER_1,
-        "vidsrcto" to LatencyTier.TIER_1,
-        "VidSrcTo" to LatencyTier.TIER_1,
-        "vidsrcme" to LatencyTier.TIER_1,
-        "VidSrcMe" to LatencyTier.TIER_1,
-        "rivestream" to LatencyTier.TIER_1,
-        "RiveStream" to LatencyTier.TIER_1,
-        "moviesapi" to LatencyTier.TIER_1,
-        "MoviesApi Club" to LatencyTier.TIER_1,
-        "moviebox" to LatencyTier.TIER_1,
-        "MovieBox (Multi)" to LatencyTier.TIER_1,
-        "vidrock" to LatencyTier.TIER_1,
-        "Vidrock" to LatencyTier.TIER_1,
-        "vidzeeapi" to LatencyTier.TIER_1,
-        "2Embed" to LatencyTier.TIER_1,
-        "Hianime" to LatencyTier.TIER_1,
-        "hianime" to LatencyTier.TIER_1,
-        "Animepahe" to LatencyTier.TIER_1,
+        "VidLink" to LatencyTier.TIER_1,
+        "vixsrc" to LatencyTier.TIER_1,
+        "VixSrc" to LatencyTier.TIER_1,
         "animepahe" to LatencyTier.TIER_1,
-        "Anizone" to LatencyTier.TIER_1,
-        "anizone" to LatencyTier.TIER_1,
-        "SubtitleAPI" to LatencyTier.TIER_1,
-        "WyZIESUB" to LatencyTier.TIER_1,
-        "stremio_addon" to LatencyTier.TIER_1,
-        "Watchsomuch" to LatencyTier.TIER_1,
-        "OpenSubs" to LatencyTier.TIER_1,
-
-        // Tier 2: Multi-step scrapers
-        "vegamovies" to LatencyTier.TIER_2,
-        "moviesmod" to LatencyTier.TIER_2,
-        "topmovies" to LatencyTier.TIER_2,
-        "bollyflix" to LatencyTier.TIER_2,
-        "hdhub4u" to LatencyTier.TIER_2,
-        "hdmovie2" to LatencyTier.TIER_2,
-        "CinemaCity" to LatencyTier.TIER_2,
-        "Movies4u" to LatencyTier.TIER_2,
-        "M4uhd" to LatencyTier.TIER_2,
-        "CineVood" to LatencyTier.TIER_2,
-        "DooFlix" to LatencyTier.TIER_2,
-        "Dudefilms" to LatencyTier.TIER_2,
-        "Zinkmovies" to LatencyTier.TIER_2,
-        "Peachify" to LatencyTier.TIER_2,
-        "Anikage" to LatencyTier.TIER_2,
-        "Anichi" to LatencyTier.TIER_2,
-        "KickAssAnime" to LatencyTier.TIER_2,
-        "Animex" to LatencyTier.TIER_2,
-        "Animetosho" to LatencyTier.TIER_2,
-        "ReAnime" to LatencyTier.TIER_2,
-        "AllMovieland" to LatencyTier.TIER_2,
-        "AllMovielandMediaProvider" to LatencyTier.TIER_2,
-        "allmovieland" to LatencyTier.TIER_2,
-
-        // Tier 3: Slow / edge fallback
-        "tokyoinsider" to LatencyTier.TIER_3,
-        "kisskh" to LatencyTier.TIER_3,
-        "dahmermovies" to LatencyTier.TIER_3,
-        "Hindmoviez" to LatencyTier.TIER_3,
-        "Filmyfiy" to LatencyTier.TIER_3,
-        "Xpass" to LatencyTier.TIER_3,
-        "nepu" to LatencyTier.TIER_3,
-        "moviesdrive" to LatencyTier.TIER_3,
-        "Anineko" to LatencyTier.TIER_3
+        "Animepahe" to LatencyTier.TIER_1,
+        "AnimePahe" to LatencyTier.TIER_1
     )
 
     fun classifyProvider(providerId: String, initialTier: LatencyTier? = null): LatencyTier {
-        val isTopTier = StreamLinkOptimizer.isTopTierProvider(providerId) || (FAST_PROVIDER_BOOST[providerId] ?: 0f) >= 80f
+        val isTopTier = StreamLinkOptimizer.isTopTierProvider(providerId) || (FAST_PROVIDER_BOOST[providerId] ?: 0f) >= 90f
         if (isTopTier) {
             return initialTier ?: STATIC_COLD_START_TIERS[providerId] ?: LatencyTier.TIER_1
         }
@@ -498,19 +357,19 @@ object SpeculativePipeliner {
 
         fun isTopTierTask(info: TrackedTaskInfo): Boolean {
             return if (info.task.priorityBoost > 0f) {
-                info.task.priorityBoost >= 80f
+                info.task.priorityBoost >= 90f
             } else {
                 StreamLinkOptimizer.isTopTierProvider(info.task.providerId) ||
-                    (FAST_PROVIDER_BOOST[info.task.providerId] ?: 0f) >= 80f
+                    (FAST_PROVIDER_BOOST[info.task.providerId] ?: 0f) >= 90f
             }
         }
 
         fun isTopTierTask(task: PipelinedTask): Boolean {
             return if (task.priorityBoost > 0f) {
-                task.priorityBoost >= 80f
+                task.priorityBoost >= 90f
             } else {
                 StreamLinkOptimizer.isTopTierProvider(task.providerId) ||
-                    (FAST_PROVIDER_BOOST[task.providerId] ?: 0f) >= 80f
+                    (FAST_PROVIDER_BOOST[task.providerId] ?: 0f) >= 90f
             }
         }
 

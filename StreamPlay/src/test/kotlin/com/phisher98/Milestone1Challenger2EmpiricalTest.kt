@@ -360,15 +360,17 @@ class Milestone1Challenger2EmpiricalTest {
         dispatcher.flush()
 
         assertTrue("Emitted list must contain at least 2 streams", emitted.size >= 2)
-        assertEquals("720p MUST be dispatched as link #1", Qualities.P720.value, emitted[0].quality)
-        assertEquals("1080p MUST be link #2", Qualities.P1080.value, emitted[1].quality)
+        // SOURCE-FIRST: VidLink (rank 100) has already delivered its best available variant
+        // (1080p), so it owns the #1 slot. The lower-ranked RiveStream 720p follows.
+        assertEquals("Highest-ranked source's 1080p MUST be link #1", vidlink1080, emitted[0])
+        assertEquals("Lower-ranked 720p MUST follow as link #2", rivestream720, emitted[1])
     }
 
     @Test
     fun testPriorityStreamDispatcher_1080pHeldForFullGraceTimeoutWhenNo720p() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
         val inFlightRanks = ConcurrentHashMap.newKeySet<Int>()
-        inFlightRanks.addAll(listOf(88, 70))
+        inFlightRanks.addAll(listOf(100, 90))
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -377,25 +379,26 @@ class Milestone1Challenger2EmpiricalTest {
             subtitleGraceMs = 50L,
             topSourceGraceMs = 50L,
             top720GraceMs = 500L, // Scaled down for fast unit test execution (500ms grace)
-            activeTopRanks = setOf(88, 70),
+            activeTopRanks = setOf(100, 90),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
-        val videasy1080 = createLink("VidEasy", "VidEasy [1080p]", "https://videasy.net/1080.m3u8", Qualities.P1080.value)
+        val autoembed1080 = createLink("AutoEmbed", "AutoEmbed [1080p]", "https://player.autoembed.cc/1080.m3u8", Qualities.P1080.value)
 
-        dispatcher.onLinkAccepted(videasy1080)
-        inFlightRanks.remove(70)
-        dispatcher.markRankCompleted(70)
+        dispatcher.onLinkAccepted(autoembed1080)
+        inFlightRanks.remove(90)
+        dispatcher.markRankCompleted(90)
 
         // At t = 200ms: within 500ms grace window, 1080p must NOT be emitted
+        // (VidLink rank 100 is still in flight)
         delay(200L)
         assertTrue("1080p must be held while grace timer is active and higher rank in flight", emitted.isEmpty())
 
         // At t = 650ms: after grace timer expires (500ms + margin), 1080p should be released as fallback
         delay(450L)
         assertEquals("1080p must be released after grace timer expires", 1, emitted.size)
-        assertEquals(videasy1080, emitted[0])
+        assertEquals(autoembed1080, emitted[0])
     }
 }

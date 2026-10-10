@@ -16,8 +16,10 @@ import kotlin.math.sign
  * 1. Mathematical separation across permutations of bitrates (0 to 100,000 kbps),
  *    video scores (REMUX, BluRay, WEB-DL, DV, HDR10+, HDR, HEVC),
  *    audio scores (Atmos, TrueHD, DTS-HD, 7.1, 5.1), and header scores.
- * 2. 1080p stream with MAXIMAL badges & 100,000 kbps NEVER beats 720p stream with MINIMAL badges & 500 kbps.
- * 3. 4K stream with MAXIMAL badges NEVER beats 480p stream with MINIMAL badges.
+ * 2. Within one source rank, a 1080p stream with MAXIMAL badges & 100,000 kbps NEVER beats a
+ *    720p stream with MINIMAL badges & 500 kbps; across source ranks the higher-ranked source wins.
+ * 3. Within one source rank, a 4K stream with MAXIMAL badges NEVER beats a 480p stream with
+ *    MINIMAL badges; across source ranks the higher-ranked source wins.
  * 4. Anti-symmetry and transitivity of isBetterThan and STREAM_PRIORITY_COMPARATOR.
  */
 class Milestone1ChallengerEmpiricalTest {
@@ -93,7 +95,7 @@ class Milestone1ChallengerEmpiricalTest {
             fullHeaders
         )
 
-        val topProviders = listOf("Vidlink", "Vidup", "RiveStream", "CineJoy", "VidFast", "VidEasy")
+        val providers = listOf("Vidlink", "AnimePahe", "VixSrc", "VidNest", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox", "YFlix")
 
         // 1. Verify tiebreaker is ALWAYS bounded strictly in [0.0f, 9.9f]
         for (b in bitrates) {
@@ -118,14 +120,28 @@ class Milestone1ChallengerEmpiricalTest {
             }
         }
 
-        // 2. Permutation separation across adjacent quality tiers for all top providers
-        var minSeparation720to1080 = Float.MAX_VALUE
-        var minSeparation1080to480 = Float.MAX_VALUE
-        var minSeparation480toOtherSd = Float.MAX_VALUE
-        var minSeparationOtherSdto4K = Float.MAX_VALUE
+        // 2. Permutation separation across adjacent quality tiers.
+        //    a) Within ONE source rank the 720p > 1080p > 480p > other SD > 4K ordering must
+        //       hold with wide, tiebreaker-proof margins.
+        //    b) Across source ranks the higher-ranked source always wins, at ANY resolution.
+        //       (Ranks are compared first, so a rank gap is never bridged by badges.)
+        fun assertRankFirstOutcome(linkA: ExtractorLink, linkB: ExtractorLink, context: String) {
+            val scoreA = StreamLinkOptimizer.getStreamCompositeScore(linkA)
+            val scoreB = StreamLinkOptimizer.getStreamCompositeScore(linkB)
+            val rankA = StreamLinkOptimizer.getSourcePriorityRank(linkA)
+            val rankB = StreamLinkOptimizer.getSourcePriorityRank(linkB)
+            if (rankA > rankB) {
+                assertTrue("$context: higher-ranked $rankA ($scoreA) must beat lower-ranked $rankB ($scoreB)", scoreA > scoreB)
+            } else {
+                assertTrue("$context: higher-ranked $rankB ($scoreB) must beat lower-ranked $rankA ($scoreA)", scoreB > scoreA)
+            }
+        }
 
-        for (pA in topProviders) {
-            for (pB in topProviders) {
+        // [bucket 0] top-tier pairs (VidLink/AnimePahe), [bucket 1] rank-0 secondary pairs
+        val minSep = arrayOf(FloatArray(4) { Float.MAX_VALUE }, FloatArray(4) { Float.MAX_VALUE })
+
+        for (pA in providers) {
+            for (pB in providers) {
                 // pA with minimal attributes vs pB with maximal attributes
                 val link720Min = createLink(source = pA, name = "$pA [720p]", quality = Qualities.P720.value)
                 val link1080Max = createLink(
@@ -156,36 +172,53 @@ class Milestone1ChallengerEmpiricalTest {
                     headers = fullHeaders
                 )
 
-                val score720Min = StreamLinkOptimizer.getStreamCompositeScore(link720Min)
-                val score1080Max = StreamLinkOptimizer.getStreamCompositeScore(link1080Max)
-                val sep720to1080 = score720Min - score1080Max
-                minSeparation720to1080 = minOf(minSeparation720to1080, sep720to1080)
-                assertTrue("720p min must strictly beat 1080p max ($pA vs $pB)", sep720to1080 > 0)
+                val rankA = StreamLinkOptimizer.getSourcePriorityRank(link720Min)
+                val rankB = StreamLinkOptimizer.getSourcePriorityRank(link1080Max)
 
-                val score1080Min = StreamLinkOptimizer.getStreamCompositeScore(link1080Min)
-                val score480Max = StreamLinkOptimizer.getStreamCompositeScore(link480Max)
-                val sep1080to480 = score1080Min - score480Max
-                minSeparation1080to480 = minOf(minSeparation1080to480, sep1080to480)
-                assertTrue("1080p min must strictly beat 480p max ($pA vs $pB)", sep1080to480 > 0)
+                if (rankA == rankB) {
+                    val bucket = if (rankA >= 90) 0 else 1
 
-                val score480Min = StreamLinkOptimizer.getStreamCompositeScore(link480Min)
-                val scoreOtherSdMax = StreamLinkOptimizer.getStreamCompositeScore(linkOtherSdMax)
-                val sep480toOtherSd = score480Min - scoreOtherSdMax
-                minSeparation480toOtherSd = minOf(minSeparation480toOtherSd, sep480toOtherSd)
-                assertTrue("480p min must strictly beat other SD max ($pA vs $pB)", sep480toOtherSd > 0)
+                    val score720Min = StreamLinkOptimizer.getStreamCompositeScore(link720Min)
+                    val score1080Max = StreamLinkOptimizer.getStreamCompositeScore(link1080Max)
+                    val sep720to1080 = score720Min - score1080Max
+                    minSep[bucket][0] = minOf(minSep[bucket][0], sep720to1080)
+                    assertTrue("720p min must strictly beat 1080p max ($pA vs $pB)", sep720to1080 > 0)
 
-                val scoreOtherSdMin = StreamLinkOptimizer.getStreamCompositeScore(linkOtherSdMin)
-                val score4kMax = StreamLinkOptimizer.getStreamCompositeScore(link4kMax)
-                val sepOtherSdto4K = scoreOtherSdMin - score4kMax
-                minSeparationOtherSdto4K = minOf(minSeparationOtherSdto4K, sepOtherSdto4K)
-                assertTrue("Other SD min (360p) must strictly beat 4K max ($pA vs $pB)", sepOtherSdto4K > 0)
+                    val score1080Min = StreamLinkOptimizer.getStreamCompositeScore(link1080Min)
+                    val score480Max = StreamLinkOptimizer.getStreamCompositeScore(link480Max)
+                    val sep1080to480 = score1080Min - score480Max
+                    minSep[bucket][1] = minOf(minSep[bucket][1], sep1080to480)
+                    assertTrue("1080p min must strictly beat 480p max ($pA vs $pB)", sep1080to480 > 0)
+
+                    val score480Min = StreamLinkOptimizer.getStreamCompositeScore(link480Min)
+                    val scoreOtherSdMax = StreamLinkOptimizer.getStreamCompositeScore(linkOtherSdMax)
+                    val sep480toOtherSd = score480Min - scoreOtherSdMax
+                    minSep[bucket][2] = minOf(minSep[bucket][2], sep480toOtherSd)
+                    assertTrue("480p min must strictly beat other SD max ($pA vs $pB)", sep480toOtherSd > 0)
+
+                    val scoreOtherSdMin = StreamLinkOptimizer.getStreamCompositeScore(linkOtherSdMin)
+                    val score4kMax = StreamLinkOptimizer.getStreamCompositeScore(link4kMax)
+                    val sepOtherSdto4K = scoreOtherSdMin - score4kMax
+                    minSep[bucket][3] = minOf(minSep[bucket][3], sepOtherSdto4K)
+                    assertTrue("Other SD min (360p) must strictly beat 4K max ($pA vs $pB)", sepOtherSdto4K > 0)
+                } else {
+                    // Cross-rank: the higher-ranked source wins every adjacent-tier pairing.
+                    assertRankFirstOutcome(link720Min, link1080Max, "720p min vs 1080p max ($pA vs $pB)")
+                    assertRankFirstOutcome(link1080Min, link480Max, "1080p min vs 480p max ($pA vs $pB)")
+                    assertRankFirstOutcome(link480Min, linkOtherSdMax, "480p min vs other SD max ($pA vs $pB)")
+                    assertRankFirstOutcome(linkOtherSdMin, link4kMax, "other SD min vs 4K max ($pA vs $pB)")
+                }
             }
         }
 
-        assertTrue("Min separation 720p -> 1080p must exceed 1540", minSeparation720to1080 >= 1540.0f)
-        assertTrue("Min separation 1080p -> 480p must exceed 1540", minSeparation1080to480 >= 1540.0f)
-        assertTrue("Min separation 480p -> other SD must exceed 1340", minSeparation480toOtherSd >= 1340.0f)
-        assertTrue("Min separation other SD -> 4K must exceed 1340", minSeparationOtherSdto4K >= 1340.0f)
+        assertTrue("Min separation 720p -> 1080p must exceed 1540", minSep[0][0] >= 1540.0f)
+        assertTrue("Min separation 1080p -> 480p must exceed 1540", minSep[0][1] >= 1540.0f)
+        assertTrue("Min separation 480p -> other SD must exceed 1340", minSep[0][2] >= 1340.0f)
+        assertTrue("Min separation other SD -> 4K must exceed 1340", minSep[0][3] >= 1340.0f)
+        assertTrue("Secondary min separation 720p -> 1080p must exceed 180", minSep[1][0] >= 180.0f)
+        assertTrue("Secondary min separation 1080p -> 480p must exceed 180", minSep[1][1] >= 180.0f)
+        assertTrue("Secondary min separation 480p -> other SD must exceed 130", minSep[1][2] >= 130.0f)
+        assertTrue("Secondary min separation other SD -> 4K must exceed 120", minSep[1][3] >= 120.0f)
     }
 
     // =========================================================================
@@ -216,26 +249,41 @@ class Milestone1ChallengerEmpiricalTest {
                     headers = emptyMap()
                 )
 
-                // 1. isBetterThan: 1080p MUST NEVER beat 720p
-                assertFalse(
-                    "1080p MAX ($p1080) must NEVER beat 720p MIN ($p720) in isBetterThan",
+                // Source rank is compared FIRST: a rank gap decides the comparison outright,
+                // equal ranks fall back to the 720p > 1080p quality hierarchy.
+                val rank1080 = StreamLinkOptimizer.getSourcePriorityRank(link1080Max)
+                val rank720 = StreamLinkOptimizer.getSourcePriorityRank(link720Min)
+                val expect1080Wins = rank1080 > rank720
+
+                // 1. isBetterThan: rank-first, quality-second ordering
+                assertEquals(
+                    "isBetterThan(1080p MAX $p1080, 720p MIN $p720) must follow rank-first ordering",
+                    expect1080Wins,
                     StreamLinkOptimizer.isBetterThan(link1080Max, link720Min)
                 )
 
-                // 2. isBetterThan: 720p MIN MUST beat 1080p MAX
-                assertTrue(
-                    "720p MIN ($p720) MUST beat 1080p MAX ($p1080) in isBetterThan",
+                // 2. isBetterThan: strict mirror image
+                assertEquals(
+                    "isBetterThan(720p MIN $p720, 1080p MAX $p1080) must be the exact mirror",
+                    !expect1080Wins,
                     StreamLinkOptimizer.isBetterThan(link720Min, link1080Max)
                 )
 
-                // 3. STREAM_PRIORITY_COMPARATOR within same provider or top-tier
-                val isBothTopTier = StreamLinkOptimizer.isTopTierSource(link1080Max) && StreamLinkOptimizer.isTopTierSource(link720Min)
-                val isBothSecondary = !StreamLinkOptimizer.isTopTierSource(link1080Max) && !StreamLinkOptimizer.isTopTierSource(link720Min)
-                if (isBothTopTier || isBothSecondary || p1080 == p720) {
-                    val comp720 = StreamLinkOptimizer.getStreamCompositeScore(link720Min)
-                    val comp1080 = StreamLinkOptimizer.getStreamCompositeScore(link1080Max)
+                // 3. STREAM_PRIORITY_COMPARATOR / composite score enforce the same ordering
+                val comp720 = StreamLinkOptimizer.getStreamCompositeScore(link720Min)
+                val comp1080 = StreamLinkOptimizer.getStreamCompositeScore(link1080Max)
+                if (expect1080Wins) {
                     assertTrue(
-                        "720p MIN ($p720: $comp720) must beat 1080p MAX ($p1080: $comp1080) in comparator",
+                        "1080p MAX ($p1080: $comp1080) must beat 720p MIN ($p720: $comp720): higher source rank",
+                        comp1080 > comp720
+                    )
+                    assertTrue(
+                        "STREAM_PRIORITY_COMPARATOR: higher-ranked 1080p must precede 720p",
+                        StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR.compare(link1080Max, link720Min) < 0
+                    )
+                } else {
+                    assertTrue(
+                        "720p MIN ($p720: $comp720) must beat 1080p MAX ($p1080: $comp1080)",
                         comp720 > comp1080
                     )
                     assertTrue(
@@ -275,26 +323,41 @@ class Milestone1ChallengerEmpiricalTest {
                     headers = emptyMap()
                 )
 
-                // 1. isBetterThan: 4K MUST NEVER beat 480p
-                assertFalse(
-                    "4K MAX ($p4k) must NEVER beat 480p MIN ($p480) in isBetterThan",
+                // Source rank is compared FIRST: a rank gap decides the comparison outright,
+                // equal ranks fall back to the 480p > 4K quality hierarchy.
+                val rank4k = StreamLinkOptimizer.getSourcePriorityRank(link4kMax)
+                val rank480 = StreamLinkOptimizer.getSourcePriorityRank(link480Min)
+                val expect4kWins = rank4k > rank480
+
+                // 1. isBetterThan: rank-first, quality-second ordering
+                assertEquals(
+                    "isBetterThan(4K MAX $p4k, 480p MIN $p480) must follow rank-first ordering",
+                    expect4kWins,
                     StreamLinkOptimizer.isBetterThan(link4kMax, link480Min)
                 )
 
-                // 2. isBetterThan: 480p MIN MUST beat 4K MAX
-                assertTrue(
-                    "480p MIN ($p480) MUST beat 4K MAX ($p4k) in isBetterThan",
+                // 2. isBetterThan: strict mirror image
+                assertEquals(
+                    "isBetterThan(480p MIN $p480, 4K MAX $p4k) must be the exact mirror",
+                    !expect4kWins,
                     StreamLinkOptimizer.isBetterThan(link480Min, link4kMax)
                 )
 
-                // 3. STREAM_PRIORITY_COMPARATOR within same provider or top-tier
-                val isBothTopTier = StreamLinkOptimizer.isTopTierSource(link4kMax) && StreamLinkOptimizer.isTopTierSource(link480Min)
-                val isBothSecondary = !StreamLinkOptimizer.isTopTierSource(link4kMax) && !StreamLinkOptimizer.isTopTierSource(link480Min)
-                if (isBothTopTier || isBothSecondary || p4k == p480) {
-                    val comp480 = StreamLinkOptimizer.getStreamCompositeScore(link480Min)
-                    val comp4k = StreamLinkOptimizer.getStreamCompositeScore(link4kMax)
+                // 3. STREAM_PRIORITY_COMPARATOR / composite score enforce the same ordering
+                val comp480 = StreamLinkOptimizer.getStreamCompositeScore(link480Min)
+                val comp4k = StreamLinkOptimizer.getStreamCompositeScore(link4kMax)
+                if (expect4kWins) {
                     assertTrue(
-                        "480p MIN ($p480: $comp480) must beat 4K MAX ($p4k: $comp4k) in comparator",
+                        "4K MAX ($p4k: $comp4k) must beat 480p MIN ($p480: $comp480): higher source rank",
+                        comp4k > comp480
+                    )
+                    assertTrue(
+                        "STREAM_PRIORITY_COMPARATOR: higher-ranked 4K must precede 480p",
+                        StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR.compare(link4kMax, link480Min) < 0
+                    )
+                } else {
+                    assertTrue(
+                        "480p MIN ($p480: $comp480) must beat 4K MAX ($p4k: $comp4k)",
                         comp480 > comp4k
                     )
                     assertTrue(

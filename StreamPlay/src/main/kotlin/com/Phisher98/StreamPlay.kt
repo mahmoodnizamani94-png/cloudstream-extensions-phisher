@@ -49,60 +49,25 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import kotlin.time.Duration.Companion.milliseconds
 
+/**
+ * Minimum cold-start boost for a provider to be treated as tier-1 by the pipeliner. The
+ * curated registry only contains sources at or above this line, so ordering windows and
+ * "is a better source still running?" checks are meaningful for every provider.
+ */
+const val TOP_TIER_BOOST_THRESHOLD = 90f
+
+/**
+ * The curated v18 registry has no subtitle-only entries: every surviving source ships its
+ * own captions (VidLink's 7 native caption tracks, VixSrc's soft-subs, AnimePahe's
+ * soft-subs), which keeps subtitle timing exactly in sync with the stream that was chosen.
+ */
 private val ANIME_ONLY_PROVIDERS = setOf(
-    "hianime",
-    "animetosho",
-    "ReAnime",
-    "Animex",
-    "kickass",
-    "animepahe",
-    "anichi",
-    "anikage",
-    "anineko",
-    "tokyoinsider",
-    "anizone"
+    "animepahe"
 )
 
 internal val NON_ANIME_PROVIDERS = setOf(
-    "uhdmovies",
-    "topmovies",
-    "moviesmod",
-    "bollyflix",
-    "watchsomuch",
-    "ninetv",
-    "allmovieland",
-    "multimovies",
-    "zshow",
-    "nepu",
-    "vidsrcxyz",
-    "vidsrccc",
-    "vidsrcto",
-    "vidsrc",
-    "moviesapi",
-    "CinemaCity",
-    "vidzeeapi",
-    "hdhub4u",
-    "vidrock",
     "vidlink",
-    "vidcore",
-    "vidup",
-    "yflix",
-    "cinejoy",
-    "kisskh",
-    "dahmermovies",
-    "HexaSU",
-    "Hindmoviez",
-    "M4uhd",
-    "MappleTV",
-    "CineVood",
-    "2Embed",
-    "DooFlix",
-    "Xpass",
-    "Dudefilms",
-    "Zinkmovies",
-    "Peachify",
-    "autoembed",
-    "moviebox"
+    "vixsrc"
 )
 
 
@@ -329,11 +294,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val animetoshoAPI = "https://animetosho.xyz"
         const val nepuAPI = "https://nepu.to"
         const val dahmerMoviesAPI = "https://a.111477.xyz"
-        const val animepaheAPI = "https://animepahe.ru"
+        const val animepaheAPI = "https://animepahe.pw"
         const val SubtitlesAPI = "https://opensubtitles-v3.strem.io"
         const val WyZIESUBAPI = "https://sub.wyzie.ru"
         const val WYZIESubsAPI = "https://sub.wyzie.ru"
-        const val RiveStreamAPI = "https://www.rivestream.app"
         const val KickassAPI = "https://kaa.lt"
         const val Vidsrcxyz = "https://vidsrc-embed.su"
         const val Vidsrccc = "https://vidsrc.cc"
@@ -343,9 +307,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val movieBox= "https://api.inmoviebox.com"
         const val vidrock = "https://vidrock.ru"
         const val vidlink = "https://vidlink.pro"
-        const val vidfastProApi = "https://vidfast.vc"
-        const val videasyAPI = "https://api.speedracelight.com"
-        const val videasyFallbackAPI = "https://api.videasy.net"
+        const val vidflixAPI = "https://vidsrc.pm"
+        const val animeggAPI = "https://www.animegg.org"
         const val moviesClubApi = "https://moviesapi.club"
         const val cinemacity = "https://cinemacity.cc"
         const val hexaSU = "https://theemoviedb.hexa.su"
@@ -356,7 +319,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val mappleAPI = "https://mapple.uk"
         const val twoEmbedAPI = "https://www.2embed.cc"
         const val xpassAPI = "https://play.xpass.top"
-        const val vaplayer = "https://streamdata.vaplayer.ru"
         const val peachifyAPI = "https://peachify.top"
         const val anineko = "https://anineko.to"
 
@@ -884,15 +846,30 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val providersCompleted = java.util.concurrent.atomic.AtomicInteger(0)
         val activeTopRanks = applicableProviders.mapNotNull {
             val boost = FAST_PROVIDER_BOOST[it.id] ?: 0f
-            if (boost >= 80f) boost.toInt() else null
+            if (boost >= TOP_TIER_BOOST_THRESHOLD) boost.toInt() else null
         }.toSet()
         val runningTopProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        runningTopProviders.addAll(applicableProviders.filter { (FAST_PROVIDER_BOOST[it.id] ?: 0f) >= 80f }.map { it.id })
+        runningTopProviders.addAll(
+            applicableProviders
+                .filter { (FAST_PROVIDER_BOOST[it.id] ?: 0f) >= TOP_TIER_BOOST_THRESHOLD }
+                .map { it.id }
+        )
+
+        // Ordering windows, not gates.
+        //
+        // `topSourceGraceMs` is how long a 720p/1080p from a lower-ranked source may wait
+        // for a higher-ranked source that is still in flight; `top720GraceMs` is how long a
+        // 1080p waits for a 720p of the same source. Both are deliberately short and
+        // bounded because they are paid by the user on every single title: if a source is
+        // down or simply has no 720p variant (VidLink serves 360/480/1080), the buffered
+        // links are flushed in strict comparator order the moment the window closes. They
+        // were previously 15-20s / 4.5-6s, which is what made timings look wrong when
+        // several legacy sources were enabled at once.
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
-            topSourceGraceMs = if (slowInternetMode) 20_000L else 15_000L,
-            top720GraceMs = if (slowInternetMode) 6000L else 4500L,
+            topSourceGraceMs = if (slowInternetMode) 3_000L else 2_000L,
+            top720GraceMs = if (slowInternetMode) 1_600L else 1_100L,
             activeTopRanks = activeTopRanks,
             isRankInFlight = { rank -> runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank } }
         )
@@ -914,8 +891,12 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             require720p = false,
             adaptiveTierEscalation = true,
             softGracePeriodAfterFirstLinkMs = 0L,
-            maxPipelineTimeoutMs = if (slowInternetMode) 45_000L else 30_000L,
-            postSatisfactionGraceMs = if (slowInternetMode) 35_000L else 25_000L
+            // Every surviving source is a single-round-trip API, so the pipeline should be
+            // done in a few seconds. The ceiling only exists to absorb a genuinely slow
+            // network; it is deliberately well below the old 30s/45s, which left the
+            // player spinning long after the user could already have started watching.
+            maxPipelineTimeoutMs = if (slowInternetMode) 26_000L else 18_000L,
+            postSatisfactionGraceMs = if (slowInternetMode) 11_000L else 7_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
         // Assumption: PriorityStreamDispatcher uses top720GraceMs and fhdGraceMs to ensure top sources
@@ -991,7 +972,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > HexaSU > AutoEmbed > VidFast > VidEasy)
+        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > VixSrc > AnimePahe)
         val primaryTasks = prioritizedPrimary.map { provider ->
             val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                 .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }
@@ -1011,7 +992,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     )
                 } finally {
                     val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
-                    if (boost >= 80f) {
+                    if (boost >= TOP_TIER_BOOST_THRESHOLD) {
                         runningTopProviders.remove(provider.id)
                         val rank = boost.toInt()
                         val hasRemainingWithRank = runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank }

@@ -77,8 +77,6 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.milliseconds
 
-private val RIVESTREAM_KEY_ARRAY_REGEX = Regex("""let\s+c\s*=\s*(\[[^]]*])""")
-private val RIVESTREAM_QUOTED_STR_REGEX = Regex("\"([^\"]+)\"")
 private val DAHMER_QUALITY_REGEX = Regex("(?i)(1080p|2160p)")
 
 
@@ -1136,11 +1134,12 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     private fun normalizeAnimePaheUrl(url: String): String {
-        val legacyHosts = listOf("animepahe.si", "animepahe.com", "animepahe.org", "animepahe.pw")
+        val legacyHosts = listOf("animepahe.si", "animepahe.com", "animepahe.org", "animepahe.ru", "animepahe.su")
         return legacyHosts.fold(url) { normalized, host ->
-            normalized.replace(host, "animepahe.ru", ignoreCase = true)
+            normalized.replace(host, "animepahe.pw", ignoreCase = true)
         }
     }
+
 
     suspend fun invokeAnimepahe(
         url: String,
@@ -2105,32 +2104,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-
-    suspend fun invokeVideasy(
-        title: String? = null,
-        tmdbId: Int? = null,
-        imdbId: String? = null,
-        year: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: (SubtitleFile) -> Unit = {},
-        callback: (ExtractorLink) -> Unit
-    ) {
-        // No-op: VidEasy decommissioned
-        return
-    }
-
-    suspend fun invokeVideasy(
-        title: String? = null,
-        tmdbId: Int? = null,
-        imdbId: String? = null,
-        year: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        invokeVideasy(title, tmdbId, imdbId, year, season, episode, subtitleCallback = {}, callback = callback)
-    }
 
     suspend fun invokeMapple(
         tmdbId: Int? = null,
@@ -3140,27 +3113,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-
-    @Deprecated("RiveStream has been decommissioned and removed.")
-    suspend fun invokeRiveStream(
-        id: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        callback: (ExtractorLink) -> Unit,
-    ) {
-        // No-op: RiveStream decommissioned
-    }
-
-    @Deprecated("RiveStream has been decommissioned and removed.")
-    suspend fun invokeRiveStream(
-        id: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        callback: (ExtractorLink) -> Unit,
-    ) {
-        // No-op: RiveStream decommissioned
-    }
 
     private fun normalizeVidSrcUrl(rawUrl: String, contextUrl: String): String {
         val trimmed = rawUrl.replace("\\/", "/").trim().trim('"', '\'')
@@ -4866,11 +4818,10 @@ object StreamPlayExtractor : StreamPlay() {
             if (effectiveTmdbId == null || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(25000L) {
-                val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$effectiveTmdbId"
-                val cachedEnc = vidlinkEncCache[effectiveTmdbId]
-                val encData = if (!cachedEnc.isNullOrBlank()) {
-                    cachedEnc
-                } else {
+                var encData = runCatching {
+                    VidLinkCrypto.encryptToken(effectiveTmdbId.toString())
+                }.getOrNull() ?: vidlinkEncCache[effectiveTmdbId] ?: run {
+                    val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$effectiveTmdbId"
                     val fetchBlock: suspend () -> String? = {
                         retryTransient(4, 350L) {
                             val resp = runCatching { app.get(encUrl, timeout = 15L) }.getOrNull()
@@ -4940,25 +4891,75 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
+                // Resilient network fallback: if primary encrypted token didn't yield a stream, fallback to enc-dec.app
+                if (stream == null) {
+                    val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$effectiveTmdbId"
+                    val remoteEnc = retryTransient(3, 300L) {
+                        val resp = runCatching { app.get(encUrl, timeout = 10L) }.getOrNull()
+                        if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) {
+                            runCatching { JSONObject(resp.text).optString("result") }.getOrNull()?.takeIf { it.isNotBlank() }
+                        } else null
+                    }
+                    if (!remoteEnc.isNullOrBlank() && remoteEnc != encData) {
+                        encData = remoteEnc
+                        vidlinkEncCache[effectiveTmdbId] = remoteEnc
+                        val fallbackUrls = if (season == null || (season == 0 && episode == null)) {
+                            listOf("$base/api/b/movie/$remoteEnc")
+                        } else {
+                            listOf("$base/api/b/tv/$remoteEnc/$season/$episode")
+                        }
+                        for (apiUrl in fallbackUrls) {
+                            val epResponse = retryTransient(2, 250L) {
+                                val resp = suspendCancellable {
+                                    runCatching { app.get(apiUrl, headers = headers, timeout = 15L) }.getOrNull()
+                                }
+                                if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
+                            } ?: continue
+
+                            val data = runCatching {
+                                Gson().fromJson(epResponse, VidlinkResponse::class.java)
+                            }.getOrNull()
+
+                            val s = data?.stream
+                            if (s != null && (!s.playlist.isNullOrBlank() || !s.qualities.isNullOrEmpty())) {
+                                stream = s
+                                break
+                            }
+                        }
+                    }
+                }
+
                 if (stream == null) return@withTimeoutOrNull
+                vidlinkEncCache[effectiveTmdbId] = encData
 
                 val cronetUserAgent = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
 
                 fun sanitizeVidlinkHeaders(inputHeaders: Map<String, String>? = null): MutableMap<String, String> {
-                    val result = (inputHeaders ?: emptyMap()).toMutableMap()
-                    result.entries.removeIf { entry ->
-                        val k = entry.key
-                        val v = entry.value
-                        (k.equals("Referer", ignoreCase = true) || k.equals("Origin", ignoreCase = true)) &&
-                            (v.contains("vidlink.pro", ignoreCase = true) || v.contains("embed", ignoreCase = true) || v.isBlank())
+                    val result = mutableMapOf<String, String>()
+                    var foundReferer: String? = null
+                    var foundOrigin: String? = null
+                    inputHeaders?.forEach { (k, v) ->
+                        if (k.equals("Referer", ignoreCase = true)) {
+                            if (!v.contains("vidlink.pro", ignoreCase = true) && !v.contains("embed", ignoreCase = true) && v.isNotBlank()) {
+                                foundReferer = v
+                            }
+                        } else if (k.equals("Origin", ignoreCase = true)) {
+                            if (!v.contains("vidlink.pro", ignoreCase = true) && !v.contains("embed", ignoreCase = true) && v.isNotBlank()) {
+                                foundOrigin = v
+                            }
+                        } else if (!k.equals("User-Agent", ignoreCase = true) &&
+                                   !k.equals("Accept", ignoreCase = true) &&
+                                   !k.equals("Accept-Ranges", ignoreCase = true)) {
+                            result[k] = v
+                        }
                     }
-                    result.entries.removeIf { entry ->
-                        entry.key.equals("User-Agent", ignoreCase = true) ||
-                        entry.key.equals("Accept", ignoreCase = true) ||
-                        entry.key.equals("Accept-Ranges", ignoreCase = true)
-                    }
+                    val effRef = foundReferer ?: "https://filmboom.top/"
+                    val effOrig = foundOrigin ?: "https://filmboom.top"
+                    result["Referer"] = effRef
+                    result["Origin"] = effOrig
                     result["User-Agent"] = cronetUserAgent
                     result["Accept"] = "*/*"
+                    result["Accept-Ranges"] = "bytes"
                     return result
                 }
 
@@ -5008,16 +5009,18 @@ object StreamPlayExtractor : StreamPlay() {
                         m3u8
                     }
 
+                    val effHlsRef = if (referer.isNotBlank()) referer else "https://filmboom.top/"
+                    val effHlsOrig = if (origin.isNotBlank()) origin else "https://filmboom.top"
                     val hlsHeaders = sanitizeVidlinkHeaders()
-                    if (origin.isNotBlank()) hlsHeaders["Origin"] = origin
-                    if (referer.isNotBlank()) hlsHeaders["Referer"] = referer
+                    hlsHeaders["Origin"] = effHlsOrig
+                    hlsHeaders["Referer"] = effHlsRef
 
                     val generatedLinks = withTimeoutOrNull(15000L) {
                         runCatching {
                             generateM3u8(
                                 "Vidlink",
                                 cleanM3u8Url,
-                                referer = referer,
+                                referer = effHlsRef,
                                 headers = hlsHeaders
                             )
                         }.getOrNull()
@@ -5025,13 +5028,15 @@ object StreamPlayExtractor : StreamPlay() {
 
                     val mappedGenerated = generatedLinks?.map { genLink ->
                         val finalHeaders = sanitizeVidlinkHeaders(genLink.headers)
+                        finalHeaders["Referer"] = effHlsRef
+                        finalHeaders["Origin"] = effHlsOrig
                         newExtractorLink(
                             genLink.source,
                             genLink.name,
                             genLink.url,
                             genLink.type
                         ) {
-                            this.referer = finalHeaders["Referer"] ?: referer
+                            this.referer = effHlsRef
                             this.quality = genLink.quality
                             this.headers = finalHeaders
                         }
@@ -5042,7 +5047,7 @@ object StreamPlayExtractor : StreamPlay() {
                             source = "Vidlink",
                             baseName = "Vidlink HLS",
                             url = cleanM3u8Url,
-                            referer = referer,
+                            referer = effHlsRef,
                             headers = hlsHeaders,
                             streamType = ExtractorLinkType.M3U8,
                             generatedLinks = mappedGenerated,
@@ -5053,7 +5058,7 @@ object StreamPlayExtractor : StreamPlay() {
                             source = "Vidlink",
                             baseName = "Vidlink HLS",
                             url = cleanM3u8Url,
-                            referer = referer,
+                            referer = effHlsRef,
                             headers = hlsHeaders,
                             streamType = ExtractorLinkType.M3U8,
                             callback = callback
@@ -5087,7 +5092,10 @@ object StreamPlayExtractor : StreamPlay() {
                             videoUrl
                         }
                         if (cleanVideoUrl.startsWith("http", ignoreCase = true)) {
-                            val effectiveRef = qualHeaders["Referer"] ?: ""
+                            val effectiveRef = qualHeaders.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value ?: "https://filmboom.top/"
+                            val effectiveOrig = qualHeaders.entries.firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value ?: StreamLinkOptimizer.getHostUrl(effectiveRef) ?: "https://filmboom.top"
+                            qualHeaders["Referer"] = effectiveRef
+                            qualHeaders["Origin"] = effectiveOrig
                             val effectiveQuality = when {
                                 qualityKey.equals("720", ignoreCase = true) || qualityKey.equals("720p", ignoreCase = true) -> "720p"
                                 qualityKey.equals("1080", ignoreCase = true) || qualityKey.equals("1080p", ignoreCase = true) -> "1080p"
@@ -5112,6 +5120,7 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
                 }
+
 
                 if (directQualitiesLinks.isNotEmpty()) {
                     emitTopTierDualQualityStreamLinks(
@@ -5140,6 +5149,938 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
+
+    // ==================== Vidflix (vidsrc.pm) SOTA Multi-Source Extractor ====================
+
+    private const val VIDFLIX_API = "https://vidsrc.pm"
+
+    /**
+     * Player credential published by the vidsrc.pm/Vidflix web player bundle. It is a
+     * public, per-player constant (not a per-user secret) and is sent as `x-player-key`.
+     */
+    private const val VIDFLIX_PLAYER_KEY =
+        "f3b72e73c80c9a996574379798703796a1936efa3516a7105cb0e43048b46b5a"
+
+    /**
+     * Upstream fan-out order. Validated live against production on 2026-10-09:
+     *  - `quasar`    -> first-party multi-variant HLS master (4K HDR / 1080p / 720p / 360p),
+     *                   served directly off lit.cheaptruckrepairs.cc with no proxy.
+     *  - `scrapify`  -> HLS behind the hd4u reverse proxy (netoda.tech origin).
+     *  - `lookmovie` -> progressive file (trunmed.cyou) behind hd4u/gofile-style mirrors.
+     *  - `vaplayer` / `fsonic` / `oreon` -> additional hd4u-fronted mirrors.
+     *
+     * Directly playable streams are always emitted ahead of proxy-fronted ones so that a
+     * degraded proxy can never displace a link the player is able to open by itself.
+     */
+    private val VIDFLIX_SOURCES =
+        listOf("quasar", "scrapify", "lookmovie", "vaplayer", "fsonic", "oreon")
+
+    private val VIDFLIX_PROXY_MARKERS = listOf("/proxy?", "hd4u.sbs", "hd4u.")
+
+    private val vidflixSemaphore = Semaphore(3)
+
+    private fun vidflixIsProxied(url: String): Boolean =
+        VIDFLIX_PROXY_MARKERS.any { url.contains(it, ignoreCase = true) }
+
+    /**
+     * The hd4u reverse proxy embeds the upstream Origin/Referer it will forward as a
+     * base64 `data=` query parameter (`Origin=...|Referer=...`). Decoding it lets us send
+     * exactly the headers the protected origin expects instead of guessing.
+     */
+    private fun vidflixProxyHeaders(url: String): Map<String, String> {
+        val encoded = Regex("""[?&]data=([^&]+)""").find(url)?.groupValues?.get(1) ?: return emptyMap()
+        val plain = runCatching {
+            base64Decode(URLDecoder.decode(encoded, "UTF-8"))
+        }.getOrNull() ?: return emptyMap()
+        return plain.split('|').mapNotNull { part ->
+            val separator = part.indexOf('=')
+            if (separator <= 0) null
+            else part.substring(0, separator).trim() to part.substring(separator + 1).trim()
+        }.toMap()
+    }
+
+    private data class VidflixStream(
+        val url: String,
+        val upstream: String,
+        val variants: List<Pair<String, Int>>,
+        val tracks: List<Pair<String, String>>
+    )
+
+    private val vidflixQualityRegex = Regex("""^\s*(\d{3,4})\s*p?""", RegexOption.IGNORE_CASE)
+
+    private fun vidflixQualityOf(label: String?): Int {
+        val raw = label?.trim().orEmpty()
+        if (raw.isBlank()) return Qualities.Unknown.value
+        vidflixQualityRegex.find(raw)?.groupValues?.get(1)?.toIntOrNull()
+            ?.let { value ->
+                return when (value) {
+                    2160 -> Qualities.P2160.value
+                    1440 -> Qualities.P1440.value
+                    1080 -> Qualities.P1080.value
+                    720 -> Qualities.P720.value
+                    480 -> Qualities.P480.value
+                    360 -> Qualities.P360.value
+                    else -> value
+                }
+            }
+        return getQualityFromName(raw).takeIf { it > 0 } ?: Qualities.Unknown.value
+    }
+
+    /** Fetches one upstream via the Vidflix API. Returns null when the mirror is dry. */
+    private suspend fun vidflixFetchSource(
+        tmdbId: Int,
+        season: Int?,
+        episode: Int?,
+        source: String?
+    ): VidflixStream? {
+        val isMovie = season == null || (season == 0 && episode == null)
+        val path = if (isMovie) {
+            "/api/vidora/v1/movie/$tmdbId"
+        } else {
+            "/api/vidora/v1/tv/$tmdbId/$season/$episode"
+        }
+        val url = if (source.isNullOrBlank()) "$VIDFLIX_API$path" else "$VIDFLIX_API$path?source=$source"
+
+        val body = retryTransient(2, 250L) {
+            val response = suspendCancellable {
+                app.get(
+                    url,
+                    headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Accept" to "application/json, text/plain, */*",
+                        "x-player-key" to VIDFLIX_PLAYER_KEY,
+                        "Referer" to "$VIDFLIX_API/",
+                        "Origin" to VIDFLIX_API
+                    ),
+                    timeout = 12L
+                )
+            }
+            if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
+        } ?: return null
+
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        if (!root.optBoolean("result", false)) return null
+        val sourcesArray = root.optJSONArray("sources") ?: return null
+
+        // A single upstream can advertise several files; keep the first usable one and
+        // harvest any extra bitrate ladder entries as variants of the same stream.
+        for (i in 0 until sourcesArray.length()) {
+            val entry = sourcesArray.optJSONObject(i) ?: continue
+            val streamUrl = entry.optString("url").trim()
+            if (streamUrl.isEmpty() || !streamUrl.startsWith("http", ignoreCase = true)) continue
+
+            val variants = mutableListOf<Pair<String, Int>>()
+            entry.optJSONArray("qualities")?.let { qualities ->
+                for (q in 0 until qualities.length()) {
+                    val qualityObj = qualities.optJSONObject(q) ?: continue
+                    val qualityUrl = qualityObj.optString("url").ifBlank { qualityObj.optString("file") }.trim()
+                    if (qualityUrl.isEmpty()) continue
+                    val label = qualityObj.optString("label").ifBlank { qualityObj.optString("quality") }
+                    variants.add(qualityUrl to vidflixQualityOf(label))
+                }
+            }
+
+            val tracks = mutableListOf<Pair<String, String>>()
+            entry.optJSONArray("tracks")?.let { trackArray ->
+                for (t in 0 until trackArray.length()) {
+                    val track = trackArray.optJSONObject(t) ?: continue
+                    val trackUrl = track.optString("file")
+                        .ifBlank { track.optString("url") }
+                        .ifBlank { track.optString("src") }
+                        .trim()
+                    if (trackUrl.isEmpty() || !trackUrl.startsWith("http", ignoreCase = true)) continue
+                    val language = track.optString("label")
+                        .ifBlank { track.optString("language") }
+                        .ifBlank { track.optString("lang") }
+                    tracks.add(cleanSubtitleLabel(language) to trackUrl)
+                }
+            }
+
+            return VidflixStream(
+                url = streamUrl,
+                upstream = entry.optString("source").ifBlank { source.orEmpty() },
+                variants = variants,
+                tracks = tracks
+            )
+        }
+        return null
+    }
+
+    private suspend fun vidflixEmit(stream: VidflixStream, callback: (ExtractorLink) -> Unit) {
+        val proxied = vidflixIsProxied(stream.url)
+        val headers = if (proxied) {
+            vidflixProxyHeaders(stream.url) + mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to "$VIDFLIX_API/",
+                "Origin" to VIDFLIX_API
+            )
+        } else {
+            mapOf("User-Agent" to USER_AGENT, "Referer" to "$VIDFLIX_API/", "Origin" to VIDFLIX_API)
+        }
+        val referer = headers["Referer"] ?: "$VIDFLIX_API/"
+        val tag = if (proxied) "Mirror" else "Direct"
+        val baseName = "Vidflix $tag (${stream.upstream})"
+
+        // Honour an explicit bitrate ladder advertised by the upstream first.
+        stream.variants.forEach { (variantUrl, quality) ->
+            if (!variantUrl.startsWith("http", ignoreCase = true)) return@forEach
+            callback(
+                newExtractorLink("Vidflix", "$baseName [${vidflixQualityTag(quality)}]", variantUrl) {
+                    this.referer = referer
+                    this.quality = quality
+                    this.type = if (variantUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    this.headers = headers
+                }
+            )
+        }
+
+        val isHls = stream.url.contains(".m3u8", ignoreCase = true)
+        if (isHls) {
+            val expanded = withTimeoutOrNull(12_000L) {
+                runCatching {
+                    generateM3u8("Vidflix", stream.url, referer = referer, headers = headers)
+                }.getOrNull()
+            }
+            if (!expanded.isNullOrEmpty()) {
+                expanded.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR).forEach { variant ->
+                    callback(
+                        newExtractorLink(
+                            "Vidflix",
+                            "$baseName [${vidflixQualityTag(variant.quality)}]",
+                            variant.url,
+                            ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = referer
+                            this.quality = variant.quality
+                            this.headers = headers
+                        }
+                    )
+                }
+                return
+            }
+        }
+
+        callback(
+            newExtractorLink(
+                "Vidflix",
+                baseName,
+                stream.url,
+                if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            ) {
+                this.referer = referer
+                this.quality = Qualities.Unknown.value
+                this.headers = headers
+            }
+        )
+    }
+
+    private fun vidflixQualityTag(quality: Int): String = when (quality) {
+        Qualities.P2160.value -> "4K"
+        Qualities.P1440.value -> "1440p"
+        Qualities.P1080.value -> "1080p"
+        Qualities.P720.value -> "720p"
+        Qualities.P480.value -> "480p"
+        Qualities.P360.value -> "360p"
+        else -> if (quality > 0 && quality != Qualities.Unknown.value) "${quality}p" else "Auto"
+    }
+
+    /**
+     * Video Streaming API extractor for Vidflix (vidsrc.pm).
+     *
+     * Protocol (verified live 2026-10-09):
+     *   GET {api}/api/vidora/v1/movie/{tmdb}            -> { result, sources: [...] }
+     *   GET {api}/api/vidora/v1/tv/{tmdb}/{s}/{e}?source=KEY
+     *   Header: x-player-key: <VIDFLIX_PLAYER_KEY>
+     */
+    suspend fun invokeVidflix(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            if (effectiveTmdbId == null) return
+            if (season != null && season != 0 && episode == null) return
+            val resolvedTmdbId = effectiveTmdbId
+
+            withTimeoutOrNull(24_000L) {
+                val isMovie = season == null || (season == 0 && episode == null)
+                val streamKey = if (isMovie) "movie_$resolvedTmdbId" else "tv_${resolvedTmdbId}_${season}_$episode"
+
+                val collected = Collections.synchronizedList(mutableListOf<VidflixStream>())
+                val emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+                suspend fun harvest(source: String?) {
+                    val stream = vidflixSemaphore.withPermit {
+                        runCatching { vidflixFetchSource(resolvedTmdbId, season, episode, source) }.getOrNull()
+                    } ?: return
+                    collected.add(stream)
+                }
+
+                // Resolve the default upstream first: it is the fastest signal that the
+                // title is actually indexed, and it lets us emit something within ~1 RTT.
+                val defaultStream = withTimeoutOrNull(9_000L) {
+                    runCatching { vidflixFetchSource(resolvedTmdbId, season, episode, null) }.getOrNull()
+                }
+                if (defaultStream != null) {
+                    collected.add(defaultStream)
+                    defaultStream.tracks.forEach { (language, trackUrl) ->
+                        if (emittedTracks.add(trackUrl)) subtitleCallback?.invoke(newSubtitleFile(language, trackUrl))
+                    }
+                    vidflixEmit(defaultStream, callback)
+                }
+
+                // Fan out across the remaining mirrors concurrently.
+                coroutineScope {
+                    VIDFLIX_SOURCES.map { source ->
+                        async {
+                            val already = collected.any {
+                                it.upstream.equals(source, ignoreCase = true) ||
+                                    it.url == defaultStream?.url
+                            }
+                            if (!already) harvest(source)
+                        }
+                    }.forEach { it.await() }
+                }
+
+                val direct = collected.filterNot { vidflixIsProxied(it.url) }
+                val mirrored = collected.filter { vidflixIsProxied(it.url) }
+
+                // Only fall back to proxy-fronted mirrors when nothing directly playable
+                // was produced; otherwise they would just pollute the source list.
+                if (direct.isEmpty() && mirrored.isEmpty()) {
+                    Log.d("StreamPlay", "Vidflix: no upstream returned a stream for $streamKey")
+                    return@withTimeoutOrNull
+                }
+
+                for (stream in (direct + mirrored).distinctBy { it.url }) {
+                    if (stream === defaultStream) continue
+                    stream.tracks.forEach { (language, trackUrl) ->
+                        if (emittedTracks.add(trackUrl)) subtitleCallback?.invoke(newSubtitleFile(language, trackUrl))
+                    }
+                    vidflixEmit(stream, callback)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidflix failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVidflix(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVidflix(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+
+    // ==================== AnimeGG SOTA Extractor ====================
+
+    private const val ANIMEGG_API = "https://www.animegg.org"
+
+    private fun animeggNormalizeTitle(value: String?): String =
+        value.orEmpty()
+            .lowercase(Locale.ROOT)
+            .replace(Regex("""\(\s*(dub|sub|uncensored)\s*\)"""), " ")
+            .replace(normalizeAlphaNumSpaceRegex, " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+    /**
+     * Resolves the best AnimeGG series slug for the requested title.
+     *
+     * AnimeGG exposes `/series/{slug}` pages plus dedicated `-dub` variants; `dub` targets
+     * prefer the dubbed slug when it exists.
+     */
+    private suspend fun animeggResolveSlug(
+        title: String?,
+        jpTitle: String?,
+        dub: Boolean
+    ): String? {
+        val candidates = listOfNotNull(title, jpTitle)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (candidates.isEmpty()) return null
+
+        val wanted = candidates.map { animeggNormalizeTitle(it) }.filter { it.isNotEmpty() }
+
+        for (query in candidates) {
+            val searchUrl = "$ANIMEGG_API/search/?q=${URLEncoder.encode(query, "UTF-8")}"
+            val html = retryTransient(2, 200L) {
+                val response = suspendCancellable {
+                    app.get(searchUrl, headers = mapOf("User-Agent" to USER_AGENT), timeout = 12L)
+                }
+                if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
+            } ?: continue
+
+            val document = runCatching { Jsoup.parse(html, ANIMEGG_API) }.getOrNull() ?: continue
+            val parsed = document.select("a.mse").mapNotNull { anchor ->
+                val href = anchor.attr("href").trim()
+                if (!href.contains("/series/")) return@mapNotNull null
+                val slug = href.substringAfter("/series/").trim('/').substringBefore('#').substringBefore('?')
+                if (slug.isEmpty()) return@mapNotNull null
+                val name = anchor.selectFirst("h2")?.text()?.trim()
+                    ?: anchor.attr("title").trim()
+                slug to name
+            }
+            if (parsed.isEmpty()) continue
+
+            val exact = parsed.firstOrNull { (slug, name) ->
+                val normalizedName = animeggNormalizeTitle(name.ifBlank { slug.replace('-', ' ') })
+                normalizedName.isNotEmpty() && normalizedName in wanted
+            }
+            val prefix = parsed.firstOrNull { (slug, name) ->
+                val normalizedName = animeggNormalizeTitle(name.ifBlank { slug.replace('-', ' ') })
+                normalizedName.isNotEmpty() && wanted.any { w ->
+                    normalizedName.startsWith(w) || w.startsWith(normalizedName)
+                }
+            }
+            val match = exact ?: prefix ?: parsed.first()
+
+            val baseSlug = match.first.removeSuffix("-dub")
+            val resolved = if (dub) {
+                if (match.first.endsWith("-dub")) match.first else "$baseSlug-dub".takeIf { it.isNotBlank() }
+            } else {
+                match.first
+            }
+            return resolved ?: match.first
+        }
+        return null
+    }
+
+    /**
+     * Extracts the subtitle/dub mirror iframe from an AnimeGG episode page.
+     * The page renders both `data-version="subbed"` and `data-version="dubbed"` panes.
+     */
+    private fun animeggPickEmbed(document: org.jsoup.nodes.Document, dub: Boolean): String? {
+        val order = if (dub) listOf("dubbed", "subbed") else listOf("subbed", "dubbed")
+        for (version in order) {
+            val pane = document.selectFirst("""[data-version="$version"]""") ?: continue
+            val frame = pane.selectFirst("iframe[src]") ?: pane.parent()?.selectFirst("iframe[src]")
+            val src = frame?.attr("src")?.trim().orEmpty()
+            if (src.isNotEmpty()) {
+                return if (src.startsWith("http", ignoreCase = true)) src
+                else if (src.startsWith("//")) "https:$src"
+                else "$ANIMEGG_API${if (src.startsWith("/")) src else "/$src"}"
+            }
+        }
+        val fallback = document.selectFirst("iframe[src*=embed]")?.attr("src")?.trim().orEmpty()
+        if (fallback.isEmpty()) return null
+        return if (fallback.startsWith("http", ignoreCase = true)) fallback
+        else if (fallback.startsWith("//")) "https:$fallback"
+        else "$ANIMEGG_API${if (fallback.startsWith("/")) fallback else "/$fallback"}"
+    }
+
+    private data class AnimeggSource(val url: String, val quality: Int, val label: String, val backup: String?)
+
+    private val animeggSourceBlockRegex = Regex("""videoSources\s*=\s*(\[[\s\S]*?])\s*;""")
+    private val animeggEntryRegex = Regex("""\{[^{}]*}["']?""")
+
+    /** Parses the player-embedded `videoSources` JS array (unquoted keys, not JSON). */
+    private fun animeggParseSources(embedHtml: String): List<AnimeggSource> {
+        val block = animeggSourceBlockRegex.find(embedHtml)?.groupValues?.get(1) ?: return emptyList()
+        return animeggEntryRegex.findAll(block).mapNotNull { match ->
+            val entry = match.value
+            fun field(key: String): String? =
+                Regex("""\b$key\s*:\s*['"]([^'"]+)['"]""").find(entry)?.groupValues?.get(1)?.trim()
+
+            val file = field("file") ?: field("src") ?: field("url") ?: return@mapNotNull null
+            val resolved = when {
+                file.startsWith("http", ignoreCase = true) -> file
+                file.startsWith("//") -> "https:$file"
+                file.startsWith("/") -> "$ANIMEGG_API$file"
+                else -> "$ANIMEGG_API/$file"
+            }
+            val label = field("label") ?: field("quality") ?: field("resolution") ?: ""
+            val backup = field("bk")?.let { encoded ->
+                runCatching {
+                    val plain = base64Decode(URLDecoder.decode(encoded, "UTF-8"))
+                    plain.takeIf { it.startsWith("http", ignoreCase = true) }
+                }.getOrNull()
+            }
+            AnimeggSource(
+                url = resolved,
+                quality = vidflixQualityOf(label),
+                label = label,
+                backup = backup
+            )
+        }.toList()
+    }
+
+    /**
+     * Video Streaming API extractor for AnimeGG (animegg.org).
+     *
+     * Protocol (verified live 2026-10-09):
+     *   /search/?q={title}                      -> `/series/{slug}` results
+     *   /{slug}-episode-{n}  (dub: /{slug}-dub-episode-{n})  -> `/embed/{id}` iframes
+     *   /embed/{id}                             -> videoSources = [{file,label,bk}]
+     *   /play/{id}/video.mp4?for={token}        -> 302 -> CDN byte stream (video/mp4)
+     */
+    suspend fun invokeAnimegg(
+        title: String? = null,
+        jpTitle: String? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        dubStatus: String? = null
+    ) {
+        try {
+            val episodeNumber = episode?.takeIf { it > 0 } ?: 1
+            val dub = dubStatus?.contains("dub", ignoreCase = true) == true
+
+            withTimeoutOrNull(25_000L) {
+                val slug = withTimeoutOrNull(12_000L) {
+                    animeggResolveSlug(title, jpTitle, dub)
+                }
+                if (slug.isNullOrBlank()) {
+                    Log.d("StreamPlay", "AnimeGG: no series match for '${title ?: jpTitle}'")
+                    return@withTimeoutOrNull
+                }
+
+                val episodeUrl = "$ANIMEGG_API/$slug-episode-$episodeNumber"
+                val episodeHtml = retryTransient(2, 200L) {
+                    val response = suspendCancellable {
+                        app.get(episodeUrl, headers = mapOf("User-Agent" to USER_AGENT), timeout = 12L)
+                    }
+                    if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
+                }
+                if (episodeHtml.isNullOrBlank()) {
+                    Log.d("StreamPlay", "AnimeGG: episode page missing for $episodeUrl")
+                    return@withTimeoutOrNull
+                }
+
+                val document = runCatching { Jsoup.parse(episodeHtml, ANIMEGG_API) }.getOrNull()
+                    ?: return@withTimeoutOrNull
+                val embedUrl = animeggPickEmbed(document, dub)
+                if (embedUrl.isNullOrBlank()) {
+                    Log.d("StreamPlay", "AnimeGG: no embed mirror for episode $episodeNumber")
+                    return@withTimeoutOrNull
+                }
+
+                val embedHtml = retryTransient(2, 200L) {
+                    val response = suspendCancellable {
+                        app.get(
+                            embedUrl,
+                            headers = mapOf("User-Agent" to USER_AGENT, "Referer" to episodeUrl),
+                            timeout = 12L
+                        )
+                    }
+                    if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
+                } ?: return@withTimeoutOrNull
+
+                val parsedSources = animeggParseSources(embedHtml)
+                if (parsedSources.isEmpty()) {
+                    Log.d("StreamPlay", "AnimeGG: no playable source in $embedUrl")
+                    return@withTimeoutOrNull
+                }
+
+                val version = if (dub) "DUB" else "SUB"
+                parsedSources
+                    .sortedByDescending { StreamLinkOptimizer.getQualityPriorityScore(it.quality) }
+                    .forEach { source ->
+                        val qualityTag = vidflixQualityTag(source.quality)
+                        callback(
+                            newExtractorLink(
+                                "AnimeGG",
+                                "AnimeGG · $version [$qualityTag]",
+                                source.url,
+                                if (source.url.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = embedUrl
+                                this.quality = source.quality
+                                this.headers = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Referer" to embedUrl
+                                )
+                            }
+                        )
+
+                        // AnimeGG publishes a mirrored host (typically mp4upload) alongside
+                        // the first-party stream; resolve it through the registered
+                        // extractor registry instead of inventing playback metadata.
+                        source.backup?.let { backupUrl ->
+                            runCatching {
+                                loadExtractor(backupUrl, embedUrl, subtitleCallback ?: {}, callback)
+                            }
+                        }
+                    }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeAnimegg failed: ${e.message}")
+        }
+    }
+
+    // ==================== VixSrc SOTA Extractor ====================
+
+    suspend fun invokeVixSrc(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            if (effectiveTmdbId == null || (season != null && season != 0 && episode == null)) return
+
+            withTimeoutOrNull(20000L) {
+                val base = "https://vixsrc.to"
+                val isMovie = season == null || (season == 0 && episode == null)
+                val apiUrl = if (isMovie) {
+                    "$base/api/movie/$effectiveTmdbId"
+                } else {
+                    "$base/api/tv/$effectiveTmdbId/$season/$episode"
+                }
+
+                val headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "$base/"
+                )
+
+                val apiResp = retryTransient(3, 200L) {
+                    val resp = suspendCancellable {
+                        runCatching { app.get(apiUrl, headers = headers, timeout = 10L) }.getOrNull()
+                    }
+                    if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) resp else null
+                } ?: return@withTimeoutOrNull
+
+                val srcPath = runCatching { JSONObject(apiResp.text).optString("src") }.getOrNull()
+                if (srcPath.isNullOrBlank()) return@withTimeoutOrNull
+                val embedUrl = if (srcPath.startsWith("http", ignoreCase = true)) srcPath else "$base$srcPath"
+
+                val embedResp = retryTransient(3, 200L) {
+                    val resp = suspendCancellable {
+                        runCatching { app.get(embedUrl, headers = headers, timeout = 10L) }.getOrNull()
+                    }
+                    if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) resp else null
+                } ?: return@withTimeoutOrNull
+
+                val html = embedResp.text
+                val tokenMatch = Regex("""'token':\s*'([^']+)'""").find(html)?.groupValues?.get(1) ?: return@withTimeoutOrNull
+                val expiresMatch = Regex("""'expires':\s*'([^']+)'""").find(html)?.groupValues?.get(1) ?: return@withTimeoutOrNull
+                val plUrl = Regex("""url:\s*'([^']+)'""").find(html)?.groupValues?.get(1) ?: "$base/playlist"
+                val masterPlaylistUrl = "$plUrl?token=$tokenMatch&expires=$expiresMatch&h=1&lang=en"
+
+                val m3u8Headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to embedUrl,
+                    "Origin" to base
+                )
+
+                // Parse and emit subtitles directly from master playlist
+                val plResp = suspendCancellable {
+                    runCatching { app.get(masterPlaylistUrl, headers = m3u8Headers, timeout = 8L) }.getOrNull()
+                }
+                if (plResp != null && plResp.isSuccessful) {
+                    Regex("""#EXT-X-MEDIA:TYPE=SUBTITLES.*?NAME="([^"]+)".*?URI="([^"]+)"""")
+                        .findAll(plResp.text)
+                        .forEach { match ->
+                            val subName = cleanSubtitleLabel(match.groupValues[1])
+                            val subUri = match.groupValues[2]
+                            val fullSubUri = if (subUri.startsWith("http", ignoreCase = true)) subUri else "$base$subUri"
+                            subtitleCallback?.invoke(newSubtitleFile(subName, fullSubUri))
+                        }
+                }
+
+                val generatedLinks = withTimeoutOrNull(15000L) {
+                    runCatching {
+                        generateM3u8(
+                            "VixSrc",
+                            masterPlaylistUrl,
+                            referer = embedUrl,
+                            headers = m3u8Headers
+                        )
+                    }.getOrNull()
+                }
+
+                if (!generatedLinks.isNullOrEmpty()) {
+                    emitTopTierDualQualityStreamLinks(
+                        source = "VixSrc",
+                        baseName = "VixSrc HLS",
+                        url = masterPlaylistUrl,
+                        referer = embedUrl,
+                        headers = m3u8Headers,
+                        streamType = ExtractorLinkType.M3U8,
+                        generatedLinks = generatedLinks,
+                        callback = callback
+                    )
+                } else {
+                    emitTopTierDualQualityStreamLinks(
+                        source = "VixSrc",
+                        baseName = "VixSrc HLS",
+                        url = masterPlaylistUrl,
+                        referer = embedUrl,
+                        headers = m3u8Headers,
+                        streamType = ExtractorLinkType.M3U8,
+                        callback = callback
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVixSrc failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVixSrc(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVixSrc(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+
+    // ==================== VidNest SOTA Extractor ====================
+
+    private const val VIDNEST_ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/="
+    private val VIDNEST_DECODE_MAP = IntArray(256) { -1 }.apply {
+        for (i in VIDNEST_ALPHABET.indices) {
+            val c = VIDNEST_ALPHABET[i].code
+            if (c in 0..255) {
+                this[c] = i
+            }
+        }
+    }
+
+    fun decryptVidNestCipher(cipherText: String): String? {
+        val len = cipherText.length
+        if (len == 0) return null
+        val bytes = ByteArray(len * 3 / 4 + 4)
+        var byteCount = 0
+        var i = 0
+        while (i < len) {
+            val o0 = cipherText.getOrNull(i)?.code ?: 61
+            val o1 = cipherText.getOrNull(i + 1)?.code ?: 61
+            val o2 = cipherText.getOrNull(i + 2)?.code ?: 61
+            val o3 = cipherText.getOrNull(i + 3)?.code ?: 61
+
+            val l0 = if (o0 in 0..255 && VIDNEST_DECODE_MAP[o0] != -1) VIDNEST_DECODE_MAP[o0] else 64
+            val l1 = if (o1 in 0..255 && VIDNEST_DECODE_MAP[o1] != -1) VIDNEST_DECODE_MAP[o1] else 64
+            val l2 = if (o2 in 0..255 && VIDNEST_DECODE_MAP[o2] != -1) VIDNEST_DECODE_MAP[o2] else 64
+            val l3 = if (o3 in 0..255 && VIDNEST_DECODE_MAP[o3] != -1) VIDNEST_DECODE_MAP[o3] else 64
+
+            bytes[byteCount++] = ((l0 shl 2) or (l1 ushr 4)).toByte()
+            if (l2 != 64) {
+                bytes[byteCount++] = (((l1 and 15) shl 4) or (l2 ushr 2)).toByte()
+            }
+            if (l3 != 64) {
+                bytes[byteCount++] = (((l2 and 3) shl 6) or l3).toByte()
+            }
+            i += 4
+        }
+        return runCatching { String(bytes, 0, byteCount, Charsets.UTF_8) }.getOrNull()
+    }
+
+    suspend fun invokeVidNest(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            if (effectiveTmdbId == null || (season != null && season != 0 && episode == null)) return
+
+            withTimeoutOrNull(22000L) {
+                val eC = "https://new.vidnest.fun"
+                val isMovie = season == null || (season == 0 && episode == null)
+                val serverPaths = if (isMovie) {
+                    listOf(
+                        "superstream/movie/$effectiveTmdbId",
+                        "nextgencloudfabric/movie/$effectiveTmdbId",
+                        "rpmvid/movie/$effectiveTmdbId",
+                        "vidzee/movie/$effectiveTmdbId"
+                    )
+                } else {
+                    listOf(
+                        "superstream/tv/$effectiveTmdbId/$season/$episode",
+                        "nextgencloudfabric/tv/$effectiveTmdbId/$season/$episode",
+                        "rpmvid/tv/$effectiveTmdbId/$season/$episode",
+                        "vidzee/tv/$effectiveTmdbId/$season/$episode"
+                    )
+                }
+
+                val headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "https://vidnest.fun/"
+                )
+
+                for (path in serverPaths) {
+                    val url = "$eC/$path"
+                    val resp = retryTransient(2, 200L) {
+                        val r = suspendCancellable {
+                            runCatching { app.get(url, headers = headers, timeout = 9L) }.getOrNull()
+                        }
+                        if (r != null && r.isSuccessful && r.text.isNotBlank()) r else null
+                    } ?: continue
+
+                    val body = runCatching { JSONObject(resp.text) }.getOrNull() ?: continue
+                    val encryptedData = body.optString("data")
+                    if (encryptedData.isBlank()) continue
+
+                    val decryptedJson = decryptVidNestCipher(encryptedData) ?: continue
+                    val decryptedObj = runCatching { JSONObject(decryptedJson) }.getOrNull() ?: continue
+
+                    // Parse subtitles if present
+                    val subsArray = decryptedObj.optJSONArray("subtitles")
+                    if (subsArray != null) {
+                        for (idx in 0 until subsArray.length()) {
+                            val subObj = subsArray.optJSONObject(idx) ?: continue
+                            val subUrl = subObj.optString("url")
+                            val lang = cleanSubtitleLabel(subObj.optString("lang").takeIf { it.isNotBlank() } ?: subObj.optString("label"))
+                            if (subUrl.startsWith("http", ignoreCase = true)) {
+                                subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+                            }
+                        }
+                    }
+
+                    // Parse streams or direct url
+                    val streamsArray = decryptedObj.optJSONArray("streams")
+                    val directUrl = decryptedObj.optString("url")
+
+                    val extractedLinks = mutableListOf<ExtractorLink>()
+
+                    if (streamsArray != null && streamsArray.length() > 0) {
+                        for (idx in 0 until streamsArray.length()) {
+                            val sObj = streamsArray.optJSONObject(idx) ?: continue
+                            val streamUrl = sObj.optString("url")
+                            if (!streamUrl.startsWith("http", ignoreCase = true)) continue
+                            val streamType = sObj.optString("type")
+                            val isHls = streamType.contains("hls", ignoreCase = true) || streamUrl.contains(".m3u8", ignoreCase = true)
+                            val qualStr = sObj.optString("quality").takeIf { it.isNotBlank() } ?: sObj.optString("language")
+                            val quality = when {
+                                qualStr.contains("1080", ignoreCase = true) -> Qualities.P1080.value
+                                qualStr.contains("720", ignoreCase = true) -> Qualities.P720.value
+                                qualStr.contains("480", ignoreCase = true) -> Qualities.P480.value
+                                qualStr.contains("360", ignoreCase = true) -> Qualities.P360.value
+                                else -> StreamLinkOptimizer.extractQualityFromText(qualStr).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.P720.value
+                            }
+                            val sHeadersObj = sObj.optJSONObject("headers")
+                            val streamHeaders = mutableMapOf("User-Agent" to USER_AGENT, "Referer" to "https://vidnest.fun/")
+                            if (sHeadersObj != null) {
+                                val keys = sHeadersObj.keys()
+                                while (keys.hasNext()) {
+                                    val k = keys.next()
+                                    streamHeaders[k] = sHeadersObj.optString(k)
+                                }
+                            }
+
+                            if (isHls) {
+                                val gen = withTimeoutOrNull(10000L) {
+                                    runCatching {
+                                        generateM3u8("VidNest", streamUrl, referer = streamHeaders["Referer"] ?: "https://vidnest.fun/", headers = streamHeaders)
+                                    }.getOrNull()
+                                }
+                                if (!gen.isNullOrEmpty()) {
+                                    extractedLinks.addAll(gen)
+                                } else {
+                                    extractedLinks.add(
+                                        newExtractorLink("VidNest", "VidNest HLS", streamUrl, ExtractorLinkType.M3U8) {
+                                            this.referer = streamHeaders["Referer"] ?: "https://vidnest.fun/"
+                                            this.quality = quality
+                                            this.headers = streamHeaders
+                                        }
+                                    )
+                                }
+                            } else {
+                                extractedLinks.add(
+                                    newExtractorLink("VidNest", "VidNest [${qualStr.ifBlank { "HD" }}]", streamUrl, ExtractorLinkType.VIDEO) {
+                                        this.referer = streamHeaders["Referer"] ?: "https://vidnest.fun/"
+                                        this.quality = quality
+                                        this.headers = streamHeaders
+                                    }
+                                )
+                            }
+                        }
+                    } else if (directUrl.startsWith("http", ignoreCase = true)) {
+                        val headerObj = decryptedObj.optJSONObject("headers")
+                        val streamHeaders = mutableMapOf("User-Agent" to USER_AGENT, "Referer" to "https://vidnest.fun/")
+                        if (headerObj != null) {
+                            val keys = headerObj.keys()
+                            while (keys.hasNext()) {
+                                val k = keys.next()
+                                streamHeaders[k] = headerObj.optString(k)
+                            }
+                        }
+                        val isHls = decryptedObj.optBoolean("hls", true) || directUrl.contains(".m3u8", ignoreCase = true)
+                        if (isHls) {
+                            val gen = withTimeoutOrNull(10000L) {
+                                runCatching {
+                                    generateM3u8("VidNest", directUrl, referer = streamHeaders["Referer"] ?: "https://vidnest.fun/", headers = streamHeaders)
+                                }.getOrNull()
+                            }
+                            if (!gen.isNullOrEmpty()) {
+                                extractedLinks.addAll(gen)
+                            } else {
+                                extractedLinks.add(
+                                    newExtractorLink("VidNest", "VidNest HLS", directUrl, ExtractorLinkType.M3U8) {
+                                        this.referer = streamHeaders["Referer"] ?: "https://vidnest.fun/"
+                                        this.quality = Qualities.P720.value
+                                        this.headers = streamHeaders
+                                    }
+                                )
+                            }
+                        } else {
+                            extractedLinks.add(
+                                newExtractorLink("VidNest", "VidNest Direct", directUrl, ExtractorLinkType.VIDEO) {
+                                    this.referer = streamHeaders["Referer"] ?: "https://vidnest.fun/"
+                                    this.quality = Qualities.P720.value
+                                    this.headers = streamHeaders
+                                }
+                            )
+                        }
+                    }
+
+                    if (extractedLinks.isNotEmpty()) {
+                        emitTopTierDualQualityStreamLinks(
+                            source = "VidNest",
+                            baseName = "VidNest",
+                            url = extractedLinks.first().url,
+                            referer = extractedLinks.first().referer,
+                            headers = extractedLinks.first().headers,
+                            streamType = extractedLinks.first().type,
+                            generatedLinks = extractedLinks,
+                            callback = callback
+                        )
+                        break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidNest failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVidNest(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVidNest(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+
 
     private fun base64UrlDecodeSafe(input: String): ByteArray {
         return try {
@@ -5860,39 +6801,6 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit
     ) {
         invokeCineJoy(title, tmdbId = tmdbId, imdbId = null, year = null, season = season, episode = episode, subtitleCallback = null, callback = callback)
-    }
-
-    @Deprecated("VidFast has been decommissioned and removed.")
-    suspend fun invokeVidFast(
-        tmdbId: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        imdbId: String? = null,
-        callback: (ExtractorLink) -> Unit,
-    ) {
-        // No-op: VidFast decommissioned
-    }
-
-    @Deprecated("VidFast has been decommissioned and removed.")
-    suspend fun invokeVidFast(
-        tmdbId: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        // No-op: VidFast decommissioned
-    }
-
-    @Deprecated("VidFast has been decommissioned and removed.")
-    suspend fun invokeVidFast(
-        tmdbId: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        // No-op: VidFast decommissioned
     }
 
     suspend fun invokeMoviesApi(
@@ -7081,55 +7989,6 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                 }
             }
-        }
-    }
-
-    suspend fun invokevaplayer(
-        tmdb: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val url = if (season == null) {
-            "$vaplayer/api.php?tmdb=$tmdb&type=movie"
-        } else {
-            "$vaplayer/api.php?tmdb=$tmdb&type=tv&season=$season&episode=$episode"
-        }
-
-        val refer = "https://nextgencloudfabric.com/"
-
-        val response = app.get(url, referer = refer)
-            .parsedSafe<Vaplayer>() ?: return
-
-        val streamUrls = response.data?.streamUrls ?: return
-
-        response.defaultSubs?.forEach { sub ->
-            subtitleCallback.invoke(
-                newSubtitleFile(
-                    sub.lang ?: sub.code ?: "Unknown",
-                    sub.url ?: return@forEach
-                )
-            )
-        }
-
-        // The CDN tokens embedded in these playlist URLs are very short-lived and hang on
-        // expiry, so expand every server in parallel and never let one dead server abort
-        // the others.
-        coroutineScope {
-            streamUrls.mapIndexed { index, streamUrl ->
-                async(Dispatchers.IO) {
-                    runCatching<Unit> {
-                        generateM3u8(
-                            "Vaplayer Server ${index + 1}",
-                            streamUrl,
-                            refer
-                        ).forEach(callback)
-                    }.onFailure { e ->
-                        Log.d("StreamPlay", "Vaplayer server ${index + 1} unavailable: ${e.message}")
-                    }
-                }
-            }.awaitAll()
         }
     }
 

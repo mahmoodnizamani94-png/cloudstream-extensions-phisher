@@ -156,7 +156,7 @@ class ChallengerM2EmpiricalAdversarialTest {
                         0 -> StreamPlayExtractor.invokeVidlink(tmdbId = 550, season = null, episode = null) {}
                         1 -> StreamPlayExtractor.invokeYFlix(title = "Matrix", tmdbId = 603, year = 1999, season = null, episode = null) {}
                         2 -> StreamPlayExtractor.invokeCineJoy(title = "Interstellar", tmdbId = 157336, season = null, episode = null) {}
-                        else -> StreamPlayExtractor.invokeVidFast(tmdbId = 550, season = null, episode = null) {}
+                        else -> StreamPlayExtractor.invokeVidflix(tmdbId = 550, season = null, episode = null) {}
                     }
                 } catch (e: CancellationException) {
                     cancelledCounter.incrementAndGet()
@@ -196,36 +196,63 @@ class ChallengerM2EmpiricalAdversarialTest {
             )
         )
 
-        // Construct a bare minimum 720p stream from the lowest ranked top-tier provider (VidEasy rank 70)
-        val bareVidEasy720 = createLink(
-            source = "VidEasy",
-            name = "VidEasy [720p]",
-            url = "https://player.videasy.to/bare_stream.m3u8",
+        // Construct a bare minimum 720p stream from a rank-0 secondary provider (YFlix)
+        val bareYFlix720 = createLink(
+            source = "YFlix",
+            name = "YFlix [720p]",
+            url = "https://yflix.to/bare_stream.m3u8",
             quality = Qualities.P720.value
         )
 
         val scoreSpoofed1080 = StreamLinkOptimizer.getStreamCompositeScore(spoofed1080)
-        val scoreBare720 = StreamLinkOptimizer.getStreamCompositeScore(bareVidEasy720)
+        val scoreBare720 = StreamLinkOptimizer.getStreamCompositeScore(bareYFlix720)
 
-        // VidEasy 720p base is 10,000 + 700 = 10,700.0
-        // VidLink 1080p max is 8,000 + 1,000 + 9.9 = 9,009.9
+        // SOURCE RANK IS PRIMARY: the top-tier VidLink 1080p always outranks a rank-0
+        // secondary 720p (VidLink 100 x 8,000 = 1,008,000+, secondary 720p = 800.0).
         assertTrue(
-            "Bare VidEasy 720p ($scoreBare720) must strictly beat spoofed VidLink 1080p ($scoreSpoofed1080)",
-            scoreBare720 > scoreSpoofed1080
+            "Spoofed VidLink 1080p ($scoreSpoofed1080) must beat bare YFlix 720p ($scoreBare720): source rank decides",
+            scoreSpoofed1080 > scoreBare720
         )
 
         assertTrue(
-            "isStreamBetter must return true for bare 720p over spoofed 1080p",
-            StreamLinkOptimizer.isStreamBetter(bareVidEasy720, spoofed1080)
+            "isStreamBetter must return true for the higher-ranked 1080p",
+            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareYFlix720)
         )
         assertFalse(
-            "isStreamBetter must return false for spoofed 1080p over bare 720p",
-            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareVidEasy720)
+            "isStreamBetter must return false for the lower-ranked bare 720p",
+            StreamLinkOptimizer.isStreamBetter(bareYFlix720, spoofed1080)
         )
 
-        val sorted = listOf(spoofed1080, bareVidEasy720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
-        assertEquals("Comparator must sort bare 720p first", bareVidEasy720, sorted[0])
-        assertEquals("Comparator must sort spoofed 1080p second", spoofed1080, sorted[1])
+        val sorted = listOf(spoofed1080, bareYFlix720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+        assertEquals("Comparator must sort the higher-ranked 1080p first", spoofed1080, sorted[0])
+        assertEquals("Comparator must sort the secondary 720p second", bareYFlix720, sorted[1])
+
+        // WITHIN one source the metadata spoofing is still powerless: a bare VidLink 720p
+        // must beat the maximally badged VidLink 1080p.
+        val bareVidLink720 = createLink(
+            source = "VidLink",
+            name = "VidLink [720p]",
+            url = "https://vidlink.pro/bare_stream.m3u8",
+            quality = Qualities.P720.value
+        )
+        val scoreBareVidLink720 = StreamLinkOptimizer.getStreamCompositeScore(bareVidLink720)
+
+        assertTrue(
+            "Bare VidLink 720p ($scoreBareVidLink720) must still beat spoofed VidLink 1080p ($scoreSpoofed1080) within the same source",
+            scoreBareVidLink720 > scoreSpoofed1080
+        )
+        assertTrue(
+            "isStreamBetter must return true for the bare 720p over the spoofed 1080p of the same source",
+            StreamLinkOptimizer.isStreamBetter(bareVidLink720, spoofed1080)
+        )
+        assertFalse(
+            "isStreamBetter must return false for the spoofed 1080p over the bare 720p of the same source",
+            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareVidLink720)
+        )
+
+        val sortedSameSource = listOf(spoofed1080, bareVidLink720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+        assertEquals("Comparator must sort bare 720p first", bareVidLink720, sortedSameSource[0])
+        assertEquals("Comparator must sort spoofed 1080p second", spoofed1080, sortedSameSource[1])
     }
 
     @Test
@@ -316,8 +343,8 @@ class ChallengerM2EmpiricalAdversarialTest {
 
         val vidup720 = createLink("Vidup", "Vidup [720p]", "https://vidup.io/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
-        val rivestream1080 = createLink("RiveStream", "RiveStream [1080p]", "https://rivestream.live/1080.m3u8", Qualities.P1080.value)
-        val cinejoy480 = createLink("CineJoy", "CineJoy [480p]", "https://cinejoy.to/480.m3u8", Qualities.P480.value)
+        val animepahe1080 = createLink("AnimePahe", "AnimePahe [1080p]", "https://animepahe.pw/1080.m3u8", Qualities.P1080.value)
+        val vidlink480 = createLink("VidLink", "VidLink [480p]", "https://vidlink.pro/480.m3u8", Qualities.P480.value)
 
         // Lower-tier 720p arrives first -> staged waiting for pinnacle VidLink (rank 100)
         dispatcher.onLinkAccepted(vidup720)
@@ -329,17 +356,17 @@ class ChallengerM2EmpiricalAdversarialTest {
         // VidLink 720p is emitted as #1, unblocking staged Vidup 720p as #2
         assertEquals("Both 720p streams must be emitted in rank priority order", 2, dispatched.size)
         assertEquals("VidLink 720p (rank 100) must be first", vidlink720, dispatched[0])
-        assertEquals("Vidup 720p (rank 95) must be second", vidup720, dispatched[1])
+        assertEquals("Vidup 720p (rank 0) must be second", vidup720, dispatched[1])
 
         // 480p arrives before 1080p -> staged waiting for 1080p
-        dispatcher.onLinkAccepted(cinejoy480)
+        dispatcher.onLinkAccepted(vidlink480)
         assertEquals("480p must not be emitted before 1080p", 2, dispatched.size)
 
         // 1080p arrives -> emitted as #3, flushes 480p as #4
-        dispatcher.onLinkAccepted(rivestream1080)
+        dispatcher.onLinkAccepted(animepahe1080)
         assertEquals("1080p emitted and flushes 480p", 4, dispatched.size)
-        assertEquals("RiveStream 1080p must be third", rivestream1080, dispatched[2])
-        assertEquals("CineJoy 480p must be fourth", cinejoy480, dispatched[3])
+        assertEquals("AnimePahe 1080p must be third", animepahe1080, dispatched[2])
+        assertEquals("VidLink 480p must be fourth", vidlink480, dispatched[3])
 
         dispatcher.flush()
     }
@@ -356,8 +383,8 @@ class ChallengerM2EmpiricalAdversarialTest {
                 type = ExtractorLinkType.M3U8
             )
             val bare720 = createLink(
-                source = "VidEasy",
-                name = "VidEasy [720p]",
+                source = "VidLink",
+                name = "VidLink [720p]",
                 url = "https://cdn.example.com/hls/master.m3u8",
                 quality = Qualities.P720.value,
                 type = ExtractorLinkType.M3U8

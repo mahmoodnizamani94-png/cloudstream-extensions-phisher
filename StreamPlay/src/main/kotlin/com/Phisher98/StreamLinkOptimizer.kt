@@ -446,13 +446,28 @@ object StreamLinkOptimizer {
         val lowerUrl = url.lowercase(Locale.ROOT)
         val hadVidlinkHeader = headers.entries.any {
             (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
-                it.value.contains("vidlink.pro", ignoreCase = true)
-        } || referer?.contains("vidlink.pro", ignoreCase = true) == true
+                (it.value.contains("vidlink.pro", ignoreCase = true) || it.value.contains("filmboom.top", ignoreCase = true))
+        } || referer?.contains("vidlink.pro", ignoreCase = true) == true || referer?.contains("filmboom.top", ignoreCase = true) == true
         val isVidlink = source?.contains("vidlink", ignoreCase = true) == true ||
             name?.contains("vidlink", ignoreCase = true) == true ||
             lowerUrl.contains("vidlink.pro") ||
             lowerUrl.contains("hakunaymatata") ||
+            lowerUrl.contains("filmboom.top") ||
             hadVidlinkHeader
+        val isVixSrc = source?.contains("vixsrc", ignoreCase = true) == true ||
+            name?.contains("vixsrc", ignoreCase = true) == true ||
+            lowerUrl.contains("vixsrc.to") ||
+            referer?.contains("vixsrc", ignoreCase = true) == true
+        val isVidNest = source?.contains("vidnest", ignoreCase = true) == true ||
+            name?.contains("vidnest", ignoreCase = true) == true ||
+            lowerUrl.contains("vidnest.fun") ||
+            lowerUrl.contains("vidnest") ||
+            referer?.contains("vidnest", ignoreCase = true) == true
+        val isAnimepahe = source?.contains("animepahe", ignoreCase = true) == true ||
+            name?.contains("animepahe", ignoreCase = true) == true ||
+            lowerUrl.contains("animepahe") ||
+            referer?.contains("animepahe", ignoreCase = true) == true ||
+            lowerUrl.contains("kwik.cx")
         val isYFlix = source?.contains("yflix", ignoreCase = true) == true ||
             name?.contains("yflix", ignoreCase = true) == true ||
             source?.contains("moviesflix", ignoreCase = true) == true ||
@@ -532,7 +547,42 @@ object StreamLinkOptimizer {
                     (k.equals(HEADER_REFERER, ignoreCase = true) || k.equals(HEADER_ORIGIN, ignoreCase = true)) &&
                     (v.contains("vidlink.pro", ignoreCase = true) || v.contains("embed", ignoreCase = true) || v.isBlank())
                 }
+                val currentRef = headers.entries.firstOrNull { it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank() }?.value
+                    ?: if (!referer.isNullOrBlank() && !referer.contains("vidlink.pro", ignoreCase = true) && !referer.contains("embed", ignoreCase = true)) referer else null
+                val effRef = if (currentRef != null && (currentRef.contains("filmboom.top", ignoreCase = true) || currentRef.contains(".top", ignoreCase = true))) {
+                    currentRef
+                } else {
+                    "https://filmboom.top/"
+                }
+                val effOrig = getHostUrl(effRef) ?: "https://filmboom.top"
+                headers[HEADER_REFERER] = effRef
+                headers[HEADER_ORIGIN] = effOrig
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isVixSrc || lowerUrl.contains("vixsrc.to") -> {
+                headers[HEADER_REFERER] = "https://vixsrc.to/"
+                headers[HEADER_ORIGIN] = "https://vixsrc.to"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isVidNest || lowerUrl.contains("vidnest.fun") || lowerUrl.contains("vidnest") -> {
+                headers[HEADER_REFERER] = "https://vidnest.fun/"
+                headers[HEADER_ORIGIN] = "https://vidnest.fun"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isAnimepahe -> {
+                val animeRef = when {
+                    lowerUrl.contains("kwik.cx") -> "https://kwik.cx/"
+                    else -> "https://animepahe.pw/"
+                }
+                headers[HEADER_REFERER] = animeRef
+                headers[HEADER_ORIGIN] = animeRef.removeSuffix("/")
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
             }
@@ -808,14 +858,28 @@ object StreamLinkOptimizer {
             }
         val hadVidlinkHeader = headers.entries.any {
             (it.key.equals(HEADER_REFERER, ignoreCase = true) || it.key.equals(HEADER_ORIGIN, ignoreCase = true)) &&
-                it.value.contains("vidlink.pro", ignoreCase = true)
-        }
+                (it.value.contains("vidlink.pro", ignoreCase = true) || it.value.contains("filmboom.top", ignoreCase = true))
+        } || referer?.contains("vidlink.pro", ignoreCase = true) == true || referer?.contains("filmboom.top", ignoreCase = true) == true
         val isVidlink = source?.contains("vidlink", ignoreCase = true) == true ||
             name?.contains("vidlink", ignoreCase = true) == true ||
             lowerUrl.contains("vidlink.pro") ||
             lowerUrl.contains("hakunaymatata") ||
-            referer?.contains("vidlink.pro", ignoreCase = true) == true ||
+            lowerUrl.contains("filmboom.top") ||
             hadVidlinkHeader
+        val isVixSrc = source?.contains("vixsrc", ignoreCase = true) == true ||
+            name?.contains("vixsrc", ignoreCase = true) == true ||
+            lowerUrl.contains("vixsrc.to") ||
+            referer?.contains("vixsrc", ignoreCase = true) == true
+        val isVidNest = source?.contains("vidnest", ignoreCase = true) == true ||
+            name?.contains("vidnest", ignoreCase = true) == true ||
+            lowerUrl.contains("vidnest.fun") ||
+            lowerUrl.contains("vidnest") ||
+            referer?.contains("vidnest", ignoreCase = true) == true
+        val isAnimepahe = source?.contains("animepahe", ignoreCase = true) == true ||
+            name?.contains("animepahe", ignoreCase = true) == true ||
+            lowerUrl.contains("animepahe") ||
+            referer?.contains("animepahe", ignoreCase = true) == true ||
+            lowerUrl.contains("kwik.cx")
         val isYFlix = source?.contains("yflix", ignoreCase = true) == true ||
             name?.contains("yflix", ignoreCase = true) == true ||
             source?.contains("moviesflix", ignoreCase = true) == true ||
@@ -878,11 +942,24 @@ object StreamLinkOptimizer {
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
             isVidlink -> {
-                headers.entries.firstOrNull {
+                val fromHeaders = headers.entries.firstOrNull {
                     it.key.equals(HEADER_REFERER, ignoreCase = true) &&
                     !it.value.contains("vidlink.pro", ignoreCase = true) &&
-                    !it.value.contains("embed", ignoreCase = true)
-                }?.value ?: ""
+                    !it.value.contains("embed", ignoreCase = true) &&
+                    it.value.isNotBlank()
+                }?.value
+                val fromArg = if (!referer.isNullOrBlank() && !referer.contains("vidlink.pro", ignoreCase = true) && !referer.contains("embed", ignoreCase = true)) referer else null
+                val eff = fromHeaders ?: fromArg
+                if (eff != null && (eff.contains("filmboom.top", ignoreCase = true) || eff.contains(".top", ignoreCase = true))) {
+                    eff
+                } else {
+                    "https://filmboom.top/"
+                }
+            }
+            isVixSrc || lowerUrl.contains("vixsrc.to") -> "https://vixsrc.to/"
+            isVidNest || lowerUrl.contains("vidnest.fun") || lowerUrl.contains("vidnest") -> "https://vidnest.fun/"
+            isAnimepahe -> {
+                if (lowerUrl.contains("kwik.cx")) "https://kwik.cx/" else "https://animepahe.pw/"
             }
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"
             DOOD_HOST_REGEX.containsMatchIn(lowerUrl) -> {
@@ -1438,22 +1515,19 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Checks if a stream link belongs to one of the top-tier zero-setup primary sources
-     * (VidLink 100 > Vidup 95 > RiveStream 90 > CineJoy 88 > VidFast 85 > VidEasy 80).
+     * Checks if a stream link belongs to one of the curated top-tier primary sources
+     * (VidLink 100 > VixSrc 95 > AnimePahe 90).
      */
-    fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 55
+    fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 90
 
     /**
-     * Checks if a provider ID matches one of the top-tier primary sources.
+     * Checks if a provider ID matches one of the curated top-tier primary sources.
      */
     fun isTopTierProvider(providerId: String): Boolean {
         val p = providerId.lowercase(Locale.ROOT)
         return p.contains("vidlink") ||
-            p.contains("vidup") ||
-            p.contains("cinejoy") ||
-            p.contains("hexasu") || p.contains("hexa") || p.contains("embedsu") || p.contains("flixer") ||
-            p.contains("autoembed") ||
-            p.contains("moviebox")
+            p.contains("vixsrc") ||
+            p.contains("animepahe")
     }
 
     /**
@@ -1497,8 +1571,8 @@ object StreamLinkOptimizer {
 
     /**
      * Executes the Universal Top-Tier Stream Guard on any stream link:
-     * Validates top-tier streams (VidLink 100 > HexaSU 90 > AutoEmbed 80 > VidFast 70 > VidEasy 60 > VidSrc 55)
-     * and forwards them cleanly to emitAction without creating artificial or duplicated companion links.
+     * Validates top-tier streams (VidLink 100 > VixSrc 95 > AnimePahe 90) and forwards them cleanly to
+     * emitAction without creating artificial or duplicated companion links.
      *
      * @param link The incoming stream link.
      * @param guardedKeys Thread-safe set of canonical stream keys that have already been emitted.
@@ -1718,8 +1792,8 @@ object StreamLinkOptimizer {
 
     /**
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
-     * 1. Quality priority score (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
-     * 2. Top-tier source priority rank (VidLink > YFlix/HexaSU > CineJoy/AutoEmbed > VidFast > VidEasy > VidSrc > Secondary)
+     * 1. Top-tier source priority rank (VidLink > VixSrc > AnimePahe > Secondary)
+     * 2. Quality priority score within the same source (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
      * 3. Genuine non-synthetic streams over synthetic companions
      * 4. Higher bitrate (kbps) (when quality score and source rank are equivalent)
      * 5. Direct endpoint rewrites (?download / &stream=1)
@@ -1730,7 +1804,16 @@ object StreamLinkOptimizer {
      * 10. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Resolution Quality comparison: user-priority score strictly takes precedence (720p > 1080p > 480p > SD > UHD > Unknown)
+        // 1. Top-Tier Source Priority Rank (VidLink > VixSrc > AnimePahe > Secondary).
+        // Source rank is primary so a higher-ranked source can never be replaced by a
+        // lower-ranked one that merely exposes a higher resolution ladder.
+        val sourceRank1 = getSourcePriorityRank(candidate)
+        val sourceRank2 = getSourcePriorityRank(current)
+        if (sourceRank1 != sourceRank2) {
+            return sourceRank1 > sourceRank2
+        }
+
+        // 2. Resolution Quality comparison within the same source (720p > 1080p > 480p > SD > UHD > Unknown)
         val rawQ1 = if (candidate.quality > 0 && candidate.quality != Qualities.Unknown.value) candidate.quality else extractQualityFromText(candidate.name, candidate.url)
         val rawQ2 = if (current.quality > 0 && current.quality != Qualities.Unknown.value) current.quality else extractQualityFromText(current.name, current.url)
         val q1 = if (rawQ1 == Qualities.Unknown.value) 0 else rawQ1
@@ -1739,14 +1822,6 @@ object StreamLinkOptimizer {
         val score2 = getQualityPriorityScore(q2)
         if (score1 != score2) {
             return score1 > score2
-        }
-
-        // 2. Top-Tier Source Priority Rank (VidLink > YFlix/HexaSU > CineJoy/AutoEmbed > VidFast > VidEasy > VidSrc > Secondary)
-        // Strictly prevents lower-tier sources (e.g. VidFast, VidEasy, or scrapers) from overriding top-tier sources at equivalent resolution
-        val sourceRank1 = getSourcePriorityRank(candidate)
-        val sourceRank2 = getSourcePriorityRank(current)
-        if (sourceRank1 != sourceRank2) {
-            return sourceRank1 > sourceRank2
         }
 
         // 3. Genuine non-synthetic streams strictly prioritize over synthetic companions
@@ -1813,53 +1888,30 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Definitive top-tier zero-setup source priority ranking:
-     * 1. VidLink (api.vidlink.pro fast HLS/m3u8 & direct Cronet CDN streams) -> 100
-     * 2. Vidup (vidup.to fast HLS streams) -> 95
-     * 3. RiveStream (www.rivestream.app multi-server fast HLS) -> 90
-     * 4. CineJoy (api.wing.st / solarpanelcleaning multi-server) -> 88
-     * 5. VidFast (vidfast.vc / hypergate fast multi-server HLS) -> 85
-     * 6. VidEasy (api.speedracelight.com / videasy.to multi-server) -> 80
-     * Secondary scrapers:
-     * 7. Peachify (peachify resolver) -> 50
-     * 8. YFlix / HexaSU (moviesflix / embed.su) -> 45
-     * 9. AutoEmbed (player.autoembed.cc HLS/MP4 streams) -> 40
-     * 10. MovieBox / UHDMovies / 4kHdhub / MultiMovies -> 35
-     * 11. VidSrc (Unified) -> 25
-     * 12. Vidrock -> 20
-     * 13. MoviesAPI -> 15
-     * 14. Vidzee -> 12
-     * 15. 2Embed -> 10
+     * Definitive source priority ranking for the curated v18 SOTA registry:
+     *
+     *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)  -> 100
+     *   2. VixSrc    (vixsrc.to, masterPlaylist HLS master)                            -> 95
+     *   3. AnimePahe (animepahe.pw, kwik.cx resolver)                                 -> 90
+     *
+     * Every other label or CDN host scores 0, because every other source was decommissioned
+     * after live research showed it dead, parked, or Cloudflare/browser gated.
+     *
+     * Matching is done on the source label as well as on the CDN hosts each source
+     * actually serves from, so a link keeps its ranking even when it is re-wrapped by the
+     * deduplicator or rewritten to a direct CDN endpoint.
      */
     fun getSourcePriorityRank(link: ExtractorLink): Int {
         val s = link.source.lowercase(Locale.ROOT)
         val n = link.name.lowercase(Locale.ROOT)
         val u = link.url.lowercase(Locale.ROOT)
         return when {
-            s.contains("vidlink") || n.contains("vidlink") || u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
-            s.contains("vidup") || n.contains("vidup") || u.contains("vidup.to") || u.contains("keenanchor.top") -> 95
-            s.contains("cinejoy") || n.contains("cinejoy") || u.contains("cinejoy") || u.contains("solarpanelcleaning") || u.contains("api.wing.st") || u.contains("bright67.online") -> 90
-            s.contains("hexasu") || s.contains("hexa.su") || s.contains("embedsu") || s.contains("embed.su") || s.contains("hexa") || s.contains("flixer") ||
-                n.contains("hexasu") || n.contains("embedsu") || n.contains("embed.su") || n.contains("hexa") || n.contains("flixer") ||
-                u.contains("hexa.su") || u.contains("embed.su") || u.contains("flixer.su") || u.contains("flixer") -> 88
-            s.contains("autoembed") || n.contains("autoembed") || u.contains("autoembed.cc") || u.contains("player.autoembed.cc") || u.contains("autoembed.to") || u.contains("autoembed.co") -> 85
-            s.contains("moviebox") || n.contains("moviebox") || u.contains("moviebox") -> 80
-            s.contains("yflix") || s.contains("moviesflix") || n.contains("yflix") || n.contains("moviesflix") || u.contains("yflix") || u.contains("moviesflix") -> 75
-            s.contains("rivestream") || n.contains("rivestream") || u.contains("rivestream") -> 70
-            s.contains("vidfast") || n.contains("vidfast") || u.contains("vidfast.pro") || u.contains("vidfast.vc") ||
-                ((u.contains("peakstorm.top") || u.contains("hypergate.top")) && !s.contains("videasy") && !n.contains("videasy")) -> 65
-            s.contains("videasy") || n.contains("videasy") || u.contains("videasy") || u.contains("speedracelight.com") || u.contains("videasy.to") || u.contains("videasy.net") || u.contains("cineby.sc") ||
-                (u.contains("peakstorm.top") && (s.contains("videasy") || n.contains("videasy"))) -> 60
-            s.contains("peachify") || n.contains("peachify") || u.contains("peachify") -> 50
-            s.contains("4khdhub") || n.contains("4khdhub") || u.contains("4khdhub") -> 35
-            s.contains("multimovies") || n.contains("multimovies") || u.contains("multimovies") -> 35
-            s.contains("uhdmovies") || n.contains("uhdmovies") || u.contains("uhdmovies") -> 35
-            s.contains("vidsrc") || n.contains("vidsrc") || u.contains("vidsrc") || u.contains("cloudnestra") || u.contains("shadowlandschronicles") ||
-                u.contains("thepixelpioneer") || u.contains("putgate") || u.contains("whisperingpines") || u.contains("vidsrc.in") || u.contains("vidsrc.pm") || u.contains("vidsrc.net") -> 25
-            s.contains("vidrock") || n.contains("vidrock") || u.contains("vidrock") -> 20
-            s.contains("moviesapi") || n.contains("moviesapi") || u.contains("moviesapi") -> 15
-            s.contains("vidzee") || n.contains("vidzee") || u.contains("vidzee") -> 12
-            s.contains("2embed") || n.contains("2embed") || u.contains("2embed") -> 10
+            s.contains("vidlink") || n.contains("vidlink") ||
+                u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
+            s.contains("vixsrc") || n.contains("vixsrc") ||
+                u.contains("vixsrc.to") || u.contains("vix-content") || u.contains("vixcloud") -> 95
+            s.contains("animepahe") || n.contains("animepahe") ||
+                u.contains("animepahe") || u.contains("kwik.cx") -> 90
             else -> 0
         }
     }
@@ -1901,14 +1953,20 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Computes the overall stream score combining:
-     * 1. Top-tier source priority rank and resolution quality hierarchy:
-     *    VidLink 100 with 720 > HexaSU 90 with 720 > AutoEmbed 80 with 720 > VidFast 70 with 720 > VidEasy 60 with 720 > VidSrc 55 with 720
-     *    then > VidLink with 1080 > HexaSU with 1080 > AutoEmbed with 1080 > VidFast with 1080 > VidEasy with 1080 > VidSrc with 1080
-     *    then the rest of the qualities (480p > other SD > 1440p > 4K > Unknown) for top sources
-     *    followed by secondary sources.
-     * 2. Micro-tiebreakers (bitrate, codecs, audio badges, headers) strictly bounded to < 10.0f
-     *    so they break ties between equivalent streams without ever inverting source or quality tiers.
+     * Computes the overall stream score as a strict two-level ordering:
+     *
+     * 1. SOURCE RANK IS PRIMARY. A higher-ranked source always wins, whatever resolution
+     *    it offers. VidLink (100) x 1080p therefore always outranks any secondary source
+     *    x 720p, which is what makes VidLink the #1 result instead of being skipped in
+     *    favour of a lower-ranked source that happens to expose a 720p ladder. The source
+     *    term is scaled by 10,000 while the whole quality term spans at most 10,000, so
+     *    adjacent source ranks (a gap of >=10 -> 100,000) can never be crossed by quality.
+     *
+     * 2. QUALITY IS SECONDARY, and only orders variants of the same source:
+     *    720p > 1080p > 480p > other SD > 1440p/4K > Unknown.
+     *
+     * Micro-tiebreakers (bitrate, codecs, audio badges, headers) stay bounded below 10.0f
+     * so they only ever break ties between otherwise identical streams.
      */
     fun getStreamCompositeScore(link: ExtractorLink): Float {
         val sourceRank = getSourcePriorityRank(link)
@@ -1917,7 +1975,7 @@ object StreamLinkOptimizer {
         } else {
             extractQualityFromText(link.name, link.url)
         }
-        val isTopTier = isTopTierSource(link) // sourceRank >= 55
+        val isTopTier = isTopTierSource(link)
         val is720 = is720p(link) || quality == Qualities.P720.value || quality in 700..749
         val is1080 = !is720 && (is1080p(link) || quality == Qualities.P1080.value || (quality in 750..1088 && quality !in 700..749))
         val isBelow720 = !is720 && !is1080 && isBelow720p(link)
@@ -1930,48 +1988,38 @@ object StreamLinkOptimizer {
         // Normalized tiebreaker (0.0f .. 9.9f) strictly prevents inverting source or quality tiers:
         val tiebreaker = minOf(9.9f, (minOf(50_000L, bitrate) / 10_000f) + (videoScore * 0.05f) + (audioScore * 0.05f) + (headerScore * 0.02f))
 
-        val baseScore = if (isTopTier) {
-            when {
-                // Tier 1: Highest priority sources with 720p (#1 Priority)
-                // VidLink (100) -> 11,000 | HexaSU (90) -> 10,900 | AutoEmbed (80) -> 10,800 | VidFast (70) -> 10,700 | VidEasy (60) -> 10,600 | VidSrc (55) -> 10,550
-                is720 -> 10_000f + (sourceRank * 10f)
-
-                // Tier 2: Highest priority sources with 1080p (#2 Priority)
-                // VidLink (100) -> 9,000 | HexaSU (90) -> 8,900 | AutoEmbed (80) -> 8,800 | VidFast (70) -> 8,700 | VidEasy (60) -> 8,600 | VidSrc (55) -> 8,550
-                is1080 -> 8_000f + (sourceRank * 10f)
-
-                // Tier 3: Rest of the qualities for highest priority sources (720 -> 1080 -> then the rest)
-                // 3A: 480p (Tier 2 SD) -> 7,000 down to 6,550
-                quality == Qualities.P480.value -> 6_000f + (sourceRank * 10f)
-
-                // 3B: Other SD (576p > 540p > 360p > 240p) -> ~5,200 down to ~4,600
-                isBelow720 -> {
-                    val sdOffset = if (quality in (Qualities.P480.value + 1) until 700) 200f else (minOf(479, maxOf(1, quality)) / 4.79f)
-                    4_000f + (sourceRank * 10f) + sdOffset
-                }
-
-                // 3C: Above 1080p (1440p > 4K / 2160p > 8K) -> ~3,200 down to ~2,600
-                isAbove1080 -> {
-                    val uhdOffset = when {
-                        quality == Qualities.P1440.value || (quality in 1089..1800) -> 200f
-                        quality == Qualities.P2160.value || (quality in 1801..3000) -> 100f
-                        else -> 50f
-                    }
-                    2_000f + (sourceRank * 10f) + uhdOffset
-                }
-
-                // 3D: Unknown or unspecified quality
-                else -> 1_200f + (sourceRank * 5f)
+        // Quality term, deliberately source-independent: 10,000 (720p) down to 1,200.
+        val qualityTerm = when {
+            is720 -> 10_000f
+            is1080 -> 8_000f
+            quality == Qualities.P480.value -> 6_000f
+            isBelow720 -> {
+                val sdOffset = if (quality in (Qualities.P480.value + 1) until 700) 200f else (minOf(479, maxOf(1, quality)) / 4.79f)
+                4_000f + sdOffset
             }
+            isAbove1080 -> {
+                val uhdOffset = when {
+                    quality == Qualities.P1440.value || (quality in 1089..1800) -> 200f
+                    quality == Qualities.P2160.value || (quality in 1801..3000) -> 100f
+                    else -> 50f
+                }
+                2_000f + uhdOffset
+            }
+            else -> 1_200f
+        }
+
+        val baseScore = if (isTopTier) {
+            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; VixSrc(95) -> 950,000+; AnimePahe(90) -> 900,000+.
+            (sourceRank * 10_000f) + qualityTerm
         } else {
-            // Secondary / Fallback sources (< 55)
+            // Secondary / fallback sources stay strictly below every top-tier stream.
             when {
-                is720 -> 800f + (sourceRank * 2f)
-                is1080 -> 600f + (sourceRank * 2f)
-                quality == Qualities.P480.value -> 400f + (sourceRank * 2f)
-                isBelow720 -> 200f + (sourceRank * 2f) + (minOf(479, maxOf(1, quality)) / 4.79f * 0.5f)
-                isAbove1080 -> 100f + (sourceRank * 2f)
-                else -> sourceRank * 2f
+                is720 -> 800f
+                is1080 -> 600f
+                quality == Qualities.P480.value -> 400f
+                isBelow720 -> 200f + (minOf(479, maxOf(1, quality)) / 4.79f * 0.5f)
+                isAbove1080 -> 100f
+                else -> 0f
             }
         }
 
@@ -2112,9 +2160,16 @@ object StreamLinkOptimizer {
 
     /**
      * State-Of-The-Art Priority-Ordered Stream Dispatcher for CloudStream.
-     * Guarantees that users receive 720p as #1 priority along with subtitles,
-     * followed by 1080p, 480p, above 1080p (4K), etc., while strictly preserving
-     * source priority order (VidLink 100 > HexaSU 90 > AutoEmbed 80 > VidFast 70 > VidEasy 60 > VidSrc 55).
+     *
+     * Guarantees that the highest-ranked source is always the #1 result (VidLink 100 >
+     * VixSrc 95 > AnimePahe 90), and only then orders that source's own variants by the
+     * quality hierarchy (720p > 1080p > 480p > above-1080p).
+     *
+     * Every hold in this dispatcher is *bounded*: it is an ordering window that exists to
+     * let a higher-ranked source finish its round-trip, never a gate that depends on a
+     * source answering. When a window expires the buffered links are always flushed in
+     * strict comparator order, so a provider that is down can only ever cost the user the
+     * window duration, never a missing stream.
      */
     class PriorityStreamDispatcher(
         private val upstreamCallback: (ExtractorLink) -> Unit,
@@ -2159,32 +2214,54 @@ object StreamLinkOptimizer {
         private var fhdTimerJob: Job? = null
         private var sdTimerJob: Job? = null
 
+        /**
+         * Highest-ranked link not yet emitted, considering *every* held bucket. A link
+         * parked in a pending quality bucket still competes for the #1 slot, so a staged
+         * lower variant can never be dispatched while a better one (e.g. VidLink 1080p vs
+         * a lower-ranked source's 720p, or VidLink 480p vs VidLink's own 1080p) is still
+         * buffered. The composite score is source-dominant, so this naturally yields the
+         * highest-ranked source's best available variant.
+         */
+        private fun bestUnemittedCandidate(): ExtractorLink? {
+            // STREAM_PRIORITY_COMPARATOR sorts highest-score-first, so .firstOrNull() is the best.
+            return (stagedLinks + pendingTop720Links + pending1080Links)
+                .filter { canonicalStreamKey(it) !in emittedKeys }
+                .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                .firstOrNull()
+        }
+
+        /** Removes a link from every bucket so it can be re-homed without duplication. */
+        private fun detachFromBuckets(link: ExtractorLink) {
+            stagedLinks.remove(link)
+            pendingTop720Links.remove(link)
+            pending1080Links.remove(link)
+        }
+
         fun onSubtitleReceived() {
             synchronized(lock) {
                 hasSubtitles = true
                 if (!hasEmittedTopStream) {
-                    val best720p = stagedLinks.filter { is720p(it) }.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
-                    if (best720p != null) {
-                        dispatchOrStageBest(best720p)
+                    val best = bestUnemittedCandidate()
+                    if (best != null) {
+                        dispatchOrStageBest(best)
                     }
                 }
             }
         }
 
-        private fun dispatchOrStageBest(best720p: ExtractorLink) {
-            val rank = getSourcePriorityRank(best720p)
+        private fun dispatchOrStageBest(best: ExtractorLink) {
+            val rank = getSourcePriorityRank(best)
             val maxRank = activeTopRanks?.maxOrNull() ?: 100
+            detachFromBuckets(best)
             if (rank >= maxRank || !hasHigherPendingTop720Rank(rank) || topSourceGraceMs <= 0L || topSourceGraceExpired) {
-                // Pinnacle active source rank + 720p + subtitles -> dispatch IMMEDIATELY as #1!
+                // Highest-ranked source (or nothing better is running) -> dispatch IMMEDIATELY as #1!
                 stageTimerJob?.cancel()
                 stageTimerJob = null
-                stagedLinks.remove(best720p)
-                emitTopStreamAndAdvance(best720p)
+                emitTopStreamAndAdvance(best)
             } else {
-                // Subtitles ready with 720p, but from lower tier (HexaSU 90, AutoEmbed 80, VidFast 70, VidEasy 60, VidSrc 55):
-                // stage in pendingTop720Links and wait for higher priority sources
-                stagedLinks.remove(best720p)
-                pendingTop720Links.add(best720p)
+                // A higher-ranked source is still in flight: hold this link in
+                // pendingTop720Links and wait (bounded) for it.
+                pendingTop720Links.add(best)
                 startTopSourceGraceTimer()
             }
         }
@@ -2257,6 +2334,15 @@ object StreamLinkOptimizer {
 
                     // Tier 3: below 720p (480p, SD) links emit immediately as priority #3
                     if (linkIsBelow720) {
+                        // ...unless a 1080p of this same ordering window is already buffered.
+                        // 1080 > 480 in the SOTA hierarchy, so the SD entry must never jump
+                        // ahead of it; queue it and let flushPending1080() release both in
+                        // comparator order.
+                        if (pending1080Links.isNotEmpty()) {
+                            pendingBelowFhdLinks.add(link)
+                            startTop720GraceTimer()
+                            return
+                        }
                         hasEmittedBelow720p = true
                         emitSingleLink(link)
                         sdTimerJob?.cancel()
@@ -2290,11 +2376,11 @@ object StreamLinkOptimizer {
 
                 stagedLinks.add(link)
 
-                // If 720p link arrived and subtitles are ready
+                // If a link arrived and subtitles are ready, dispatch the composite-best
+                // candidate (source-dominant), falling back to the link itself.
                 if (linkIs720 && hasSubtitles) {
-                    val best720p = stagedLinks.filter { is720p(it) }
-                        .sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull() ?: link
-                    dispatchOrStageBest(best720p)
+                    val best = bestUnemittedCandidate() ?: link
+                    dispatchOrStageBest(best)
                     return
                 }
 
@@ -2306,10 +2392,9 @@ object StreamLinkOptimizer {
                             synchronized(lock) {
                                 stageTimerJob = null
                                 if (!hasEmittedTopStream) {
-                                    val best720p = stagedLinks.filter { is720p(it) }.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
-                                        ?: stagedLinks.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
-                                    if (best720p != null) {
-                                        val rank = getSourcePriorityRank(best720p)
+                                    val best = bestUnemittedCandidate()
+                                    if (best != null) {
+                                        val rank = getSourcePriorityRank(best)
                                         val maxRank = activeTopRanks?.maxOrNull() ?: 100
                                         val shouldHoldForHigherInFlight = isRankInFlight != null &&
                                             rank < maxRank &&
@@ -2317,12 +2402,12 @@ object StreamLinkOptimizer {
                                             topSourceGraceMs > 0L &&
                                             !topSourceGraceExpired
                                         if (shouldHoldForHigherInFlight) {
-                                            stagedLinks.remove(best720p)
-                                            pendingTop720Links.add(best720p)
+                                            detachFromBuckets(best)
+                                            pendingTop720Links.add(best)
                                             startTopSourceGraceTimer()
                                         } else {
-                                            stagedLinks.remove(best720p)
-                                            emitTopStreamAndAdvance(best720p)
+                                            detachFromBuckets(best)
+                                            emitTopStreamAndAdvance(best)
                                         }
                                     }
                                 }
@@ -2339,9 +2424,18 @@ object StreamLinkOptimizer {
                         synchronized(lock) {
                             stageTimerJob = null
                             if (!hasEmittedTopStream) {
-                                val best720 = stagedLinks.filter { is720p(it) }.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
-                                if (best720 != null) {
-                                    dispatchOrStageBest(best720)
+                                val best = bestUnemittedCandidate()
+                                if (best != null) {
+                                    dispatchOrStageBest(best)
+                                } else if (pending1080Links.isNotEmpty()) {
+                                    // A buffered 1080p outranks everything below 720p, so move
+                                    // the staged SD links behind it instead of letting them
+                                    // take the #1 slot; the 1080p grace timer will flush both
+                                    // in comparator order.
+                                    val stagedNonHd = stagedLinks.filter { !is720p(it) }
+                                    stagedLinks.removeAll(stagedNonHd)
+                                    pendingBelowFhdLinks.addAll(stagedNonHd)
+                                    startTop720GraceTimer()
                                 } else {
                                     val bestStream = stagedLinks.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
                                     if (bestStream != null) {
@@ -2432,17 +2526,8 @@ object StreamLinkOptimizer {
         fun markProviderCompleted(providerId: String) {
             val rank = when {
                 providerId.contains("vidlink", ignoreCase = true) -> 100
-                providerId.contains("vidup", ignoreCase = true) -> 95
-                providerId.contains("cinejoy", ignoreCase = true) -> 90
-                providerId.contains("hexa", ignoreCase = true) || providerId.contains("flixer", ignoreCase = true) || providerId.contains("embedsu", ignoreCase = true) -> 88
-                providerId.contains("autoembed", ignoreCase = true) -> 85
-                providerId.contains("moviebox", ignoreCase = true) -> 80
-                providerId.contains("yflix", ignoreCase = true) || providerId.contains("moviesflix", ignoreCase = true) -> 75
-                providerId.contains("rivestream", ignoreCase = true) -> 70
-                providerId.contains("vidfast", ignoreCase = true) -> 65
-                providerId.contains("videasy", ignoreCase = true) -> 60
-                providerId.contains("peachify", ignoreCase = true) -> 50
-                providerId.contains("vidsrc", ignoreCase = true) -> 25
+                providerId.contains("vixsrc", ignoreCase = true) -> 95
+                providerId.contains("animepahe", ignoreCase = true) -> 90
                 else -> 0
             }
             if (rank > 0) {
@@ -2744,8 +2829,14 @@ object StreamLinkOptimizer {
         fun hasTopStreamEmitted(): Boolean = hasEmittedTopStream
 
         companion object {
-            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90, 88, 85, 80)
-            private val TOP_TIER_RANKS = listOf(100, 95, 90, 88, 85, 80)
+            /**
+             * The complete set of top-tier ranks in the curated registry. Kept as an
+             * explicit list (rather than derived from the string-keyed boost map) so the
+             * dispatcher can reason about "is a higher-ranked source still running?"
+             * without having to know any provider names.
+             */
+            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90)
+            private val TOP_TIER_RANKS = listOf(100, 95, 90)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

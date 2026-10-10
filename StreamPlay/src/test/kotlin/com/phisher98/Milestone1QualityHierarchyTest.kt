@@ -23,8 +23,9 @@ import org.junit.Test
  *    and properly drives StreamDeduplicator upgrades.
  * 3. Acceptance Criterion 3: StreamLinkOptimizer.getQualityPriorityScore(quality) assigns
  *    higher scores to 720p than 1080p, 1080p higher than 480p, and 480p higher than 4K or 360p.
- * 4. Acceptance Criterion 4: Composite scoring ensures top-tier 720p streams always dispatch
- *    ahead of top-tier 1080p streams across all 36 provider combinations.
+ * 4. Acceptance Criterion 4: Composite scoring is source-rank-first - a higher-ranked source
+ *    always outscores a lower-ranked one at any resolution - and 720p beats 1080p within one
+ *    source rank across all provider combinations.
  * 5. Boundary Tests: 718p widescreen vs 1080p, 800p vs 480p, 576p vs 360p, 4K vs 360p,
  *    and tiebreaker separation under max badges.
  */
@@ -105,24 +106,35 @@ class Milestone1QualityHierarchyTest {
 
     @Test
     fun testAc1_StreamPriorityComparator_CrossSourceQualityTransitivity() {
-        // Lowest top-tier source (VidEasy, rank 70) vs highest top-tier source (VidLink, rank 100)
-        val videasy720 = createLink("VidEasy", "VidEasy [720p]", "https://videasy.net/720.m3u8", Qualities.P720.value)
+        // Secondary source (YFlix, rank 0) vs top-tier source (VidLink, rank 100):
+        // source rank decides cross-source ordering, quality orders variants within one source.
+        val yflix720 = createLink("YFlix", "YFlix [720p]", "https://yflix.to/720.m3u8", Qualities.P720.value)
         val vidlink1080 = createLink("VidLink", "VidLink [1080p]", "https://vidlink.pro/1080.m3u8", Qualities.P1080.value)
-        val videasy1080 = createLink("VidEasy", "VidEasy [1080p]", "https://videasy.net/1080.m3u8", Qualities.P1080.value)
+        val yflix1080 = createLink("YFlix", "YFlix [1080p]", "https://yflix.to/1080.m3u8", Qualities.P1080.value)
         val vidlink480 = createLink("VidLink", "VidLink [480p]", "https://vidlink.pro/480.m3u8", Qualities.P480.value)
-        val videasy480 = createLink("VidEasy", "VidEasy [480p]", "https://videasy.net/480.m3u8", Qualities.P480.value)
+        val yflix480 = createLink("YFlix", "YFlix [480p]", "https://yflix.to/480.m3u8", Qualities.P480.value)
         val vidlink360 = createLink("VidLink", "VidLink [360p]", "https://vidlink.pro/360.m3u8", Qualities.P360.value)
-        val videasy360 = createLink("VidEasy", "VidEasy [360p]", "https://videasy.net/360.m3u8", Qualities.P360.value)
+        val yflix360 = createLink("YFlix", "YFlix [360p]", "https://yflix.to/360.m3u8", Qualities.P360.value)
         val vidlink2160 = createLink("VidLink", "VidLink [4K]", "https://vidlink.pro/2160.m3u8", Qualities.P2160.value)
 
-        val list = listOf(vidlink2160, vidlink360, vidlink480, vidlink1080, videasy360, videasy480, videasy1080, videasy720)
+        val list = listOf(vidlink2160, vidlink360, vidlink480, vidlink1080, yflix360, yflix480, yflix1080, yflix720)
         val sorted = list.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
 
-        // 720p group must come before 1080p group, even if 720p is from VidEasy and 1080p is from VidLink
-        assertTrue("VidEasy 720p must precede VidLink 1080p in sorted order", sorted.indexOf(videasy720) < sorted.indexOf(vidlink1080))
-        assertTrue("VidEasy 1080p must precede VidLink 480p in sorted order", sorted.indexOf(videasy1080) < sorted.indexOf(vidlink480))
-        assertTrue("VidEasy 480p must precede VidLink 360p in sorted order", sorted.indexOf(videasy480) < sorted.indexOf(vidlink360))
-        assertTrue("VidEasy 360p must precede VidLink 2160p in sorted order", sorted.indexOf(videasy360) < sorted.indexOf(vidlink2160))
+        // Source rank is PRIMARY: every VidLink variant precedes every YFlix variant,
+        // regardless of resolution.
+        assertTrue("VidLink 1080p must precede YFlix 720p in sorted order", sorted.indexOf(vidlink1080) < sorted.indexOf(yflix720))
+        assertTrue("VidLink 480p must precede YFlix 1080p in sorted order", sorted.indexOf(vidlink480) < sorted.indexOf(yflix1080))
+        assertTrue("VidLink 360p must precede YFlix 480p in sorted order", sorted.indexOf(vidlink360) < sorted.indexOf(yflix480))
+        assertTrue("VidLink 2160p must precede YFlix 360p in sorted order", sorted.indexOf(vidlink2160) < sorted.indexOf(yflix360))
+
+        // Quality is SECONDARY: it orders the variants inside a single source
+        // (720p > 1080p > 480p > 360p > 4K).
+        assertTrue("VidLink 1080p must precede VidLink 480p", sorted.indexOf(vidlink1080) < sorted.indexOf(vidlink480))
+        assertTrue("VidLink 480p must precede VidLink 360p", sorted.indexOf(vidlink480) < sorted.indexOf(vidlink360))
+        assertTrue("VidLink 360p must precede VidLink 2160p", sorted.indexOf(vidlink360) < sorted.indexOf(vidlink2160))
+        assertTrue("YFlix 720p must precede YFlix 1080p", sorted.indexOf(yflix720) < sorted.indexOf(yflix1080))
+        assertTrue("YFlix 1080p must precede YFlix 480p", sorted.indexOf(yflix1080) < sorted.indexOf(yflix480))
+        assertTrue("YFlix 480p must precede YFlix 360p", sorted.indexOf(yflix480) < sorted.indexOf(yflix360))
     }
 
     // =========================================================================
@@ -250,8 +262,11 @@ class Milestone1QualityHierarchyTest {
     // =========================================================================
 
     @Test
-    fun testAc4_CompositeScoring_All36TopTierCombinations_720pAlwaysBeats1080p() {
-        val topProviders = listOf("Vidlink", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox")
+    fun testAc4_CompositeScoring_SourceRankFirstThenQualityWithinSource() {
+        // The v18 registry has exactly two top-tier sources (VidLink 100, AnimePahe 90);
+        // every other label scores rank 0. Source rank dominates the composite score, so
+        // 720p only outranks 1080p WITHIN the same source rank.
+        val topProviders = listOf("Vidlink", "AnimePahe", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox")
 
         for (p720 in topProviders) {
             // Unadorned 720p link (0 bitrate, no badges)
@@ -262,6 +277,7 @@ class Milestone1QualityHierarchyTest {
                 quality = Qualities.P720.value
             )
             val score720 = StreamLinkOptimizer.getStreamCompositeScore(link720)
+            val rank720 = StreamLinkOptimizer.getSourcePriorityRank(link720)
 
             for (p1080 in topProviders) {
                 // Heavily badged 1080p link (max bitrate, REMUX, DV, TrueHD, 7.1, complete headers)
@@ -279,15 +295,30 @@ class Milestone1QualityHierarchyTest {
                     )
                 )
                 val score1080 = StreamLinkOptimizer.getStreamCompositeScore(link1080)
+                val rank1080 = StreamLinkOptimizer.getSourcePriorityRank(link1080)
 
-                assertTrue(
-                    "Any top-tier 720p ($p720: $score720) must strictly beat any top-tier 1080p ($p1080: $score1080)",
-                    score720 > score1080
-                )
-                assertTrue(
-                    "Separation between $p720 720p and $p1080 1080p must exceed 1,540 points",
-                    (score720 - score1080) >= 1540f
-                )
+                if (rank720 == rank1080) {
+                    assertTrue(
+                        "Same-rank 720p ($p720: $score720) must strictly beat 1080p ($p1080: $score1080)",
+                        score720 > score1080
+                    )
+                    assertTrue(
+                        "Separation between $p720 720p and $p1080 1080p must exceed 190 points",
+                        (score720 - score1080) >= 190f
+                    )
+                } else {
+                    // Cross-source: the higher-ranked source always wins, whatever resolution it offers.
+                    val higherIs720 = rank720 > rank1080
+                    assertEquals(
+                        "Source rank must decide $p720 720p ($score720) vs $p1080 1080p ($score1080)",
+                        higherIs720,
+                        score720 > score1080
+                    )
+                    assertTrue(
+                        "isStreamBetter must agree with the rank-first ordering for $p720 vs $p1080",
+                        StreamLinkOptimizer.isStreamBetter(if (higherIs720) link720 else link1080, if (higherIs720) link1080 else link720)
+                    )
+                }
             }
         }
     }
@@ -319,8 +350,10 @@ class Milestone1QualityHierarchyTest {
         dispatcher.flush()
 
         assertEquals("Both links must eventually be emitted", 2, emittedLinks.size)
-        assertEquals("720p MUST be emitted first despite arriving second from a lower-ranked provider", vidsrc720, emittedLinks[0])
-        assertEquals("1080p MUST follow 720p", vidlink1080, emittedLinks[1])
+        // SOURCE-FIRST: VidLink (rank 100) is the highest-ranked source, so its best available
+        // variant (1080p) takes #1. The rank-0 VidSrc 720p follows.
+        assertEquals("Highest-ranked source's 1080p MUST be #1", vidlink1080, emittedLinks[0])
+        assertEquals("Lower-ranked 720p MUST follow", vidsrc720, emittedLinks[1])
     }
 
     // =========================================================================
@@ -428,12 +461,14 @@ class Milestone1QualityHierarchyTest {
         val scorePlain = StreamLinkOptimizer.getStreamCompositeScore(plain1080)
         val scoreMax = StreamLinkOptimizer.getStreamCompositeScore(maxBadged1080)
 
-        // Tiebreaker difference must exactly equal 9.9f ceiling
+        // Tiebreaker difference must exactly equal the 9.9f ceiling
+        // (delta widened to 0.15f: at ~1e6 composite scores the float grid is 0.0625 wide)
         val diff = scoreMax - scorePlain
-        assertEquals("Tiebreaker boost must be strictly capped at 9.9f", 9.9f, diff, 0.01f)
+        assertEquals("Tiebreaker boost must be strictly capped at 9.9f", 9.9f, diff, 0.15f)
 
-        // Ensure provider rank cannot be inverted by tiebreaker badges
-        val cinejoyPlain720 = createLink("CineJoy", "CineJoy [720p]", "https://solarpanelcleaning.cc/720.m3u8", Qualities.P720.value)
+        // Ensure provider rank cannot be inverted by tiebreaker badges: a plain link from the
+        // top-tier source (VidLink 100) still beats a max-badged secondary (VidEasy, rank 0)
+        val plainTopTier720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
         val videasyMax720 = createLink(
             source = "VidEasy",
             name = "VidEasy [720p] [50000kbps] [REMUX] [DV] [Atmos]",
@@ -442,13 +477,13 @@ class Milestone1QualityHierarchyTest {
             headers = mapOf(StreamLinkOptimizer.HEADER_ACCEPT_ENCODING to "identity")
         )
 
-        val scoreCineJoy = StreamLinkOptimizer.getStreamCompositeScore(cinejoyPlain720)
+        val scorePlainTopTier = StreamLinkOptimizer.getStreamCompositeScore(plainTopTier720)
         val scoreVidEasy = StreamLinkOptimizer.getStreamCompositeScore(videasyMax720)
 
         assertTrue(
-            "Higher ranked CineJoy (score $scoreCineJoy) must beat lower ranked VidEasy with max badges (score $scoreVidEasy)",
-            scoreCineJoy > scoreVidEasy
+            "Higher ranked plain VidLink (score $scorePlainTopTier) must beat lower ranked VidEasy with max badges (score $scoreVidEasy)",
+            scorePlainTopTier > scoreVidEasy
         )
-        assertTrue("Margin must be at least 70.0 points", (scoreCineJoy - scoreVidEasy) >= 70.0f)
+        assertTrue("Margin must be at least 70.0 points", (scorePlainTopTier - scoreVidEasy) >= 70.0f)
     }
 }

@@ -696,32 +696,6 @@ data class HiAnimeTrack(
     val default: Boolean?
 )
 
-//vaplayer
-
-data class Vaplayer(
-    @JsonProperty("data")
-    val data: VaplayerData? = null,
-
-    @JsonProperty("default_subs")
-    val defaultSubs: List<VaplayerSub>? = null
-)
-
-data class VaplayerData(
-    @JsonProperty("stream_urls")
-    val streamUrls: List<String>? = null
-)
-
-data class VaplayerSub(
-    @JsonProperty("lang")
-    val lang: String? = null,
-
-    @JsonProperty("code")
-    val code: String? = null,
-
-    @JsonProperty("url")
-    val url: String? = null
-)
-
 //ReAnime
 
 data class ReAnime(

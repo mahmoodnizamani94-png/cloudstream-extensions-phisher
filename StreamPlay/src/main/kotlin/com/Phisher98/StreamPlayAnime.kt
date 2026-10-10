@@ -358,7 +358,8 @@ class StreamPlayAnime : MainAPI() {
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
-            top720GraceMs = 350L
+            top720GraceMs = 350L,
+            activeTopRanks = setOf(90)
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
