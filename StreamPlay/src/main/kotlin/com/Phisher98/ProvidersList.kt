@@ -215,43 +215,40 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v20_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v21_initialized"
 
 /**
- * Provider settings bootstrap + migration to the curated v20 SOTA registry.
+ * Provider settings bootstrap + migration to the curated v21 SOTA registry.
  *
- * Clean installs: enable exactly [DEFAULT_TOP_TIER_PROVIDERS], disable nothing else
- * (the registry no longer contains anything else).
- *
- * Upgrading installs: the key is versioned, so every build that changes the registry forces
- * exactly one re-migration. The stored `disabled_providers` set is rebuilt from scratch
- * instead of being merged, which is the only way to guarantee complete state for a user who
- * had enabled rivestream / vidfast / videasy / vidflix / vixsrc / HexaSU / AutoEmbed / the
- * download-only scraper tier in an older build, and equally the only way to guarantee that a
- * user who had *disabled* VidEm (or any other newly researched source) in an earlier build
- * actually gets it, because the v18 key never existed for them.
+ * Clean installs: enable exactly [DEFAULT_TOP_TIER_PROVIDERS], disable nothing else.
+ * VidLink is the pinnacle #1 provider and cannot be disabled.
  */
 fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
-    if (sharedPref == null) return getDefaultDisabledProviderIds()
+    if (sharedPref == null) return getDefaultDisabledProviderIds().filterNot { it.equals("vidlink", ignoreCase = true) }.toSet()
 
     val isTopTierInitialized = sharedPref.getBoolean(PREFS_TOP_TIER_INITIALIZED, false)
     if (isTopTierInitialized) {
         val persisted = sharedPref.getStringSet("disabled_providers", null)
-        if (persisted == null) return getDefaultDisabledProviderIds()
-        // Never let a stale identifier from a decommissioned provider linger.
-        return persisted.filterNot { it in REMOVED_PROVIDER_IDS }.toSet()
+        if (persisted == null) return getDefaultDisabledProviderIds().filterNot { it.equals("vidlink", ignoreCase = true) }.toSet()
+        // Never let a stale identifier from a decommissioned provider linger, and NEVER let vidlink be disabled
+        val scrubbed = persisted.filterNot { it in REMOVED_PROVIDER_IDS || it.equals("vidlink", ignoreCase = true) }.toSet()
+        if (scrubbed.size != persisted.size) {
+            sharedPref.edit { putStringSet("disabled_providers", scrubbed) }
+        }
+        return scrubbed
     }
 
     val previousDisabled = sharedPref.getStringSet("disabled_providers", null)
 
-    // Preserve an explicit user opt-out only for providers that still exist; every
-    // legacy entry is dropped because the provider itself is gone.
+    // Preserve an explicit user opt-out only for providers that still exist (except VidLink, which is mandatory)
     val registeredIds = buildProviders().map { it.id }.toSet()
     val carriedOver = previousDisabled.orEmpty()
-        .filter { it in registeredIds && it !in DEFAULT_TOP_TIER_PROVIDERS }
+        .filter { it in registeredIds && it !in DEFAULT_TOP_TIER_PROVIDERS && !it.equals("vidlink", ignoreCase = true) }
         .toSet()
 
-    val finalDisabled = (registeredIds - DEFAULT_TOP_TIER_PROVIDERS) + carriedOver
+    val finalDisabled = ((registeredIds - DEFAULT_TOP_TIER_PROVIDERS) + carriedOver)
+        .filterNot { it.equals("vidlink", ignoreCase = true) }
+        .toSet()
 
     sharedPref.edit {
         putStringSet("disabled_providers", finalDisabled)
@@ -259,7 +256,7 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
     }
     Log.d(
         "StreamPlay",
-        "🎯 Migrated to curated SOTA registry v19: ${DEFAULT_TOP_TIER_PROVIDERS.size} source(s) active, " +
+        "🎯 Migrated to curated SOTA registry v21: VidLink guaranteed active, " +
             "scrubbed ${REMOVED_PROVIDER_IDS.size} decommissioned provider identifiers"
     )
     return finalDisabled

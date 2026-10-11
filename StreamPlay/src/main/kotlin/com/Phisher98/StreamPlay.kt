@@ -798,7 +798,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val allProviders = buildProviders()
         val disabledProviderIds = getOrInitializeDisabledProviders(sharedPref)
 
-        val activeProviders = allProviders.filterNot { disabledProviderIds.contains(it.id) }
+        val activeProviders = allProviders.filterNot { disabledProviderIds.contains(it.id) && !it.id.equals("vidlink", ignoreCase = true) }
         val authToken = token.orEmpty()
 
         fun Provider.isApplicableTo(res: LinkData): Boolean {

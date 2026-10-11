@@ -1798,7 +1798,6 @@ object StreamPlayExtractor : StreamPlay() {
                 val headers = mapOf(
                     "User-Agent" to StreamLinkOptimizer.MODERN_DESKTOP_UA,
                     "Accept" to "application/json",
-                    "Connection" to "keep-alive",
                     "Referer" to "$base/",
                     "Origin" to base
                 )
