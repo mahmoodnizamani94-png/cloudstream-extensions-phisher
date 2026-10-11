@@ -143,9 +143,7 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
 private val providers by lazy {
     listOf(
         Provider("vidlink", "VidLink") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) {
-                invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
-            }
+            invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
         },
         Provider("videm", "VidEm") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) {
@@ -217,10 +215,10 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v19_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v20_initialized"
 
 /**
- * Provider settings bootstrap + migration to the curated v19 SOTA registry.
+ * Provider settings bootstrap + migration to the curated v20 SOTA registry.
  *
  * Clean installs: enable exactly [DEFAULT_TOP_TIER_PROVIDERS], disable nothing else
  * (the registry no longer contains anything else).

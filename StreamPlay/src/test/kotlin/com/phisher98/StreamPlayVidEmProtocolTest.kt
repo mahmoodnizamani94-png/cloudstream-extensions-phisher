@@ -217,9 +217,9 @@ class StreamPlayVidEmProtocolTest {
 
     @Test
     fun testContentGatingKeepsMovieTvAndAnimeHalvesDisjoint() {
-        // Movie/TV sources must never run for anime and vice versa, which is what makes the shared
-        // rank ladder safe: the two halves can never race each other.
-        assertTrue(NON_ANIME_PROVIDERS.contains("vidlink"))
+        // VidLink is the universal #1 provider across movies, TV, and anime (via TMDB).
+        // VidEm is gated strictly to Movie/TV, while AnimePahe and AnimeGG are anime-only.
+        assertFalse("VidLink must be universally applicable across all content types", NON_ANIME_PROVIDERS.contains("vidlink"))
         assertTrue(NON_ANIME_PROVIDERS.contains("videm"))
         assertFalse("Anime sources must not be gated as Movie/TV", NON_ANIME_PROVIDERS.contains("animepahe"))
         assertFalse("Anime sources must not be gated as Movie/TV", NON_ANIME_PROVIDERS.contains("animegg"))

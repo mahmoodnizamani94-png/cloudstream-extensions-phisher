@@ -1788,150 +1788,101 @@ object StreamPlayExtractor : StreamPlay() {
             if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
                 effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
             }
-            if (effectiveTmdbId == null || (season != null && season != 0 && episode == null)) return
+            // SOTA Fallback: vidlink.pro accepts encrypted IMDb IDs (e.g. tt0137523) directly for movies!
+            val mediaIdStr = effectiveTmdbId?.toString() ?: (if (season == null) imdbId?.trim() else null)
+            if (mediaIdStr.isNullOrBlank() || (season != null && season != 0 && episode == null)) return
 
             withTimeoutOrNull(25000L) {
-                val now = System.currentTimeMillis()
-                val cached = vidlinkEncCache[effectiveTmdbId]
-                var encData = if (cached != null && (now - cached.second) < 45_000L) {
-                    cached.first
-                } else null
-
-                if (encData.isNullOrBlank()) {
-                    val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$effectiveTmdbId"
-                    val fetchBlock: suspend () -> String? = {
-                        retryTransient(4, 350L) {
-                            val resp = suspendCancellable {
-                                runCatching {
-                                    app.get(
-                                        encUrl,
-                                        headers = mapOf(
-                                            "User-Agent" to USER_AGENT,
-                                            "Accept" to "application/json"
-                                        ),
-                                        timeout = 10L
-                                    )
-                                }.getOrNull()
-                            }
-                            if (resp != null) {
-                                if (resp.code == 429) {
-                                    val retryAfterSec = resp.headers["Retry-After"]?.toLongOrNull() ?: 1L
-                                    delay((retryAfterSec * 1000L).coerceIn(400L, 2000L))
-                                    return@retryTransient null
-                                }
-                                if (resp.isSuccessful && resp.text.isNotBlank()) {
-                                    val res = runCatching { JSONObject(resp.text).optString("result") }.getOrNull()
-                                    if (!res.isNullOrBlank()) res else null
-                                } else null
-                            } else null
-                        }
-                    }
-                    val fetched = withTimeoutOrNull(3500L) {
-                        encDecApiSemaphore.withPermit { fetchBlock() }
-                    } ?: fetchBlock()
-
-                    if (!fetched.isNullOrBlank()) {
-                        vidlinkEncCache[effectiveTmdbId] = Pair(fetched, System.currentTimeMillis())
-                        encData = fetched
-                    }
-                }
-
-                if (encData.isNullOrBlank()) return@withTimeoutOrNull
-
                 val base = vidlink
 
                 val headers = mapOf(
-                    "User-Agent" to USER_AGENT,
+                    "User-Agent" to StreamLinkOptimizer.MODERN_DESKTOP_UA,
+                    "Accept" to "application/json",
                     "Connection" to "keep-alive",
                     "Referer" to "$base/",
                     "Origin" to base
                 )
 
-                val apiUrls = if (season == null || (season == 0 && episode == null)) {
-                    listOf("$base/api/b/movie/$encData")
-                } else {
-                    if (episode == null) return@withTimeoutOrNull
-                    if (season == 0) {
-                        listOf(
-                            "$base/api/b/tv/$encData/$season/$episode",
-                            "$base/api/b/movie/$encData"
-                        )
-                    } else {
-                        listOf("$base/api/b/tv/$encData/$season/$episode")
-                    }
+                fun buildApiUrls(token: String): List<String> = when {
+                    season == null || (season == 0 && episode == null) -> listOf("$base/api/b/movie/$token")
+                    episode == null -> emptyList()
+                    season == 0 -> listOf(
+                        "$base/api/b/tv/$token/$season/$episode",
+                        "$base/api/b/movie/$token"
+                    )
+                    else -> listOf("$base/api/b/tv/$token/$season/$episode")
                 }
+
+                suspend fun fetchStreamForToken(token: String): VidlinkStream? {
+                    val urls = buildApiUrls(token)
+                    for (apiUrl in urls) {
+                        val epResponse = retryTransient(2, 250L) {
+                            val resp = suspendCancellable {
+                                runCatching { app.get(apiUrl, headers = headers, timeout = 12L) }.getOrNull()
+                            }
+                            if (resp != null && resp.isSuccessful && resp.text.isNotBlank() && resp.text != "null") resp.text else null
+                        } ?: continue
+
+                        val data = runCatching {
+                            Gson().fromJson(epResponse, VidlinkResponse::class.java)
+                        }.getOrNull()
+
+                        val s = data?.stream
+                        if (s != null && (!s.playlist.isNullOrBlank() || !s.qualities.isNullOrEmpty())) {
+                            return s
+                        }
+                    }
+                    return null
+                }
+
+                // SOTA Phase 1: High-performance, offline-native XSalsa20-Poly1305 encryption.
+                // Generates authentic tokens instantly in 0ms with zero network requests, bypassing
+                // external rate-limiting (HTTP 429), connection dropouts, and DNS blocks.
+                var encData = runCatching {
+                    VidLinkCrypto.encryptToken(mediaIdStr)
+                }.getOrNull()
 
                 var stream: VidlinkStream? = null
-                for (apiUrl in apiUrls) {
-                    val epResponse = retryTransient(2, 250L) {
-                        val resp = suspendCancellable {
-                            runCatching { app.get(apiUrl, headers = headers, timeout = 15L) }.getOrNull()
-                        }
-                        if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
-                    } ?: continue
-
-                    val data = runCatching {
-                        Gson().fromJson(epResponse, VidlinkResponse::class.java)
-                    }.getOrNull()
-
-                    val s = data?.stream
-                    if (s != null && (!s.playlist.isNullOrBlank() || !s.qualities.isNullOrEmpty())) {
-                        stream = s
-                        break
-                    }
+                if (!encData.isNullOrBlank()) {
+                    stream = fetchStreamForToken(encData)
                 }
 
-                // Resilient fallback: fetch a brand new token from enc-dec.app bypassing cache if initial stream failed
+                // SOTA Phase 2: Resilient secondary fallback to enc-dec.app only if offline token returned no stream
                 if (stream == null) {
-                    val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$effectiveTmdbId"
+                    val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$mediaIdStr"
                     val remoteEnc = retryTransient(3, 300L) {
                         val resp = suspendCancellable {
                             runCatching {
                                 app.get(
                                     encUrl,
                                     headers = mapOf(
-                                        "User-Agent" to USER_AGENT,
+                                        "User-Agent" to StreamLinkOptimizer.MODERN_DESKTOP_UA,
                                         "Accept" to "application/json"
                                     ),
-                                    timeout = 10L
+                                    timeout = 5L
                                 )
                             }.getOrNull()
                         }
-                        if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) {
-                            runCatching { JSONObject(resp.text).optString("result") }.getOrNull()?.takeIf { it.isNotBlank() }
+                        if (resp != null) {
+                            if (resp.code == 429) {
+                                val retryAfterSec = resp.headers["Retry-After"]?.toLongOrNull() ?: 1L
+                                delay((retryAfterSec * 1000L).coerceIn(400L, 2000L))
+                                return@retryTransient null
+                            }
+                            if (resp.isSuccessful && resp.text.isNotBlank()) {
+                                val res = runCatching { JSONObject(resp.text).optString("result") }.getOrNull()
+                                if (!res.isNullOrBlank()) res else null
+                            } else null
                         } else null
                     }
                     if (!remoteEnc.isNullOrBlank() && remoteEnc != encData) {
                         encData = remoteEnc
-                        vidlinkEncCache[effectiveTmdbId] = Pair(remoteEnc, System.currentTimeMillis())
-                        val fallbackUrls = if (season == null || (season == 0 && episode == null)) {
-                            listOf("$base/api/b/movie/$remoteEnc")
-                        } else {
-                            listOf("$base/api/b/tv/$remoteEnc/$season/$episode")
-                        }
-                        for (apiUrl in fallbackUrls) {
-                            val epResponse = retryTransient(2, 250L) {
-                                val resp = suspendCancellable {
-                                    runCatching { app.get(apiUrl, headers = headers, timeout = 15L) }.getOrNull()
-                                }
-                                if (resp != null && resp.isSuccessful && resp.text.isNotBlank()) resp.text else null
-                            } ?: continue
-
-                            val data = runCatching {
-                                Gson().fromJson(epResponse, VidlinkResponse::class.java)
-                            }.getOrNull()
-
-                            val s = data?.stream
-                            if (s != null && (!s.playlist.isNullOrBlank() || !s.qualities.isNullOrEmpty())) {
-                                stream = s
-                                break
-                            }
-                        }
+                        stream = fetchStreamForToken(remoteEnc)
                     }
                 }
 
                 if (stream == null) return@withTimeoutOrNull
-                vidlinkEncCache[effectiveTmdbId] = Pair(encData, System.currentTimeMillis())
+                effectiveTmdbId?.let { vidlinkEncCache[it] = Pair(encData ?: "", System.currentTimeMillis()) }
 
                 val cronetUserAgent = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
 

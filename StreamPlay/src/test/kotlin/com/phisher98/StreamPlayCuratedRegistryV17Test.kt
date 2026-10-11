@@ -559,4 +559,62 @@ class StreamPlayCuratedRegistryV17Test {
         )
         assertEquals("VidLink effective referer must be empty", "", effective)
     }
+
+    @Test
+    fun testVidLinkIsUniversalAcrossMovieTvAndAnime() {
+        val providers = buildProviders()
+        val vidlinkProvider = providers.first { it.id == "vidlink" }
+        assertNotNull("VidLink provider must exist in registry", vidlinkProvider)
+
+        // Verify VidLink is not in NON_ANIME_PROVIDERS
+        assertFalse(
+            "VidLink must be universally applicable and not gated out for anime",
+            NON_ANIME_PROVIDERS.contains("vidlink")
+        )
+
+        // Verify VidLink boost is 100f (highest tier in the engine)
+        assertEquals(100f, FAST_PROVIDER_BOOST.getValue("vidlink"))
+    }
+
+    @Test
+    fun testVidLinkOutranksEveryOtherSourceInCompositeScore() {
+        // Even the lowest SD variant of VidLink (e.g. 360p) must outrank any 1080p from a secondary or lower source
+        val vidlink360 = createLink("Vidlink", "Vidlink 360p", "https://bcdn.hakunaymatata.com/bt/360.mp4", Qualities.P360.value)
+        val videm1080 = createLink("Videm", "VidEm 1080p", "https://videm.xyz/stream/1080.mp4", Qualities.P1080.value)
+        val animepahe1080 = createLink("Animepahe", "AnimePahe 1080p", "https://kwik.cx/1080.mp4", Qualities.P1080.value)
+
+        val scoreVidlink360 = StreamLinkOptimizer.getStreamCompositeScore(vidlink360)
+        val scoreVidem1080 = StreamLinkOptimizer.getStreamCompositeScore(videm1080)
+        val scoreAnimepahe1080 = StreamLinkOptimizer.getStreamCompositeScore(animepahe1080)
+
+        assertTrue("VidLink composite score must dominate VidEm", scoreVidlink360 > scoreVidem1080)
+        assertTrue("VidLink composite score must dominate AnimePahe", scoreVidlink360 > scoreAnimepahe1080)
+        assertTrue("VidLink must score >= 1,000,000", scoreVidlink360 >= 1_000_000f)
+    }
+
+    @Test
+    fun testVidLinkQualityLadderOrdering() {
+        val vidlink720 = createLink("Vidlink", "Vidlink 720p", "https://bcdn.hakunaymatata.com/bt/720.mp4", Qualities.P720.value)
+        val vidlink1080 = createLink("Vidlink", "Vidlink 1080p", "https://bcdn.hakunaymatata.com/bt/1080.mp4", Qualities.P1080.value)
+        val vidlink480 = createLink("Vidlink", "Vidlink 480p", "https://bcdn.hakunaymatata.com/bt/480.mp4", Qualities.P480.value)
+        val vidlink360 = createLink("Vidlink", "Vidlink 360p", "https://bcdn.hakunaymatata.com/bt/360.mp4", Qualities.P360.value)
+
+        val score720 = StreamLinkOptimizer.getStreamCompositeScore(vidlink720)
+        val score1080 = StreamLinkOptimizer.getStreamCompositeScore(vidlink1080)
+        val score480 = StreamLinkOptimizer.getStreamCompositeScore(vidlink480)
+        val score360 = StreamLinkOptimizer.getStreamCompositeScore(vidlink360)
+
+        // Strict SOTA ladder: 720p #1 > 1080p #2 > 480p #3 > 360p #4
+        assertTrue("720p must score higher than 1080p", score720 > score1080)
+        assertTrue("1080p must score higher than 480p", score1080 > score480)
+        assertTrue("480p must score higher than 360p", score480 > score360)
+    }
+
+    @Test
+    fun testVidLinkDirectImdbTokenEncryption() {
+        val imdbToken = VidLinkCrypto.encryptToken("tt0137523")
+        assertNotNull(imdbToken)
+        assertTrue("Token for IMDb ID must be URL-safe", imdbToken.matches(Regex("^[A-Za-z0-9_-]+$")))
+        assertTrue("Token must be non-empty", imdbToken.isNotEmpty())
+    }
 }
