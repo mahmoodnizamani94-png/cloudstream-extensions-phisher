@@ -65,7 +65,8 @@ class StreamPlayPlugin: Plugin() {
             Log.d("StreamPlay", "⚙️ Set recommended concurrency: $recommended")
         }
 
-        // Initialize top tier defaults for providers (VidLink, HexaSU, AutoEmbed, VidFast, VidEasy)
+        // Bootstrap the curated v19 registry defaults (VidLink, VidEm, AnimePahe, AnimeGG) and
+        // scrub every decommissioned provider id from an upgrading install's preferences.
         getOrInitializeDisabledProviders(sharedPref)
 
         val mainApis = listOf(

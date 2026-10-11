@@ -245,11 +245,13 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "vidlink" to 100f,
     "Vidlink" to 100f,
     "VidLink" to 100f,
-    "vixsrc" to 95f,
-    "VixSrc" to 95f,
+    "videm" to 95f,
+    "VidEm" to 95f,
     "animepahe" to 90f,
     "Animepahe" to 90f,
-    "AnimePahe" to 90f
+    "AnimePahe" to 90f,
+    "animegg" to 85f,
+    "AnimeGG" to 85f
 )
 
 /**
@@ -272,15 +274,18 @@ object SpeculativePipeliner {
         "vidlink" to LatencyTier.TIER_1,
         "Vidlink" to LatencyTier.TIER_1,
         "VidLink" to LatencyTier.TIER_1,
-        "vixsrc" to LatencyTier.TIER_1,
-        "VixSrc" to LatencyTier.TIER_1,
+        "videm" to LatencyTier.TIER_1,
+        "VidEm" to LatencyTier.TIER_1,
         "animepahe" to LatencyTier.TIER_1,
         "Animepahe" to LatencyTier.TIER_1,
-        "AnimePahe" to LatencyTier.TIER_1
+        "AnimePahe" to LatencyTier.TIER_1,
+        "animegg" to LatencyTier.TIER_1,
+        "AnimeGG" to LatencyTier.TIER_1
     )
 
     fun classifyProvider(providerId: String, initialTier: LatencyTier? = null): LatencyTier {
-        val isTopTier = StreamLinkOptimizer.isTopTierProvider(providerId) || (FAST_PROVIDER_BOOST[providerId] ?: 0f) >= 90f
+        val isTopTier =
+            StreamLinkOptimizer.isTopTierProvider(providerId) || (FAST_PROVIDER_BOOST[providerId] ?: 0f) >= TOP_TIER_BOOST_THRESHOLD
         if (isTopTier) {
             return initialTier ?: STATIC_COLD_START_TIERS[providerId] ?: LatencyTier.TIER_1
         }
@@ -357,19 +362,19 @@ object SpeculativePipeliner {
 
         fun isTopTierTask(info: TrackedTaskInfo): Boolean {
             return if (info.task.priorityBoost > 0f) {
-                info.task.priorityBoost >= 90f
+                info.task.priorityBoost >= TOP_TIER_BOOST_THRESHOLD
             } else {
                 StreamLinkOptimizer.isTopTierProvider(info.task.providerId) ||
-                    (FAST_PROVIDER_BOOST[info.task.providerId] ?: 0f) >= 90f
+                    (FAST_PROVIDER_BOOST[info.task.providerId] ?: 0f) >= TOP_TIER_BOOST_THRESHOLD
             }
         }
 
         fun isTopTierTask(task: PipelinedTask): Boolean {
             return if (task.priorityBoost > 0f) {
-                task.priorityBoost >= 90f
+                task.priorityBoost >= TOP_TIER_BOOST_THRESHOLD
             } else {
                 StreamLinkOptimizer.isTopTierProvider(task.providerId) ||
-                    (FAST_PROVIDER_BOOST[task.providerId] ?: 0f) >= 90f
+                    (FAST_PROVIDER_BOOST[task.providerId] ?: 0f) >= TOP_TIER_BOOST_THRESHOLD
             }
         }
 

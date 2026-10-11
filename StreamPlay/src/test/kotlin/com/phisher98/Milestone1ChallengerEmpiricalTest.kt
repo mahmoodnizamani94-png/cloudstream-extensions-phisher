@@ -95,7 +95,7 @@ class Milestone1ChallengerEmpiricalTest {
             fullHeaders
         )
 
-        val providers = listOf("Vidlink", "AnimePahe", "VixSrc", "VidNest", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox", "YFlix")
+        val providers = listOf("Vidlink", "AnimePahe", "VidEm", "VidNest", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox", "YFlix")
 
         // 1. Verify tiebreaker is ALWAYS bounded strictly in [0.0f, 9.9f]
         for (b in bitrates) {

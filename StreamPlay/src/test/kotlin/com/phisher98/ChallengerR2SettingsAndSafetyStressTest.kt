@@ -44,10 +44,10 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 3 curated sources", 3, activeProviders.size)
+        assertEquals("Clean install must activate exactly 4 curated sources", 4, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "vixsrc", "animepahe")
+        val expectedCurated = setOf("vidlink", "videm", "animepahe", "animegg")
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.
@@ -70,7 +70,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 3 curated sources", 3, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 4 curated sources", 4, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }

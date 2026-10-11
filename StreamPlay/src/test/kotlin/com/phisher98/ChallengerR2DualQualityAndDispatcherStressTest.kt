@@ -98,7 +98,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         val providers = listOf(
             "VidLink" to 100,
             "AnimePahe" to 90,
-            "VixSrc" to 0,
+            "RiveStream" to 0,
             "VidNest" to 0,
             "Vidup" to 0,
             "CineJoy" to 0,
@@ -164,10 +164,10 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
         // The v18 registry has three ranked sources; every other label scores rank 0, so
-        // monotonicity is asserted across the distinct ranks: VidLink 100 > VixSrc 95 > AnimePahe 90 > secondary 0.
+        // monotonicity is asserted across the distinct ranks: VidLink 100 > VidEm 95 > AnimePahe 90 > secondary 0.
         val providersInOrder = listOf(
             "VidLink" to 100,
-            "VixSrc" to 95,
+            "VidEm" to 95,
             "AnimePahe" to 90
         )
 

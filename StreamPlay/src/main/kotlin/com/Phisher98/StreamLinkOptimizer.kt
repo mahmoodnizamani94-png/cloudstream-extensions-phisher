@@ -458,6 +458,16 @@ object StreamLinkOptimizer {
             name?.contains("vixsrc", ignoreCase = true) == true ||
             lowerUrl.contains("vixsrc.to") ||
             referer?.contains("vixsrc", ignoreCase = true) == true
+        val isVidEm = source?.contains("videm", ignoreCase = true) == true ||
+            name?.contains("videm", ignoreCase = true) == true ||
+            lowerUrl.contains("videm.xyz") ||
+            lowerUrl.contains("vidsrc.buzz") ||
+            referer?.contains("videm.xyz", ignoreCase = true) == true ||
+            referer?.contains("vidsrc.buzz", ignoreCase = true) == true
+        val isAnimegg = source?.contains("animegg", ignoreCase = true) == true ||
+            name?.contains("animegg", ignoreCase = true) == true ||
+            lowerUrl.contains("animegg.org") ||
+            referer?.contains("animegg.org", ignoreCase = true) == true
         val isVidNest = source?.contains("vidnest", ignoreCase = true) == true ||
             name?.contains("vidnest", ignoreCase = true) == true ||
             lowerUrl.contains("vidnest.fun") ||
@@ -543,20 +553,8 @@ object StreamLinkOptimizer {
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
             }
             isVidlink -> {
-                headers.entries.removeIf { (k, v) ->
-                    (k.equals(HEADER_REFERER, ignoreCase = true) || k.equals(HEADER_ORIGIN, ignoreCase = true)) &&
-                    (v.contains("vidlink.pro", ignoreCase = true) || v.contains("embed", ignoreCase = true) || v.isBlank())
-                }
-                val currentRef = headers.entries.firstOrNull { it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank() }?.value
-                    ?: if (!referer.isNullOrBlank() && !referer.contains("vidlink.pro", ignoreCase = true) && !referer.contains("embed", ignoreCase = true)) referer else null
-                val effRef = if (currentRef != null && (currentRef.contains("filmboom.top", ignoreCase = true) || currentRef.contains(".top", ignoreCase = true))) {
-                    currentRef
-                } else {
-                    "https://filmboom.top/"
-                }
-                val effOrig = getHostUrl(effRef) ?: "https://filmboom.top"
-                headers[HEADER_REFERER] = effRef
-                headers[HEADER_ORIGIN] = effOrig
+                headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
+                headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -564,6 +562,41 @@ object StreamLinkOptimizer {
             isVixSrc || lowerUrl.contains("vixsrc.to") -> {
                 headers[HEADER_REFERER] = "https://vixsrc.to/"
                 headers[HEADER_ORIGIN] = "https://vixsrc.to"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isVidEm -> {
+                // The engine mints origin-bound `/_stream` URLs whose manifest only answers to the
+                // embed page that produced them, so an already-correct referer is preserved and
+                // anything else is pinned back to the canonical origin.
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                val eff = if (supplied != null &&
+                    (supplied.contains("videm.xyz", ignoreCase = true) || supplied.contains("vidsrc.buzz", ignoreCase = true))
+                ) {
+                    supplied
+                } else {
+                    "https://videm.xyz/"
+                }
+                headers[HEADER_REFERER] = eff
+                headers[HEADER_ORIGIN] = getHostUrl(eff) ?: "https://videm.xyz"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isAnimegg -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                val eff = if (supplied != null && supplied.contains("animegg.org", ignoreCase = true)) {
+                    supplied
+                } else {
+                    "https://www.animegg.org/"
+                }
+                headers[HEADER_REFERER] = eff
+                headers[HEADER_ORIGIN] = getHostUrl(eff) ?: "https://www.animegg.org"
                 headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -870,6 +903,16 @@ object StreamLinkOptimizer {
             name?.contains("vixsrc", ignoreCase = true) == true ||
             lowerUrl.contains("vixsrc.to") ||
             referer?.contains("vixsrc", ignoreCase = true) == true
+        val isVidEm = source?.contains("videm", ignoreCase = true) == true ||
+            name?.contains("videm", ignoreCase = true) == true ||
+            lowerUrl.contains("videm.xyz") ||
+            lowerUrl.contains("vidsrc.buzz") ||
+            referer?.contains("videm.xyz", ignoreCase = true) == true ||
+            referer?.contains("vidsrc.buzz", ignoreCase = true) == true
+        val isAnimegg = source?.contains("animegg", ignoreCase = true) == true ||
+            name?.contains("animegg", ignoreCase = true) == true ||
+            lowerUrl.contains("animegg.org") ||
+            referer?.contains("animegg.org", ignoreCase = true) == true
         val isVidNest = source?.contains("vidnest", ignoreCase = true) == true ||
             name?.contains("vidnest", ignoreCase = true) == true ||
             lowerUrl.contains("vidnest.fun") ||
@@ -941,22 +984,27 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.net")
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
-            isVidlink -> {
-                val fromHeaders = headers.entries.firstOrNull {
-                    it.key.equals(HEADER_REFERER, ignoreCase = true) &&
-                    !it.value.contains("vidlink.pro", ignoreCase = true) &&
-                    !it.value.contains("embed", ignoreCase = true) &&
-                    it.value.isNotBlank()
-                }?.value
-                val fromArg = if (!referer.isNullOrBlank() && !referer.contains("vidlink.pro", ignoreCase = true) && !referer.contains("embed", ignoreCase = true)) referer else null
-                val eff = fromHeaders ?: fromArg
-                if (eff != null && (eff.contains("filmboom.top", ignoreCase = true) || eff.contains(".top", ignoreCase = true))) {
-                    eff
+            isVidlink -> ""
+            isVixSrc || lowerUrl.contains("vixsrc.to") -> "https://vixsrc.to/"
+            isVidEm -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                if (supplied != null &&
+                    (supplied.contains("videm.xyz", ignoreCase = true) || supplied.contains("vidsrc.buzz", ignoreCase = true))
+                ) {
+                    supplied
                 } else {
-                    "https://filmboom.top/"
+                    "https://videm.xyz/"
                 }
             }
-            isVixSrc || lowerUrl.contains("vixsrc.to") -> "https://vixsrc.to/"
+            isAnimegg -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                if (supplied != null && supplied.contains("animegg.org", ignoreCase = true)) supplied
+                else "https://www.animegg.org/"
+            }
             isVidNest || lowerUrl.contains("vidnest.fun") || lowerUrl.contains("vidnest") -> "https://vidnest.fun/"
             isAnimepahe -> {
                 if (lowerUrl.contains("kwik.cx")) "https://kwik.cx/" else "https://animepahe.pw/"
@@ -1518,7 +1566,7 @@ object StreamLinkOptimizer {
      * Checks if a stream link belongs to one of the curated top-tier primary sources
      * (VidLink 100 > VixSrc 95 > AnimePahe 90).
      */
-    fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 90
+    fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 85
 
     /**
      * Checks if a provider ID matches one of the curated top-tier primary sources.
@@ -1526,8 +1574,9 @@ object StreamLinkOptimizer {
     fun isTopTierProvider(providerId: String): Boolean {
         val p = providerId.lowercase(Locale.ROOT)
         return p.contains("vidlink") ||
-            p.contains("vixsrc") ||
-            p.contains("animepahe")
+            p.contains("videm") ||
+            p.contains("animepahe") ||
+            p.contains("animegg")
     }
 
     /**
@@ -1908,10 +1957,12 @@ object StreamLinkOptimizer {
         return when {
             s.contains("vidlink") || n.contains("vidlink") ||
                 u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
-            s.contains("vixsrc") || n.contains("vixsrc") ||
-                u.contains("vixsrc.to") || u.contains("vix-content") || u.contains("vixcloud") -> 95
+            s.contains("videm") || n.contains("videm") ||
+                u.contains("videm.xyz") || u.contains("vidsrc.buzz") || u.contains("/_stream") -> 95
             s.contains("animepahe") || n.contains("animepahe") ||
                 u.contains("animepahe") || u.contains("kwik.cx") -> 90
+            s.contains("animegg") || n.contains("animegg") ||
+                u.contains("animegg.org") -> 85
             else -> 0
         }
     }
@@ -2526,8 +2577,9 @@ object StreamLinkOptimizer {
         fun markProviderCompleted(providerId: String) {
             val rank = when {
                 providerId.contains("vidlink", ignoreCase = true) -> 100
-                providerId.contains("vixsrc", ignoreCase = true) -> 95
+                providerId.contains("videm", ignoreCase = true) -> 95
                 providerId.contains("animepahe", ignoreCase = true) -> 90
+                providerId.contains("animegg", ignoreCase = true) -> 85
                 else -> 0
             }
             if (rank > 0) {
@@ -2835,8 +2887,8 @@ object StreamLinkOptimizer {
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.
              */
-            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90)
-            private val TOP_TIER_RANKS = listOf(100, 95, 90)
+            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90, 85)
+            private val TOP_TIER_RANKS = listOf(100, 95, 90, 85)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

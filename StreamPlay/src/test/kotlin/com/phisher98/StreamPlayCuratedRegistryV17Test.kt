@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class StreamPlayCuratedRegistryV17Test {
 
-    private val curatedIds = setOf("vidlink", "vixsrc", "animepahe")
+    private val curatedIds = setOf("vidlink", "videm", "animepahe", "animegg")
 
     @Before
     fun setUp() {
@@ -82,8 +82,9 @@ class StreamPlayCuratedRegistryV17Test {
 
         val byId = providers.associateBy { it.id }
         assertEquals("VidLink", byId.getValue("vidlink").name)
-        assertEquals("VixSrc", byId.getValue("vixsrc").name)
+        assertEquals("VidEm", byId.getValue("videm").name)
         assertEquals("AnimePahe", byId.getValue("animepahe").name)
+        assertEquals("AnimeGG", byId.getValue("animegg").name)
         providers.forEach { assertEquals(ProviderKind.VIDEO, it.kind) }
     }
 
@@ -109,17 +110,22 @@ class StreamPlayCuratedRegistryV17Test {
         // REMOVED_PROVIDER_IDS bookkeeping mistake.
         listOf("rivestream", "vidfast", "videasy", "superstream", "vaplayer", "vidcore", "vidnest", "vidup", "hexasu", "autoembed")
             .forEach { assertFalse("$it must not be registered", providerIds.contains(it)) }
-        // VixSrc is deliberately active again, so it must NOT be treated as removed.
-        assertTrue("vixsrc must be registered", providerIds.contains("vixsrc"))
+        // The v19 additions are live members of the curated set, so they must be registered
+        // and must never be filtered out by REMOVED_PROVIDER_IDS bookkeeping.
+        curatedIds.forEach { id ->
+            assertTrue("$id must be registered", providerIds.contains(id))
+            assertFalse("$id must not be listed as removed", REMOVED_PROVIDER_IDS.contains(id))
+        }
     }
 
     @Test
     fun testRankingHierarchyIsStrictAndMonotonic() {
         assertEquals(100f, FAST_PROVIDER_BOOST.getValue("vidlink"))
-        assertEquals(95f, FAST_PROVIDER_BOOST.getValue("vixsrc"))
+        assertEquals(95f, FAST_PROVIDER_BOOST.getValue("videm"))
         assertEquals(90f, FAST_PROVIDER_BOOST.getValue("animepahe"))
+        assertEquals(85f, FAST_PROVIDER_BOOST.getValue("animegg"))
 
-        val boosts = listOf("vidlink", "vixsrc", "animepahe").map { FAST_PROVIDER_BOOST.getValue(it) }
+        val boosts = listOf("vidlink", "videm", "animepahe", "animegg").map { FAST_PROVIDER_BOOST.getValue(it) }
         assertEquals("Boosts must be strictly descending", boosts.sortedDescending(), boosts)
 
         // Every curated provider must be tier-1 so the pipeliner starts them together.
@@ -135,16 +141,24 @@ class StreamPlayCuratedRegistryV17Test {
     @Test
     fun testSourcePriorityRankCoversLabelsAndCdnHosts() {
         assertEquals(100, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4")))
-        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("VixSrc", "VixSrc HLS", "https://cdn.example/b.m3u8")))
+        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidEm", "VidEm HLS", "https://cdn.example/b.m3u8")))
         assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(createLink("AnimePahe", "AnimePahe [1080p]", "https://cdn.example/d.m3u8")))
+        assertEquals(85, StreamLinkOptimizer.getSourcePriorityRank(createLink("AnimeGG", "AnimeGG SUB [720p]", "https://cdn.example/e.mp4")))
+
+        // VidEm ranks on the minted stream host as well as its own label, because the engine's
+        // `/_stream?id=` URL carries no product name of its own.
+        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidEm", "VidEm HLS", "https://cdn.example/f.m3u8")))
+        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://videm.xyz/_stream?id=abc")))
+        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://vidsrc.buzz/_stream?id=abc")))
+        assertEquals(85, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://cdn.animegg.org/x.mp4")))
 
         // Ranking must survive CDN rewrites that lose the original source label.
         assertEquals(100, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://bcdnxw.hakunaymatata.com/bt/a.mp4")))
-        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://sc-u18-01.vix-content.net/hls/master.m3u8")))
+        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://sc-u18-01.vix-content.net/hls/master.m3u8")))
         assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://kwik.cx/e/abc.m3u8")))
 
         // Decommissioned sources must score zero rather than inheriting a legacy rank.
-        listOf("VidFast", "RiveStream", "VidEasy", "Vidflix", "AnimeGG", "Vidup", "CineJoy", "YFlix", "HexaSU", "MovieBox", "VidSrc")
+        listOf("VidFast", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix", "HexaSU", "MovieBox", "VidSrc")
             .forEach { label ->
                 assertEquals(
                     "$label must not inherit a rank after decommissioning",
@@ -204,8 +218,8 @@ class StreamPlayCuratedRegistryV17Test {
     @Test
     fun testMigrationNeverReadmitsAProviderThatWasRemovedUpstream() {
         val prefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
-        // Persist a fully-populated legacy disabled set, including the three sources the
-        // request explicitly wanted gone.
+        // Persist a fully-populated legacy disabled set, including the sources the request
+        // explicitly wanted gone.
         prefs.edit().putStringSet(
             "disabled_providers",
             setOf("rivestream", "vidfast", "videasy", "yflix", "cinejoy", "hexasu", "vixsrc")
@@ -280,7 +294,7 @@ class StreamPlayCuratedRegistryV17Test {
             subtitleGraceMs = 100L,
             topSourceGraceMs = 300L,
             top720GraceMs = 300L,
-            activeTopRanks = setOf(100, 95, 90),
+            activeTopRanks = setOf(100, 95, 90, 85),
             // VidLink is "running" but never produces anything: exactly the skipped-source
             // situation that used to stall every other source for 15-20 seconds.
             isRankInFlight = { rank -> rank == 100 }
@@ -309,7 +323,7 @@ class StreamPlayCuratedRegistryV17Test {
             subtitleGraceMs = 80L,
             topSourceGraceMs = 250L,
             top720GraceMs = 250L,
-            activeTopRanks = setOf(100, 95, 90),
+            activeTopRanks = setOf(100, 95, 90, 85),
             isRankInFlight = { rank -> rank == 100 }
         )
 
@@ -337,7 +351,7 @@ class StreamPlayCuratedRegistryV17Test {
             subtitleGraceMs = 50L,
             topSourceGraceMs = 60_000L,
             top720GraceMs = 60_000L,
-            activeTopRanks = setOf(100, 95, 90),
+            activeTopRanks = setOf(100, 95, 90, 85),
             // Every higher-ranked source is permanently "in flight" and silent.
             isRankInFlight = { true }
         )
@@ -480,14 +494,14 @@ class StreamPlayCuratedRegistryV17Test {
     @Test
     fun testTopTierOrderingCannotBeInvertedByTelemetryVariance() {
         // Telemetry penalties are bounded to [-30, +100]; boosts are weighted 100x, so even
-        // the tightest curated neighbours (VixSrc 95 -> AnimePahe 90) can never invert.
-        val gap = FAST_PROVIDER_BOOST.getValue("vixsrc") - FAST_PROVIDER_BOOST.getValue("animepahe")
+        // the tightest curated neighbours (VidEm 95 -> AnimePahe 90) can never invert.
+        val gap = FAST_PROVIDER_BOOST.getValue("videm") - FAST_PROVIDER_BOOST.getValue("animepahe")
         assertEquals(5f, gap)
-        val worstCaseVixSrc = FAST_PROVIDER_BOOST.getValue("vixsrc") * 100f - 30f
+        val worstCaseVidEm = FAST_PROVIDER_BOOST.getValue("videm") * 100f - 30f
         val bestCaseAnimePahe = FAST_PROVIDER_BOOST.getValue("animepahe") * 100f + 100f
         assertTrue(
-            "VixSrc must stay ranked above AnimePahe under adversarial telemetry",
-            worstCaseVixSrc > bestCaseAnimePahe
+            "VidEm must stay ranked above AnimePahe under adversarial telemetry",
+            worstCaseVidEm > bestCaseAnimePahe
         )
     }
 
@@ -507,8 +521,42 @@ class StreamPlayCuratedRegistryV17Test {
             assertTrue("${provider.id} must expose a resolver lambda", provider.invoke != null)
         }
         assertTrue(providers.any { it.id == "vidlink" })
-        assertTrue(providers.any { it.id == "vixsrc" })
+        assertTrue(providers.any { it.id == "videm" })
         assertTrue(providers.any { it.id == "animepahe" })
+        assertTrue(providers.any { it.id == "animegg" })
         assertTrue("Movie titles must remain resolvable", linkData.isAnime.not())
+    }
+
+    @Test
+    fun testVidLinkDownloadHeadersStripsRefererAndOrigin() {
+        val headers = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = mapOf(
+                "Referer" to "https://filmboom.top/",
+                "Origin" to "https://filmboom.top"
+            ),
+            url = "https://bcdn.hakunaymatata.com/bt/test.mp4",
+            referer = "https://filmboom.top/",
+            linkType = ExtractorLinkType.VIDEO,
+            source = "Vidlink",
+            name = "Vidlink 1080p"
+        )
+
+        assertNull("Referer must be stripped for VidLink to prevent CDN 429", headers["Referer"])
+        assertNull("Origin must be stripped for VidLink to prevent CDN 429", headers["Origin"])
+        assertEquals("*/*", headers["Accept"])
+        assertEquals("bytes", headers["Accept-Ranges"])
+        assertTrue("User-Agent must be non-empty", headers["User-Agent"]?.isNotEmpty() == true)
+    }
+
+    @Test
+    fun testVidLinkEffectiveRefererIsEmpty() {
+        val effective = StreamLinkOptimizer.getEffectiveReferer(
+            url = "https://bcdn.hakunaymatata.com/bt/test.mp4",
+            referer = "https://filmboom.top/",
+            headers = mapOf("Referer" to "https://filmboom.top/"),
+            source = "Vidlink",
+            name = "Vidlink 1080p"
+        )
+        assertEquals("VidLink effective referer must be empty", "", effective)
     }
 }

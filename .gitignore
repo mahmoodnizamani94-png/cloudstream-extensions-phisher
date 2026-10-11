@@ -15,4 +15,5 @@ local.properties
 .agents/
 ORIGINAL_REQUEST.md
 PROJECT.md
+.zcodeignore
 

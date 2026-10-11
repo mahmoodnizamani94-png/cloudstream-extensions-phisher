@@ -54,20 +54,22 @@ import kotlin.time.Duration.Companion.milliseconds
  * curated registry only contains sources at or above this line, so ordering windows and
  * "is a better source still running?" checks are meaningful for every provider.
  */
-const val TOP_TIER_BOOST_THRESHOLD = 90f
+const val TOP_TIER_BOOST_THRESHOLD = 85f
 
 /**
- * The curated v18 registry has no subtitle-only entries: every surviving source ships its
- * own captions (VidLink's 7 native caption tracks, VixSrc's soft-subs, AnimePahe's
- * soft-subs), which keeps subtitle timing exactly in sync with the stream that was chosen.
+ * The curated v19 registry has no subtitle-only entries: every surviving source ships its
+ * own captions (VidLink's native caption tracks, VidEm's 10-11 caption tracks, AnimePahe's
+ * soft-subs, AnimeGG's mirrored subtitle tracks), which keeps subtitle timing exactly in
+ * sync with the stream that was chosen.
  */
 private val ANIME_ONLY_PROVIDERS = setOf(
-    "animepahe"
+    "animepahe",
+    "animegg"
 )
 
 internal val NON_ANIME_PROVIDERS = setOf(
     "vidlink",
-    "vixsrc"
+    "videm"
 )
 
 
@@ -972,7 +974,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > VixSrc > AnimePahe)
+        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > VidEm > AnimePahe > AnimeGG)
         val primaryTasks = prioritizedPrimary.map { provider ->
             val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                 .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }

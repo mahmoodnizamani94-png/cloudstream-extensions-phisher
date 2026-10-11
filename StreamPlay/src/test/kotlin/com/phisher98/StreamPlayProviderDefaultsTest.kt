@@ -12,13 +12,13 @@ import java.util.concurrent.TimeUnit
 
 class StreamPlayProviderDefaultsTest {
 
-    private val v18TopTier = setOf("vidlink", "vixsrc", "animepahe")
+    private val v19TopTier = setOf("vidlink", "videm", "animepahe", "animegg")
 
     @Test
     fun testRemovedSourcesAreAbsentFromProviderList() {
         val providers = buildProviders()
 
-        listOf("vaplayer", "superstream", "vidcore", "rivestream", "vidfast", "videasy", "vidflix", "animegg")
+        listOf("vaplayer", "superstream", "vidcore", "rivestream", "vidfast", "videasy", "vidflix", "vixsrc")
             .forEach { id ->
                 val found = providers.find { it.id.equals(id, ignoreCase = true) }
                 assertNull("$id must be completely removed from providers list", found)
@@ -27,13 +27,13 @@ class StreamPlayProviderDefaultsTest {
     }
 
     @Test
-    fun testDefaultTopTierProvidersContainsExactlyTheThreeCuratedSources() {
+    fun testDefaultTopTierProvidersContainsExactlyTheFourCuratedSources() {
         assertEquals(
-            "Top tier default providers must contain exactly 3 sources",
-            3,
+            "Top tier default providers must contain exactly 4 sources",
+            4,
             DEFAULT_TOP_TIER_PROVIDERS.size
         )
-        assertEquals("Top tier default providers must match expected IDs", v18TopTier, DEFAULT_TOP_TIER_PROVIDERS)
+        assertEquals("Top tier default providers must match expected IDs", v19TopTier, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
     @Test
@@ -59,7 +59,7 @@ class StreamPlayProviderDefaultsTest {
         assertEquals("No source should be disabled by default", expectedDisabledCount, disabledIds.size)
 
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("All curated sources should be active by default", 3, activeProviders.size)
+        assertEquals("All curated sources should be active by default", 4, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,
@@ -78,17 +78,18 @@ class StreamPlayProviderDefaultsTest {
     // ==================== v18 Migration Idempotency Stress Tests ====================
 
     @Test
-    fun testCleanInstallActivatesExactlyThreeCuratedSourcesIdempotently() {
+    fun testCleanInstallActivatesExactlyFourCuratedSourcesIdempotently() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
 
         val initialDisabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 3 curated sources", 3, activeProviders.size)
-        assertEquals(v18TopTier, activeProviders)
+        assertEquals("Clean install must activate exactly 4 curated sources", 4, activeProviders.size)
+        assertEquals(v19TopTier, activeProviders)
         assertFalse("vidlink must NOT be in disabled set", initialDisabled.contains("vidlink"))
-        assertFalse("vixsrc must NOT be in disabled set", initialDisabled.contains("vixsrc"))
+        assertFalse("videm must NOT be in disabled set", initialDisabled.contains("videm"))
         assertFalse("animepahe must NOT be in disabled set", initialDisabled.contains("animepahe"))
+        assertFalse("animegg must NOT be in disabled set", initialDisabled.contains("animegg"))
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // Repeated invocation must be strictly idempotent.
@@ -107,7 +108,7 @@ class StreamPlayProviderDefaultsTest {
         mockPrefs.edit()
             .putStringSet(
                 "disabled_providers",
-                setOf("vidlink", "rivestream", "vidfast", "videasy", "vidflix", "animegg", "hexasu", "autoembed")
+                setOf("vidlink", "rivestream", "vidfast", "videasy", "vidflix", "vixsrc", "hexasu", "autoembed")
             )
             .putBoolean("streamplay_top_tier_v11_initialized", true)
             .apply()
@@ -119,10 +120,10 @@ class StreamPlayProviderDefaultsTest {
         }
         // Curated sources are always re-enabled by a version migration.
         assertFalse("vidlink must be re-enabled", migratedDisabled.contains("vidlink"))
-        assertFalse("vixsrc must be re-enabled", migratedDisabled.contains("vixsrc"))
+        assertFalse("videm must be re-enabled", migratedDisabled.contains("videm"))
 
         val active = buildProviders().map { it.id }.filterNot { migratedDisabled.contains(it) }.toSet()
-        assertEquals("Exactly the curated sources must be active after migration", v18TopTier, active)
+        assertEquals("Exactly the curated sources must be active after migration", v19TopTier, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // Idempotency.
@@ -155,8 +156,8 @@ class StreamPlayProviderDefaultsTest {
         val allProviders = buildProviders()
         for (res in results) {
             val active = allProviders.map { it.id }.filterNot { res.contains(it) }.toSet()
-            assertEquals("Every concurrent call must activate exactly the curated sources", v18TopTier, active)
-            for (top in v18TopTier) {
+            assertEquals("Every concurrent call must activate exactly the curated sources", v19TopTier, active)
+            for (top in v19TopTier) {
                 assertFalse("Top tier provider $top must not be disabled", res.contains(top))
             }
         }
