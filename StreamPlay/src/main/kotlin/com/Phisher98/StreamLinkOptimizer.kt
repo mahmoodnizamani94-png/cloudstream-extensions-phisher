@@ -1615,7 +1615,7 @@ object StreamLinkOptimizer {
 
     /**
      * Checks if a stream link belongs to one of the curated top-tier primary sources
-     * (VidLink 100 > VidSrc 95 > VidRock 92 > AnimePahe 90).
+     * (VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 > MeowTV 91 > Animex 90).
      */
     fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 85
 
@@ -1626,8 +1626,10 @@ object StreamLinkOptimizer {
         val p = providerId.lowercase(Locale.ROOT)
         return p.contains("vidlink") ||
             p.contains("vidsrc") ||
+            p.contains("vidfast") ||
             p.contains("vidrock") ||
-            p.contains("animepahe")
+            p.contains("meowtv") ||
+            p.contains("animex")
     }
 
     /**
@@ -1671,7 +1673,8 @@ object StreamLinkOptimizer {
 
     /**
      * Executes the Universal Top-Tier Stream Guard on any stream link:
-     * Validates top-tier streams (VidLink 100 > VixSrc 95 > AnimePahe 90) and forwards them cleanly to
+     * Validates top-tier streams (VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 >
+     * MeowTV 91 > Animex 90) and forwards them cleanly to
      * emitAction without creating artificial or duplicated companion links.
      *
      * @param link The incoming stream link.
@@ -1892,7 +1895,7 @@ object StreamLinkOptimizer {
 
     /**
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
-     * 1. Top-tier source priority rank (VidLink > VixSrc > AnimePahe > Secondary)
+     * 1. Top-tier source priority rank (VidLink > VidSrc > VidFast > VidSrcSU > VidRock > MeowTV > Animex > Secondary)
      * 2. Quality priority score within the same source (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
      * 3. Genuine non-synthetic streams over synthetic companions
      * 4. Higher bitrate (kbps) (when quality score and source rank are equivalent)
@@ -1904,7 +1907,7 @@ object StreamLinkOptimizer {
      * 10. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Top-Tier Source Priority Rank (VidLink > VixSrc > AnimePahe > Secondary).
+        // 1. Top-Tier Source Priority Rank (VidLink > VidSrc > VidFast > VidSrcSU > VidRock > MeowTV > Animex > Secondary).
         // Source rank is primary so a higher-ranked source can never be replaced by a
         // lower-ranked one that merely exposes a higher resolution ladder.
         val sourceRank1 = getSourcePriorityRank(candidate)
@@ -1988,15 +1991,21 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Definitive source priority ranking for the curated v22 SOTA registry:
+     * Definitive source priority ranking for the curated v23 SOTA registry:
      *
      *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)      -> 100
      *   2. VidSrc    (vidsrc.pm Vidora API, quasar/scrapify HLS masters)                  -> 95
-     *   3. VidRock   (vidrock.net, AES-256-GCM lanes, Origin-pinned CDN HLS)              -> 92
-     *   4. AnimePahe (animepahe.pw, kwik.cx resolver)                                     -> 90
+     *   3. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 94
+     *   4. VidSrcSU  (vidsrc.su, X-Api-Key images decrypt, dragonballzfans.xyz CDN HLS)   -> 93
+     *   5. VidRock   (vidrock.net, AES-256-GCM lanes, Origin-pinned CDN HLS)              -> 92
+     *   6. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
+     *   7. Animex    (animex.one, GraphQL catalog, nero provider soft-subbed HLS)         -> 90
      *
-     * Every other label or CDN host scores 0, because every other source was decommissioned
-     * after live research showed it dead, parked, or Cloudflare/browser gated.
+     * VidSrcSU is matched BEFORE VidSrc because the "VidSrcSU" label contains the
+     * "vidsrc" substring, and the AnimePahe/kwik mapping was dropped together with the
+     * decommissioned source. Every other label or CDN host scores 0, because every other
+     * source was decommissioned after live research showed it dead, parked, or
+     * Cloudflare/browser gated.
      *
      * Matching is done on the source label as well as on the CDN hosts each source
      * actually serves from, so a link keeps its ranking even when it is re-wrapped by the
@@ -2009,12 +2018,19 @@ object StreamLinkOptimizer {
         return when {
             s.contains("vidlink") || n.contains("vidlink") ||
                 u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
+            s.contains("vidsrcsu") || n.contains("vidsrcsu") ||
+                u.contains("dragonballzfans") -> 93
             s.contains("vidsrc") || n.contains("vidsrc") ||
                 u.contains("vidsrc.pm") || u.contains("cheaptruckrepairs") || u.contains("netoda.tech") -> 95
+            s.contains("vidfast") || n.contains("vidfast") ||
+                u.contains("vidfast.vc") || u.contains("zenoak") -> 94
             s.contains("vidrock") || n.contains("vidrock") ||
                 u.contains("vidrock.net") || u.contains("galacticvoyagers") || u.contains("moonfirekeeper") -> 92
-            s.contains("animepahe") || n.contains("animepahe") ||
-                u.contains("animepahe") || u.contains("kwik.cx") -> 90
+            s.contains("meowtv") || n.contains("meowtv") ||
+                u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
+                u.contains("krico443jez.com") -> 91
+            s.contains("animex") || n.contains("animex") ||
+                u.contains("animex.one") || u.contains("aniwatchtv.site") -> 90
             else -> 0
         }
     }
@@ -2112,7 +2128,7 @@ object StreamLinkOptimizer {
         }
 
         val baseScore = if (isTopTier) {
-            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; VixSrc(95) -> 950,000+; AnimePahe(90) -> 900,000+.
+            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; VidSrc(95) -> 950,000+; Animex(90) -> 900,000+.
             (sourceRank * 10_000f) + qualityTerm
         } else {
             // Secondary / fallback sources stay strictly below every top-tier stream.
@@ -2271,7 +2287,8 @@ object StreamLinkOptimizer {
      * State-Of-The-Art Priority-Ordered Stream Dispatcher for CloudStream.
      *
      * Guarantees that the highest-ranked source is always the #1 result (VidLink 100 >
-     * VixSrc 95 > AnimePahe 90), and only then orders that source's own variants by the
+     * VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 > MeowTV 91 > Animex 90), and only
+     * then orders that source's own variants by the
      * quality hierarchy (720p > 1080p > 480p > above-1080p).
      *
      * Every hold in this dispatcher is *bounded*: it is an ordering window that exists to
@@ -2635,9 +2652,12 @@ object StreamLinkOptimizer {
         fun markProviderCompleted(providerId: String) {
             val rank = when {
                 providerId.contains("vidlink", ignoreCase = true) -> 100
+                providerId.contains("vidsrcsu", ignoreCase = true) -> 93
                 providerId.contains("vidsrc", ignoreCase = true) -> 95
+                providerId.contains("vidfast", ignoreCase = true) -> 94
                 providerId.contains("vidrock", ignoreCase = true) -> 92
-                providerId.contains("animepahe", ignoreCase = true) -> 90
+                providerId.contains("meowtv", ignoreCase = true) -> 91
+                providerId.contains("animex", ignoreCase = true) -> 90
                 else -> 0
             }
             if (rank > 0) {
@@ -2940,13 +2960,23 @@ object StreamLinkOptimizer {
 
         companion object {
             /**
-             * The complete set of top-tier ranks in the curated registry. Kept as an
+             * The v22-era top-tier ranks, kept only for the standalone fallback path of
+             * [hasHigherPendingTop720Rank] (no [activeTopRanks] and no [isRankInFlight]):
+             * in that mode the dispatcher knows nothing about which v23 registry sources
+             * are live, so it waits only for these historic ranks plus any rank it has
+             * actually observed in the current session. Every production caller passes
+             * [activeTopRanks]/[isRankInFlight], where the full v23 [TOP_TIER_RANKS] set
+             * is used against the live provider picture instead.
+             */
+            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90, 85)
+
+            /**
+             * The complete set of top-tier ranks in the curated v23 registry. Kept as an
              * explicit list (rather than derived from the string-keyed boost map) so the
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.
              */
-            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90, 85)
-            private val TOP_TIER_RANKS = listOf(100, 95, 92, 90)
+            private val TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 90)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

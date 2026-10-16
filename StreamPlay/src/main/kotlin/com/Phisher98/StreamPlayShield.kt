@@ -194,16 +194,27 @@ object StreamPlayShield {
     internal val VETTED_SOURCE_DOMAINS: Set<String> = setOf(
         "vidlink.pro",
         "vidsrc.pm",
+        "vidfast.vc",
+        "moon.zenoak.top",
+        "vidsrc.su",
+        "themoviedb.vidsrc.su",
+        "dragonballzfans.xyz",
         "vidrock.net",
         "galacticvoyagers.xyz",
         "moonfirekeeper.lol",
+        "meowtv.ru",
+        "hscow.com",
+        "fcxmb.com",
+        "vidjoy.org",
+        "krico443jez.com",
+        "slast430did.com",
+        "animex.one",
+        "aniwatchtv.site",
         "cheaptruckrepairs.cc",
         "netoda.tech",
         "hakunaymatata.com",
         "kwik.cx",
-        "vix-content.net",
-        "animepahe.ru",
-        "animepahe.pw"
+        "vix-content.net"
     )
 
     /** Category bit flags recorded into the merged suffix index. */

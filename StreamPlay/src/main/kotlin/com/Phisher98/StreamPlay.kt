@@ -57,19 +57,22 @@ import kotlin.time.Duration.Companion.milliseconds
 const val TOP_TIER_BOOST_THRESHOLD = 85f
 
 /**
- * The curated v22 registry has no subtitle-only entries: every surviving source ships its
- * own captions (VidLink's native caption tracks, VidSrc's Vidora track list, VidRock's
- * player captions, AnimePahe's soft-subs), which keeps subtitle timing exactly in sync with
- * the stream that was chosen. VidLink is deliberately absent from both gates: it is the
+ * The curated v23 registry has no subtitle-only entries: every surviving source ships its
+ * own captions (VidLink's native caption tracks, VidSrc/VidFast/VidSrcSU/MeowTV decrypted
+ * track lists, Animex's soft-subs), which keeps subtitle timing exactly in sync with the
+ * stream that was chosen. VidLink is deliberately absent from both gates: it is the
  * universal #1 and is always applicable.
  */
 private val ANIME_ONLY_PROVIDERS = setOf(
-    "animepahe"
+    "animex"
 )
 
 internal val NON_ANIME_PROVIDERS = setOf(
     "vidsrc",
-    "vidrock"
+    "vidfast",
+    "vidsrcsu",
+    "vidrock",
+    "meowtv"
 )
 
 
@@ -312,9 +315,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val vidflixAPI = "https://vidsrc.pm"
         const val moviesClubApi = "https://moviesapi.club"
         const val cinemacity = "https://cinemacity.cc"
-        const val hexaSU = "https://theemoviedb.hexa.su"
-        const val flixerSU = "https://flixer.su"
-        const val embedSU = "https://embed.su"
         const val autoembedPlayer = "https://player.autoembed.cc"
         const val autoembedDomain = "https://autoembed.cc"
         const val mappleAPI = "https://mapple.uk"

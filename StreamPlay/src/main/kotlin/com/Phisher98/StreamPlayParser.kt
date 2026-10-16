@@ -642,38 +642,84 @@ data class DooflixLink(
     val updatedAt: String,
 )
 
-//Hexa
+//VidSrcSU (hexa protocol)
 
-data class HexaEn(
-    val status: Long,
-    val result: HexResult,
+data class VidSrcSUEn(
+    val status: Long? = null,
+    val result: VidSrcSUEnResult? = null,
 )
 
-data class HexResult(
-    val token: String,
-    val expires: String,
+data class VidSrcSUEnResult(
+    val token: String? = null,
+    val expires: String? = null,
 )
 
-data class HexaResponse(
+data class VidSrcSUResponse(
     val status: Int? = null,
-    val result: HexaResult? = null
+    val result: VidSrcSUResult? = null
 )
 
-data class HexaResult(
-    val sources: List<HexaSource>? = null,
-    val tracks: List<HexaTrack>? = null,
+data class VidSrcSUResult(
+    val sources: List<VidSrcSUSource>? = null,
+    val tracks: List<VidSrcSUTrack>? = null,
     val skipTime: Any? = null
 )
 
-data class HexaTrack(
+data class VidSrcSUTrack(
     val file: String? = null,
     val label: String? = null,
     val kind: String? = null
 )
 
-data class HexaSource(
+data class VidSrcSUSource(
     val server: String? = null,
     val url: String? = null
+)
+
+//VidFast
+
+data class VidFastStage1Response(
+    val status: Int? = null,
+    val result: VidFastStage1? = null,
+)
+
+data class VidFastStage1(
+    val stage1: String? = null,
+    val token: String? = null,
+)
+
+data class VidFastStage2Response(
+    val status: Int? = null,
+    val result: VidFastStage2? = null,
+)
+
+data class VidFastStage2(
+    val servers: String? = null,
+    val stream: String? = null,
+    val token: String? = null,
+)
+
+//MeowTV
+
+data class MeowTvTicketResponse(
+    val ticket: String? = null,
+    val exp: Long? = null,
+)
+
+data class MeowTvPayload(
+    val n: String? = null,
+    val d: String? = null,
+)
+
+data class MeowTvDecResponse(
+    val status: Int? = null,
+    val result: MeowTvDecResult? = null,
+)
+
+data class MeowTvDecResult(
+    val language: String? = null,
+    val url: String? = null,
+    val headers: Map<String, String>? = null,
 )
 
 //MegaPlaybuzz HiAnime

@@ -12,13 +12,13 @@ import java.util.concurrent.TimeUnit
 
 class StreamPlayProviderDefaultsTest {
 
-    private val v22TopTier = setOf("vidlink", "vidsrc", "vidrock", "animepahe")
+    private val v23TopTier = setOf("vidlink", "vidsrc", "vidfast", "vidsrcsu", "vidrock", "meowtv", "animex")
 
     @Test
     fun testRemovedSourcesAreAbsentFromProviderList() {
         val providers = buildProviders()
 
-        listOf("vaplayer", "superstream", "vidcore", "rivestream", "vidfast", "videasy", "vidflix", "vixsrc")
+        listOf("vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
             .forEach { id ->
                 val found = providers.find { it.id.equals(id, ignoreCase = true) }
                 assertNull("$id must be completely removed from providers list", found)
@@ -27,13 +27,13 @@ class StreamPlayProviderDefaultsTest {
     }
 
     @Test
-    fun testDefaultTopTierProvidersContainsExactlyTheFourCuratedSources() {
+    fun testDefaultTopTierProvidersContainsExactlyTheSevenCuratedSources() {
         assertEquals(
-            "Top tier default providers must contain exactly 4 sources",
-            4,
+            "Top tier default providers must contain exactly 7 sources",
+            7,
             DEFAULT_TOP_TIER_PROVIDERS.size
         )
-        assertEquals("Top tier default providers must match expected IDs", v22TopTier, DEFAULT_TOP_TIER_PROVIDERS)
+        assertEquals("Top tier default providers must match expected IDs", v23TopTier, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
     @Test
@@ -59,7 +59,7 @@ class StreamPlayProviderDefaultsTest {
         assertEquals("No source should be disabled by default", expectedDisabledCount, disabledIds.size)
 
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("All curated sources should be active by default", 4, activeProviders.size)
+        assertEquals("All curated sources should be active by default", 7, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,
@@ -78,18 +78,17 @@ class StreamPlayProviderDefaultsTest {
     // ==================== v18 Migration Idempotency Stress Tests ====================
 
     @Test
-    fun testCleanInstallActivatesExactlyFourCuratedSourcesIdempotently() {
+    fun testCleanInstallActivatesExactlySevenCuratedSourcesIdempotently() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
 
         val initialDisabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 4 curated sources", 4, activeProviders.size)
-        assertEquals(v22TopTier, activeProviders)
-        assertFalse("vidlink must NOT be in disabled set", initialDisabled.contains("vidlink"))
-        assertFalse("vidsrc must NOT be in disabled set", initialDisabled.contains("vidsrc"))
-        assertFalse("animepahe must NOT be in disabled set", initialDisabled.contains("animepahe"))
-        assertFalse("vidrock must NOT be in disabled set", initialDisabled.contains("vidrock"))
+        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
+        assertEquals(v23TopTier, activeProviders)
+        v23TopTier.forEach { id ->
+            assertFalse("$id must NOT be in disabled set", initialDisabled.contains(id))
+        }
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // Repeated invocation must be strictly idempotent.
@@ -97,9 +96,9 @@ class StreamPlayProviderDefaultsTest {
         assertEquals("Second call must return identical disabled set", initialDisabled, secondDisabled)
 
         // A user disabling a real curated source must be preserved across later calls.
-        mockPrefs.edit().putStringSet("disabled_providers", setOf("animepahe")).apply()
+        mockPrefs.edit().putStringSet("disabled_providers", setOf("meowtv")).apply()
         val userModified = getOrInitializeDisabledProviders(mockPrefs)
-        assertEquals("Subsequent calls must honor user preference", setOf("animepahe"), userModified)
+        assertEquals("Subsequent calls must honor user preference", setOf("meowtv"), userModified)
     }
 
     @Test
@@ -123,7 +122,7 @@ class StreamPlayProviderDefaultsTest {
         assertFalse("vidsrc must be re-enabled", migratedDisabled.contains("vidsrc"))
 
         val active = buildProviders().map { it.id }.filterNot { migratedDisabled.contains(it) }.toSet()
-        assertEquals("Exactly the curated sources must be active after migration", v22TopTier, active)
+        assertEquals("Exactly the curated sources must be active after migration", v23TopTier, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // Idempotency.
@@ -156,8 +155,8 @@ class StreamPlayProviderDefaultsTest {
         val allProviders = buildProviders()
         for (res in results) {
             val active = allProviders.map { it.id }.filterNot { res.contains(it) }.toSet()
-            assertEquals("Every concurrent call must activate exactly the curated sources", v22TopTier, active)
-            for (top in v22TopTier) {
+            assertEquals("Every concurrent call must activate exactly the curated sources", v23TopTier, active)
+            for (top in v23TopTier) {
                 assertFalse("Top tier provider $top must not be disabled", res.contains(top))
             }
         }

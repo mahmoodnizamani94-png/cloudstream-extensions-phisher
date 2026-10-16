@@ -35,7 +35,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
     // =========================================================================
 
     @Test
-    fun testCleanInstallNullDisabledProvidersActivatesExactlyTwoCuratedSources() {
+    fun testCleanInstallNullDisabledProvidersActivatesExactlySevenCuratedSources() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // Fresh install: no keys at all
         assertFalse(mockPrefs.contains(PREFS_TOP_TIER_INITIALIZED))
@@ -44,15 +44,15 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 4 curated sources", 4, activeProviders.size)
+        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "vidsrc", "vidrock", "animepahe")
+        val expectedCurated = setOf("vidlink", "vidsrc", "vidfast", "vidsrcsu", "vidrock", "meowtv", "animex")
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.
         assertFalse("vidlink must NOT be disabled", disabled.contains("vidlink"))
-        assertFalse("animepahe must NOT be disabled", disabled.contains("animepahe"))
+        assertFalse("vidfast must NOT be disabled (re-issued id)", disabled.contains("vidfast"))
         REMOVED_PROVIDER_IDS.forEach { legacy ->
             assertFalse("$legacy must not be injected into the disabled set", disabled.contains(legacy))
         }
@@ -62,7 +62,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
     }
 
     @Test
-    fun testCleanInstallEmptyDisabledProvidersActivatesExactlyTwoCuratedSources() {
+    fun testCleanInstallEmptyDisabledProvidersActivatesExactlySevenCuratedSources() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // Stale or empty set stored without the initialized flag
         mockPrefs.edit().putStringSet("disabled_providers", emptySet()).apply()
@@ -70,7 +70,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 4 curated sources", 4, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 7 curated sources", 7, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
@@ -97,7 +97,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         }
         // The curated sources are re-enabled unconditionally by a version migration.
         assertFalse("vidlink must be re-enabled", migratedDisabled.contains("vidlink"))
-        assertFalse("animepahe must be re-enabled", migratedDisabled.contains("animepahe"))
+        assertFalse("meowtv must be re-enabled", migratedDisabled.contains("meowtv"))
 
         val active = buildProviders().map { it.id }.filterNot { migratedDisabled.contains(it) }.toSet()
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
@@ -118,9 +118,9 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val migratedDisabled = getOrInitializeDisabledProviders(mockPrefs)
 
         assertFalse("vidcore must be scrubbed", migratedDisabled.contains("vidcore"))
-        assertFalse("vidfast must be scrubbed", migratedDisabled.contains("vidfast"))
+        assertFalse("vidfast must be re-enabled (re-issued id)", migratedDisabled.contains("vidfast"))
         assertFalse("rivestream must be scrubbed", migratedDisabled.contains("rivestream"))
-        assertFalse("animepahe must be enabled", migratedDisabled.contains("animepahe"))
+        assertFalse("animepahe must be scrubbed", migratedDisabled.contains("animepahe"))
 
         val subsequent = getOrInitializeDisabledProviders(mockPrefs)
         assertEquals("Migration must be idempotent", migratedDisabled, subsequent)
@@ -142,12 +142,12 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val first = getOrInitializeDisabledProviders(mockPrefs)
         // Simulate the user disabling a curated source after migration; it must be
         // honoured (and stay stable) on subsequent reads.
-        val custom = first + "animepahe"
+        val custom = first + "meowtv"
         mockPrefs.edit().putStringSet("disabled_providers", custom).apply()
 
         val second = getOrInitializeDisabledProviders(mockPrefs)
         assertEquals("Subsequent call must return stored preferences without re-migrating", custom, second)
-        assertTrue(second.contains("animepahe"))
+        assertTrue(second.contains("meowtv"))
     }
 
     // =========================================================================
@@ -155,11 +155,11 @@ class ChallengerR2SettingsAndSafetyStressTest {
     // =========================================================================
 
     @Test
-    fun testInvokeHexaNullInputsReturnZeroLinksImmediately() = runBlocking {
+    fun testInvokeVidSrcSUNullInputsReturnZeroLinksImmediately() = runBlocking {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
             // Null tmdbId
-            StreamPlayExtractor.invokeHexa(
+            StreamPlayExtractor.invokeVidSrcSU(
                 tmdbId = null,
                 season = 1,
                 episode = 1,
@@ -167,7 +167,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
                 callback = { links.add(it) }
             )
             // TV show with season but null episode
-            StreamPlayExtractor.invokeHexa(
+            StreamPlayExtractor.invokeVidSrcSU(
                 tmdbId = 12345,
                 season = 1,
                 episode = null,
@@ -180,10 +180,10 @@ class ChallengerR2SettingsAndSafetyStressTest {
     }
 
     @Test
-    fun testInvokeHexaDeadEndpointsCompleteCleanlyWithinBoundedTimeout() = runBlocking {
+    fun testInvokeVidSrcSUUnindexedTitleCompletesCleanlyWithinBoundedTimeout() = runBlocking {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeHexa(
+            StreamPlayExtractor.invokeVidSrcSU(
                 tmdbId = 999999,
                 season = null,
                 episode = null,
@@ -191,17 +191,18 @@ class ChallengerR2SettingsAndSafetyStressTest {
                 callback = { links.add(it) }
             )
         }
-        assertEquals("Dead HexaSU must emit 0 links", 0, links.size)
-        // Must complete within bounded timeout (withTimeoutOrNull 2500ms)
-        assertTrue("invokeHexa must complete within 3500ms bound, took ${elapsed}ms", elapsed <= 3500)
+        assertEquals("Unindexed title on VidSrcSU must emit 0 links", 0, links.size)
+        // Must complete within the extractor's own bounded timeout (withTimeoutOrNull 24000ms);
+        // the handshake itself is 3 RTTs, so this bound is about clean early-exit, not latency.
+        assertTrue("invokeVidSrcSU must complete within 30000ms bound, took ${elapsed}ms", elapsed <= 30000)
     }
 
     @Test
-    fun testInvokeHexaCancellationSafety() = runBlocking {
+    fun testInvokeVidSrcSUCancellationSafety() = runBlocking {
         var cancellationObserved = false
         val job = launch {
             try {
-                StreamPlayExtractor.invokeHexa(
+                StreamPlayExtractor.invokeVidSrcSU(
                     tmdbId = 999999,
                     season = null,
                     episode = null,
@@ -215,7 +216,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         }
         // Cancel the job immediately
         job.cancelAndJoin()
-        assertTrue("invokeHexa must propagate CancellationException to preserve coroutine hierarchy", job.isCancelled)
+        assertTrue("invokeVidSrcSU must propagate CancellationException to preserve coroutine hierarchy", job.isCancelled)
     }
 
     @Test
@@ -480,7 +481,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
             val episode = episodes[i % episodes.size]
 
             // None of these should throw any unhandled exceptions
-            StreamPlayExtractor.invokeHexa(tmdbId, season, episode) {}
+            StreamPlayExtractor.invokeVidSrcSU(tmdbId, season, episode) {}
             StreamPlayExtractor.invokeAutoembed(tmdbId, season, episode) {}
             StreamPlayExtractor.invokeYFlix(title, tmdbId, year = null, season = season, episode = episode) {}
             StreamPlayExtractor.invokeCineJoy(title, tmdbId, season = season, episode = episode) {}

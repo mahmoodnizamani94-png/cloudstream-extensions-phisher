@@ -263,10 +263,10 @@ class Milestone1QualityHierarchyTest {
 
     @Test
     fun testAc4_CompositeScoring_SourceRankFirstThenQualityWithinSource() {
-        // The v18 registry has exactly two top-tier sources (VidLink 100, AnimePahe 90);
-        // every other label scores rank 0. Source rank dominates the composite score, so
-        // 720p only outranks 1080p WITHIN the same source rank.
-        val topProviders = listOf("Vidlink", "AnimePahe", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox")
+        // The v23 registry ranks VidLink 100 > VidSrc 95 > VidFast 94 > Animex 90 (plus the
+        // decommissioned labels, which score rank 0). Source rank dominates the composite
+        // score, so 720p only outranks 1080p WITHIN the same source rank.
+        val topProviders = listOf("Vidlink", "VidSrc", "VidFast", "Animex", "Vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox")
 
         for (p720 in topProviders) {
             // Unadorned 720p link (0 bitrate, no badges)

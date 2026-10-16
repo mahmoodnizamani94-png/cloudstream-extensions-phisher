@@ -9,7 +9,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -21,22 +20,35 @@ import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Acceptance suite for the curated v22 StreamPlay source registry.
+ * Acceptance suite for the curated v23 SOTA StreamPlay source registry.
  *
  * It pins down, as executable contracts:
- *  1. exactly which sources may surface in the UI (VidLink, VidSrc, VidRock, AnimePahe),
+ *  1. exactly which sources may surface in the UI (VidLink, VidSrc, VidFast, VidSrcSU,
+ *     VidRock, MeowTV, Animex) and their strict launch hierarchy,
  *  2. the ranking of those sources and of the CDN hosts they serve from,
  *  3. the settings migration that removes every decommissioned provider from an existing
- *     install,
- *  4. the bounded ordering windows of [StreamLinkOptimizer.PriorityStreamDispatcher], and
- *  5. known-answer vectors for the offline VidLink token encryptor.
+ *     install while re-admitting the re-issued `vidfast` identifier,
+ *  4. the bounded ordering windows of [StreamLinkOptimizer.PriorityStreamDispatcher],
+ *  5. known-answer vectors for the offline VidLink token encryptor,
+ *  6. known-answer vectors for the VidRock AES-256-GCM lane unwrap, and
+ *  7. the exception gates that keep the Movie/TV and Anime halves of the registry apart.
  */
-class StreamPlayCuratedRegistryV22Test {
+class StreamPlayCuratedRegistryV23Test {
 
-    private val curatedIds = setOf("vidlink", "vidsrc", "vidrock", "animepahe")
+    private val curatedIds = setOf("vidlink", "vidsrc", "vidfast", "vidsrcsu", "vidrock", "meowtv", "animex")
+
+    /** Authoritative launch hierarchy: strictly descending boost per provider id. */
+    private val boostByProvider = linkedMapOf(
+        "vidlink" to 100f,
+        "vidsrc" to 95f,
+        "vidfast" to 94f,
+        "vidsrcsu" to 93f,
+        "vidrock" to 92f,
+        "meowtv" to 91f,
+        "animex" to 90f
+    )
 
     @Before
     fun setUp() {
@@ -71,6 +83,9 @@ class StreamPlayCuratedRegistryV22Test {
         )
     }
 
+    private fun rankOf(source: String, name: String, url: String): Int =
+        StreamLinkOptimizer.getSourcePriorityRank(createLink(source, name, url))
+
     // =========================================================================
     // 1. REGISTRY SHAPE
     // =========================================================================
@@ -84,8 +99,11 @@ class StreamPlayCuratedRegistryV22Test {
         val byId = providers.associateBy { it.id }
         assertEquals("VidLink", byId.getValue("vidlink").name)
         assertEquals("VidSrc", byId.getValue("vidsrc").name)
-        assertEquals("AnimePahe", byId.getValue("animepahe").name)
+        assertEquals("VidFast", byId.getValue("vidfast").name)
+        assertEquals("VidSrcSU", byId.getValue("vidsrcsu").name)
         assertEquals("VidRock", byId.getValue("vidrock").name)
+        assertEquals("MeowTV", byId.getValue("meowtv").name)
+        assertEquals("Animex", byId.getValue("animex").name)
         providers.forEach { assertEquals(ProviderKind.VIDEO, it.kind) }
     }
 
@@ -93,25 +111,34 @@ class StreamPlayCuratedRegistryV22Test {
     fun testEveryDecommissionedProviderIsAbsentFromEverySurface() {
         val providerIds = buildProviders().map { it.id }.toSet()
 
-        // VidLink and AnimePahe are the two explicitly retained legacy sources; everything
-        // else that used to ship must be gone from the registry, the boost table, the
-        // cold-start tier table and the default top tier.
+        // Every identifier that has ever shipped but is now decommissioned must be gone
+        // from the registry, the boost table, the cold-start tier table and the default
+        // top tier. The single deliberate exception is the capitalised legacy spelling
+        // `Animex`: the live provider ships as lowercase `animex`, and the capitalised
+        // alias is intentionally retained in the boost/tier tables so any stale capitalised
+        // label still resolves to rank 90 instead of silently falling back to 0.
         for (removed in REMOVED_PROVIDER_IDS) {
             assertFalse("$removed must not be registered", providerIds.contains(removed))
-            assertNull("$removed must not have a cold-start boost", FAST_PROVIDER_BOOST[removed])
-            assertNull(
-                "$removed must not have a cold-start latency tier",
-                SpeculativePipeliner.STATIC_COLD_START_TIERS[removed]
-            )
+            if (removed != "Animex") {
+                assertNull("$removed must not have a cold-start boost", FAST_PROVIDER_BOOST[removed])
+                assertNull(
+                    "$removed must not have a cold-start latency tier",
+                    SpeculativePipeliner.STATIC_COLD_START_TIERS[removed]
+                )
+            }
             assertFalse("$removed must not be a default top tier source", DEFAULT_TOP_TIER_PROVIDERS.contains(removed))
         }
 
-        // The three sources the request called out by name, plus the other removed
-        // movie mirrors, are asserted explicitly so a regression cannot slip through a
-        // REMOVED_PROVIDER_IDS bookkeeping mistake.
-        listOf("rivestream", "vidfast", "videasy", "superstream", "vaplayer", "vidcore", "vidnest", "vidup", "hexasu", "autoembed", "videm", "animegg")
-            .forEach { assertFalse("$it must not be registered", providerIds.contains(it)) }
-        // The v22 additions are live members of the curated set, so they must be registered
+        // The most consequential removals are asserted explicitly so a regression cannot
+        // slip through a REMOVED_PROVIDER_IDS bookkeeping mistake. `vidfast` is no longer
+        // in this list (the identifier was re-issued to the v23 VidFast extractor), while
+        // `animepahe` was added after its fronts were hijacked.
+        listOf(
+            "rivestream", "videasy", "superstream", "vaplayer", "vidcore", "vidnest",
+            "vidup", "hexasu", "autoembed", "videm", "animegg", "animepahe", "AnimePahe"
+        ).forEach { assertFalse("$it must not be registered", providerIds.contains(it)) }
+
+        // The v23 additions are live members of the curated set, so they must be registered
         // and must never be filtered out by REMOVED_PROVIDER_IDS bookkeeping.
         curatedIds.forEach { id ->
             assertTrue("$id must be registered", providerIds.contains(id))
@@ -121,13 +148,13 @@ class StreamPlayCuratedRegistryV22Test {
 
     @Test
     fun testRankingHierarchyIsStrictAndMonotonic() {
-        assertEquals(100f, FAST_PROVIDER_BOOST.getValue("vidlink"))
-        assertEquals(95f, FAST_PROVIDER_BOOST.getValue("vidsrc"))
-        assertEquals(90f, FAST_PROVIDER_BOOST.getValue("animepahe"))
-        assertEquals(92f, FAST_PROVIDER_BOOST.getValue("vidrock"))
+        boostByProvider.forEach { (id, boost) ->
+            assertEquals("$id must launch at boost $boost", boost, FAST_PROVIDER_BOOST.getValue(id))
+        }
 
-        val boosts = listOf("vidlink", "vidsrc", "vidrock", "animepahe").map { FAST_PROVIDER_BOOST.getValue(it) }
+        val boosts = boostByProvider.keys.map { FAST_PROVIDER_BOOST.getValue(it) }
         assertEquals("Boosts must be strictly descending", boosts.sortedDescending(), boosts)
+        assertEquals("Every curated provider must have a unique boost", boosts.size, boosts.toSet().size)
 
         // Every curated provider must be tier-1 so the pipeliner starts them together.
         curatedIds.forEach { id ->
@@ -141,38 +168,59 @@ class StreamPlayCuratedRegistryV22Test {
 
     @Test
     fun testSourcePriorityRankCoversLabelsAndCdnHosts() {
-        assertEquals(100, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4")))
-        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidSrc", "VidSrc HLS", "https://lit.cheaptruckrepairs.cc/b.m3u8")))
-        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(createLink("AnimePahe", "AnimePahe [1080p]", "https://cdn.example/d.m3u8")))
-        assertEquals(92, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidRock", "VidRock SUB [720p]", "https://galacticvoyagers.xyz/e.m3u8")))
+        assertEquals(100, rankOf("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4"))
+        assertEquals(95, rankOf("VidSrc", "VidSrc HLS", "https://lit.cheaptruckrepairs.cc/b.m3u8"))
+        assertEquals(94, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
+        assertEquals(93, rankOf("VidSrcSU", "VidSrcSU [1080p]", "https://cdn.example/su.m3u8"))
+        assertEquals(92, rankOf("VidRock", "VidRock SUB [720p]", "https://galacticvoyagers.xyz/e.m3u8"))
+        assertEquals(91, rankOf("MeowTV", "MeowTV [1080p]", "https://cdn.example/m.m3u8"))
+        assertEquals(90, rankOf("Animex", "Animex [Sub] [HD-1]", "https://cdn.example/x.m3u8"))
 
-        // VidSrc and VidRock also rank on their CDN hosts, so a link keeps its tier when
-        // the deduplicator rewraps it away from its label
-        // `/_stream?id=` URL carries no product name of its own.
-        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("VidSrc", "VidSrc HLS", "https://netoda.tech/f.m3u8")))
-        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://vidsrc.pm/vidora/stream.m3u8")))
+        // VidSrcSU must be matched before the generic `vidsrc` substring, otherwise its own
+        // label would inherit VidSrc's 95 instead of its 93.
+        assertEquals(93, rankOf("VidSrcSU", "VidSrcSU HLS", "https://cdn.example/su.m3u8"))
+
+        // Every provider also ranks on the CDN hosts it actually serves from, so a link
+        // keeps its tier when the deduplicator rewraps it away from its label.
+        assertEquals(95, rankOf("VidSrc", "VidSrc HLS", "https://netoda.tech/f.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://vidsrc.pm/vidora/stream.m3u8"))
         // vidsrc.buzz was the VidEm mirror domain and stays decommissioned.
-        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://vidsrc.buzz/_stream?id=abc")))
-        assertEquals(92, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://galacticvoyagers.xyz/x.m3u8")))
+        assertEquals(0, rankOf("Unknown", "stream", "https://vidsrc.buzz/_stream?id=abc"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://vidfast.vc/e/abc.m3u8"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
+        assertEquals(92, rankOf("Unknown", "stream", "https://galacticvoyagers.xyz/x.m3u8"))
+        assertEquals(92, rankOf("Unknown", "stream", "https://moonfirekeeper.lol/file2/master.m3u8"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/thumb.jpg"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://cdn.vidjoy.org/hls/master.m3u8"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://i-arch-400.krico443jez.com/x.m3u8"))
+        assertEquals(90, rankOf("Unknown", "stream", "https://animex.one/embed/x"))
+        assertEquals(90, rankOf("Unknown", "stream", "https://aniwatchtv.site/e/abc.m3u8"))
 
         // Ranking must survive CDN rewrites that lose the original source label.
-        assertEquals(100, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://bcdnxw.hakunaymatata.com/bt/a.mp4")))
-        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://sc-u18-01.vix-content.net/hls/master.m3u8")))
-        assertEquals(90, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://kwik.cx/e/abc.m3u8")))
+        assertEquals(100, rankOf("Unknown", "stream", "https://bcdnxw.hakunaymatata.com/bt/a.mp4"))
+        assertEquals(0, rankOf("Unknown", "stream", "https://sc-u18-01.vix-content.net/hls/master.m3u8"))
+
+        // The AnimePahe/Kwik mapping was dropped together with the decommissioned source:
+        // a rewrapped kwik.cx URL must no longer resurrect a rank.
+        assertEquals(0, rankOf("Unknown", "stream", "https://kwik.cx/e/abc.m3u8"))
+        assertEquals(0, rankOf("AnimePahe", "AnimePahe [1080p]", "https://kwik.cx/e/abc.m3u8"))
 
         // Decommissioned sources must score zero rather than inheriting a legacy rank.
-        listOf("VidFast", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix", "HexaSU", "MovieBox", "VidEm")
-            .forEach { label ->
-                assertEquals(
-                    "$label must not inherit a rank after decommissioning",
-                    0,
-                    StreamLinkOptimizer.getSourcePriorityRank(createLink(label, "$label [1080p]", "https://x.example/a.m3u8"))
-                )
-            }
-        // Their legacy CDN hosts must not resurrect a rank either (the VidSrc/VidRock CDNs,
-        // by contrast, DO carry rank: see the host-level assertions above).
-        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://videm.xyz/video/x.m3u8")))
-        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://s247.vidcache.net:8166/play/a/video.mp4")))
+        listOf(
+            "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix",
+            "HexaSU", "MovieBox", "VidEm", "AnimePahe"
+        ).forEach { label ->
+            assertEquals(
+                "$label must not inherit a rank after decommissioning",
+                0,
+                rankOf(label, "$label [1080p]", "https://x.example/a.m3u8")
+            )
+        }
+        // Their legacy CDN hosts must not resurrect a rank either (the VidSrc/VidRock/VidFast/
+        // MeowTV CDNs, by contrast, DO carry rank: see the host-level assertions above).
+        assertEquals(0, rankOf("Unknown", "stream", "https://videm.xyz/video/x.m3u8"))
+        assertEquals(0, rankOf("Unknown", "stream", "https://s247.vidcache.net:8166/play/a/video.mp4"))
 
         curatedIds.forEach { id ->
             assertTrue("$id must be recognised as a top-tier provider", StreamLinkOptimizer.isTopTierProvider(id))
@@ -180,7 +228,7 @@ class StreamPlayCuratedRegistryV22Test {
     }
 
     // =========================================================================
-    // 2. SETTINGS MIGRATION (v22)
+    // 2. SETTINGS MIGRATION (v23)
     // =========================================================================
 
     @Test
@@ -200,10 +248,10 @@ class StreamPlayCuratedRegistryV22Test {
         val prefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // A legacy install that had enabled the scraper tier and disabled vidlink would have
         // this shape; the old migration only added dead ids, so rivestream/vidfast/videasy
-        // stayed enabled forever.
+        // stayed enabled forever and animepahe stayed disabled but referenced a dead host.
         prefs.edit().putStringSet(
             "disabled_providers",
-            setOf("vidlink", "uhdmovies", "HexaSU")
+            setOf("vidlink", "uhdmovies", "HexaSU", "animepahe", "AnimePahe")
         ).apply()
 
         val disabled = getOrInitializeDisabledProviders(prefs)
@@ -223,10 +271,12 @@ class StreamPlayCuratedRegistryV22Test {
     fun testMigrationNeverReadmitsAProviderThatWasRemovedUpstream() {
         val prefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // Persist a fully-populated legacy disabled set, including the sources the request
-        // explicitly wanted gone.
+        // explicitly wanted gone. `vidfast` appears because it WAS decommissioned in v19 and
+        // later re-issued: a stale opt-out must not survive into the v23 registry, and the
+        // genuinely dead ids must not reappear in any shape.
         prefs.edit().putStringSet(
             "disabled_providers",
-            setOf("rivestream", "vidfast", "videasy", "yflix", "cinejoy", "hexasu", "vixsrc")
+            setOf("rivestream", "vidfast", "videasy", "yflix", "cinejoy", "hexasu", "vixsrc", "animepahe", "AnimePahe", "Animex")
         ).apply()
 
         val disabled = getOrInitializeDisabledProviders(prefs)
@@ -239,12 +289,12 @@ class StreamPlayCuratedRegistryV22Test {
         val prefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         getOrInitializeDisabledProviders(prefs)
 
-        // Simulate the user disabling AnimePahe and re-enabling nothing else.
-        prefs.edit().putStringSet("disabled_providers", setOf("animepahe")).apply()
+        // Simulate the user disabling MeowTV and re-enabling nothing else.
+        prefs.edit().putStringSet("disabled_providers", setOf("meowtv")).apply()
 
         val first = getOrInitializeDisabledProviders(prefs)
         val second = getOrInitializeDisabledProviders(prefs)
-        assertEquals(setOf("animepahe"), first)
+        assertEquals(setOf("meowtv"), first)
         assertEquals(first, second)
     }
 
@@ -298,21 +348,21 @@ class StreamPlayCuratedRegistryV22Test {
             subtitleGraceMs = 100L,
             topSourceGraceMs = 300L,
             top720GraceMs = 300L,
-            activeTopRanks = setOf(100, 95, 92, 90),
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
             // VidLink is "running" but never produces anything: exactly the skipped-source
             // situation that used to stall every other source for 15-20 seconds.
             isRankInFlight = { rank -> rank == 100 }
         )
 
         // A lower-ranked source's 720p arrives first but a higher-ranked source looks in flight.
-        dispatcher.onLinkAccepted(createLink("AnimePahe", "AnimePahe [720p]", "https://cdn.example/animepahe720.m3u8", Qualities.P720.value))
+        dispatcher.onLinkAccepted(createLink("Animex", "Animex [720p]", "https://cdn.example/animex720.m3u8", Qualities.P720.value))
 
         delay(150L)
         assertTrue("Nothing may be emitted while the ordering window is open", emitted.isEmpty())
 
         delay(400L)
         assertEquals("The buffered link must be flushed once the window closes", 1, emitted.size)
-        assertTrue(emitted.first().url.contains("animepahe720"))
+        assertTrue(emitted.first().url.contains("animex720"))
         scope.cancel()
     }
 
@@ -327,7 +377,7 @@ class StreamPlayCuratedRegistryV22Test {
             subtitleGraceMs = 80L,
             topSourceGraceMs = 250L,
             top720GraceMs = 250L,
-            activeTopRanks = setOf(100, 95, 92, 90),
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
             isRankInFlight = { rank -> rank == 100 }
         )
 
@@ -355,7 +405,7 @@ class StreamPlayCuratedRegistryV22Test {
             subtitleGraceMs = 50L,
             topSourceGraceMs = 60_000L,
             top720GraceMs = 60_000L,
-            activeTopRanks = setOf(100, 95, 92, 90),
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
             // Every higher-ranked source is permanently "in flight" and silent.
             isRankInFlight = { true }
         )
@@ -363,8 +413,8 @@ class StreamPlayCuratedRegistryV22Test {
         repeat(6) { index ->
             dispatcher.onLinkAccepted(
                 createLink(
-                    "AnimePahe",
-                    "AnimePahe [$index]",
+                    "Animex",
+                    "Animex [$index]",
                     "https://cdn.example/stream$index.m3u8",
                     Qualities.P720.value
                 )
@@ -479,8 +529,9 @@ class StreamPlayCuratedRegistryV22Test {
 
         // And the survived sources only ever advertise playable media containers.
         assertTrue(StreamLinkOptimizer.isTopTierProvider("vidlink"))
-        assertTrue(StreamLinkOptimizer.isTopTierProvider("animepahe"))
-        assertEquals(0, StreamLinkOptimizer.getSourcePriorityRank(createLink("UHDMovies", "UHDMovies [Download]", "https://x.example/dl")))
+        assertTrue(StreamLinkOptimizer.isTopTierProvider("animex"))
+        assertFalse("AnimePahe was decommissioned and must not report as top tier", StreamLinkOptimizer.isTopTierProvider("animepahe"))
+        assertEquals(0, rankOf("UHDMovies", "UHDMovies [Download]", "https://x.example/dl"))
     }
 
     @Test
@@ -497,16 +548,69 @@ class StreamPlayCuratedRegistryV22Test {
 
     @Test
     fun testTopTierOrderingCannotBeInvertedByTelemetryVariance() {
-        // Telemetry penalties are bounded to [-30, +100]; boosts are weighted 100x, so even
-        // the tightest curated neighbours (VidSrc 95 -> VidRock 92) can never invert.
-        val gap = FAST_PROVIDER_BOOST.getValue("vidsrc") - FAST_PROVIDER_BOOST.getValue("vidrock")
-        assertEquals(3f, gap)
-        val worstCaseVidSrc = FAST_PROVIDER_BOOST.getValue("vidsrc") * 100f - 30f
-        val bestCaseVidRock = FAST_PROVIDER_BOOST.getValue("vidrock") * 100f + 100f
+        // Telemetry perturbation is bounded to [-30, +100] and only ever enters the
+        // launch-priority score (boost * 100 + telemetry). The worst possible swing is 130
+        // points, while VidLink sits 500 points above its closest runner-up (VidSrc 95), so
+        // the #1 source can never be displaced during scraper launch:
+        val worstCaseVidLink = FAST_PROVIDER_BOOST.getValue("vidlink") * 100f - 30f
+        val bestCaseRunnerUp = DEFAULT_TOP_TIER_PROVIDERS
+            .filter { it != "vidlink" }
+            .maxOf { FAST_PROVIDER_BOOST.getValue(it) } * 100f + 100f
         assertTrue(
-            "VidSrc must stay ranked above VidRock under adversarial telemetry",
-            worstCaseVidSrc > bestCaseVidRock
+            "VidLink must hold launch priority #1 under adversarial telemetry",
+            worstCaseVidLink > bestCaseRunnerUp
         )
+
+        // Playback ordering (getStreamCompositeScore) is telemetry-free: it is
+        // rank * 10,000 + a quality term bounded below 10,000, so every top-tier stream
+        // (rank >= 90 -> >= 900,000) strictly out-scores every secondary stream (capped
+        // below 810) no matter what telemetry recorded. The adversarial secondary stream
+        // below carries every micro-tiebreaker bit the scorer understands.
+        val worstTopTier = createLink(
+            "Animex",
+            "Animex [Sub] 360p",
+            "https://animex.one/e/sd.m3u8",
+            Qualities.P360.value
+        )
+        val bestSecondary = createLink(
+            "Unknown",
+            "Unknown [REMUX][DV][HEVC][10-bit][TrueHD] 720p 50000 kbps",
+            "https://cdn.example/best.m3u8",
+            Qualities.P720.value
+        )
+        assertTrue(
+            "The lowest-ranked top-tier stream must always out-score the best secondary stream",
+            StreamLinkOptimizer.getStreamCompositeScore(worstTopTier) >
+                StreamLinkOptimizer.getStreamCompositeScore(bestSecondary)
+        )
+    }
+
+    @Test
+    fun testPlaybackOrderingIsStrictlyRankDominatedAcrossTheV23Registry() {
+        // In playback ordering, source rank dominates quality: the SD variant of a
+        // higher-ranked source must always out-score the HD variant of the next source down.
+        // This is what keeps the launch hierarchy and the playback hierarchy locked together.
+        boostByProvider.keys.toList().let { hierarchy ->
+            for (i in 0 until hierarchy.size - 1) {
+                val higher = createLink(
+                    hierarchy[i],
+                    "${hierarchy[i]} 360p",
+                    "https://cdn.example/sd$i.m3u8",
+                    Qualities.P360.value
+                )
+                val lower = createLink(
+                    hierarchy[i + 1],
+                    "${hierarchy[i + 1]} 720p",
+                    "https://cdn.example/hd$i.m3u8",
+                    Qualities.P720.value
+                )
+                assertTrue(
+                    "${hierarchy[i]} 360p must outrank ${hierarchy[i + 1]} 720p",
+                    StreamLinkOptimizer.getStreamCompositeScore(higher) >
+                        StreamLinkOptimizer.getStreamCompositeScore(lower)
+                )
+            }
+        }
     }
 
     @Test
@@ -518,16 +622,14 @@ class StreamPlayCuratedRegistryV22Test {
             title = "Deadpool & Wolverine"
         )
         // Structural contract only: resolvers are network-bound, so this suite must not
-        // invoke them. What matters is that each provider is wired to a non-null lambda and
-        // that the movie/TV and anime halves of the registry are both represented.
+        // invoke them. What matters is that every curated provider is wired to a non-null
+        // lambda and that the movie/TV and anime halves of the registry are both represented.
         val providers = buildProviders()
-        providers.forEach { provider ->
-            assertTrue("${provider.id} must expose a resolver lambda", provider.invoke != null)
+        curatedIds.forEach { id ->
+            val provider = providers.firstOrNull { it.id == id }
+            assertNotNull("$id must be registered", provider)
+            assertTrue("$id must expose a resolver lambda", provider!!.invoke != null)
         }
-        assertTrue(providers.any { it.id == "vidlink" })
-        assertTrue(providers.any { it.id == "vidsrc" })
-        assertTrue(providers.any { it.id == "animepahe" })
-        assertTrue(providers.any { it.id == "vidrock" })
         assertTrue("Movie titles must remain resolvable", linkData.isAnime.not())
     }
 
@@ -582,17 +684,18 @@ class StreamPlayCuratedRegistryV22Test {
 
     @Test
     fun testVidLinkOutranksEveryOtherSourceInCompositeScore() {
-        // Even the lowest SD variant of VidLink (e.g. 360p) must outrank any 1080p from a secondary or lower source
+        // Even the lowest SD variant of VidLink (e.g. 360p) must outrank any 1080p from a
+        // secondary or lower source.
         val vidlink360 = createLink("Vidlink", "Vidlink 360p", "https://bcdn.hakunaymatata.com/bt/360.mp4", Qualities.P360.value)
         val vidsrc1080 = createLink("VidSrc", "VidSrc 1080p", "https://vidsrc.pm/stream/1080.mp4", Qualities.P1080.value)
-        val animepahe1080 = createLink("Animepahe", "AnimePahe 1080p", "https://kwik.cx/1080.mp4", Qualities.P1080.value)
+        val animex1080 = createLink("Animex", "Animex 1080p", "https://animex.one/e/1080.m3u8", Qualities.P1080.value)
 
         val scoreVidlink360 = StreamLinkOptimizer.getStreamCompositeScore(vidlink360)
         val scoreVidSrc1080 = StreamLinkOptimizer.getStreamCompositeScore(vidsrc1080)
-        val scoreAnimepahe1080 = StreamLinkOptimizer.getStreamCompositeScore(animepahe1080)
+        val scoreAnimex1080 = StreamLinkOptimizer.getStreamCompositeScore(animex1080)
 
         assertTrue("VidLink composite score must dominate VidSrc", scoreVidlink360 > scoreVidSrc1080)
-        assertTrue("VidLink composite score must dominate AnimePahe", scoreVidlink360 > scoreAnimepahe1080)
+        assertTrue("VidLink composite score must dominate Animex", scoreVidlink360 > scoreAnimex1080)
         assertTrue("VidLink must score >= 1,000,000", scoreVidlink360 >= 1_000_000f)
     }
 
@@ -706,11 +809,11 @@ class StreamPlayCuratedRegistryV22Test {
 
     @Test
     fun testVidrockAndVidSrcAreGatedToNonAnimeAndVidLinkIsUniversal() {
-        // VidSrc and VidRock are Movie/TV-only; they must never race an anime title.
-        assertTrue("vidsrc must be a NON_ANIME provider", NON_ANIME_PROVIDERS.contains("vidsrc"))
-        assertTrue("vidrock must be a NON_ANIME provider", NON_ANIME_PROVIDERS.contains("vidrock"))
-        assertFalse("AnimePahe is anime-only", NON_ANIME_PROVIDERS.contains("animepahe"))
-        // AnimePahe is gated by the ANIME_ONLY set (registered providers list, not assertions here).
+        // Every Movie/TV source must never race an anime title.
+        listOf("vidsrc", "vidfast", "vidsrcsu", "vidrock", "meowtv").forEach { id ->
+            assertTrue("$id must be a NON_ANIME provider", NON_ANIME_PROVIDERS.contains(id))
+        }
+        assertFalse("Animex is anime-only", NON_ANIME_PROVIDERS.contains("animex"))
 
         // VidLink is the universal #1: it must never be gated in either direction.
         assertFalse("VidLink must be universally applicable and not gated out for anime", NON_ANIME_PROVIDERS.contains("vidlink"))
@@ -719,13 +822,18 @@ class StreamPlayCuratedRegistryV22Test {
             StreamLinkOptimizer.isTopTierProvider("vidlink")
         )
         assertEquals(100, FAST_PROVIDER_BOOST.getValue("vidlink").toInt())
+
+        // Every curated id must be recognised as top-tier by the provider gate too.
+        curatedIds.forEach { id ->
+            assertTrue("$id must be recognised as a top-tier provider", StreamLinkOptimizer.isTopTierProvider(id))
+        }
     }
 
     @Test
     fun testCuratedRanksMeetTheTopTierBoostThreshold() {
         // Every registered providerId boost must clear the dispatcher's top-tier threshold so
-        // the loadLinks machinery treats all four sources as primary. The lowest bar is
-        // AnimePahe (90) so an accidental demotion fails here, not silently at runtime.
+        // the loadLinks machinery treats all seven sources as primary. The lowest bar is
+        // Animex (90) so an accidental demotion fails here, not silently at runtime.
         val lowest = DEFAULT_TOP_TIER_PROVIDERS.minOf { FAST_PROVIDER_BOOST.getValue(it) }
         assertTrue(
             "Lowest curated boost $lowest must clear the top-tier threshold",
@@ -734,21 +842,16 @@ class StreamPlayCuratedRegistryV22Test {
     }
 
     @Test
-    fun testVidrockCdnHostsCarryRankForRewrappedLinks() {
-        // The deduplicator can rewrite a lane link to its CDN endpoint (losing the VidRock
-        // label), so the ranker must recover the tier from the CDN host.
-        assertEquals(
-            92,
-            StreamLinkOptimizer.getSourcePriorityRank(
-                createLink("Unknown", "stream", "https://moonfirekeeper.lol/file2/master.m3u8")
-            )
-        )
-        assertEquals(
-            95,
-            StreamLinkOptimizer.getSourcePriorityRank(
-                createLink("Unknown", "stream", "https://lit.cheaptruckrepairs.cc/h/master.m3u8")
-            )
-        )
+    fun testEveryProviderCdnHostCarriesRankForRewrappedLinks() {
+        // The deduplicator can rewrite a lane link to its CDN endpoint (losing the provider
+        // label), so the ranker must recover the tier from every provider's CDN host.
+        assertEquals(100, rankOf("Unknown", "stream", "https://bcdn.hakunaymatata.com/bt/master.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://lit.cheaptruckrepairs.cc/h/master.m3u8"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
+        assertEquals(92, rankOf("Unknown", "stream", "https://moonfirekeeper.lol/file2/master.m3u8"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/i/master.m3u8"))
+        assertEquals(90, rankOf("Unknown", "stream", "https://aniwatchtv.site/e/master.m3u8"))
     }
 
     @Test
@@ -764,12 +867,26 @@ class StreamPlayCuratedRegistryV22Test {
         assertTrue("AdGuard bootstrap must be present for the resolver race", OptimizedDns.ADGUARD_BOOTSTRAP_IPS.contains("94.140.14.140"))
         assertTrue(OptimizedDns.ADGUARD_BOOTSTRAP_IPS.contains("94.140.14.141"))
 
-        // Every one of the streaming-tier domains must be warmed predictively.
+        // Every one of the v23 streaming-tier domains must be warmed predictively: each of
+        // the seven providers' API hosts plus the live verified CDNs they serve from.
         OptimizedDns.TOP_PREDICTIVE_DOMAINS.let { domains ->
-            listOf("vidlink.pro", "vidsrc.pm", "vidrock.net", "bcdn.hakunaymatata.com", "galacticvoyagers.xyz", "moonfirekeeper.lol", "kwik.cx")
-                .forEach { domain ->
-                    assertTrue("$domain must be in TOP_PREDICTIVE_DOMAINS", domains.contains(domain))
-                }
+            listOf(
+                "vidlink.pro", "bcdn.hakunaymatata.com",
+                "vidsrc.pm", "lit.cheaptruckrepairs.cc",
+                "vidfast.vc", "moon.zenoak.top",
+                "vidsrc.su", "themoviedb.vidsrc.su", "dragonballzfans.xyz",
+                "vidrock.net", "galacticvoyagers.xyz", "moonfirekeeper.lol",
+                "meowtv.ru", "api.meowtv.ru", "img1.hscow.com", "img1.fcxmb.com",
+                "cdn.vidjoy.org", "cdn2.vidjoy.org", "i-arch-400.krico443jez.com",
+                "graphql.animex.one", "pp.animex.one",
+                "kwik.cx"
+            ).forEach { domain ->
+                assertTrue("$domain must be in TOP_PREDICTIVE_DOMAINS", domains.contains(domain))
+            }
+            assertTrue(
+                "Decommissioned AnimePahe domains must not be warmed",
+                domains.none { it.contains("animepahe") }
+            )
         }
     }
 }

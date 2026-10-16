@@ -343,7 +343,7 @@ class ChallengerM2EmpiricalAdversarialTest {
 
         val vidup720 = createLink("Vidup", "Vidup [720p]", "https://vidup.io/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
-        val animepahe1080 = createLink("AnimePahe", "AnimePahe [1080p]", "https://animepahe.pw/1080.m3u8", Qualities.P1080.value)
+        val animex1080 = createLink("Animex", "Animex [1080p]", "https://animex.one/1080.m3u8", Qualities.P1080.value)
         val vidlink480 = createLink("VidLink", "VidLink [480p]", "https://vidlink.pro/480.m3u8", Qualities.P480.value)
 
         // Lower-tier 720p arrives first -> staged waiting for pinnacle VidLink (rank 100)
@@ -363,9 +363,9 @@ class ChallengerM2EmpiricalAdversarialTest {
         assertEquals("480p must not be emitted before 1080p", 2, dispatched.size)
 
         // 1080p arrives -> emitted as #3, flushes 480p as #4
-        dispatcher.onLinkAccepted(animepahe1080)
+        dispatcher.onLinkAccepted(animex1080)
         assertEquals("1080p emitted and flushes 480p", 4, dispatched.size)
-        assertEquals("AnimePahe 1080p must be third", animepahe1080, dispatched[2])
+        assertEquals("Animex 1080p must be third", animex1080, dispatched[2])
         assertEquals("VidLink 480p must be fourth", vidlink480, dispatched[3])
 
         dispatcher.flush()

@@ -94,10 +94,10 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         assertFalse(StreamLinkOptimizer.isStreamBetter(minMovieBox720, maxVidLink1080))
 
         // Permute all providers across 720p vs 1080p with randomized or edge-case badge sets.
-        // Ranks: VidLink 100 > AnimePahe 90 > every other (decommissioned) label at 0.
+        // Ranks: VidLink 100 > Animex 90 > every other (decommissioned) label at 0.
         val providers = listOf(
             "VidLink" to 100,
-            "AnimePahe" to 90,
+            "Animex" to 90,
             "RiveStream" to 0,
             "VidNest" to 0,
             "Vidup" to 0,
@@ -163,12 +163,17 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
-        // The v18 registry has three ranked sources; every other label scores rank 0, so
-        // monotonicity is asserted across the distinct ranks: VidLink 100 > VidSrc 95 > AnimePahe 90 > secondary 0.
+        // The v23 registry has seven ranked sources; every other label scores rank 0, so
+        // monotonicity is asserted across the full distinct-rank chain:
+        // VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 > MeowTV 91 > Animex 90.
         val providersInOrder = listOf(
             "VidLink" to 100,
             "VidSrc" to 95,
-            "AnimePahe" to 90
+            "VidFast" to 94,
+            "VidSrcSU" to 93,
+            "VidRock" to 92,
+            "MeowTV" to 91,
+            "Animex" to 90
         )
 
         val maxHeaders = mapOf(
@@ -251,7 +256,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         val hexasu720 = createLink("HexaSU", "HexaSU [720p]", "https://hexa.su/720.m3u8", Qualities.P720.value)
         val cinejoy720 = createLink("CineJoy", "CineJoy [720p]", "https://cinejoy.to/720.m3u8", Qualities.P720.value)
         val vidup720 = createLink("Vidup", "Vidup [720p]", "https://vidup.to/720.m3u8", Qualities.P720.value)
-        val animepahe720 = createLink("AnimePahe", "AnimePahe [720p]", "https://animepahe.pw/720.m3u8", Qualities.P720.value)
+        val animex720 = createLink("Animex", "Animex [720p]", "https://animex.one/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
 
         // Arrive in reverse order: all rank-0 secondaries, then rank 90, rank 100 last
@@ -260,7 +265,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         dispatcher.onLinkAccepted(hexasu720)
         dispatcher.onLinkAccepted(cinejoy720)
         dispatcher.onLinkAccepted(vidup720)
-        dispatcher.onLinkAccepted(animepahe720)
+        dispatcher.onLinkAccepted(animex720)
 
         // All are buffered in pendingTop720Links waiting for VidLink (100) which is still in flight (within topSourceGraceMs 300ms)
         delay(50L)
@@ -275,11 +280,11 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         inFlightRanks.clear()
         dispatcher.markRankCompleted(90)
 
-        // VidLink (100) and AnimePahe (90) outrank everything; the five rank-0 secondaries tie at
+        // VidLink (100) and Animex (90) outrank everything; the five rank-0 secondaries tie at
         // 800.0f, so the stable comparator drains them in arrival order.
         assertEquals("All 7 streams must be emitted", 7, emitted.size)
         assertEquals("1st must be VidLink 720p", vidlink720, emitted[0])
-        assertEquals("2nd must be AnimePahe 720p", animepahe720, emitted[1])
+        assertEquals("2nd must be Animex 720p", animex720, emitted[1])
         assertEquals("3rd must be MovieBox 720p", moviebox720, emitted[2])
         assertEquals("4th must be AutoEmbed 720p", autoembed720, emitted[3])
         assertEquals("5th must be HexaSU 720p", hexasu720, emitted[4])
@@ -290,7 +295,8 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     @Test
     fun testHigherRanking720pArrivesDuring1080pGraceWindowPreempts1080p() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
-        val inFlightRanks = mutableSetOf(90, 80, 70)
+        // VidSrc (95) and VidFast (94) are still in flight when the 1080p candidate lands.
+        val inFlightRanks = mutableSetOf(95, 94)
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -299,36 +305,35 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 150L,
             top720GraceMs = 1000L,
-            activeTopRanks = setOf(90, 80, 70),
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
-        // VidFast (rank 70) emits 1080p at t=0ms, while higher ranks (YFlix 90, CineJoy 80) are in flight
-        val vidfast1080 = createLink("VidFast", "VidFast [1080p]", "https://vidfast.vc/1080.m3u8", Qualities.P1080.value)
-        val cinejoy720 = createLink("CineJoy", "CineJoy [720p]", "https://cinejoy.to/720.m3u8", Qualities.P720.value)
+        // MeowTV (rank 91) emits 1080p at t=0ms, while higher ranks (VidSrc 95, VidFast 94)
+        // are still in flight.
+        val meowtv1080 = createLink("MeowTV", "MeowTV [1080p]", "https://meowtv.ru/1080.m3u8", Qualities.P1080.value)
+        // VidRock (rank 92) arrives later with 720p and must preempt the held 1080p.
+        val vidrock720 = createLink("VidRock", "VidRock [720p]", "https://vidrock.net/720.m3u8", Qualities.P720.value)
 
-        dispatcher.onLinkAccepted(vidfast1080)
-        inFlightRanks.remove(70)
-        dispatcher.markRankCompleted(70)
-
+        dispatcher.onLinkAccepted(meowtv1080)
         delay(50L)
-        // VidFast 1080p must be held because higher rank 720p candidates (ranks 90, 80) are in flight
-        assertTrue("VidFast 1080p must be held waiting for higher-ranked 720p candidates", emitted.isEmpty())
+        // MeowTV 1080p must be held because higher-ranked candidates (ranks 95/94) are in flight.
+        assertTrue("MeowTV 1080p must be held waiting for higher-ranked candidates", emitted.isEmpty())
 
-        // CineJoy 720p (rank 80) arrives at t=60ms
-        dispatcher.onLinkAccepted(cinejoy720)
-        inFlightRanks.remove(80)
-        dispatcher.markRankCompleted(80)
+        // VidRock 720p (rank 92) arrives at t=60ms
+        dispatcher.onLinkAccepted(vidrock720)
 
-        // YFlix (rank 90) finishes with no links
-        inFlightRanks.remove(90)
-        dispatcher.markRankCompleted(90)
+        // The higher-ranked in-flight sources finish with no 720p of their own
+        inFlightRanks.remove(95)
+        inFlightRanks.remove(94)
+        dispatcher.markRankCompleted(95)
+        dispatcher.markRankCompleted(94)
 
         assertEquals("Both streams must be emitted", 2, emitted.size)
-        assertEquals("CineJoy 720p MUST be emitted BEFORE VidFast 1080p", cinejoy720, emitted[0])
-        assertEquals("VidFast 1080p must be emitted AFTER higher-ranked 720p", vidfast1080, emitted[1])
+        assertEquals("VidRock 720p MUST be emitted BEFORE MeowTV 1080p", vidrock720, emitted[0])
+        assertEquals("MeowTV 1080p must be emitted AFTER the higher-ranked 720p", meowtv1080, emitted[1])
     }
 
     @Test

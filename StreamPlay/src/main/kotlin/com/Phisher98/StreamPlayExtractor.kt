@@ -151,11 +151,12 @@ object StreamPlayExtractor : StreamPlay() {
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     if (cont.isActive) {
-                        if (call.isCanceled()) {
-                            cont.cancel(CancellationException(e.message, e))
-                        } else {
-                            cont.resume(null)
-                        }
+                        // OkHttp's callTimeout cancels the call internally and reports it as a
+                        // cancelled call + IOException ("timeout"); that is a retryable failure,
+                        // NOT coroutine cancellation. Genuine external cancellation makes cont
+                        // inactive before invokeOnCancellation() ever runs, so if we get here
+                        // while active, resuming null preserves both semantics.
+                        cont.resume(null)
                     }
                 }
 
@@ -167,11 +168,10 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     } catch (t: Throwable) {
                         if (cont.isActive) {
-                            if (call.isCanceled() || t is CancellationException) {
-                                cont.cancel(CancellationException(t.message, t))
-                            } else {
-                                cont.resume(null)
-                            }
+                            // Same rationale as onFailure: a body-read failure caused by an
+                            // okhttp-internal callTimeout is retryable (resume null); genuine
+                            // external cancellation already made cont inactive.
+                            cont.resume(null)
                         }
                     }
                 }
@@ -213,11 +213,12 @@ object StreamPlayExtractor : StreamPlay() {
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     if (cont.isActive) {
-                        if (call.isCanceled()) {
-                            cont.cancel(CancellationException(e.message, e))
-                        } else {
-                            cont.resume(null)
-                        }
+                        // OkHttp's callTimeout cancels the call internally and reports it as a
+                        // cancelled call + IOException ("timeout"); that is a retryable failure,
+                        // NOT coroutine cancellation. Genuine external cancellation makes cont
+                        // inactive before invokeOnCancellation() ever runs, so if we get here
+                        // while active, resuming null preserves both semantics.
+                        cont.resume(null)
                     }
                 }
 
@@ -254,20 +255,16 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * SOTA Emission for Top-Tier Sources (VidLink 100 > HexaSU 90 > AutoEmbed 80 > VidFast 70 > VidEasy 60 > VidSrc 55).
-     * Guarantees that EVERY top-tier stream provides BOTH 720p and 1080p, with 720p strictly prioritized as #1
-     * and 1080p as #2, followed by other qualities (480p, 4K, etc.) using STREAM_PRIORITY_COMPARATOR.
+     * SOTA Emission for Top-Tier Sources (VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 >
+     * VidRock 92 > MeowTV 91 > Animex 90). Emits only genuine, manifest-verified variants:
+     * 720p is prioritized #1 and 1080p #2 by STREAM_PRIORITY_COMPARATOR, followed by the
+     * remaining qualities (480p, 4K, ...); no synthetic companions are ever fabricated.
      *
-     * - If generatedLinks is provided from generateM3u8:
-     *   1. Tags each link with sota_dual_quality.
-     *   2. Inspects the links for 720p and 1080p.
-     *   3. If 720p is missing, synthesizes a 720p companion from the best available link/master stream.
-     *   4. If 1080p is missing, synthesizes a 1080p companion from the best available link/master stream.
-     *   5. Dispatches all links sorted by STREAM_PRIORITY_COMPARATOR (guaranteeing 720p is emitted first, then 1080p).
-     *
-     * - If generatedLinks is null or empty (e.g. direct MP4/MKV video or fallback M3U8):
-     *   1. Emits 720p variant first (#1).
-     *   2. Emits 1080p variant second (#2).
+     * - If generatedLinks is provided from generateM3u8: every parsed variant is tagged with
+     *   sota_dual_quality and dispatched sorted strictly by STREAM_PRIORITY_COMPARATOR.
+     * - If generatedLinks is null or empty (direct MP4/MKV, single media playlist, or an
+     *   unparseable master): exactly one link is emitted carrying its authentic detected
+     *   quality, or [Auto] + Qualities.Unknown for unparseable HLS masters.
      */
     fun emitTopTierDualQualityStreamLinks(
         source: String,
@@ -712,98 +709,6 @@ object StreamPlayExtractor : StreamPlay() {
                         callback.invoke(newLink)
                     }
                 }
-            }
-        }
-    }
-
-    private fun normalizeAnimePaheUrl(url: String): String {
-        val legacyHosts = listOf("animepahe.si", "animepahe.com", "animepahe.org", "animepahe.ru", "animepahe.su")
-        return legacyHosts.fold(url) { normalized, host ->
-            normalized.replace(host, "animepahe.pw", ignoreCase = true)
-        }
-    }
-
-
-    suspend fun invokeAnimepahe(
-        url: String,
-        episode: Int? = null,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-        dubtype: String?,
-    ) {
-        val isMovie = dubtype == "Movie"
-        val headers = mapOf("Cookie" to "__ddg2_=1234567890")
-
-        val id = safeGet(normalizeAnimePaheUrl(url), headers)
-            .document.selectFirst("meta[property=og:url]")
-            ?.attr("content").toString().substringAfterLast("/")
-
-        val animeData = safeGet(
-            "$animepaheAPI/api?m=release&id=$id&sort=episode_asc&page=1",
-            headers
-        ).parsedSafe<animepahe>()?.data.orEmpty()
-
-        val targetIndex = (episode ?: 1) - 1
-        if (targetIndex !in animeData.indices) return
-        val session = animeData[targetIndex].session
-
-        val document = safeGet(
-            "$animepaheAPI/play/$id/$session",
-            headers
-        ).document
-
-        document.select("#resolutionMenu button").safeAmap {
-            val dubText = it.select("span").text().lowercase()
-            val type = if ("eng" in dubText) "DUB" else "SUB"
-
-            val qualityRegex = Regex("""(.+?)\s+·\s+(\d{3,4}p)""")
-            val text = it.text()
-            val match = qualityRegex.find(text)
-
-            val source = match?.groupValues?.getOrNull(1)?.trim() ?: "Unknown"
-            val quality = match?.groupValues?.getOrNull(2)?.substringBefore("p")?.toIntOrNull()
-                ?: Qualities.Unknown.value
-
-            val href = it.attr("data-src")
-            if ("kwik" in href && (isMovie || (dubtype != null && type.contains(
-                    dubtype,
-                    ignoreCase = true
-                )))
-            ) {
-                loadDisplaySourceNameExtractor(
-                    "Animepahe",
-                    "⌜ Animepahe ⌟ $source | [$type]",
-                    href,
-                    "",
-                    subtitleCallback,
-                    callback,
-                    quality
-                )
-            }
-        }
-
-        document.select("div#pickDownload > a").safeAmap {
-            val qualityRegex = Regex("""(.+?)\s+·\s+(\d{3,4}p)""")
-
-            val href = it.attr("href")
-            var type = "SUB"
-            if (it.select("span").text().contains("eng", ignoreCase = true))
-                type = "DUB"
-
-            val text = it.text()
-            val match = qualityRegex.find(text)
-            val source = match?.groupValues?.getOrNull(1) ?: "Unknown"
-            val quality = match?.groupValues?.getOrNull(2)?.substringBefore("p") ?: "Unknown"
-            if (isMovie || (dubtype != null && type.contains(dubtype, ignoreCase = true))) {
-                loadDisplaySourceNameExtractor(
-                    "Animepahe Pahe",
-                    "⌜ Animepahe ⌟ Pahe $source | [$type]",
-                    href,
-                    "",
-                    subtitleCallback,
-                    callback,
-                    quality.toIntOrNull()
-                )
             }
         }
     }
@@ -3169,176 +3074,323 @@ object StreamPlayExtractor : StreamPlay() {
         invokeCineJoy(title, tmdbId = tmdbId, imdbId = null, year = null, season = season, episode = episode, subtitleCallback = null, callback = callback)
     }
 
-    suspend fun invokeHexa(
+    // ==================== v23 SOTA Extractor Suite (VidFast / VidSrcSU / MeowTV) ====================
+    //
+    // Three protocols reverse-engineered and verified end-to-end over plain HTTP during the v23
+    // research pass (2026-10-16). Each one hides its media URL behind a small closed-source
+    // client crypto chain; the per-request decryptor calls are delegated to enc-dec.app, the
+    // continuously maintained decrypt toolkit already trusted by this extension for other
+    // flows. Every playback URL produced here is expanded and emitted through the repo-standard
+    // non-synthetic top-tier emission path (emitTopTierDualQualityStreamLinks).
+
+    private const val ENC_DEC_API = "https://enc-dec.app/api"
+
+    /** VidFast player origin. Protocol: page token -> enc-vidfast stage 1/2 -> per-server stream. */
+    private const val VIDFAST_HOST = "https://vidfast.vc"
+
+    /** VidSrcSU (hexa protocol) TMDB metadata origin + its web front used for Referer pinning. */
+    private const val VIDSRCSU_API = "https://themoviedb.vidsrc.su"
+    private const val VIDSRCSU_ORIGIN = "https://vidsrc.su"
+
+    /** Public per-player fingerprint constant published by the vidsrc.su web bundle. */
+    private const val VIDSRCSU_FINGERPRINT = "e9136c41504646444"
+
+    /** MeowTV web front (Origin/Referer) + ticket/stream API. */
+    private const val MEOWTV_HOST = "https://meowtv.ru"
+    private const val MEOWTV_API = "https://api.meowtv.ru"
+
+    /** MeowTV upstream servers, in the site's own preference order (original audio first). */
+    private val MEOWTV_SERVERS = listOf("english", "ipcloud", "tik", "dcloud", "acme", "hindi")
+
+    private val VIDFAST_PAGE_TOKEN_REGEX = Regex("\"(?:en|token)\":\"([A-Za-z0-9_-]+)\"")
+
+    /**
+     * Extracts the VidFast player handshake token from the page HTML. The bundle embeds it inside
+     * a JSON-in-string (`\"en\":\"<b64url>\"`, fallback key `token`), so the JSON string layer is
+     * unescaped first and the first base64url payload of at least 20 characters wins.
+     */
+    internal fun vidfastExtractPageToken(html: String): String? {
+        val unescaped = html.replace("\\\"", "\"")
+        return VIDFAST_PAGE_TOKEN_REGEX.findAll(unescaped)
+            .map { it.groupValues[1] }
+            .firstOrNull { it.length >= 20 }
+    }
+
+    /** enc-dec.app GET with the process-wide 4-permit throttle and one transient retry. */
+    private suspend fun encDecGet(url: String, headers: Map<String, String>, timeoutSec: Long = 3L): String? =
+        encDecApiSemaphore.withPermit {
+            retryTransient(1, 200L) { cancellableGetText(url, headers, timeoutSec) }
+        }
+
+    /** enc-dec.app POST (JSON body) with the process-wide throttle and two transient retries. */
+    private suspend fun encDecPost(path: String, jsonBody: String, timeoutSec: Long = 4L): String? =
+        encDecApiSemaphore.withPermit {
+            retryTransient(2, 300L) {
+                cancellablePostText(
+                    "$ENC_DEC_API/$path",
+                    headers = mapOf("Content-Type" to "application/json", "User-Agent" to USER_AGENT),
+                    requestBody = jsonBody.toRequestBody("application/json".toMediaType()),
+                    timeoutSec = timeoutSec
+                )
+            }
+        }
+
+    /**
+     * Shared expander for verified protocol outputs: expands a master playlist through
+     * M3u8Helper and delegates to the repo-standard non-synthetic top-tier emission (sorted
+     * genuine variants, or exactly one authentic [Auto] link when the manifest is a single
+     * media playlist / unparseable).
+     */
+    private suspend fun emitVerifiedStream(
+        source: String,
+        baseName: String,
+        url: String,
+        referer: String,
+        headers: Map<String, String> = emptyMap(),
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val isDirectVideo = url.contains(".mp4", ignoreCase = true) || url.contains(".mkv", ignoreCase = true)
+        val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+        val generated = if (!isDirectVideo) {
+            withTimeoutOrNull(4500L) {
+                runCatching { generateM3u8(baseName, url, referer, headers = headers) }.getOrNull()
+            }
+        } else null
+
+        emitTopTierDualQualityStreamLinks(
+            source = source,
+            baseName = baseName,
+            url = url,
+            referer = referer,
+            headers = headers,
+            streamType = streamType,
+            generatedLinks = generated,
+            callback = callback
+        )
+    }
+
+    // -------------------- VidFast --------------------
+
+    suspend fun invokeVidFast(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            val id = effectiveTmdbId ?: return
+            val isMovie = season == null || (season == 0 && episode == null)
+            if (!isMovie && episode == null) return
+
+            withTimeoutOrNull(24_000L) {
+                val pagePath = if (isMovie) "/movie/$id/" else "/tv/$id/$season/$episode/"
+                val pageHtml = cancellableGetText(
+                    "$VIDFAST_HOST$pagePath",
+                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$VIDFAST_HOST/"),
+                    timeoutSec = 5L
+                ) ?: return@withTimeoutOrNull
+
+                val pageToken = vidfastExtractPageToken(pageHtml) ?: run {
+                    Log.d("StreamPlay", "VidFast: no player token in page for $pagePath")
+                    return@withTimeoutOrNull
+                }
+
+                val stage1Raw = encDecGet(
+                    "$ENC_DEC_API/enc-vidfast?text=${URLEncoder.encode(pageToken, "UTF-8")}&stage=1",
+                    headers = mapOf("User-Agent" to USER_AGENT),
+                    timeoutSec = 4L
+                ) ?: return@withTimeoutOrNull
+                val stage1 = tryParseJson<VidFastStage1Response>(stage1Raw)?.result ?: return@withTimeoutOrNull
+                val stage1Url = stage1.stage1?.takeIf { it.startsWith("http") } ?: return@withTimeoutOrNull
+                var csrfToken = stage1.token?.takeIf { it.isNotBlank() } ?: return@withTimeoutOrNull
+
+                val playerHeaders = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "$VIDFAST_HOST/",
+                    "X-Requested-With" to "XMLHttpRequest"
+                )
+
+                suspend fun playerPost(url: String, csrf: String, timeoutSec: Long = 4L): String? =
+                    retryTransient(2, 350L) {
+                        cancellablePostText(
+                            url,
+                            headers = playerHeaders + mapOf("X-CSRF-Token" to csrf),
+                            requestBody = "{}".toRequestBody("application/json".toMediaType()),
+                            timeoutSec = timeoutSec
+                        )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") }
+                    }
+
+                val stage1Body = playerPost(stage1Url, csrfToken) ?: return@withTimeoutOrNull
+
+                val stage2Raw = encDecGet(
+                    "$ENC_DEC_API/enc-vidfast?text=${URLEncoder.encode(stage1Body, "UTF-8")}&stage=2",
+                    headers = mapOf("User-Agent" to USER_AGENT),
+                    timeoutSec = 4L
+                ) ?: return@withTimeoutOrNull
+                val stage2 = tryParseJson<VidFastStage2Response>(stage2Raw)?.result ?: return@withTimeoutOrNull
+                val serversUrl = stage2.servers?.takeIf { it.startsWith("http") } ?: return@withTimeoutOrNull
+                val streamBase = stage2.stream?.takeIf { it.startsWith("http") } ?: return@withTimeoutOrNull
+                csrfToken = stage2.token?.takeIf { it.isNotBlank() } ?: csrfToken
+
+                val serversBody = playerPost(serversUrl, csrfToken) ?: return@withTimeoutOrNull
+                val serversDecRaw = encDecPost("dec-vidfast", JSONObject().put("text", serversBody).toString())
+                    ?: return@withTimeoutOrNull
+                val servers = runCatching {
+                    JSONObject(serversDecRaw).optJSONArray("result")
+                }.getOrNull() ?: return@withTimeoutOrNull
+
+                for (i in 0 until servers.length()) {
+                    currentCoroutineContext().ensureActive()
+                    val serverObj = servers.optJSONObject(i) ?: continue
+                    val data = serverObj.optString("data").takeIf { it.isNotBlank() } ?: continue
+                    val serverName = serverObj.optString("name").takeIf { it.isNotBlank() } ?: "Server"
+
+                    val streamBody = playerPost("$streamBase/$data", csrfToken) ?: continue
+                    val streamDecRaw = encDecPost("dec-vidfast", JSONObject().put("text", streamBody).toString()) ?: continue
+                    val streamResult = runCatching {
+                        JSONObject(streamDecRaw).optJSONObject("result")
+                    }.getOrNull() ?: continue
+                    val streamUrl = streamResult.optString("url").takeIf { it.startsWith("http") } ?: continue
+
+                    streamResult.optJSONArray("tracks")?.let { tracks ->
+                        for (t in 0 until tracks.length()) {
+                            val track = tracks.optJSONObject(t) ?: continue
+                            if (track.optString("kind").equals("thumbnails", ignoreCase = true)) continue
+                            val file = track.optString("file").takeIf { it.startsWith("http") } ?: continue
+                            subtitleCallback?.invoke(
+                                newSubtitleFile(cleanSubtitleLabel(track.optString("label").ifBlank { "English" }), file)
+                            )
+                        }
+                    }
+
+                    val noReferrer = streamResult.optBoolean("noReferrer", false)
+                    val referer = if (noReferrer) "" else "$VIDFAST_HOST/"
+                    val streamHeaders = if (noReferrer) emptyMap()
+                    else mapOf("Referer" to "$VIDFAST_HOST/", "Origin" to VIDFAST_HOST)
+
+                    val displayName = serverName.replaceFirstChar {
+                        if (it.isLowerCase()) it.titlecase() else it.toString()
+                    }
+                    emitVerifiedStream(
+                        source = "VidFast",
+                        baseName = "VidFast $displayName",
+                        url = streamUrl,
+                        referer = referer,
+                        headers = streamHeaders,
+                        callback = callback
+                    )
+                    return@withTimeoutOrNull
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidFast failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVidFast(
         tmdbId: Int?,
         season: Int?,
         episode: Int?,
-        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit
     ) {
-        try {
-            if (tmdbId == null || (season != null && season != 0 && episode == null)) return
+        invokeVidFast(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
 
-            withTimeoutOrNull(2500L) {
+    // -------------------- VidSrcSU (hexa protocol) --------------------
+
+    suspend fun invokeVidSrcSU(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            val id = effectiveTmdbId ?: return
+            val isMovie = season == null || (season == 0 && episode == null)
+            if (!isMovie && episode == null) return
+
+            withTimeoutOrNull(24_000L) {
                 val key = generateHexKey32()
 
                 val baseHeaders = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-                    "Referer" to "https://hexa.su/",
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "$VIDSRCSU_ORIGIN/",
                     "Accept" to "text/plain",
-                    "X-Fingerprint-Lite" to "e9136c41504646444",
+                    "X-Fingerprint-Lite" to VIDSRCSU_FINGERPRINT,
                     "X-Api-Key" to key
                 )
 
-                val apiBase = "https://enc-dec.app/api"
+                val tokenRaw = encDecGet("$ENC_DEC_API/enc-hexa", headers = baseHeaders, timeoutSec = 4L)
+                    ?: return@withTimeoutOrNull
+                val token = tryParseJson<VidSrcSUEn>(tokenRaw)?.result?.token?.takeIf { it.isNotBlank() }
+                    ?: return@withTimeoutOrNull
 
-                val token = encDecApiSemaphore.withPermit {
-                    retryTransient(1, 100L) {
-                        safeGet("$apiBase/enc-hexa", headers = baseHeaders, timeout = 2L).parsedSafe<HexaEn>()
-                    }
-                }?.result?.token ?: return@withTimeoutOrNull
-
-                val headers = baseHeaders + mapOf(
-                    "X-Cap-Token" to token
-                )
-
-                val paths = if (season == null || (season == 0 && episode == null)) {
-                    listOf("/api/tmdb/movie/$tmdbId/images")
+                val imagesUrl = if (isMovie) {
+                    "$VIDSRCSU_API/api/tmdb/movie/$id/images"
                 } else {
-                    if (episode == null) return@withTimeoutOrNull
-                    if (season == 0) {
-                        listOf(
-                            "/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images",
-                            "/api/tmdb/movie/$tmdbId/images"
-                        )
-                    } else {
-                        listOf("/api/tmdb/tv/$tmdbId/season/$season/episode/$episode/images")
-                    }
+                    "$VIDSRCSU_API/api/tmdb/tv/$id/season/$season/episode/$episode/images"
                 }
 
-                val domainTargets = listOf(
-                    hexaSU to "https://hexa.su/",
-                    flixerSU to "https://flixer.su/",
-                    embedSU to "https://embed.su/"
-                )
+                val imagesRaw = cancellableGetText(
+                    imagesUrl,
+                    headers = baseHeaders + mapOf("X-Cap-Token" to token),
+                    timeoutSec = 5L
+                )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") }
+                    ?: return@withTimeoutOrNull
 
-                var encrypted = ""
-                var chosenReferer = "https://hexa.su/"
-
-                for (path in paths) {
-                    for ((domain, referer) in domainTargets) {
-                        val url = "$domain$path"
-                        val targetHeaders = headers + mapOf(
-                            "Referer" to referer,
-                            "Origin" to referer.removeSuffix("/")
-                        )
-                        val response = suspendCancellable {
-                            withTimeoutOrNull(1800L) {
-                                safeGet(url, targetHeaders, timeout = 2L)
-                            }
-                        }
-                        if (response != null && response.isSuccessful && response.code !in listOf(403, 404, 500, 502, 503, 521, 522) && response.text.isNotBlank()) {
-                            encrypted = response.text
-                            chosenReferer = referer
-                            break
-                        } else {
-                            android.util.Log.d("StreamPlay", "HexaSU primary $domain unavailable (code: ${response?.code}), fast failover to next endpoint")
-                        }
-                    }
-                    if (encrypted.isNotEmpty()) break
-                }
-
-                if (encrypted.isEmpty()) return@withTimeoutOrNull
-
-                val jsonBody = JSONObject().put("text", encrypted).put("key", key).toString()
-                    .toRequestBody("application/json".toMediaType())
-
-                val decryptRes = encDecApiSemaphore.withPermit {
-                    retryTransient(2, 400L) {
-                        suspendCancellable {
-                            app.post(
-                                "$apiBase/dec-hexa",
-                                headers = mapOf("Content-Type" to "application/json"),
-                                requestBody = jsonBody,
-                                timeout = 4L
-                            ).parsedSafe<HexaResponse>()
-                        }
-                    }
-                } ?: return@withTimeoutOrNull
-
+                val decryptRaw = encDecPost(
+                    "dec-hexa",
+                    JSONObject().put("text", imagesRaw).put("key", key).toString(),
+                    timeoutSec = 5L
+                ) ?: return@withTimeoutOrNull
+                val decryptRes = tryParseJson<VidSrcSUResponse>(decryptRaw) ?: return@withTimeoutOrNull
                 if (decryptRes.status != 200) return@withTimeoutOrNull
 
-                // 1. Emit subtitles if available
                 decryptRes.result?.tracks?.forEach { track ->
                     if (track.kind?.equals("thumbnails", ignoreCase = true) == true) return@forEach
-                    val rawFile = track.file?.trim()
-                    val rawLabel = track.label ?: "English"
+                    val rawFile = track.file?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
                     val file = when {
-                        rawFile.isNullOrBlank() -> null
                         rawFile.startsWith("http://", ignoreCase = true) || rawFile.startsWith("https://", ignoreCase = true) -> rawFile
                         rawFile.startsWith("//") -> "https:$rawFile"
-                        else -> null
+                        else -> return@forEach
                     }
-                    if (!file.isNullOrBlank()) {
-                        val label = cleanSubtitleLabel(rawLabel)
-                        subtitleCallback?.invoke(newSubtitleFile(label, file))
-                    }
+                    subtitleCallback?.invoke(newSubtitleFile(cleanSubtitleLabel(track.label ?: "English"), file))
                 }
 
-                val sources = decryptRes.result?.sources ?: return@withTimeoutOrNull
+                val sources = decryptRes.result?.sources.orEmpty()
+                val cdnHeaders = mapOf("Referer" to "$VIDSRCSU_ORIGIN/", "Origin" to VIDSRCSU_ORIGIN)
 
                 coroutineScope {
                     sources.map { src ->
                         async {
                             try {
+                                currentCoroutineContext().ensureActive()
                                 val server = src.server ?: return@async
-                                val link = src.url ?: return@async
-
-                                if (link.isEmpty()) return@async
-
-                                val name = server.replaceFirstChar {
+                                val link = src.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return@async
+                                val displayName = server.replaceFirstChar {
                                     if (it.isLowerCase()) it.titlecase() else it.toString()
                                 }
-
-                                val linkHeaders = mapOf("Referer" to chosenReferer, "Origin" to chosenReferer.removeSuffix("/"))
-                                val isDirectVideo = link.contains(".mp4", ignoreCase = true) || link.contains(".mkv", ignoreCase = true)
-                                val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
-
-                                val generated = if (!isDirectVideo) {
-                                    withTimeoutOrNull(4500L) {
-                                        runCatching {
-                                            generateM3u8(
-                                                "HexaSU $name",
-                                                link,
-                                                chosenReferer,
-                                                headers = linkHeaders
-                                            )
-                                        }.getOrNull()
-                                    }
-                                } else null
-
-                                if (!generated.isNullOrEmpty()) {
-                                    emitTopTierDualQualityStreamLinks(
-                                        source = "HexaSU",
-                                        baseName = "HexaSU $name",
-                                        url = link,
-                                        referer = chosenReferer,
-                                        headers = linkHeaders,
-                                        streamType = streamType,
-                                        generatedLinks = generated,
-                                        callback = callback
-                                    )
-                                } else if (link.isNotBlank() && link.startsWith("http", ignoreCase = true)) {
-                                    emitTopTierDualQualityStreamLinks(
-                                        source = "HexaSU",
-                                        baseName = "HexaSU $name",
-                                        url = link,
-                                        referer = chosenReferer,
-                                        headers = linkHeaders,
-                                        streamType = streamType,
-                                        callback = callback
-                                    )
-                                }
+                                emitVerifiedStream(
+                                    source = "VidSrcSU",
+                                    baseName = "VidSrcSU $displayName",
+                                    url = link,
+                                    referer = "$VIDSRCSU_ORIGIN/",
+                                    headers = cdnHeaders,
+                                    callback = callback
+                                )
                             } catch (e: Exception) {
                                 if (e is CancellationException) throw e
                             }
@@ -3348,17 +3400,111 @@ object StreamPlayExtractor : StreamPlay() {
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            Log.w("StreamPlay", "invokeHexa failed: ${e.message}")
+            Log.w("StreamPlay", "invokeVidSrcSU failed: ${e.message}")
         }
     }
 
-    suspend fun invokeHexa(
+    suspend fun invokeVidSrcSU(
         tmdbId: Int?,
         season: Int?,
         episode: Int?,
         callback: (ExtractorLink) -> Unit
     ) {
-        invokeHexa(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+        invokeVidSrcSU(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+
+    // -------------------- MeowTV --------------------
+
+    suspend fun invokeMeowTV(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            val id = effectiveTmdbId ?: return
+            val isMovie = season == null || (season == 0 && episode == null)
+            if (!isMovie && episode == null) return
+
+            withTimeoutOrNull(24_000L) {
+                val streamPath = if (isMovie) "/streams/movie/$id" else "/streams/tv/$id/$season/$episode"
+                val baseHeaders = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Origin" to MEOWTV_HOST,
+                    "Referer" to "$MEOWTV_HOST/"
+                )
+
+                for (server in MEOWTV_SERVERS) {
+                    currentCoroutineContext().ensureActive()
+
+                    // Tickets are single-use: every server attempt needs a fresh one, and the
+                    // stream GET is deliberately never retried with a spent ticket.
+                    val ticketRaw = cancellablePostText(
+                        "$MEOWTV_API/streams/ticket",
+                        headers = baseHeaders + mapOf("Content-Type" to "application/json"),
+                        requestBody = "{}".toRequestBody("application/json".toMediaType()),
+                        timeoutSec = 4L
+                    ) ?: continue
+                    val ticket = tryParseJson<MeowTvTicketResponse>(ticketRaw)?.ticket?.takeIf { it.isNotBlank() }
+                        ?: continue
+
+                    val streamRaw = cancellableGetText(
+                        "$MEOWTV_API$streamPath?s=$server",
+                        headers = baseHeaders + mapOf("X-Stream-Ticket" to ticket),
+                        timeoutSec = 5L
+                    )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") } ?: continue
+
+                    val payload = tryParseJson<MeowTvPayload>(streamRaw) ?: continue
+                    val payloadN = payload.n?.takeIf { it.isNotBlank() } ?: continue
+                    val payloadD = payload.d?.takeIf { it.isNotBlank() } ?: continue
+
+                    val decRaw = encDecPost(
+                        "dec-meowtv",
+                        JSONObject().put("data", JSONObject().put("n", payloadN).put("d", payloadD)).toString(),
+                        timeoutSec = 5L
+                    ) ?: continue
+                    val decRes = tryParseJson<MeowTvDecResponse>(decRaw)?.result ?: continue
+                    val streamUrl = decRes.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+
+                    val decHeaders = decRes.headers.orEmpty()
+                    val referer = decHeaders.entries
+                        .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value ?: ""
+                    val streamHeaders = decHeaders + mapOf("User-Agent" to USER_AGENT)
+
+                    val language = decRes.language?.takeIf { it.isNotBlank() } ?: "Auto"
+                    val displayLanguage = language.replaceFirstChar {
+                        if (it.isLowerCase()) it.titlecase() else it.toString()
+                    }
+                    emitVerifiedStream(
+                        source = "MeowTV",
+                        baseName = "MeowTV $displayLanguage",
+                        url = streamUrl,
+                        referer = referer,
+                        headers = streamHeaders,
+                        callback = callback
+                    )
+                    return@withTimeoutOrNull
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeMeowTV failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeMeowTV(
+        tmdbId: Int?,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeMeowTV(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
     suspend fun invokeAutoembed(

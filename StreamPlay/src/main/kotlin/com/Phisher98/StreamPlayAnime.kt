@@ -48,7 +48,6 @@ import com.phisher98.StreamPlay.Companion.malsyncAPI
 import com.phisher98.StreamPlayExtractor.invokeAnichi
 import com.phisher98.StreamPlayExtractor.invokeAnikage
 import com.phisher98.StreamPlayExtractor.invokeAnineko
-import com.phisher98.StreamPlayExtractor.invokeAnimepahe
 import com.phisher98.StreamPlayExtractor.invokeAnimetosho
 import com.phisher98.StreamPlayExtractor.invokeAnimex
 import com.phisher98.StreamPlayExtractor.invokeAnizone
@@ -447,11 +446,6 @@ class StreamPlayAnime : MainAPI() {
             add(PipelinedTask("Hianime", LatencyTier.TIER_1) {
                 invokeHianime(malId, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
             })
-            malsync?.animepahe?.values?.firstNotNullOfOrNull { it["url"] }?.let { url ->
-                add(PipelinedTask("Animepahe", LatencyTier.TIER_1) {
-                    invokeAnimepahe(url, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
-                })
-            }
             add(PipelinedTask("Anizone", LatencyTier.TIER_1) {
                 invokeAnizone(jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
             })
