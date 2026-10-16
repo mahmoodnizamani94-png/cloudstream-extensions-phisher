@@ -940,13 +940,21 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 rawUrl.startsWith("//") -> "https:$rawUrl"
                 else -> return false
             }
+            // Shield Tier-3: subtitles inherit tracking particles from frame pages, and
+            // subtitle CDNs must not be ad/tracker infrastructure.
+            val shieldedUrl = StreamPlayShield.stripTrackingParticles(url)
+            if (StreamPlayShield.isBlockedUrl(shieldedUrl)) {
+                StreamPlayShield.countEmissionBlocked()
+                Log.d("StreamPlayShield", "🛡 dropped blocked subtitle URL via ${StreamPlayShield.hostOf(shieldedUrl)}")
+                return false
+            }
             val cleanedLang = cleanSubtitleLabel(subtitle.lang)
-            val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$url"
+            val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$shieldedUrl"
 
             return if (emittedSubtitles.add(dedupeKey)) {
                 subtitlesFound.incrementAndGet()
                 @Suppress("DEPRECATION")
-                val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = url)
+                val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = shieldedUrl)
                 earlyController.onSubtitleEmitted(cleanedSubtitle)
                 subtitleCallback(cleanedSubtitle)
                 dispatcher.onSubtitleReceived()

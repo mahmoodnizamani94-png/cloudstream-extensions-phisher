@@ -1,5 +1,6 @@
 package com.phisher98
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -278,8 +279,34 @@ object StreamLinkOptimizer {
             )
         }
 
+        // Tier-3 shield gate: a resolved playback URL pointing at known ad/tracker
+        // infrastructure is reduced to a tombstone (empty url) that the StreamDeduplicator
+        // drops — the player must never be handed a blocked host.
+        if (StreamPlayShield.isBlockedUrl(rawUrl)) {
+            StreamPlayShield.countEmissionBlocked()
+            Log.d(
+                "StreamPlayShield",
+                "🛡 dropped blocked URL from ${link.source} via ${StreamPlayShield.hostOf(rawUrl)}"
+            )
+            @Suppress("DEPRECATION")
+            return ExtractorLink(
+                source = link.source,
+                name = link.name,
+                url = "",
+                referer = link.referer,
+                quality = link.quality,
+                type = link.type,
+                headers = link.headers,
+                extractorData = link.extractorData
+            )
+        }
+
+        // Tier-3 hygiene: strip tracking particles (utm_*/fbclid/gclid/...) inherited from
+        // redirect chains / player payloads before any rewrite or format stage sees them.
+        val shieldCleanUrl = StreamPlayShield.stripTrackingParticles(rawUrl)
+
         // 1. Direct CDN / endpoint rewrites
-        val optimizedUrl = resolveDirectStreamUrl(rawUrl)
+        val optimizedUrl = resolveDirectStreamUrl(shieldCleanUrl)
 
         // 2. Container & manifest auto-detection
         val resolvedType = resolveCorrectLinkType(optimizedUrl, link.type, headers = link.headers)
@@ -2202,6 +2229,12 @@ object StreamLinkOptimizer {
         }
 
         fun emitDetailed(link: ExtractorLink): DeduplicationResult {
+            // Shield gate: never forward, deduplicate or upgrade a link pointing at known
+            // ad/tracker infrastructure (covers flows that bypass the optimizer).
+            if (StreamPlayShield.isBlockedUrl(link.url)) {
+                StreamPlayShield.countEmissionBlocked()
+                return DeduplicationResult.DROPPED
+            }
             if (!isValidStreamUrl(link.url)) return DeduplicationResult.DROPPED
             val key = canonicalStreamKey(link)
             if (key.isBlank()) return DeduplicationResult.DROPPED

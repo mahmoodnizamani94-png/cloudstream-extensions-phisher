@@ -1,5 +1,15 @@
 # TEST_READY: Milestone 6 Acceptance & E2E Verification Report
 
+## StreamPlayShield Addendum (2026-10-16, commit v696)
+
+Follow-up to the v22 addendum below: StreamPlay now ships a production ad/tracker protection stack (**StreamPlayShield**), enforced at three tiers with one curated registry brain (registrable-domain suffixes only, no wildcards) and a vetted-source allowlist that unit-tests pin as collision-proof against the active fleet:
+
+- **T1 DNS gate**: blocked hostnames die inside `OptimizedDns.lookup` before any resolver flight (cache/LRU, system DNS or the 4-operator DoH race) via the standard `UnknownHostException` contract — zero packets leave the process.
+- **T2 shared-client interceptor**: `ShieldRequestInterceptor` (pure `evaluateRequest` decision + thin shell) is installed on the app-shared `app.baseClient` by `NetworkOptimizer` — it vetoes ad/tracker egress with `AdBlockedException : IOException`, strips tracking particles (utm_*, fbclid, gclid, msclkid, ttclid, mc_eid, _hsenc, _gl, …) through OkHttp's own URL builder, and applies an origin-only cross-host Referer policy while extractor-pinned anti-hotlink referers (vidrock CDN family, kwik) pass byte-for-byte. Because `app.baseClient` is shared process-wide, this favors the whole CloudStream app, not just StreamPlay.
+- **T3 emission hygiene**: `StreamLinkOptimizer.optimize` tombstones blocked URLs and scrubs particles from every emitted link; `StreamDeduplicator.emitDetailed` independently vetoes blocked hosts (covers the anime and stremio-catalog loadLinks funnels); subtitle URLs are scrubbed + gated in both flows. The player is never handed a URL the shield would have vetoed on the wire.
+- **Metrics**: per-tier counters (`StreamPlayShield.metrics()` / `describe()`) — ad vs tracker blocks, DNS gate, particle scrubs, referer leans, emission drops.
+- **Acceptance at this addendum**: `.\gradlew.bat :StreamPlay:testDebugUnitTest` — **493 tests, 0 failures, 0 errors, 0 skipped (35 suites)**, including the new `StreamPlayShieldTest` (32 tests: registry integrity, allowlist-collision pinning, lookalike safety, hostOf edge matrix, particle family + fragment preservation, Tier-2 decision contract, Tier-1 gate with zero resolver flights, Tier-3 tombstone/dedup/subtitle paths, metrics coherence, and a 20k-classification perf ceiling). `:StreamPlay:assembleDebug` BUILD SUCCESSFUL.
+
 ## v22 Registry Re-issuance Addendum (2026-10-16, commit v695)
 
 The sections below (1–4) are the Milestone-6 certification of the original SOTA engine rollout and remain historical record. The following addendum documents the v22 overhaul of **StreamPlay only** (no other plugin was touched, which intentionally breaks the cross-module bitwise-parity rows in section 3 for StreamPlay; the Ultima/StremioAddon/SuperStream copies stayed identical to their hashes):

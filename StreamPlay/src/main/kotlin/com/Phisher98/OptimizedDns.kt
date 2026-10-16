@@ -85,6 +85,14 @@ open class OptimizedDns(
             throw UnknownHostException("Hostname cannot be empty")
         }
 
+        // 0. Shield DNS gate: a blocked ad/tracker hostname must never produce ANY resolver
+        //    round-trip (neither system DNS nor the parallel DoH race). Throwing the standard
+        //    UnknownHostException keeps every network caller's failure contract intact.
+        if (StreamPlayShield.isBlockedHost(trimmed)) {
+            StreamPlayShield.countDnsGate()
+            throw UnknownHostException("blocked by StreamPlayShield policy: $trimmed")
+        }
+
         // 1. Literal IP Address Check (bypasses cache and network)
         if (isNumericIp(trimmed)) {
             return listOf(InetAddress.getByName(trimmed))

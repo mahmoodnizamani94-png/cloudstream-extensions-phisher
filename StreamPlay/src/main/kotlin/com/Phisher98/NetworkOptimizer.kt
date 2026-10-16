@@ -25,7 +25,8 @@ class NetworkOptimizerMarker : Interceptor {
  * SOTA Idempotent Network Connection & Client Optimizer.
  *
  * Configures CloudStream's app.baseClient with:
- * - OptimizedDns (in-memory LRU cache, Happy Eyeballs IP racing, Cloudflare/Google DoH fallback)
+ * - OptimizedDns (in-memory LRU cache, Happy Eyeballs IP racing, 4-operator DoH race)
+ * - StreamPlayShield request interceptor (ad/tracker block, tracking particles, referer policy)
  * - High-capacity ConnectionPool (64 max idle connections, 5 min keep-alive)
  * - High-concurrency Dispatcher (128 max concurrent requests, 32 per host)
  * - Optimized socket timeouts (6s connect, 10s read, 10s write)
@@ -50,12 +51,15 @@ object NetworkOptimizer {
         val hasMarker = client.interceptors.any { interceptor ->
             interceptor.javaClass.name.endsWith("NetworkOptimizerMarker")
         }
+        val hasShield = client.interceptors.any { interceptor ->
+            interceptor.javaClass.name.endsWith("ShieldRequestInterceptor")
+        }
         val hasOptimizedDispatcher = client.dispatcher.maxRequests >= 128 &&
                 client.dispatcher.maxRequestsPerHost >= 32
         val hasOptimizedTimeouts = client.connectTimeoutMillis <= 6000
         val hasOptimizedDns = client.dns.javaClass.name.contains("OptimizedDns")
 
-        return hasMarker && hasOptimizedDispatcher && hasOptimizedTimeouts && hasOptimizedDns
+        return hasMarker && hasShield && hasOptimizedDispatcher && hasOptimizedTimeouts && hasOptimizedDns
     }
 
     /**
@@ -92,11 +96,12 @@ object NetworkOptimizer {
                     .readTimeout(10, TimeUnit.SECONDS)
                     .writeTimeout(10, TimeUnit.SECONDS)
                     .addInterceptor(NetworkOptimizerMarker())
+                    .addInterceptor(StreamPlayShield.newRequestInterceptor())
                     .build()
 
                 app.baseClient = newClient
                 isLocallyInitialized = true
-                Log.d(TAG, "🚀 NetworkOptimizer initialized: pool=64, maxReq=128, maxPerHost=32, connect=6s, read=10s, dns=OptimizedDns")
+                Log.d(TAG, "🚀 NetworkOptimizer initialized: pool=64, maxReq=128, maxPerHost=32, connect=6s, read=10s, dns=OptimizedDns, shield=StreamPlayShield")
 
                 OptimizedDns.preResolveTopDomains()
             } catch (e: Exception) {

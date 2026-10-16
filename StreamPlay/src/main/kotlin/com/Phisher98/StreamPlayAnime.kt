@@ -423,13 +423,22 @@ class StreamPlayAnime : MainAPI() {
             }
         }
         val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
-            val url = sub.url.trim()
-            if (url.startsWith("http", ignoreCase = true)) {
-                val key = "${sub.lang.lowercase()}|$url"
-                if (emittedSubtitles.add(key)) {
-                    earlyController.onSubtitleEmitted(sub)
-                    subtitleCallback(sub)
-                    dispatcher.onSubtitleReceived()
+            val rawUrl = sub.url.trim()
+            if (rawUrl.startsWith("http", ignoreCase = true)) {
+                // Shield Tier-3: strip tracking particles and refuse ad/tracker hosts.
+                val url = StreamPlayShield.stripTrackingParticles(rawUrl)
+                if (StreamPlayShield.isBlockedUrl(url)) {
+                    StreamPlayShield.countEmissionBlocked()
+                    Log.d("StreamPlayShield", "🛡 dropped blocked subtitle URL via ${StreamPlayShield.hostOf(url)}")
+                } else {
+                    val key = "${sub.lang.lowercase()}|$url"
+                    if (emittedSubtitles.add(key)) {
+                        @Suppress("DEPRECATION")
+                        val shieldedSubtitle = SubtitleFile(lang = sub.lang, url = url)
+                        earlyController.onSubtitleEmitted(shieldedSubtitle)
+                        subtitleCallback(shieldedSubtitle)
+                        dispatcher.onSubtitleReceived()
+                    }
                 }
             }
         }
