@@ -32,8 +32,10 @@ import java.util.concurrent.CountDownLatch
  *     install while re-admitting the re-issued `vidfast` identifier,
  *  4. the bounded ordering windows of [StreamLinkOptimizer.PriorityStreamDispatcher],
  *  5. known-answer vectors for the offline VidLink token encryptor,
- *  6. known-answer vectors for the VidRock AES-256-GCM lane unwrap, and
- *  7. the exception gates that keep the Movie/TV and Anime halves of the registry apart.
+ *  6. known-answer vectors for the VidRock AES-256-GCM lane unwrap,
+ *  7. the exception gates that keep the Movie/TV and Anime halves of the registry apart, and
+ *  8. the stream-only download-exclusion contract (`DOWNLOAD_EXCLUDED_PROVIDER_IDS`) that
+ *     keeps VidFast fully streamable but structurally ineligible as a download source.
  */
 class StreamPlayCuratedRegistryV23Test {
 
@@ -888,5 +890,70 @@ class StreamPlayCuratedRegistryV23Test {
                 domains.none { it.contains("animepahe") }
             )
         }
+    }
+
+    // =========================================================================
+    // 8. STREAM-ONLY CONTRACT: DOWNLOAD-EXCLUDED PROVIDERS
+    // =========================================================================
+
+    @Test
+    fun testVidFastIsTheDeclaredStreamOnlyProvider() {
+        // VidFast is the pilot (and currently sole member) of the stream-only contract.
+        // The set must reference live curated providers only: excluding an id that is not
+        // registered, or one that already lives in the removed-tier bookkeeping, would make
+        // the host contract meaningless.
+        assertEquals("The stream-only declaration must be exactly VidFast", setOf("vidfast"), DOWNLOAD_EXCLUDED_PROVIDER_IDS)
+
+        val providerIds = buildProviders().map { it.id }.toSet()
+        DOWNLOAD_EXCLUDED_PROVIDER_IDS.forEach { id ->
+            assertTrue("Stream-only id $id must be a registered provider", providerIds.contains(id))
+            assertTrue("Stream-only id $id must be part of the curated registry", DEFAULT_TOP_TIER_PROVIDERS.contains(id))
+            assertFalse("Stream-only id $id must not be listed as removed", REMOVED_PROVIDER_IDS.contains(id))
+            assertNotNull("Stream-only id $id must keep its streaming boost", FAST_PROVIDER_BOOST[id])
+        }
+    }
+
+    @Test
+    fun testStreamOnlyProvidersAreNeverDisabledByTheSettingsPipeline() {
+        // The settings pipeline must never use the download contract to disable these
+        // providers: both a clean install and a repair of a stale, host-stamped opt-out
+        // have to leave them active for streaming.
+        val prefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
+        prefs.edit().putStringSet("disabled_providers", setOf("vidfast", "vidsrc")).apply()
+
+        val disabled = getOrInitializeDisabledProviders(prefs)
+        DOWNLOAD_EXCLUDED_PROVIDER_IDS.forEach { id ->
+            assertFalse("Stream-only $id must be active after migration", disabled.contains(id))
+        }
+        assertFalse("VidSrc must be active after migration", disabled.contains("vidsrc"))
+    }
+
+    @Test
+    fun testDownloadExclusionNeverDemotesStreamRank() {
+        // The download exclusion is a separate axis from streaming: it must not touch the
+        // launch boost, the cold-start tier, the provider gate or the composite playback
+        // score. Excluded ids keep their full stream rank everywhere.
+        for ((id, boost) in boostByProvider) {
+            if (!DOWNLOAD_EXCLUDED_PROVIDER_IDS.contains(id)) continue
+            assertEquals("Stream-only $id must keep its full launch boost", boost, FAST_PROVIDER_BOOST.getValue(id))
+            assertEquals(
+                "Stream-only $id must stay tier-1 for streaming",
+                LatencyTier.TIER_1,
+                SpeculativePipeliner.classifyProvider(id)
+            )
+            assertTrue("Stream-only $id must stay a recognised top-tier provider", StreamLinkOptimizer.isTopTierProvider(id))
+        }
+
+        // Concretely for VidFast: rank 94 for playback, above VidSrcSU/VidRock/MeowTV/Animex,
+        // and recovered even from a CDN-rewrapped link that lost its provider label.
+        assertEquals(94, rankOf("VidFast", "VidFast [720p]", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
+
+        val vidfast = createLink("VidFast", "VidFast [720p]", "https://moon.zenoak.top/hls/master.m3u8", Qualities.P720.value)
+        val vidsrcsu = createLink("VidSrcSU", "VidSrcSU [720p]", "https://dragonballzfans.xyz/x/master.m3u8", Qualities.P720.value)
+        assertTrue(
+            "VidFast must still outrank VidSrcSU for playback",
+            StreamLinkOptimizer.getStreamCompositeScore(vidfast) > StreamLinkOptimizer.getStreamCompositeScore(vidsrcsu)
+        )
     }
 }
