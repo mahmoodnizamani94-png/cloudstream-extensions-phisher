@@ -74,6 +74,7 @@ import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.milliseconds
@@ -2084,15 +2085,15 @@ object StreamPlayExtractor : StreamPlay() {
         invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== Vidflix (vidsrc.pm) SOTA Multi-Source Extractor ====================
+    // ==================== VidSrc (vidsrc.pm) SOTA Multi-Source Extractor ====================
 
-    private const val VIDFLIX_API = "https://vidsrc.pm"
+    private const val VIDSRC_API = "https://vidsrc.pm"
 
     /**
-     * Player credential published by the vidsrc.pm/Vidflix web player bundle. It is a
+     * Player credential published by the vidsrc.pm/VidSrc web player bundle. It is a
      * public, per-player constant (not a per-user secret) and is sent as `x-player-key`.
      */
-    private const val VIDFLIX_PLAYER_KEY =
+    private const val VIDSRC_PLAYER_KEY =
         "f3b72e73c80c9a996574379798703796a1936efa3516a7105cb0e43048b46b5a"
 
     /**
@@ -2106,22 +2107,22 @@ object StreamPlayExtractor : StreamPlay() {
      * Directly playable streams are always emitted ahead of proxy-fronted ones so that a
      * degraded proxy can never displace a link the player is able to open by itself.
      */
-    private val VIDFLIX_SOURCES =
+    private val VIDSRC_SOURCES =
         listOf("quasar", "scrapify", "lookmovie", "vaplayer", "fsonic", "oreon")
 
-    private val VIDFLIX_PROXY_MARKERS = listOf("/proxy?", "hd4u.sbs", "hd4u.")
+    private val VIDSRC_PROXY_MARKERS = listOf("/proxy?", "hd4u.sbs", "hd4u.")
 
-    private val vidflixSemaphore = Semaphore(3)
+    private val vidsrcSemaphore = Semaphore(3)
 
-    private fun vidflixIsProxied(url: String): Boolean =
-        VIDFLIX_PROXY_MARKERS.any { url.contains(it, ignoreCase = true) }
+    private fun vidsrcIsProxied(url: String): Boolean =
+        VIDSRC_PROXY_MARKERS.any { url.contains(it, ignoreCase = true) }
 
     /**
      * The hd4u reverse proxy embeds the upstream Origin/Referer it will forward as a
      * base64 `data=` query parameter (`Origin=...|Referer=...`). Decoding it lets us send
      * exactly the headers the protected origin expects instead of guessing.
      */
-    private fun vidflixProxyHeaders(url: String): Map<String, String> {
+    private fun vidsrcProxyHeaders(url: String): Map<String, String> {
         val encoded = Regex("""[?&]data=([^&]+)""").find(url)?.groupValues?.get(1) ?: return emptyMap()
         val plain = runCatching {
             base64Decode(URLDecoder.decode(encoded, "UTF-8"))
@@ -2133,19 +2134,19 @@ object StreamPlayExtractor : StreamPlay() {
         }.toMap()
     }
 
-    private data class VidflixStream(
+    private data class VidSrcStream(
         val url: String,
         val upstream: String,
         val variants: List<Pair<String, Int>>,
         val tracks: List<Pair<String, String>>
     )
 
-    private val vidflixQualityRegex = Regex("""^\s*(\d{3,4})\s*p?""", RegexOption.IGNORE_CASE)
+    private val vidsrcQualityRegex = Regex("""^\s*(\d{3,4})\s*p?""", RegexOption.IGNORE_CASE)
 
-    private fun vidflixQualityOf(label: String?): Int {
+    private fun vidsrcQualityOf(label: String?): Int {
         val raw = label?.trim().orEmpty()
         if (raw.isBlank()) return Qualities.Unknown.value
-        vidflixQualityRegex.find(raw)?.groupValues?.get(1)?.toIntOrNull()
+        vidsrcQualityRegex.find(raw)?.groupValues?.get(1)?.toIntOrNull()
             ?.let { value ->
                 return when (value) {
                     2160 -> Qualities.P2160.value
@@ -2160,20 +2161,20 @@ object StreamPlayExtractor : StreamPlay() {
         return getQualityFromName(raw).takeIf { it > 0 } ?: Qualities.Unknown.value
     }
 
-    /** Fetches one upstream via the Vidflix API. Returns null when the mirror is dry. */
-    private suspend fun vidflixFetchSource(
+    /** Fetches one upstream via the VidSrc API. Returns null when the mirror is dry. */
+    private suspend fun vidsrcFetchSource(
         tmdbId: Int,
         season: Int?,
         episode: Int?,
         source: String?
-    ): VidflixStream? {
+    ): VidSrcStream? {
         val isMovie = season == null || (season == 0 && episode == null)
         val path = if (isMovie) {
             "/api/vidora/v1/movie/$tmdbId"
         } else {
             "/api/vidora/v1/tv/$tmdbId/$season/$episode"
         }
-        val url = if (source.isNullOrBlank()) "$VIDFLIX_API$path" else "$VIDFLIX_API$path?source=$source"
+        val url = if (source.isNullOrBlank()) "$VIDSRC_API$path" else "$VIDSRC_API$path?source=$source"
 
         val body = retryTransient(2, 250L) {
             val response = suspendCancellable {
@@ -2182,9 +2183,9 @@ object StreamPlayExtractor : StreamPlay() {
                     headers = mapOf(
                         "User-Agent" to USER_AGENT,
                         "Accept" to "application/json, text/plain, */*",
-                        "x-player-key" to VIDFLIX_PLAYER_KEY,
-                        "Referer" to "$VIDFLIX_API/",
-                        "Origin" to VIDFLIX_API
+                        "x-player-key" to VIDSRC_PLAYER_KEY,
+                        "Referer" to "$VIDSRC_API/",
+                        "Origin" to VIDSRC_API
                     ),
                     timeout = 12L
                 )
@@ -2210,7 +2211,7 @@ object StreamPlayExtractor : StreamPlay() {
                     val qualityUrl = qualityObj.optString("url").ifBlank { qualityObj.optString("file") }.trim()
                     if (qualityUrl.isEmpty()) continue
                     val label = qualityObj.optString("label").ifBlank { qualityObj.optString("quality") }
-                    variants.add(qualityUrl to vidflixQualityOf(label))
+                    variants.add(qualityUrl to vidsrcQualityOf(label))
                 }
             }
 
@@ -2230,7 +2231,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            return VidflixStream(
+            return VidSrcStream(
                 url = streamUrl,
                 upstream = entry.optString("source").ifBlank { source.orEmpty() },
                 variants = variants,
@@ -2240,26 +2241,26 @@ object StreamPlayExtractor : StreamPlay() {
         return null
     }
 
-    private suspend fun vidflixEmit(stream: VidflixStream, callback: (ExtractorLink) -> Unit) {
-        val proxied = vidflixIsProxied(stream.url)
+    private suspend fun vidsrcEmit(stream: VidSrcStream, callback: (ExtractorLink) -> Unit) {
+        val proxied = vidsrcIsProxied(stream.url)
         val headers = if (proxied) {
-            vidflixProxyHeaders(stream.url) + mapOf(
+            vidsrcProxyHeaders(stream.url) + mapOf(
                 "User-Agent" to USER_AGENT,
-                "Referer" to "$VIDFLIX_API/",
-                "Origin" to VIDFLIX_API
+                "Referer" to "$VIDSRC_API/",
+                "Origin" to VIDSRC_API
             )
         } else {
-            mapOf("User-Agent" to USER_AGENT, "Referer" to "$VIDFLIX_API/", "Origin" to VIDFLIX_API)
+            mapOf("User-Agent" to USER_AGENT, "Referer" to "$VIDSRC_API/", "Origin" to VIDSRC_API)
         }
-        val referer = headers["Referer"] ?: "$VIDFLIX_API/"
+        val referer = headers["Referer"] ?: "$VIDSRC_API/"
         val tag = if (proxied) "Mirror" else "Direct"
-        val baseName = "Vidflix $tag (${stream.upstream})"
+        val baseName = "VidSrc $tag (${stream.upstream})"
 
         // Honour an explicit bitrate ladder advertised by the upstream first.
         stream.variants.forEach { (variantUrl, quality) ->
             if (!variantUrl.startsWith("http", ignoreCase = true)) return@forEach
             callback(
-                newExtractorLink("Vidflix", "$baseName [${vidflixQualityTag(quality)}]", variantUrl) {
+                newExtractorLink("VidSrc", "$baseName [${vidsrcQualityTag(quality)}]", variantUrl) {
                     this.referer = referer
                     this.quality = quality
                     this.type = if (variantUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
@@ -2272,15 +2273,15 @@ object StreamPlayExtractor : StreamPlay() {
         if (isHls) {
             val expanded = withTimeoutOrNull(12_000L) {
                 runCatching {
-                    generateM3u8("Vidflix", stream.url, referer = referer, headers = headers)
+                    generateM3u8("VidSrc", stream.url, referer = referer, headers = headers)
                 }.getOrNull()
             }
             if (!expanded.isNullOrEmpty()) {
                 expanded.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR).forEach { variant ->
                     callback(
                         newExtractorLink(
-                            "Vidflix",
-                            "$baseName [${vidflixQualityTag(variant.quality)}]",
+                            "VidSrc",
+                            "$baseName [${vidsrcQualityTag(variant.quality)}]",
                             variant.url,
                             ExtractorLinkType.M3U8
                         ) {
@@ -2296,7 +2297,7 @@ object StreamPlayExtractor : StreamPlay() {
 
         callback(
             newExtractorLink(
-                "Vidflix",
+                "VidSrc",
                 baseName,
                 stream.url,
                 if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
@@ -2308,7 +2309,7 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    private fun vidflixQualityTag(quality: Int): String = when (quality) {
+    private fun vidsrcQualityTag(quality: Int): String = when (quality) {
         Qualities.P2160.value -> "4K"
         Qualities.P1440.value -> "1440p"
         Qualities.P1080.value -> "1080p"
@@ -2319,14 +2320,14 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * Video Streaming API extractor for Vidflix (vidsrc.pm).
+     * Video Streaming API extractor for VidSrc (vidsrc.pm).
      *
      * Protocol (verified live 2026-10-09):
      *   GET {api}/api/vidora/v1/movie/{tmdb}            -> { result, sources: [...] }
      *   GET {api}/api/vidora/v1/tv/{tmdb}/{s}/{e}?source=KEY
-     *   Header: x-player-key: <VIDFLIX_PLAYER_KEY>
+     *   Header: x-player-key: <VIDSRC_PLAYER_KEY>
      */
-    suspend fun invokeVidflix(
+    suspend fun invokeVidSrc(
         tmdbId: Int? = null,
         season: Int? = null,
         episode: Int? = null,
@@ -2347,12 +2348,12 @@ object StreamPlayExtractor : StreamPlay() {
                 val isMovie = season == null || (season == 0 && episode == null)
                 val streamKey = if (isMovie) "movie_$resolvedTmdbId" else "tv_${resolvedTmdbId}_${season}_$episode"
 
-                val collected = Collections.synchronizedList(mutableListOf<VidflixStream>())
+                val collected = Collections.synchronizedList(mutableListOf<VidSrcStream>())
                 val emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
                 suspend fun harvest(source: String?) {
-                    val stream = vidflixSemaphore.withPermit {
-                        runCatching { vidflixFetchSource(resolvedTmdbId, season, episode, source) }.getOrNull()
+                    val stream = vidsrcSemaphore.withPermit {
+                        runCatching { vidsrcFetchSource(resolvedTmdbId, season, episode, source) }.getOrNull()
                     } ?: return
                     collected.add(stream)
                 }
@@ -2360,19 +2361,19 @@ object StreamPlayExtractor : StreamPlay() {
                 // Resolve the default upstream first: it is the fastest signal that the
                 // title is actually indexed, and it lets us emit something within ~1 RTT.
                 val defaultStream = withTimeoutOrNull(9_000L) {
-                    runCatching { vidflixFetchSource(resolvedTmdbId, season, episode, null) }.getOrNull()
+                    runCatching { vidsrcFetchSource(resolvedTmdbId, season, episode, null) }.getOrNull()
                 }
                 if (defaultStream != null) {
                     collected.add(defaultStream)
                     defaultStream.tracks.forEach { (language, trackUrl) ->
                         if (emittedTracks.add(trackUrl)) subtitleCallback?.invoke(newSubtitleFile(language, trackUrl))
                     }
-                    vidflixEmit(defaultStream, callback)
+                    vidsrcEmit(defaultStream, callback)
                 }
 
                 // Fan out across the remaining mirrors concurrently.
                 coroutineScope {
-                    VIDFLIX_SOURCES.map { source ->
+                    VIDSRC_SOURCES.map { source ->
                         async {
                             val already = collected.any {
                                 it.upstream.equals(source, ignoreCase = true) ||
@@ -2383,13 +2384,13 @@ object StreamPlayExtractor : StreamPlay() {
                     }.forEach { it.await() }
                 }
 
-                val direct = collected.filterNot { vidflixIsProxied(it.url) }
-                val mirrored = collected.filter { vidflixIsProxied(it.url) }
+                val direct = collected.filterNot { vidsrcIsProxied(it.url) }
+                val mirrored = collected.filter { vidsrcIsProxied(it.url) }
 
                 // Only fall back to proxy-fronted mirrors when nothing directly playable
                 // was produced; otherwise they would just pollute the source list.
                 if (direct.isEmpty() && mirrored.isEmpty()) {
-                    Log.d("StreamPlay", "Vidflix: no upstream returned a stream for $streamKey")
+                    Log.d("StreamPlay", "VidSrc: no upstream returned a stream for $streamKey")
                     return@withTimeoutOrNull
                 }
 
@@ -2398,495 +2399,216 @@ object StreamPlayExtractor : StreamPlay() {
                     stream.tracks.forEach { (language, trackUrl) ->
                         if (emittedTracks.add(trackUrl)) subtitleCallback?.invoke(newSubtitleFile(language, trackUrl))
                     }
-                    vidflixEmit(stream, callback)
+                    vidsrcEmit(stream, callback)
                 }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            Log.w("StreamPlay", "invokeVidflix failed: ${e.message}")
+            Log.w("StreamPlay", "invokeVidSrc failed: ${e.message}")
         }
     }
 
-    suspend fun invokeVidflix(
+    suspend fun invokeVidSrc(
         tmdbId: Int? = null,
         season: Int? = null,
         episode: Int? = null,
         callback: (ExtractorLink) -> Unit
     ) {
-        invokeVidflix(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+        invokeVidSrc(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== AnimeGG SOTA Extractor ====================
+    // ==================== VidRock SOTA Extractor ====================
 
-    private const val ANIMEGG_API = "https://www.animegg.org"
-
-    private fun animeggNormalizeTitle(value: String?): String =
-        value.orEmpty()
-            .lowercase(Locale.ROOT)
-            .replace(Regex("""\(\s*(dub|sub|uncensored)\s*\)"""), " ")
-            .replace(normalizeAlphaNumSpaceRegex, " ")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
+    private const val VIDROCK_API = "https://vidrock.net"
 
     /**
-     * Resolves the best AnimeGG series slug for the requested title.
+     * Player credential published by the vidrock.net web bundle (`assets/index-*.js`, symbols
+     * TQ/_Q/AQ/LQ/CQ/RQ/dR). It is a public, per-player constant (not a per-user secret) and is
+     * the AES-256-GCM content key for every share token the VidRock API hands out.
+     */
+    // internal (not private) so the protocol test-suite can pin the exact KAT key.
+    internal const val VIDROCK_KEY_HEX =
+        "7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f"
+    internal val vidrockKey: ByteArray by lazy {
+        ByteArray(VIDROCK_KEY_HEX.length / 2) { byteIndex ->
+            val hi = Character.digit(VIDROCK_KEY_HEX[2 * byteIndex], 16)
+            val lo = Character.digit(VIDROCK_KEY_HEX[2 * byteIndex + 1], 16)
+            ((hi shl 4) + lo).toByte()
+        }
+    }
+
+    /** CDN hosts VidRock's encrypted lanes resolve to (mirrored so either can serve the file). */
+    private val VIDROCK_CDN_HOSTS = listOf("galacticvoyagers.xyz", "moonfirekeeper.lol")
+
+    /**
+     * Offline AES-256-GCM unwrap for VidRock share tokens.
      *
-     * AnimeGG exposes `/series/{slug}` pages plus dedicated `-dub` variants; `dub` targets
-     * prefer the dubbed slug when it exists.
+     * Token wire format (verified live 2026-10-15): base64url(nonce[12] || ciphertext || tag[16]).
+     * Java's GCM `doFinal` consumes the trailing 16-byte tag, so the payload is fed verbatim and
+     * any tampering surfaces as AEADBadTagException, which we treat as a dead lane.
      */
-    private suspend fun animeggResolveSlug(
-        title: String?,
-        jpTitle: String?,
-        dub: Boolean
-    ): String? {
-        val candidates = listOfNotNull(title, jpTitle)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-        if (candidates.isEmpty()) return null
-
-        val wanted = candidates.map { animeggNormalizeTitle(it) }.filter { it.isNotEmpty() }
-
-        for (query in candidates) {
-            val searchUrl = "$ANIMEGG_API/search/?q=${URLEncoder.encode(query, "UTF-8")}"
-            val html = retryTransient(2, 200L) {
-                val response = suspendCancellable {
-                    app.get(searchUrl, headers = mapOf("User-Agent" to USER_AGENT), timeout = 12L)
-                }
-                if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
-            } ?: continue
-
-            val document = runCatching { Jsoup.parse(html, ANIMEGG_API) }.getOrNull() ?: continue
-            val parsed = document.select("a.mse").mapNotNull { anchor ->
-                val href = anchor.attr("href").trim()
-                if (!href.contains("/series/")) return@mapNotNull null
-                val slug = href.substringAfter("/series/").trim('/').substringBefore('#').substringBefore('?')
-                if (slug.isEmpty()) return@mapNotNull null
-                val name = anchor.selectFirst("h2")?.text()?.trim()
-                    ?: anchor.attr("title").trim()
-                slug to name
-            }
-            if (parsed.isEmpty()) continue
-
-            val exact = parsed.firstOrNull { (slug, name) ->
-                val normalizedName = animeggNormalizeTitle(name.ifBlank { slug.replace('-', ' ') })
-                normalizedName.isNotEmpty() && normalizedName in wanted
-            }
-            val prefix = parsed.firstOrNull { (slug, name) ->
-                val normalizedName = animeggNormalizeTitle(name.ifBlank { slug.replace('-', ' ') })
-                normalizedName.isNotEmpty() && wanted.any { w ->
-                    normalizedName.startsWith(w) || w.startsWith(normalizedName)
-                }
-            }
-            val match = exact ?: prefix ?: parsed.first()
-
-            val baseSlug = match.first.removeSuffix("-dub")
-            val resolved = if (dub) {
-                if (match.first.endsWith("-dub")) match.first else "$baseSlug-dub".takeIf { it.isNotBlank() }
-            } else {
-                match.first
-            }
-            return resolved ?: match.first
-        }
-        return null
-    }
-
-    /**
-     * Extracts the subtitle/dub mirror iframe from an AnimeGG episode page.
-     * The page renders both `data-version="subbed"` and `data-version="dubbed"` panes.
-     */
-    private fun animeggPickEmbed(document: org.jsoup.nodes.Document, dub: Boolean): String? {
-        val order = if (dub) listOf("dubbed", "subbed") else listOf("subbed", "dubbed")
-        for (version in order) {
-            val pane = document.selectFirst("""[data-version="$version"]""") ?: continue
-            val frame = pane.selectFirst("iframe[src]") ?: pane.parent()?.selectFirst("iframe[src]")
-            val src = frame?.attr("src")?.trim().orEmpty()
-            if (src.isNotEmpty()) {
-                return if (src.startsWith("http", ignoreCase = true)) src
-                else if (src.startsWith("//")) "https:$src"
-                else "$ANIMEGG_API${if (src.startsWith("/")) src else "/$src"}"
-            }
-        }
-        val fallback = document.selectFirst("iframe[src*=embed]")?.attr("src")?.trim().orEmpty()
-        if (fallback.isEmpty()) return null
-        return if (fallback.startsWith("http", ignoreCase = true)) fallback
-        else if (fallback.startsWith("//")) "https:$fallback"
-        else "$ANIMEGG_API${if (fallback.startsWith("/")) fallback else "/$fallback"}"
-    }
-
-    private data class AnimeggSource(val url: String, val quality: Int, val label: String, val backup: String?)
-
-    private val animeggSourceBlockRegex = Regex("""videoSources\s*=\s*(\[[\s\S]*?])\s*;""")
-    private val animeggEntryRegex = Regex("""\{[^{}]*}["']?""")
-
-    /** Parses the player-embedded `videoSources` JS array (unquoted keys, not JSON). */
-    private fun animeggParseSources(embedHtml: String): List<AnimeggSource> {
-        val block = animeggSourceBlockRegex.find(embedHtml)?.groupValues?.get(1) ?: return emptyList()
-        return animeggEntryRegex.findAll(block).mapNotNull { match ->
-            val entry = match.value
-            fun field(key: String): String? =
-                Regex("""\b$key\s*:\s*['"]([^'"]+)['"]""").find(entry)?.groupValues?.get(1)?.trim()
-
-            val file = field("file") ?: field("src") ?: field("url") ?: return@mapNotNull null
-            val resolved = when {
-                file.startsWith("http", ignoreCase = true) -> file
-                file.startsWith("//") -> "https:$file"
-                file.startsWith("/") -> "$ANIMEGG_API$file"
-                else -> "$ANIMEGG_API/$file"
-            }
-            val label = field("label") ?: field("quality") ?: field("resolution") ?: ""
-            val backup = field("bk")?.let { encoded ->
-                runCatching {
-                    val plain = base64Decode(URLDecoder.decode(encoded, "UTF-8"))
-                    plain.takeIf { it.startsWith("http", ignoreCase = true) }
-                }.getOrNull()
-            }
-            AnimeggSource(
-                url = resolved,
-                quality = vidflixQualityOf(label),
-                label = label,
-                backup = backup
+    internal fun vidrockUnwrap(token: String): String? {
+        if (token.isBlank()) return null
+        val buf = runCatching { b64UrlDecode(token.trim()) }.getOrNull() ?: return null
+        if (buf.size < 28) return null // 12 nonce + 0 body + 16 tag is the minimum viable token
+        return runCatching {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                SecretKeySpec(vidrockKey, "AES"),
+                GCMParameterSpec(128, buf.copyOfRange(0, 12))
             )
-        }.toList()
+            String(cipher.doFinal(buf.copyOfRange(12, buf.size)), Charsets.UTF_8)
+        }.getOrNull()
+    }
+
+    // internal: returned by internal vidrockParseLanes() consumed by tests.
+    internal data class VidRockLane(
+        val lane: String,
+        val language: String,
+        val kind: String,
+        val urls: List<Pair<String, Int>>
+    )
+
+    /**
+     * Parses the VidRock API payload: a JSON object keyed by lane codename (Luna, Orion, Astra,
+     * Atlas, Hindi...). Each lane carries an encrypted `url`, a `type` ("hls"/"mp4") and the
+     * audio `language`. The decrypted value is either a direct manifest URL or a JSON array of
+     * `{name,resolution,url}` ladder entries, which we expand into per-quality links.
+     */
+    internal fun vidrockParseLanes(body: String): List<VidRockLane> {
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+        val lanes = mutableListOf<VidRockLane>()
+        val keys = root.keys()
+        while (keys.hasNext()) {
+            val laneName = keys.next()
+            val laneObj = root.optJSONObject(laneName) ?: continue
+            val token = laneObj.optString("url").orEmpty().trim()
+            if (token.isEmpty()) continue
+            val plain = vidrockUnwrap(token) ?: continue
+            val kind = laneObj.optString("type").ifBlank {
+                if (plain.contains(".m3u8", ignoreCase = true)) "hls" else "mp4"
+            }
+            val language = laneObj.optString("language").ifBlank { "English" }
+
+            val urls = if (plain.trimStart().startsWith("[")) {
+                val ladder = runCatching { JSONArray(plain) }.getOrNull()
+                if (ladder != null) {
+                    (0 until ladder.length()).mapNotNull { idx ->
+                        val entry = ladder.optJSONObject(idx) ?: return@mapNotNull null
+                        val url = entry.optString("url").ifBlank { entry.optString("file") }.trim()
+                        if (!url.startsWith("http", ignoreCase = true)) return@mapNotNull null
+                        val label = entry.optString("name").ifBlank {
+                            entry.optString("resolution").ifBlank { entry.optString("label") }
+                        }
+                        url to vidrockQualityOf(label)
+                    }
+                } else {
+                    emptyList()
+                }
+            } else {
+                if (plain.startsWith("http", ignoreCase = true)) listOf(plain to Qualities.Unknown.value) else emptyList()
+            }
+            if (urls.isNotEmpty()) lanes.add(VidRockLane(laneName, language, kind, urls))
+        }
+        return lanes
+    }
+
+    private val vidrockQualityRegex = Regex("""^\s*(\d{3,4})\s*p?""", RegexOption.IGNORE_CASE)
+
+    internal fun vidrockQualityOf(label: String?): Int {
+        val raw = label?.trim().orEmpty()
+        if (raw.isBlank() || raw.equals("auto", ignoreCase = true)) return Qualities.Unknown.value
+        vidrockQualityRegex.find(raw)?.groupValues?.get(1)?.toIntOrNull()?.let { value ->
+            return when (value) {
+                2160 -> Qualities.P2160.value
+                1440 -> Qualities.P1440.value
+                1080 -> Qualities.P1080.value
+                720 -> Qualities.P720.value
+                480 -> Qualities.P480.value
+                360 -> Qualities.P360.value
+                else -> value
+            }
+        }
+        // Local fallback instead of getQualityFromName(): that helper's class-initialiser
+        // pulls in the Rhino engine (org.mozilla.javascript), absent from the unit-test
+        // classpath, and VidRock ladder labels are simple marketing names anyway.
+        return when {
+            raw.equals("uhd", true) || raw.equals("4k", true) -> Qualities.P2160.value
+            raw.equals("qhd", true) || raw.equals("2k", true) -> Qualities.P1440.value
+            raw.equals("fhd", true) || raw.equals("high", true) -> Qualities.P1080.value
+            raw.equals("hd", true) -> Qualities.P720.value
+            raw.equals("sd", true) -> Qualities.P480.value
+            else -> Qualities.Unknown.value
+        }
     }
 
     /**
-     * Video Streaming API extractor for AnimeGG (animegg.org).
-     *
-     * Protocol (verified live 2026-10-09):
-     *   /search/?q={title}                      -> `/series/{slug}` results
-     *   /{slug}-episode-{n}  (dub: /{slug}-dub-episode-{n})  -> `/embed/{id}` iframes
-     *   /embed/{id}                             -> videoSources = [{file,label,bk}]
-     *   /play/{id}/video.mp4?for={token}        -> 302 -> CDN byte stream (video/mp4)
+     * Every request the VidRock CDN answers (master playlists, variant playlists, captions,
+     * segments) must carry the site's Origin AND Referer, otherwise it responds 403 with an
+     * HTML challenge page instead of media. Verified live 2026-10-15: neither header alone is
+     * sufficient; sending both returns the 1080p master playlist.
      */
-    suspend fun invokeAnimegg(
-        title: String? = null,
-        jpTitle: String? = null,
-        episode: Int? = null,
-        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        callback: (ExtractorLink) -> Unit,
-        dubStatus: String? = null
-    ) {
-        try {
-            val episodeNumber = episode?.takeIf { it > 0 } ?: 1
-            val dub = dubStatus?.contains("dub", ignoreCase = true) == true
-
-            withTimeoutOrNull(25_000L) {
-                val slug = withTimeoutOrNull(12_000L) {
-                    animeggResolveSlug(title, jpTitle, dub)
+    private suspend fun vidrockEmitLane(lane: VidRockLane, callback: (ExtractorLink) -> Unit) {
+        val headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to "https://vidrock.net/",
+            "Origin" to "https://vidrock.net"
+        )
+        val isHls = lane.kind.contains("hls", ignoreCase = true)
+        for ((url, quality) in lane.urls) {
+            val explicitQuality = quality != Qualities.Unknown.value
+            if (isHls && !explicitQuality) {
+                // Expand the master playlist so the ranker sees a concrete resolution ladder
+                // instead of one unknown-quality link.
+                val expanded = withTimeoutOrNull(12_000L) {
+                    runCatching {
+                        generateM3u8("VidRock", url, referer = "https://vidrock.net/", headers = headers)
+                    }.getOrNull()
                 }
-                if (slug.isNullOrBlank()) {
-                    Log.d("StreamPlay", "AnimeGG: no series match for '${title ?: jpTitle}'")
-                    return@withTimeoutOrNull
-                }
-
-                val episodeUrl = "$ANIMEGG_API/$slug-episode-$episodeNumber"
-                val episodeHtml = retryTransient(2, 200L) {
-                    val response = suspendCancellable {
-                        app.get(episodeUrl, headers = mapOf("User-Agent" to USER_AGENT), timeout = 12L)
-                    }
-                    if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
-                }
-                if (episodeHtml.isNullOrBlank()) {
-                    Log.d("StreamPlay", "AnimeGG: episode page missing for $episodeUrl")
-                    return@withTimeoutOrNull
-                }
-
-                val document = runCatching { Jsoup.parse(episodeHtml, ANIMEGG_API) }.getOrNull()
-                    ?: return@withTimeoutOrNull
-                val embedUrl = animeggPickEmbed(document, dub)
-                if (embedUrl.isNullOrBlank()) {
-                    Log.d("StreamPlay", "AnimeGG: no embed mirror for episode $episodeNumber")
-                    return@withTimeoutOrNull
-                }
-
-                val embedHtml = retryTransient(2, 200L) {
-                    val response = suspendCancellable {
-                        app.get(
-                            embedUrl,
-                            headers = mapOf("User-Agent" to USER_AGENT, "Referer" to episodeUrl),
-                            timeout = 12L
-                        )
-                    }
-                    if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
-                } ?: return@withTimeoutOrNull
-
-                val parsedSources = animeggParseSources(embedHtml)
-                if (parsedSources.isEmpty()) {
-                    Log.d("StreamPlay", "AnimeGG: no playable source in $embedUrl")
-                    return@withTimeoutOrNull
-                }
-
-                val version = if (dub) "DUB" else "SUB"
-                parsedSources
-                    .sortedByDescending { StreamLinkOptimizer.getQualityPriorityScore(it.quality) }
-                    .forEach { source ->
-                        val qualityTag = vidflixQualityTag(source.quality)
+                if (!expanded.isNullOrEmpty()) {
+                    expanded.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR).forEach { variant ->
                         callback(
                             newExtractorLink(
-                                "AnimeGG",
-                                "AnimeGG · $version [$qualityTag]",
-                                source.url,
-                                if (source.url.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                "VidRock",
+                                "VidRock ${lane.lane} (${lane.language}) [${vidsrcQualityTag(variant.quality)}]",
+                                variant.url,
+                                ExtractorLinkType.M3U8
                             ) {
-                                this.referer = embedUrl
-                                this.quality = source.quality
-                                this.headers = mapOf(
-                                    "User-Agent" to USER_AGENT,
-                                    "Referer" to embedUrl
-                                )
+                                this.referer = "https://vidrock.net/"
+                                this.quality = variant.quality
+                                this.headers = headers
                             }
                         )
-
-                        // AnimeGG publishes a mirrored host (typically mp4upload) alongside
-                        // the first-party stream; resolve it through the registered
-                        // extractor registry instead of inventing playback metadata.
-                        source.backup?.let { backupUrl ->
-                            runCatching {
-                                loadExtractor(backupUrl, embedUrl, subtitleCallback ?: {}, callback)
-                            }
-                        }
                     }
-            }
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            Log.w("StreamPlay", "invokeAnimegg failed: ${e.message}")
-        }
-    }
-
-    // ==================== VidEm / VidSrc.buzz SOTA Extractor ====================
-
-    /**
-     * One deployment of the VID ("VidEm") playback engine.
-     *
-     * The engine is a server-rendered player: `GET {embedBase}/embed/{movie|tv}/...` inlines the
-     * full player state as `var Q = {...}` (type/id/token plus a pre-warmed `ssr.servers` list),
-     * and every subsequent call goes through a relative `api.php` that resolves against the page's
-     * `<base href>`. Mirror #2 therefore lives under a path prefix (`/pl/`), not at its root.
-     */
-    private data class VidEmMirror(
-        val origin: String,
-        val apiBase: String
-    )
-
-    /**
-     * Verified live 2026-10-10. `videm.xyz` is the canonical origin; `vidsrc.buzz` runs the same
-     * engine behind a `/pl/` prefix and is used purely as a failover origin when the canonical
-     * origin is unreachable.
-     */
-    private val VIDEM_MIRRORS = listOf(
-        VidEmMirror("https://videm.xyz", "https://videm.xyz/api.php"),
-        VidEmMirror("https://vidsrc.buzz", "https://vidsrc.buzz/pl/api.php")
-    )
-
-    private const val VIDEM_STREAM_NAME = "VidEm"
-    private const val VIDEM_MINT_CONCURRENCY = 8
-    private const val VIDEM_MINT_TIMEOUT_MS = 9_000L
-    private const val VIDEM_RACE_BUDGET_MS = 11_000L
-    private const val VIDEM_VALIDATE_TIMEOUT_MS = 6_000L
-    private const val VIDEM_SERVER_POLL_TIMEOUT_MS = 12_000L
-
-    /**
-     * Brace-matches the server-rendered `var Q = {...}` player state out of an embed page.
-     *
-     * A regex is unusable here: `Q` nests objects and arrays and embeds quoted HTML (the `<iframe>`
-     * share snippet), so the only correct parse is a string-aware brace scan.
-     */
-    internal fun videmExtractState(html: String): JSONObject? {
-        val marker = html.indexOf("var Q")
-        if (marker < 0) return null
-        val start = html.indexOf('{', marker)
-        if (start < 0) return null
-
-        var depth = 0
-        var inString = false
-        var escaped = false
-        for (i in start until html.length) {
-            val c = html[i]
-            if (inString) {
-                when {
-                    escaped -> escaped = false
-                    c == '\\' -> escaped = true
-                    c == '"' -> inString = false
-                }
-            } else {
-                when (c) {
-                    '"' -> inString = true
-                    '{' -> depth++
-                    '}' -> {
-                        depth--
-                        if (depth == 0) {
-                            return runCatching { JSONObject(html.substring(start, i + 1)) }.getOrNull()
-                        }
-                    }
+                    continue
                 }
             }
-        }
-        return null
-    }
-
-    private fun videmUrlEncode(value: String): String = URLEncoder.encode(value, "UTF-8")
-
-    /** The exact query string the player itself sends: `type&id&s&e&t`. */
-    internal fun videmQuery(state: JSONObject): String {
-        return "type=${videmUrlEncode(state.optString("type"))}" +
-            "&id=${videmUrlEncode(state.optString("id"))}" +
-            "&s=${state.optInt("s", 0)}" +
-            "&e=${state.optInt("e", 0)}" +
-            "&t=${videmUrlEncode(state.optString("t"))}"
-    }
-
-    /** Server handles pre-warmed into the embed response, newest first. */
-    internal fun videmPreWarmedHandles(state: JSONObject): List<String> {
-        val servers = state.optJSONObject("ssr")?.optJSONArray("servers") ?: return emptyList()
-        return (0 until servers.length()).mapNotNull { index ->
-            servers.optJSONObject(index)?.optString("ref")?.takeIf { it.isNotBlank() }
-        }
-    }
-
-    internal fun videmHandlesFromPayload(body: String): List<String> {
-        val servers = runCatching { JSONObject(body).optJSONArray("servers") }.getOrNull() ?: return emptyList()
-        return (0 until servers.length()).mapNotNull { index ->
-            servers.optJSONObject(index)?.optString("ref")?.takeIf { it.isNotBlank() }
-        }
-    }
-
-    private suspend fun videmGet(url: String, referer: String, timeout: Long): String? {
-        val response = suspendCancellable {
-            runCatching {
-                app.get(url, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer), timeout = timeout)
-            }.getOrNull()
-        }
-        return response?.takeIf { it.isSuccessful }?.text?.takeIf { it.isNotBlank() }
-    }
-
-    /**
-     * Mints a playable stream URL for one server handle.
-     *
-     * The engine answers `200 {"error":"unavailable"}` for handles whose backing scraper is dry,
-     * so a non-JSON or `url`-less body is a normal miss rather than an error condition.
-     */
-    private suspend fun videmMint(
-        mirror: VidEmMirror,
-        handle: String,
-        token: String,
-        embedUrl: String
-    ): String? {
-        val url = "${mirror.apiBase}?a=play&ref=${videmUrlEncode(handle)}&t=${videmUrlEncode(token)}"
-        val body = videmGet(url, embedUrl, VIDEM_MINT_TIMEOUT_MS) ?: return null
-        if (!body.trimStart().startsWith("{")) return null
-
-        val raw = runCatching { JSONObject(body).optString("url") }.getOrNull()
-        if (raw.isNullOrBlank()) return null
-        return when {
-            raw.startsWith("http", ignoreCase = true) -> raw
-            raw.startsWith("/") -> mirror.origin + raw
-            else -> "${mirror.origin}/$raw"
-        }
-    }
-
-    /**
-     * Confirms a minted URL really hands back a manifest/segment stream instead of an error shell.
-     * A dead handle can still mint a signed URL, so this check is what keeps broken entries out of
-     * the user's source list.
-     */
-    private suspend fun videmIsPlayable(url: String, referer: String): Boolean {
-        val response = suspendCancellable {
-            runCatching {
-                app.get(url, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer), timeout = VIDEM_VALIDATE_TIMEOUT_MS)
-            }.getOrNull()
-        } ?: return false
-        if (!response.isSuccessful) return false
-
-        val contentType = response.headers["Content-Type"].orEmpty().lowercase(Locale.ROOT)
-        if (contentType.startsWith("video/") || contentType.contains("mpegurl")) return true
-
-        val body = response.text.take(2048)
-        return body.contains("#EXTM3U") || body.contains("#EXT-X-")
-    }
-
-    /**
-     * Races every server handle concurrently and returns the first minted URL that actually plays.
-     *
-     * The engine's own player does exactly this (`raceStart` + `probeCands`), because individual
-     * handles are independently healthy or dry at any moment. Racing is therefore the intended
-     * protocol rather than a workaround, and it is what makes the first result fast.
-     */
-    private suspend fun videmRaceFirstPlayable(
-        mirror: VidEmMirror,
-        handles: List<String>,
-        token: String,
-        embedUrl: String
-    ): String? {
-        val candidates = handles.distinct().take(VIDEM_MINT_CONCURRENCY)
-        if (candidates.isEmpty()) return null
-
-        val minted = Channel<String>(Channel.UNLIMITED)
-        val validations = Semaphore(4)
-        var winner: String? = null
-
-        coroutineScope {
-            val jobs = candidates.map { handle ->
-                launch(Dispatchers.IO) {
-                    val url = videmMint(mirror, handle, token, embedUrl) ?: return@launch
-                    minted.send(url)
+            callback(
+                newExtractorLink(
+                    "VidRock",
+                    "VidRock ${lane.lane} (${lane.language})${if (explicitQuality) " [${vidsrcQualityTag(quality)}]" else ""}",
+                    url,
+                    if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = "https://vidrock.net/"
+                    this.quality = quality
+                    this.headers = headers
                 }
-            }
-            try {
-                withTimeoutOrNull(VIDEM_RACE_BUDGET_MS) {
-                    while (true) {
-                        val candidate = minted.receive()
-                        val playable = withContext(Dispatchers.IO) {
-                            validations.withPermit { videmIsPlayable(candidate, embedUrl) }
-                        }
-                        if (playable) {
-                            winner = candidate
-                            return@withTimeoutOrNull
-                        }
-                    }
-                }
-            } finally {
-                jobs.forEach { it.cancel() }
-                minted.close()
-            }
-        }
-
-        return winner
-    }
-
-    private suspend fun videmEmitSubtitles(
-        mirror: VidEmMirror,
-        query: String,
-        embedUrl: String,
-        subtitleCallback: ((SubtitleFile) -> Unit)?
-    ) {
-        if (subtitleCallback == null) return
-        val body = videmGet("${mirror.apiBase}?a=subs&$query", embedUrl, 8_000L) ?: return
-        val subs = runCatching { JSONObject(body).optJSONArray("subs") }.getOrNull() ?: return
-        for (index in 0 until subs.length()) {
-            val entry = subs.optJSONObject(index) ?: continue
-            val handle = entry.optString("ref")
-            if (handle.isBlank()) continue
-            val label = cleanSubtitleLabel(entry.optString("label").ifBlank { "Subtitle" })
-            // The engine proxies each caption track through `a=sub`; emitting the proxy keeps the
-            // track reachable from the same origin the player itself uses.
-            val subUrl = "${mirror.apiBase}?a=sub&ref=${videmUrlEncode(handle)}"
-            subtitleCallback(newSubtitleFile(label, subUrl))
+            )
         }
     }
 
     /**
-     * Resolves the "VidEm" engine (videm.xyz, mirrored on vidsrc.buzz) for movies and TV.
+     * Video Streaming API extractor for VidRock (vidrock.net).
      *
-     * Protocol (all endpoints verified live 2026-10-10 against real playback):
-     *   GET /embed/movie/{tmdb}            -> `var Q = {type,id,token,ssr.servers}`
-     *   GET /embed/tv/{tmdb}/{season}/{ep} -> `var Q = {type,id,token,ssr.servers}`
-     *   GET /api.php?a=sources&type&id&s&e&t  -> `{status,servers:[{ref}],more}` (refresh pass)
-     *   GET /api.php?a=play&ref&t             -> `{url:"/_stream?id=...",type:"hls"}`
-     *   GET /api.php?a=subs&type&id&s&e&t     -> `{subs:[{label,lang,cc,ref}]}`
-     *   GET /_stream?id=...                   -> multi-variant HLS master playlist
+     * Protocol (verified live 2026-10-15):
+     *   GET /api/movie/{tmdb}          -> {Luna:{url:token,type,language}, Orion:{...}, ...}
+     *   GET /api/tv/{tmdb}/{s}/{e}
+     *   Token: base64url AES-256-GCM under VIDROCK_KEY_HEX, nonce[12] || ct || tag[16]
+     *   CDN: requires Origin + Referer https://vidrock.net on every media request
      */
-    suspend fun invokeVidEm(
+    suspend fun invokeVidrock(
         tmdbId: Int? = null,
         season: Int? = null,
         episode: Int? = null,
@@ -2900,79 +2622,53 @@ object StreamPlayExtractor : StreamPlay() {
                 effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
             }
             if (effectiveTmdbId == null) return
+            if (season != null && season != 0 && episode == null) return
+            val resolvedTmdbId = effectiveTmdbId
+            val isMovie = season == null || (season == 0 && episode == null)
+            val path = if (isMovie) "/api/movie/$resolvedTmdbId" else "/api/tv/$resolvedTmdbId/$season/$episode"
 
-            val isEpisode = season != null && season > 0 && episode != null && episode > 0
-
-            withTimeoutOrNull(28_000L) {
-                for (mirror in VIDEM_MIRRORS) {
-                    val path = if (isEpisode) {
-                        "/embed/tv/$effectiveTmdbId/$season/$episode"
-                    } else {
-                        "/embed/movie/$effectiveTmdbId"
-                    }
-                    val embedUrl = mirror.origin + path
-                    val embedHtml = videmGet(embedUrl, "${mirror.origin}/", 10_000L) ?: continue
-                    val state = videmExtractState(embedHtml) ?: continue
-
-                    val token = state.optString("t")
-                    if (token.isBlank()) continue
-                    val query = videmQuery(state)
-
-                    var handles = videmPreWarmedHandles(state)
-                    var streamUrl = videmRaceFirstPlayable(mirror, handles, token, embedUrl)
-
-                    // Pre-warmed handles can all be stale; the engine's refresh pass is the
-                    // documented way to pull a fresh set, so one bounded retry is issued.
-                    if (streamUrl == null) {
-                        val refreshed = videmGet(
-                            "${mirror.apiBase}?a=sources&$query&refresh=1",
-                            embedUrl,
-                            VIDEM_SERVER_POLL_TIMEOUT_MS
-                        )
-                        if (refreshed != null) {
-                            handles = videmHandlesFromPayload(refreshed).ifEmpty { handles }
-                            streamUrl = videmRaceFirstPlayable(mirror, handles, token, embedUrl)
-                        }
-                    }
-
-                    if (streamUrl == null) continue
-
-                    videmEmitSubtitles(mirror, query, embedUrl, subtitleCallback)
-
-                    val headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to embedUrl,
-                        "Origin" to mirror.origin
+            val body = retryTransient(2, 250L) {
+                val response = suspendCancellable {
+                    app.get(
+                        "$VIDROCK_API$path",
+                        headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Accept" to "application/json, text/plain, */*",
+                            "Referer" to "https://vidrock.net/",
+                            "Origin" to "https://vidrock.net"
+                        ),
+                        timeout = 12L
                     )
-
-                    val generated = withTimeoutOrNull(9_000L) {
-                        runCatching {
-                            generateM3u8(
-                                VIDEM_STREAM_NAME,
-                                streamUrl,
-                                referer = embedUrl,
-                                headers = headers
-                            )
-                        }.getOrNull()
-                    }
-
-                    emitTopTierDualQualityStreamLinks(
-                        source = VIDEM_STREAM_NAME,
-                        baseName = "VidEm HLS",
-                        url = streamUrl,
-                        referer = embedUrl,
-                        headers = headers,
-                        streamType = ExtractorLinkType.M3U8,
-                        generatedLinks = generated,
-                        callback = callback
-                    )
-                    return@withTimeoutOrNull
                 }
-                Log.d("StreamPlay", "VidEm: no playable server for tmdb=$effectiveTmdbId s=$season e=$episode")
+                if (response != null && response.isSuccessful && response.text.isNotBlank()) response.text else null
+            } ?: run {
+                Log.d("StreamPlay", "VidRock: API unavailable for $path")
+                return
+            }
+
+            val lanes = vidrockParseLanes(body)
+            if (lanes.isEmpty()) {
+                Log.d("StreamPlay", "VidRock: no decryptable lane returned for $path")
+                return
+            }
+
+            // Preferred lanes first: the site's own player picks the first decryptable lane in
+            // document order (Luna, Orion, ...), so emit the primary lane strictly before the
+            // others, and fail over across every remaining lane concurrently.
+            val primary = lanes.first()
+            vidrockEmitLane(primary, callback)
+            if (lanes.size > 1) {
+                coroutineScope {
+                    lanes.drop(1).map { lane ->
+                        async {
+                            runCatching { vidrockEmitLane(lane, callback) }
+                        }
+                    }.forEach { it.await() }
+                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            Log.w("StreamPlay", "invokeVidEm failed: ${e.message}")
+            Log.w("StreamPlay", "invokeVidrock failed: ${e.message}")
         }
     }
 

@@ -65,7 +65,7 @@ class StreamPlayPlugin: Plugin() {
             Log.d("StreamPlay", "⚙️ Set recommended concurrency: $recommended")
         }
 
-        // Bootstrap the curated v19 registry defaults (VidLink, VidEm, AnimePahe, AnimeGG) and
+        // Bootstrap the curated v22 registry defaults (VidLink, VidSrc, VidRock, AnimePahe) and
         // scrub every decommissioned provider id from an upgrading install's preferences.
         getOrInitializeDisabledProviders(sharedPref)
 

@@ -1,5 +1,16 @@
 # TEST_READY: Milestone 6 Acceptance & E2E Verification Report
 
+## v22 Registry Re-issuance Addendum (2026-10-16, commit v695)
+
+The sections below (1–4) are the Milestone-6 certification of the original SOTA engine rollout and remain historical record. The following addendum documents the v22 overhaul of **StreamPlay only** (no other plugin was touched, which intentionally breaks the cross-module bitwise-parity rows in section 3 for StreamPlay; the Ultima/StremioAddon/SuperStream copies stayed identical to their hashes):
+
+- **Registry v22**: StreamPlay now runs exactly four curated sources — VidLink (100, universal) > VidSrc (95, vidsrc.pm Vidora API) > VidRock (92, vidrock.net AES-256-GCM lanes) > AnimePahe (90, anime-only). All legacy ids (yflix, cinejoy, vidfast, videasy, videm, animegg, rivestream, vidcore, ...) are force-removed via `REMOVED_PROVIDER_IDS`; prefs key `streamplay_top_tier_v22_initialized`.
+- **New VidRock extractor**: offline AES-256-GCM unwrap of `base64url(nonce[12]‖ct‖tag[16])` lane tokens with the publicly published player key, JSON ladder expansion, and CDN hardening (`Origin`+`Referer` both pinned to `https://vidrock.net` — verified live 2026-10-15, either alone yields a 403 HTML challenge).
+- **4-operator DoH race**: OptimizedDns now races Cloudflare + Google + Quad9(unfiltered) + AdGuard(unfiltered) over bootstrapped IPs (4 distinct networks) so one ISP/DNS filter cannot blank the resolver.
+- **Critical production bug fixed during test enablement**: the VidRock key bytes were derived with a stride-1 index over the 64-char hex key (each byte doubled into the next), so `vidrockUnwrap` could never decrypt a real API token even though self-sealed roundtrip tests passed (encrypt and decrypt shared the same wrong key). The unit-test suite now includes independent Node-generated known-answer vectors, which is why the bug was caught. On device this failure manifested as an immediate "no links found" for the new source.
+- **Acceptance at this addendum**: `.\gradlew.bat :StreamPlay:testDebugUnitTest` — **461 tests, 0 failures, 0 errors, 0 skipped**, including the new `StreamPlayVidRockProtocolTest` (KAT + tamper/integrity + lane-parsing + rank contract) and the rewritten `StreamPlayCuratedRegistryV22Test` (registry, gates, dispatcher windows, 4-operator DNS bootstrap assertions).
+
+
 ## Executive Certification
 
 The SOTA optimization and resilience overhaul of `cloudstream-extensions-phisher`—spanning the core all-in-one aggregators **StreamPlay**, **Ultima**, **StremioAddon**, and **SuperStream**—is fully implemented, verified, hardened, and audit-ready.

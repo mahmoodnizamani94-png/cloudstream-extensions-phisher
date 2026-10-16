@@ -156,7 +156,7 @@ class ChallengerM2EmpiricalAdversarialTest {
                         0 -> StreamPlayExtractor.invokeVidlink(tmdbId = 550, season = null, episode = null) {}
                         1 -> StreamPlayExtractor.invokeYFlix(title = "Matrix", tmdbId = 603, year = 1999, season = null, episode = null) {}
                         2 -> StreamPlayExtractor.invokeCineJoy(title = "Interstellar", tmdbId = 157336, season = null, episode = null) {}
-                        else -> StreamPlayExtractor.invokeVidflix(tmdbId = 550, season = null, episode = null) {}
+                        else -> StreamPlayExtractor.invokeVidSrc(tmdbId = 550, season = null, episode = null) {}
                     }
                 } catch (e: CancellationException) {
                     cancelledCounter.incrementAndGet()

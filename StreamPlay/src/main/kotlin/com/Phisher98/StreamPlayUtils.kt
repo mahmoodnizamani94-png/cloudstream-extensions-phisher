@@ -1290,35 +1290,6 @@ private fun buildCanonicalString(
             canonicalUrl
 }
 
-fun vidrockEncode(
-    tmdb: Int? = null,
-    type: String,
-    season: Int? = null,
-    episode: Int? = null,
-): String {
-    val zw = base64Decode("eDdrOW1QcVQycld2WTh6QTViQzNuRjZoSjJsSzRtTjk=")
-    val s = if (type == "tv" && season != null && episode != null) {
-        "${tmdb}_${season}_${episode}"
-    } else {
-        tmdb
-    }.toString()
-    val keyBytes = zw.toByteArray(Charsets.UTF_8)
-    val ivBytes = zw.substring(0, 16).toByteArray(Charsets.UTF_8)
-    val keySpec = SecretKeySpec(keyBytes, "AES")
-    val ivSpec = IvParameterSpec(ivBytes)
-    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-    cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec)
-
-    val encrypted = cipher.doFinal(s.toByteArray(Charsets.UTF_8))
-
-    val base64 = base64Encode(encrypted)
-    return base64
-        .replace("+", "-")
-        .replace("/", "_")
-        .replace("=", "")
-}
-
-
 // Hex → ByteArray
 fun fromHex(hex: String): ByteArray {
     val cleanHex = hex.replace(Regex("[^0-9a-fA-F]"), "")

@@ -57,18 +57,19 @@ import kotlin.time.Duration.Companion.milliseconds
 const val TOP_TIER_BOOST_THRESHOLD = 85f
 
 /**
- * The curated v19 registry has no subtitle-only entries: every surviving source ships its
- * own captions (VidLink's native caption tracks, VidEm's 10-11 caption tracks, AnimePahe's
- * soft-subs, AnimeGG's mirrored subtitle tracks), which keeps subtitle timing exactly in
- * sync with the stream that was chosen.
+ * The curated v22 registry has no subtitle-only entries: every surviving source ships its
+ * own captions (VidLink's native caption tracks, VidSrc's Vidora track list, VidRock's
+ * player captions, AnimePahe's soft-subs), which keeps subtitle timing exactly in sync with
+ * the stream that was chosen. VidLink is deliberately absent from both gates: it is the
+ * universal #1 and is always applicable.
  */
 private val ANIME_ONLY_PROVIDERS = setOf(
-    "animepahe",
-    "animegg"
+    "animepahe"
 )
 
 internal val NON_ANIME_PROVIDERS = setOf(
-    "videm"
+    "vidsrc",
+    "vidrock"
 )
 
 
@@ -306,10 +307,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val Vidsrcpm = "https://vidsrc.pm"
         const val Vidsrcme = "https://vidsrc.me"
         const val movieBox= "https://api.inmoviebox.com"
-        const val vidrock = "https://vidrock.ru"
+        const val vidrock = "https://vidrock.net"
         const val vidlink = "https://vidlink.pro"
         const val vidflixAPI = "https://vidsrc.pm"
-        const val animeggAPI = "https://www.animegg.org"
         const val moviesClubApi = "https://moviesapi.club"
         const val cinemacity = "https://cinemacity.cc"
         const val hexaSU = "https://theemoviedb.hexa.su"
@@ -973,7 +973,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > VidEm > AnimePahe > AnimeGG)
+        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > VidSrc > VidRock > AnimePahe)
         val primaryTasks = prioritizedPrimary.map { provider ->
             val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                 .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }

@@ -47,7 +47,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         assertEquals("Clean install must activate exactly 4 curated sources", 4, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "videm", "animepahe", "animegg")
+        val expectedCurated = setOf("vidlink", "vidsrc", "vidrock", "animepahe")
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.

@@ -234,7 +234,7 @@ class EarlySatisfactionController(
 }
 
 /**
- * Authoritative cold-start priority boost for the curated v18 SOTA registry.
+ * Authoritative cold-start priority boost for the curated v22 SOTA registry.
  *
  * The hierarchy is deliberately flat and small: every entry is a source that has been
  * verified live with a plain HTTP probe, and the ordering is the order a well-behaved
@@ -245,13 +245,15 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "vidlink" to 100f,
     "Vidlink" to 100f,
     "VidLink" to 100f,
-    "videm" to 95f,
-    "VidEm" to 95f,
+    "vidsrc" to 95f,
+    "Vidsrc" to 95f,
+    "VidSrc" to 95f,
+    "vidrock" to 92f,
+    "Vidrock" to 92f,
+    "VidRock" to 92f,
     "animepahe" to 90f,
     "Animepahe" to 90f,
-    "AnimePahe" to 90f,
-    "animegg" to 85f,
-    "AnimeGG" to 85f
+    "AnimePahe" to 90f
 )
 
 /**
@@ -261,9 +263,10 @@ object SpeculativePipeliner {
     private const val TAG = "SpeculativePipeliner"
 
     /**
-     * Cold-start latency expectation for the curated registry. Both surviving sources
-     * are single-round-trip JSON APIs, so they live in TIER_1; the intent is that the
-     * pipeline starts them together instead of serialising them.
+     * Cold-start latency expectation for the curated v22 registry. Every surviving source
+     * is a single-round-trip JSON API (VidRock additionally unwraps its lanes fully
+     * offline), so they all live in TIER_1; the intent is that the pipeline starts them
+     * together instead of serialising them.
      */
     val STATIC_COLD_START_TIERS: Map<String, LatencyTier> = mapOf(
         // Tier 0: Direct cache / instant player
@@ -274,13 +277,15 @@ object SpeculativePipeliner {
         "vidlink" to LatencyTier.TIER_1,
         "Vidlink" to LatencyTier.TIER_1,
         "VidLink" to LatencyTier.TIER_1,
-        "videm" to LatencyTier.TIER_1,
-        "VidEm" to LatencyTier.TIER_1,
+        "vidsrc" to LatencyTier.TIER_1,
+        "Vidsrc" to LatencyTier.TIER_1,
+        "VidSrc" to LatencyTier.TIER_1,
+        "vidrock" to LatencyTier.TIER_1,
+        "Vidrock" to LatencyTier.TIER_1,
+        "VidRock" to LatencyTier.TIER_1,
         "animepahe" to LatencyTier.TIER_1,
         "Animepahe" to LatencyTier.TIER_1,
-        "AnimePahe" to LatencyTier.TIER_1,
-        "animegg" to LatencyTier.TIER_1,
-        "AnimeGG" to LatencyTier.TIER_1
+        "AnimePahe" to LatencyTier.TIER_1
     )
 
     fun classifyProvider(providerId: String, initialTier: LatencyTier? = null): LatencyTier {
