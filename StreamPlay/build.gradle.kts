@@ -2,7 +2,16 @@
 
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 696
+// StreamPlay versioning contract (cloudstream extension convention):
+//  - `version` is a single monotonic integer; the CloudStream app updates the plugin
+//    whenever the repo publishes a strictly greater number (installed 696 < 700 ✓).
+//  - Release tracking rounds to the next "decade marker" ending in 0 so every new
+//    architecture era starts on a round number (695/696 era -> 700) and the remaining
+//    7xx slots stay reserved for incremental feature/fix updates (701, 702, ... 799)
+//    without ever needing to rewrite history.
+//  - Never decrement or re-issue an already-published number: users' apps compare
+//    `>` against the installed version, so any regression silently stops updates.
+version = 700
 
 android {
     buildFeatures {
