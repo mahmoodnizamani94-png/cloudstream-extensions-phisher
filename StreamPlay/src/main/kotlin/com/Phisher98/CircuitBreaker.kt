@@ -167,30 +167,6 @@ class CircuitBreaker(
     }
 
     /**
-     * Explicitly attempts to acquire canary permit without executing regular calls.
-     */
-    fun tryAcquireCanary(providerId: String): Boolean {
-        val ref = getCircuitRef(providerId)
-        val now = timeProvider.currentTimeMillis()
-        while (true) {
-            val current = ref.get()
-            val effective = current.resolveEffectiveState(now, config)
-            if (effective != CircuitState.HALF_OPEN) return false
-
-            val leaseExpired = current.canaryInFlight &&
-                (now - current.canaryStartedAtMs >= config.canaryLeaseTimeoutMs)
-            if (current.canaryInFlight && !leaseExpired) return false
-
-            val updated = current.copy(
-                state = CircuitState.HALF_OPEN,
-                canaryInFlight = true,
-                canaryStartedAtMs = now
-            )
-            if (ref.compareAndSet(current, updated)) return true
-        }
-    }
-
-    /**
      * Releases the canary permit in case of coroutine cancellation, preventing orphaned locks.
      */
     fun releaseCanaryPermit(providerId: String) {
@@ -366,18 +342,6 @@ class CircuitBreaker(
         return snapshot.calculateCooldownRemainingMs(timeProvider.currentTimeMillis(), config)
     }
 
-    /**
-     * Returns optimal timeout budget for this provider.
-     * Canary probes are clamped to canaryExecutionTimeoutMs (6s) so they never stall user playback.
-     */
-    fun getExecutionTimeoutMs(providerId: String, defaultTimeoutMs: Long = 20_000L): Long {
-        return when (getState(providerId)) {
-            CircuitState.OPEN -> 0L
-            CircuitState.HALF_OPEN -> config.canaryExecutionTimeoutMs
-            CircuitState.CLOSED -> defaultTimeoutMs
-        }
-    }
-
     fun reset(providerId: String) {
         circuits[providerId]?.set(CircuitSnapshot())
         Log.d(TAG, "Circuit reset for provider: $providerId")
@@ -392,10 +356,6 @@ class CircuitBreaker(
 
     fun getSnapshot(providerId: String): CircuitSnapshot {
         return circuits[providerId]?.get() ?: CircuitSnapshot()
-    }
-
-    fun getAllSnapshots(): Map<String, CircuitSnapshot> {
-        return circuits.mapValues { it.value.get() }
     }
 
     fun restoreSnapshot(providerId: String, snapshot: CircuitSnapshot) {

@@ -184,7 +184,8 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
             StreamPlayExtractor.invokeVidSrcSU(
-                tmdbId = 999999,
+                // 99999999 lies beyond TMDB's id space (404) — a genuinely unindexed title.
+                tmdbId = 99999999,
                 season = null,
                 episode = null,
                 subtitleCallback = {},

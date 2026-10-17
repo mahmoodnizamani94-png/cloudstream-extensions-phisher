@@ -295,10 +295,6 @@ object ProviderTelemetryManager {
         return circuitBreaker.getState(providerId) == CircuitBreaker.CircuitState.HALF_OPEN
     }
 
-    fun getCircuitState(providerId: String): CircuitBreaker.CircuitState {
-        return circuitBreaker.getState(providerId)
-    }
-
     fun getCooldownRemainingMs(providerId: String): Long {
         return circuitBreaker.getCooldownRemainingMs(providerId)
     }
@@ -359,10 +355,6 @@ object ProviderTelemetryManager {
             isDirty = false
             lastSaveTimeMs = timeProvider.currentTimeMillis()
         }
-    }
-
-    fun onCleanShutdown(prefs: SharedPreferences?) {
-        flushSync(prefs)
     }
 
     fun loadPersistedStats(prefs: SharedPreferences?) {

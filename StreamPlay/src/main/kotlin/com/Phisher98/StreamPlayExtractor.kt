@@ -79,15 +79,8 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.milliseconds
 
-private val DAHMER_QUALITY_REGEX = Regex("(?i)(1080p|2160p)")
-
 
 val session: Session by lazy { Session(app.baseClient) }
-
-val webMutex = Mutex()
-private val streamPlayExtractorMapper by lazy { jacksonObjectMapper() }
-private val normalizeAlphaNumSpaceRegex = Regex("[^a-z0-9 ]")
-private val normalizeAlphaNumRegex = Regex("[^a-z0-9]")
 
 
 object StreamPlayExtractor : StreamPlay() {
@@ -1002,18 +995,32 @@ object StreamPlayExtractor : StreamPlay() {
                         ?.trim()
                         ?: "Unknown"
 
-                    callback.invoke(
-                        newExtractorLink(
-                            "Animex",
-                            "Animex [$subType] [${type.replaceFirstChar(Char::uppercase)}] [${providerId.replaceFirstChar(Char::uppercase)}]",
-                            source.url
-                        ) {
-                            this.referer = referer
-                            quality = getQualityFromName(source.quality)
-                                .takeIf { it != Qualities.Unknown.value }
-                                ?: Qualities.Unknown.value
-                        }
-                    )
+                    val labeledQuality = getQualityFromName(source.quality)
+                        .takeIf { it != Qualities.Unknown.value }
+
+                    if (labeledQuality != null) {
+                        callback.invoke(
+                            newExtractorLink(
+                                "Animex",
+                                "Animex [$subType] [${type.replaceFirstChar(Char::uppercase)}] [${providerId.replaceFirstChar(Char::uppercase)}]",
+                                source.url
+                            ) {
+                                this.referer = referer
+                                quality = labeledQuality
+                            }
+                        )
+                    } else {
+                        // Unlabelled source: expand the master playlist so the ranker sees the
+                        // authentic 720p/1080p/480p ladder instead of one unknown-quality link
+                        // (the same verified-expansion path VidSrcSU/MeowTV use).
+                        emitVerifiedStream(
+                            source = "Animex",
+                            baseName = "Animex [$subType] [${type.replaceFirstChar(Char::uppercase)}] [${providerId.replaceFirstChar(Char::uppercase)}]",
+                            url = source.url,
+                            referer = referer,
+                            callback = callback
+                        )
+                    }
                 }
 
                 sourceResponse.tracks?.forEach { track ->
@@ -1559,52 +1566,6 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    // only subs
-    suspend fun invokeWatchsomuch(
-        imdbId: String? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: (SubtitleFile) -> Unit,
-    ) {
-        val id = imdbId?.removePrefix("tt")
-        val epsId = app.post(
-            "$watchSomuchAPI/Watch/ajMovieTorrents.aspx",
-            data = mapOf(
-                "index" to "0",
-                "mid" to "$id",
-                "wsk" to "30fb68aa-1c71-4b8c-b5d4-4ca9222cfb45",
-                "lid" to "",
-                "liu" to ""
-            ),
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-        ).parsedSafe<WatchsomuchResponses>()?.movie?.torrents?.let { eps ->
-            if (season == null) {
-                eps.firstOrNull()?.id
-            } else {
-                eps.find { it.episode == episode && it.season == season }?.id
-            }
-        } ?: return
-
-        val (seasonSlug, episodeSlug) = getEpisodeSlug(season, episode)
-
-        val subUrl = if (season == null) {
-            "$watchSomuchAPI/Watch/ajMovieSubtitles.aspx?mid=$id&tid=$epsId&part="
-        } else {
-            "$watchSomuchAPI/Watch/ajMovieSubtitles.aspx?mid=$id&tid=$epsId&part=S${seasonSlug}E${episodeSlug}"
-        }
-
-        safeGet(subUrl).parsedSafe<WatchsomuchSubResponses>()?.subtitles?.map { sub ->
-            subtitleCallback.invoke(
-                newSubtitleFile(
-                    sub.label?.substringBefore("&nbsp") ?: "", fixUrl(
-                        sub.url
-                            ?: return@map null, watchSomuchAPI
-                    )
-                )
-            )
-        }
-    }
-
     private val random = SecureRandom()
 
     fun generateDeviceId(): String {
@@ -1946,10 +1907,20 @@ object StreamPlayExtractor : StreamPlay() {
                                 !qualityKey.isNullOrBlank() -> if (qualityKey.endsWith("p", ignoreCase = true)) qualityKey else "${qualityKey}p"
                                 else -> "Auto"
                             }
+                            // Authentic per-quality size from the VidLink API, threaded into the
+                            // link name in the exact dialect the app's download ranker parses —
+                            // the host elects the lowest-size candidate among equal qualities
+                            // from this label, so it must never be fabricated or rounded away.
+                            val sizeLabel = StreamLinkOptimizer.normalizeSizeLabel(qualityObj.size)
+                            val displayName = if (sizeLabel != null) {
+                                "Vidlink $effectiveQuality [$sizeLabel]"
+                            } else {
+                                "Vidlink $effectiveQuality"
+                            }
                             directQualitiesLinks.add(
                                 newExtractorLink(
                                     "Vidlink",
-                                    "Vidlink $effectiveQuality",
+                                    displayName,
                                     url = cleanVideoUrl,
                                     type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
                                 ) {
@@ -3805,124 +3776,6 @@ object StreamPlayExtractor : StreamPlay() {
         invokeAutoembed(tmdbId, season, episode, subtitleCallback = {}, callback = callback)
     }
 
-    suspend fun generateZinkLinks(url: String): List<ZinkLink> {
-        return runCatching {
-
-            val firstDoc = app.get(url).document
-            val title = firstDoc.select("h1.file-title").text()
-            val firstHtml = firstDoc.html()
-
-            val randomId = Regex("""generateDownloadLink\(['"]([^'"]+)""")
-                .find(firstHtml)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?: return emptyList()
-
-            val ajaxEndpoint = Regex("""https://[^"'\\s]+ajax_generate_token\.php""")
-                .find(firstHtml)
-                ?.value
-                ?: return emptyList()
-
-            val downloadBase = Regex("""https://[^"'\\s]+/dl/""")
-                .find(firstHtml)
-                ?.value
-                ?: return emptyList()
-
-            val token = retry  { app.post(
-                url = "$ajaxEndpoint?random_id=$randomId",
-                data = mapOf(
-                    "random_id" to randomId
-                ),
-                headers = mapOf(
-                    "X-Requested-With" to "XMLHttpRequest"
-                )
-            ).parsedSafe<ZinkTokenResponse>()
-                ?.token
-
-            } ?: return emptyList()
-
-            val generatedUrl = downloadBase + token
-
-            val generatedDoc = app.get(generatedUrl).document
-
-            val results = generatedDoc
-                .select("#mirror-buttons a[href]")
-                .mapNotNull { element ->
-
-                    val href = element.attr("href").trim()
-
-                    if (href.isBlank()) return@mapNotNull null
-
-                    ZinkLink(
-                        name = element.text()
-                            .replace("Generate", "", true)
-                            .trim(),
-                        url = href,
-                        title = title,
-                    )
-                }
-                .toMutableList()
-
-            generatedDoc.selectFirst("#worker-btn")?.let { btn: Element ->
-
-                val workerId = Regex("""handleServerRequest\(['"]worker['"]\s*,\s*['"]([^'"]+)""")
-                    .find(btn.attr("onclick"))
-                    ?.groupValues
-                    ?.getOrNull(1)
-
-                val serverHandler = Regex("""SERVER_HANDLER_URL\s*=\s*["']([^"']+)""")
-                    .find(generatedDoc.html())
-                    ?.groupValues
-                    ?.getOrNull(1)
-
-                if (
-                    !workerId.isNullOrBlank() &&
-                    !serverHandler.isNullOrBlank()
-                ) {
-
-                    runCatching {
-
-                        val workerJson = JSONObject(
-                            app.post(
-                                url = serverHandler,
-                                requestBody = """
-                                {
-                                    "server":"worker",
-                                    "random_id":"$workerId"
-                                }
-                            """.trimIndent().toRequestBody(),
-                                headers = mapOf(
-                                    "X-Requested-With" to "XMLHttpRequest",
-                                    "Content-Type" to "application/json",
-                                    "Origin" to generatedUrl.substringBefore("/dl/"),
-                                    "Referer" to generatedUrl
-                                )
-                            ).text
-                        )
-
-                        workerJson.optString("url")
-                            .ifBlank {
-                                workerJson.optString("download")
-                            }
-                            .takeIf { it.isNotBlank() }
-                            ?.let {
-                                results += ZinkLink(
-                                    name = "WORKER",
-                                    url = it,
-                                    title = title,
-                                )
-                            }
-
-                    }
-                }
-            }
-
-            results.distinctBy { it.url }
-
-        }.getOrElse {
-            emptyList()
-        }
-    }
     suspend fun invokeAnikage(
         anilistId: Int?,
         query: String?,

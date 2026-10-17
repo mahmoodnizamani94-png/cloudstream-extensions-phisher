@@ -409,4 +409,57 @@ class StreamLinkOptimizerTest {
         val finalLink = deduplicator.getEmittedLinks().first()
         assertEquals(Qualities.P720.value, finalLink.quality)
     }
+
+    // ==================== Size-label dialect (host download-ranker contract) ====================
+
+    @Test
+    fun testNormalizeSizeLabelCanonicalizesToRankerDialect() {
+        assertEquals("1.4 GB", StreamLinkOptimizer.normalizeSizeLabel("1.4 GB"))
+        assertEquals("1.4 GB", StreamLinkOptimizer.normalizeSizeLabel("1,4gb"))
+        assertEquals("1.4 GB", StreamLinkOptimizer.normalizeSizeLabel("  1.4 GB  "))
+        assertEquals("1536 MB", StreamLinkOptimizer.normalizeSizeLabel("1536 MB"))
+        assertEquals("750 MB", StreamLinkOptimizer.normalizeSizeLabel("750 MiB"))
+        assertEquals("2 GB", StreamLinkOptimizer.normalizeSizeLabel("2 GiB"))
+        assertEquals("2.00 GB", StreamLinkOptimizer.normalizeSizeLabel("2147483648"))
+        assertNull(StreamLinkOptimizer.normalizeSizeLabel(null))
+        assertNull(StreamLinkOptimizer.normalizeSizeLabel(""))
+        assertNull(StreamLinkOptimizer.normalizeSizeLabel("fast"))
+        assertNull(StreamLinkOptimizer.normalizeSizeLabel("720p"))
+        assertNull(StreamLinkOptimizer.normalizeSizeLabel("0"))
+        assertNull(StreamLinkOptimizer.normalizeSizeLabel("-5"))
+    }
+
+    @Test
+    fun testFormatSizeLabelEmitsUnitsTheRankerParses() {
+        assertEquals("2.00 GB", StreamLinkOptimizer.formatSizeLabel(2147483648L))
+        assertEquals("1.50 GB", StreamLinkOptimizer.formatSizeLabel(1610612736L))
+        assertEquals("750 MB", StreamLinkOptimizer.formatSizeLabel(786432000L))
+        assertEquals("512 KB", StreamLinkOptimizer.formatSizeLabel(524288L))
+        assertEquals("11.50 GB", StreamLinkOptimizer.formatSizeLabel(12345678901L))
+        // Everything we can ever emit must be parseable by the app's FILE_SIZE_REGEX.
+        for (bytes in listOf(1L, 1024L, 524288L, 786432000L, 2147483648L, 12345678901L)) {
+            val emitted = StreamLinkOptimizer.formatSizeLabel(bytes)
+            assertTrue(
+                "'$emitted' must match the host ranker regex",
+                emitted.matches(Regex("""\d+(?:[.,]\d+)? (GB|MB|KB)"""))
+            )
+        }
+    }
+
+    @Test
+    fun testOptimizePreservesSizeLabelForDownloadRanker() {
+        val link = createLink(
+            source = "Vidlink",
+            name = "Vidlink 1080p [1.42 GB]",
+            url = "https://cdn.vidlink.pro/hls/1080.m3u8",
+            type = ExtractorLinkType.M3U8,
+            referer = "https://vidlink.pro/",
+            quality = Qualities.P1080.value
+        )
+        val optimized = StreamLinkOptimizer.optimize(link)
+        assertTrue(
+            "Size label must survive optimize() so the host can rank same-quality candidates",
+            optimized.name.contains("[1.42 GB]")
+        )
+    }
 }

@@ -949,16 +949,33 @@ class DualQualityAndSotaHierarchyTest {
     }
 
     @Test
-    fun testCreateQualityCompanionFormattingAndTags() {
-        val original = createLink("VidLink", "VidLink Server 1 [1080p]", "https://vidlink.pro/stream.m3u8", Qualities.P1080.value)
-        @Suppress("DEPRECATION")
-        val companion720 = StreamLinkOptimizer.createQualityCompanion(original, Qualities.P720.value)
+    fun testTopTierTrioOrderIs720Then1080Then480() = runBlocking {
+        // Host download contract: the top-tier ladder must surface 720p > 1080p > 480p in
+        // exactly that priority order, no matter how the manifest tiers arrive.
+        val emitted = mutableListOf<ExtractorLink>()
+        val link1080 = createLink("VidLink", "VidLink [1080p]", "https://vidlink.pro/1080.m3u8", Qualities.P1080.value, ExtractorLinkType.M3U8)
+        val link720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value, ExtractorLinkType.M3U8)
+        val link480 = createLink("VidLink", "VidLink [480p]", "https://vidlink.pro/480.m3u8", Qualities.P480.value, ExtractorLinkType.M3U8)
 
-        assertEquals("VidLink Server 1 [720p]", companion720.name)
-        assertEquals(Qualities.P720.value, companion720.quality)
-        assertEquals(original.url, companion720.url)
-        assertEquals(original.source, companion720.source)
-        assertTrue("Companion must have sota_dual_quality tag", companion720.extractorData?.contains("sota_dual_quality") == true)
+        StreamLinkOptimizer.emitTopTierDualQualityStreamLinks(
+            source = "VidLink",
+            baseName = "VidLink",
+            url = "https://vidlink.pro/master.m3u8",
+            referer = "https://vidlink.pro/",
+            streamType = ExtractorLinkType.M3U8,
+            generatedLinks = listOf(link480, link1080, link720), // scrambled arrival order
+            callback = { emitted.add(it) }
+        )
+
+        assertEquals("Exactly the three genuine tiers, nothing synthesized", 3, emitted.size)
+        assertEquals("Priority #1 must be 720p", Qualities.P720.value, emitted[0].quality)
+        assertEquals("Priority #2 must be 1080p", Qualities.P1080.value, emitted[1].quality)
+        assertEquals("Priority #3 must be 480p", Qualities.P480.value, emitted[2].quality)
+        assertEquals(
+            "Every emitted URL must be one of the genuine manifest URLs",
+            setOf(link720.url, link1080.url, link480.url),
+            emitted.map { it.url }.toSet()
+        )
     }
 
     @Test
@@ -1904,7 +1921,8 @@ class DualQualityAndSotaHierarchyTest {
     fun testDeadProvidersVidSrcSUAndAutoembedGracefulZeroLinks() = runBlocking {
         val vidsrcsuLinks = mutableListOf<ExtractorLink>()
         StreamPlayExtractor.invokeVidSrcSU(
-            tmdbId = 999999,
+            // 99999999 lies beyond TMDB's id space (404) — a genuinely unindexed title.
+            tmdbId = 99999999,
             season = null,
             episode = null,
             subtitleCallback = {},

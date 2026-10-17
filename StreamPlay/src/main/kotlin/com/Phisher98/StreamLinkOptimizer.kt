@@ -180,6 +180,13 @@ object StreamLinkOptimizer {
 
     // Bitrate & Size Regexes
     private val SIZE_REGEX = Regex("""\b(\d+(?:\.\d+)?)\s*(GB|GIB|MB|MIB|KB|KIB|B)\b""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Whole-string matcher for source-reported size labels ("1.4 GB", "1,4gb", "1536 MB").
+     * Used by [normalizeSizeLabel] to canonicalise them into the exact dialect the app's
+     * download ranker parses.
+     */
+    private val SIZE_UNIT_LABEL_REGEX = Regex("""^(\d+(?:[.,]\d+)?)\s*(GB|GIB|MB|MIB|KB|KIB)$""", RegexOption.IGNORE_CASE)
     private val BITRATE_TEXT_REGEX = Regex("""\b(\d+(?:\.\d+)?)\s*(kbps|mbps|kb/s|mb/s)\b""", RegexOption.IGNORE_CASE)
     private val BITRATE_K_REGEX = Regex("""\b(\d{3,5})\s*k\b""", RegexOption.IGNORE_CASE)
 
@@ -1305,6 +1312,43 @@ object StreamLinkOptimizer {
     }
 
     /**
+     * Canonical size-label dialect shared with the CloudStream download ranker (the app
+     * parses "1.42 GB" / "750 MB" out of link names to elect the smallest same-quality
+     * candidate). Emits GB/MB/KB only — exactly the units the ranker's FILE_SIZE_REGEX
+     * accepts — so nothing else may ever be attached to a name.
+     */
+    fun formatSizeLabel(bytes: Long): String {
+        val gb = 1024.0 * 1024.0 * 1024.0
+        val mb = 1024.0 * 1024.0
+        val kb = 1024.0
+        val value = bytes.coerceAtLeast(0L).toDouble()
+        return when {
+            value >= gb -> String.format(Locale.ROOT, "%.2f GB", value / gb)
+            value >= mb -> String.format(Locale.ROOT, "%.0f MB", value / mb)
+            else -> String.format(Locale.ROOT, "%.0f KB", value / kb)
+        }
+    }
+
+    /**
+     * Canonicalises a source-reported size string ("1.4 GB", "1,4gb", "1536 MB", "1610612736")
+     * into the [formatSizeLabel] dialect, or null when the text is not a size. The number is
+     * preserved verbatim for explicit-unit input — no unit conversion, so candidate ranking
+     * never loses precision to rounding; bare byte counts are formatted once.
+     */
+    fun normalizeSizeLabel(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        SIZE_UNIT_LABEL_REGEX.matchEntire(trimmed)?.let { match ->
+            val value = match.groupValues[1].replace(',', '.')
+            val unit = match.groupValues[2].uppercase(Locale.ROOT).replace("I", "")
+            return "$value $unit"
+        }
+        val bytes = trimmed.toLongOrNull() ?: return null
+        if (bytes <= 0L) return null
+        return formatSizeLabel(bytes)
+    }
+
+    /**
      * Parses explicit bitrate in kbps from strings like "4500 kbps", "4.5 Mbps", "2500k".
      */
     fun parseBitrateKbpsFromText(text: String?): Long? {
@@ -1630,40 +1674,6 @@ object StreamLinkOptimizer {
             p.contains("vidrock") ||
             p.contains("meowtv") ||
             p.contains("animex")
-    }
-
-    /**
-     * Creates a quality-specialized companion ExtractorLink (e.g. 720p or 1080p) from an existing link.
-     * Deprecated: synthetic companion generation is eliminated to prevent fabricated quality labels.
-     */
-    @Deprecated("Synthetic companion generation is eliminated to prevent fabricated quality labels.", ReplaceWith("link"))
-    fun createQualityCompanion(link: ExtractorLink, targetQuality: Int, targetUrl: String? = null): ExtractorLink {
-        val targetTag = when (targetQuality) {
-            Qualities.P720.value -> "720p"
-            Qualities.P1080.value -> "1080p"
-            Qualities.P480.value -> "480p"
-            Qualities.P1440.value -> "1440p"
-            Qualities.P2160.value -> "4K"
-            else -> "${targetQuality}p"
-        }
-        val cleanName = link.name
-            .replace(Regex("""\[(2160|1440|1080|720|480|360|4K|UHD|FHD|HD|SD)p?\]""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\b(2160|1440|1080|720|480|360)p\b""", RegexOption.IGNORE_CASE), "")
-            .trim()
-        val newName = "$cleanName [$targetTag]".trim()
-        val extData = link.extractorData?.let { if (it.contains("sota_dual_quality")) it else "$it;sota_dual_quality" } ?: "sota_dual_quality"
-        val finalUrl = targetUrl?.takeIf { it.isNotBlank() } ?: link.url
-        @Suppress("DEPRECATION")
-        return ExtractorLink(
-            source = link.source,
-            name = newName,
-            url = finalUrl,
-            referer = link.referer,
-            quality = targetQuality,
-            type = link.type,
-            headers = link.headers,
-            extractorData = extData
-        )
     }
 
     fun is720p(link: ExtractorLink): Boolean = PriorityStreamDispatcher.is720p(link)
@@ -2646,22 +2656,6 @@ object StreamLinkOptimizer {
             synchronized(lock) {
                 completedTop720Ranks.add(rank)
                 drainPendingTop720()
-            }
-        }
-
-        fun markProviderCompleted(providerId: String) {
-            val rank = when {
-                providerId.contains("vidlink", ignoreCase = true) -> 100
-                providerId.contains("vidsrcsu", ignoreCase = true) -> 93
-                providerId.contains("vidsrc", ignoreCase = true) -> 95
-                providerId.contains("vidfast", ignoreCase = true) -> 94
-                providerId.contains("vidrock", ignoreCase = true) -> 92
-                providerId.contains("meowtv", ignoreCase = true) -> 91
-                providerId.contains("animex", ignoreCase = true) -> 90
-                else -> 0
-            }
-            if (rank > 0) {
-                markRankCompleted(rank)
             }
         }
 

@@ -47,7 +47,7 @@ cloudstream {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.google.android.material:material:1.14.0")
-    // FIXME remove this when crossplatform is fully supported
+    // Required while crossplatform support is incomplete: cloudstream3 must use the dedicated configuration below.
     val cloudstream by configurations
     cloudstream("com.lagradost:cloudstream3:pre-release")
 }

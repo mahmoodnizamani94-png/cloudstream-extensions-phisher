@@ -1,7 +1,11 @@
 package com.phisher98
 
 import okhttp3.Dns
+import okhttp3.Interceptor
+import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -13,6 +17,7 @@ import org.junit.Before
 import org.junit.Test
 import java.net.InetAddress
 import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 
 /**
  * Acceptance contract for [StreamPlayShield] — the production ad/tracker policy engine —
@@ -529,5 +534,162 @@ class StreamPlayShieldTest {
             "20k classifications must stay well under a second (took ${elapsedMillis}ms)",
             elapsedMillis < 1_000
         )
+    }
+
+    // =========================================================================
+    // 10. Tier-2b hop guard & final-response verification
+    // =========================================================================
+
+    private fun mockChain(
+        request: Request,
+        proceedResult: (Request) -> Response
+    ): Interceptor.Chain = object : Interceptor.Chain {
+        override fun request(): Request = request
+        override fun proceed(request: Request): Response = proceedResult(request)
+        override fun connection() = null
+        override fun call() = throw UnsupportedOperationException()
+        override fun connectTimeoutMillis() = 1000
+        override fun withConnectTimeout(timeout: Int, unit: TimeUnit) = this
+        override fun readTimeoutMillis() = 1000
+        override fun withReadTimeout(timeout: Int, unit: TimeUnit) = this
+        override fun writeTimeoutMillis() = 1000
+        override fun withWriteTimeout(timeout: Int, unit: TimeUnit) = this
+    }
+
+    private fun responseOf(request: Request): Response = Response.Builder()
+        .request(request)
+        .protocol(Protocol.HTTP_1_1)
+        .code(200)
+        .message("OK")
+        .body("{}".toResponseBody())
+        .build()
+
+    @Test
+    fun testHopGuardVetoesBlockedAdHopBeforeProceed() {
+        val request = Request.Builder().url("https://qyvir.com/ad.js").build()
+        var proceeded = false
+        try {
+            StreamPlayShield.newHopGuardInterceptor().intercept(
+                mockChain(request) { proceeded = true; responseOf(it) }
+            )
+            fail("Hop guard must refuse a blocked redirect hop")
+        } catch (e: StreamPlayShield.AdBlockedException) {
+            assertTrue("Blocked host must be the hop host", e.host.contains("qyvir"))
+        }
+        assertFalse("Proceed must never be reached for a blocked hop", proceeded)
+        val m = StreamPlayShield.metrics()
+        assertEquals("Hop block must be counted exactly once in the hop bucket", 1, m.blockedRedirectHops)
+        assertEquals("Hop block must land in the ad bucket", 1, m.blockedAdRequests)
+        assertEquals("Hop block must not be counted as a tracker", 0, m.blockedTrackerRequests)
+    }
+
+    @Test
+    fun testHopGuardVetoesBlockedTrackerHop() {
+        try {
+            StreamPlayShield.newHopGuardInterceptor().intercept(
+                mockChain(Request.Builder().url("https://demdex.net/id").build()) { responseOf(it) }
+            )
+            fail("Hop guard must refuse a blocked tracker hop")
+        } catch (e: StreamPlayShield.AdBlockedException) {
+            assertTrue("Blocked host must be the hop host", e.host.contains("demdex"))
+        }
+        val m = StreamPlayShield.metrics()
+        assertEquals(1, m.blockedRedirectHops)
+        assertEquals(1, m.blockedTrackerRequests)
+        assertEquals(0, m.blockedAdRequests)
+    }
+
+    @Test
+    fun testHopGuardPassesCleanAndVettedHopsByteIdentically() {
+        val url = "https://cdn.vidlink.pro/hls/master.m3u8?token=abc123&exp=999"
+        var seen: Request? = null
+        val response = StreamPlayShield.newHopGuardInterceptor().intercept(
+            mockChain(Request.Builder().url(url).build()) { seen = it; responseOf(it) }
+        )
+        assertEquals(200, response.code)
+        assertEquals("Hop guard is block-only: clean hops pass byte-identically", url, seen!!.url.toString())
+        assertEquals(0, StreamPlayShield.metrics().blockedRedirectHops)
+    }
+
+    @Test
+    fun testFinalResponseVerificationClosesBlockedTerminalResponse() {
+        // A preflight-clean request whose chain finalises on blocked infrastructure (HTTP
+        // cache / pooled redirect chain): the terminal guard must close the body and refuse.
+        val original = Request.Builder().url("https://vidsrc.to/api/stream").build()
+        var proceededWith: Request? = null
+        val terminal = Response.Builder()
+            .request(Request.Builder().url("https://monetag.com/redirect-target").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(302)
+            .message("Found")
+            .body("ad-payload".toResponseBody())
+            .build()
+        try {
+            StreamPlayShield.newRequestInterceptor().intercept(
+                mockChain(original) { proceededWith = it; terminal }
+            )
+            fail("Final-response verification must refuse a terminal blocked response")
+        } catch (e: StreamPlayShield.AdBlockedException) {
+            assertTrue("Terminal host must be reported", e.host.contains("monetag"))
+        }
+        assertEquals("Preflight must forward the clean request unchanged", original, proceededWith)
+        val m = StreamPlayShield.metrics()
+        assertEquals("Final-response block lands in the hop bucket", 1, m.blockedRedirectHops)
+        assertEquals(1, m.blockedAdRequests)
+    }
+
+    @Test
+    fun testFinalResponseVerificationPassesCleanTerminalResponseThrough() {
+        val original = Request.Builder().url("https://vidsrc.to/api/stream").build()
+        val ok = Response.Builder()
+            .request(Request.Builder().url("https://vidsrc.to/api/final").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body("{}".toResponseBody())
+            .build()
+        val response = StreamPlayShield.newRequestInterceptor().intercept(mockChain(original) { ok })
+        assertSame("A clean terminal response must be returned untouched", ok, response)
+        assertEquals(0, StreamPlayShield.metrics().blockedRedirectHops)
+    }
+
+    // =========================================================================
+    // 11. Round-two registry families (v703 hardening)
+    // =========================================================================
+
+    @Test
+    fun testRoundTwoRegistryFamiliesAreBlockedAndProperlyCategorized() {
+        for (host in listOf(
+            "qyvir.com", "monetag.com", "ezoic.net", "ezoic.com", "spotxchange.com",
+            "primis.tech", "adriver.ru"
+        )) {
+            assertTrue("ad host '$host' must be blocked", StreamPlayShield.isBlockedHost(host))
+            assertTrue("ad host '$host' must classify as ad", StreamPlayShield.isBlockedAdHost(host))
+        }
+        for (host in listOf(
+            "demdex.net", "omtrdc.net", "2o7.net", "everesttech.net", "adobedc.net",
+            "analytics.tiktok.com", "ct.pinterest.com", "alb.reddit.com", "top-fwz1.mail.ru",
+            "counter.yadro.ru", "segment.com", "segment.io", "fullstory.com"
+        )) {
+            assertTrue("tracker host '$host' must be blocked", StreamPlayShield.isBlockedHost(host))
+            assertTrue("tracker host '$host' must classify as tracker", StreamPlayShield.isBlockedTrackerHost(host))
+        }
+        assertTrue("subdomains inherit like base entries", StreamPlayShield.isBlockedHost("cdn.demdex.net"))
+        assertTrue("subdomains inherit like base entries", StreamPlayShield.isBlockedHost("eu.qyvir.com"))
+    }
+
+    @Test
+    fun testRoundTwoParticleFamilyIsScrubbed() {
+        for (param in listOf(
+            "_ga", "_openstat", "pk_campaign", "pk_kwd", "pk_source", "pk_medium",
+            "mkt_tok", "wickedid", "s_cid", "hsctatracking",
+            "_gac_1234", "trk_campaign", "mtm_source"
+        )) {
+            val cleaned = StreamPlayShield.stripTrackingParticles(
+                "https://cdn.vidlink.pro/hls/master.m3u8?$param=x&keep=1"
+            )
+            assertFalse("particle '$param' must be scrubbed", cleaned.contains(param))
+            assertTrue("functional parameters must survive", cleaned.contains("keep=1"))
+        }
     }
 }

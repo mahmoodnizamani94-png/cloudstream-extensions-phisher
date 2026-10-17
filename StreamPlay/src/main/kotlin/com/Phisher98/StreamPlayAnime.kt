@@ -646,11 +646,4 @@ class StreamPlayAnime : MainAPI() {
 
         return AniIds(res?.id, res?.idMal)
     }
-
-    private fun extractSeason(title: String): Int? {
-        val regex = Regex("""(?i)(?:season\s*(\d+)|(\d+)(?:st|nd|rd|th)?\s*season)""")
-        val match = regex.find(title)
-        val seasonStr = match?.groups?.get(1)?.value ?: match?.groups?.get(2)?.value ?: "1"
-        return seasonStr.toIntOrNull()
-    }
 }

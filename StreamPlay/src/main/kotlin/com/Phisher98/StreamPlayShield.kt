@@ -18,23 +18,34 @@ import java.util.concurrent.atomic.AtomicInteger
  * (every operator ships an opaque, ad-hoc list and can silently blackhole streaming CDNs —
  * the exact failure mode the 4-operator race was built to avoid).
  *
- * Three enforcement tiers, one registry brain:
+ * Three enforcement tiers, four enforcement points, one registry brain:
  *
  *  T1 — DNS gate ([OptimizedDns.lookup]): a blocked hostname never produces a resolver
  *       round-trip at all. Nothing is sent to DoH or system DNS for it, and callers observe
  *       the standard [java.net.UnknownHostException] contract (an IOException) that every
  *       error wrapper in this codebase already treats as "network failed, move on".
  *
- *  T2 — OkHttp request interceptor ([ShieldRequestInterceptor], installed on the shared
- *       `app.baseClient` by [NetworkOptimizer]): because CloudStream shares one OkHttpClient
- *       process-wide, this tier protects not only StreamPlay but the other extensions'
- *       traffic as well — the whole app gets a clean network stack. It (a) hard-blocks
- *       egress to known ad/tracker infrastructure, (b) strips tracking particles (utm_*,
- *       fbclid, gclid, ...) from the request URL before anything hits the wire, and (c)
- *       applies an origin-only cross-host Referer policy so full page URLs (often carrying
- *       sku/episode ids) never leak to third parties. Anti-hotlink pins for our own
- *       streaming CDNs pass through byte-for-byte: referrer relationships the extractors
- *       deliberately establish are excluded from the policy via the vetted allowlist.
+ *  T2a — OkHttp application interceptor ([ShieldRequestInterceptor], installed on the shared
+ *        `app.baseClient` by [NetworkOptimizer]): because CloudStream shares one OkHttpClient
+ *        process-wide, this tier protects not only StreamPlay but the other extensions'
+ *        traffic as well — the whole app gets a clean network stack. It (a) hard-blocks
+ *        egress to known ad/tracker infrastructure, (b) strips tracking particles (utm_*,
+ *        fbclid, gclid, ...) from the request URL before anything hits the wire, (c)
+ *        applies an origin-only cross-host Referer policy so full page URLs (often carrying
+ *        sku/episode ids) never leak to third parties, and (d) verifies the FINAL response
+ *        of a chain — a hop that lands on blocked infrastructure (a cached redirect target,
+ *        for example) is refused at delivery, so a policy change can never be outlived by a
+ *        stale cache entry. Anti-hotlink pins for our own streaming CDNs pass through
+ *        byte-for-byte: referrer relationships the extractors deliberately establish are
+ *        excluded from the policy via the vetted allowlist.
+ *
+ *  T2b — OkHttp network hop guard ([ShieldHopGuardInterceptor], also installed on
+ *        `app.baseClient`): application interceptors only ever see the original request,
+ *        while network interceptors observe every redirect hop — so a 30x into known
+ *        ad/tracker infrastructure is vetoed at the hop boundary, before the HTTP exchange,
+ *        regardless of how the chain was reached (fresh redirect, retry, or a pooled
+ *        connection that outlived a registry update). Block-only by design: request
+ *        rewriting stays in the single T2a contract, one owner per concern.
  *
  *  T3 — Emission hygiene ([StreamLinkOptimizer.optimize] + [StreamLinkOptimizer.StreamDeduplicator]):
  *       every playback link a source produces is scrubbed of tracking particles before it
@@ -139,7 +150,54 @@ object StreamPlayShield {
         "adcash.com",
         "adsterra.com",
         "zqtk.net",
-        "4dsply.com"
+        "4dsply.com",
+        // Open exchanges / header bidding / video ad servers (round two)
+        "appnexus.com",
+        "improvedigital.com",
+        "emxdgt.com",
+        "sonobi.com",
+        "gumgum.com",
+        "sovrn.com",
+        "lijit.com",
+        "triplelift.com",
+        "33across.com",
+        "loopme.me",
+        "smaato.net",
+        "admixer.net",
+        "adtelligent.com",
+        // Video ad serving and player-side monetisation (runs inside streaming players)
+        "spotxchange.com",
+        "springserve.com",
+        "teads.tv",
+        "unrulymedia.com",
+        "connatix.com",
+        "primis.tech",
+        "vidoomy.com",
+        "aniview.com",
+        "beachfront.com",
+        "tremorhub.com",
+        "cpmstar.com",
+        "exponential.com",
+        "tribalfusion.com",
+        // Popunder / redirect monetisers that litter streaming mirrors
+        "adnium.com",
+        "ad-maven.com",
+        "monetag.com",
+        "hilltopads.net",
+        "trafficstars.com",
+        "zeropark.com",
+        "adspyglass.com",
+        "dtscout.com",
+        // Publisher-side ad tech
+        "ezoic.net",
+        "ezoic.com",
+        "adpushup.com",
+        "adroll.com",
+        "zemanta.com",
+        // Streaming-portal redirect gateways (repo research: the AnimePahe front hijack lands here)
+        "qyvir.com",
+        // RU/CIS ad stack
+        "adriver.ru"
     )
 
     /**
@@ -182,7 +240,60 @@ object StreamPlayShield {
         "bat.bing.com",
         "gemius.pl",
         // Consent beacon infrastructure (IAB TCF consent-engine endpoints)
-        "consensu.org"
+        "consensu.org",
+        // Adobe Experience Cloud measurement and identity
+        "demdex.net",
+        "omtrdc.net",
+        "2o7.net",
+        "everesttech.net",
+        "adobedc.net",
+        // Data clouds / DMPs / identity resolvers
+        "bluekai.com",
+        "bkrtx.com",
+        "addthis.com",
+        "agkn.com",
+        "krxd.net",
+        "exelator.com",
+        "imrworldwide.com",
+        "crwdcntrl.net",
+        "mathtag.com",
+        "turn.com",
+        "tapad.com",
+        "sitescout.com",
+        "rfihub.com",
+        "owneriq.net",
+        "simpli.fi",
+        "steelhousemedia.com",
+        "id5-sync.com",
+        "liadm.com",
+        "rlcdn.com",
+        "pippio.com",
+        "permutive.com",
+        // Session replay / product analytics
+        "fullstory.com",
+        "mouseflow.com",
+        "luckyorange.com",
+        "smartlook.com",
+        "inspectlet.com",
+        "logrocket.com",
+        "logrocket.io",
+        "quantummetric.com",
+        // Customer data platforms
+        "segment.com",
+        "segment.io",
+        "mparticle.com",
+        // Social beacon subdomains (the parent registrants must never be blocked)
+        "analytics.tiktok.com",
+        "ct.pinterest.com",
+        "alb.reddit.com",
+        // RU/CIS counters and audience panels
+        "top-fwz1.mail.ru",
+        "counter.yadro.ru",
+        "liveinternet.ru",
+        "mediascope.net",
+        "gemius.lt",
+        // Heatmap asset host
+        "hotjar.io"
     )
 
     /**
@@ -370,8 +481,14 @@ object StreamPlayShield {
         "fbclid", "li_fat_id",
         // MailChimp, HubSpot, Vero, Adobe SAINT attribution
         "mc_eid", "mc_cid", "_hsenc", "_hsmi", "vero_conv", "vero_id", "s_kwcid",
-        // Google Analytics cross-domain linker
-        "_gl",
+        // Google Analytics cross-domain linker + legacy campaign fabric
+        "_gl", "_ga", "_openstat",
+        // Matomo / Piwik campaign fabric
+        "pk_campaign", "pk_kwd", "pk_source", "pk_medium",
+        // MailChimp campaign carriers
+        "mkt_tok", "wickedid",
+        // Adobe / HubSpot legacy carriers
+        "s_cid", "hsctatracking",
         // Instagram / TikTok share attribution
         "igshid",
         // Alibaba page-relationship beacons
@@ -383,7 +500,10 @@ object StreamPlayShield {
         "utm_",        // UTM attribution family (utm_source/medium/campaign/term/content/id/...)
         "hsa_",        // HubSpot ads family (hsa_cam/acc/ad/grp/net/...)
         "oly_anon_id", // Omeda identity carriers
-        "oly_enc_id"
+        "oly_enc_id",
+        "_gac_",       // Google Ads conversion linker family (_gac_UA-1234)
+        "trk_",        // MailChimp campaign fabric (trk_contact, trk_msg, trk_module, ...)
+        "mtm_"         // Matomo measurement family (mtm_campaign, mtm_source, ...)
     )
 
     fun isTrackingParticle(paramName: String): Boolean {
@@ -445,10 +565,13 @@ object StreamPlayShield {
     fun hasTrackingParticles(urlish: String): Boolean = stripTrackingParticles(urlish) !== urlish
 
     // =========================================================================
-    // 4. Tier-2 request interceptor (installed on the shared app.baseClient)
+    // 4. Tier-2 interceptors (installed on the shared app.baseClient)
     // =========================================================================
 
-    /** Thrown (deliberately an IOException) when the shield refuses a request's host. */
+    /**
+     * Thrown (deliberately an IOException) when the shield refuses a request: at the T2a
+     * preflight, at T2a final-response verification, or at a T2b network hop.
+     */
     class AdBlockedException(val host: String, val category: String) : IOException(
         "StreamPlayShield blocked request to ad/tracker host '$host' ($category)"
     )
@@ -517,14 +640,31 @@ object StreamPlayShield {
     }
 
     /**
-     * OkHttp application interceptor: the Tier-2 enforcement point. A thin shell around
-     * the pure [evaluateRequest] decision — see its KDoc for the full contract.
+     * OkHttp application interceptor: the Tier-2a enforcement point. A thin shell around
+     * the pure [evaluateRequest] decision (see its KDoc for the full contract) plus the
+     * final-response verification — whatever the redirect chain, the HTTP cache or the
+     * connection pool served, a chain that finalises on blocked infrastructure is closed
+     * and refused before the caller can ever see the body. This is what makes a registry
+     * update impossible to outlive for responses that never re-ran the preflight (a hop
+     * served from OkHttp's cache, for example).
      */
     class ShieldRequestInterceptor : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
-            return when (val decision = evaluateRequest(chain.request())) {
-                is ShieldDecision.Blocked -> throw AdBlockedException(decision.host, categoryLabel(decision.category))
-                is ShieldDecision.Allowed -> chain.proceed(decision.rewritten ?: chain.request())
+            val request = chain.request()
+            when (val decision = evaluateRequest(request)) {
+                is ShieldDecision.Blocked ->
+                    throw AdBlockedException(decision.host, categoryLabel(decision.category))
+
+                is ShieldDecision.Allowed -> {
+                    val response = chain.proceed(decision.rewritten ?: request)
+                    val finalHost = response.request.url.host
+                    val finalCategory = classifyHost(finalHost)
+                    if (finalCategory == CATEGORY_ALLOW) return response
+                    response.close()
+                    countBlockedRequest(finalCategory)
+                    countBlockedHop()
+                    throw AdBlockedException(finalHost, categoryLabel(finalCategory))
+                }
             }
         }
     }
@@ -541,6 +681,31 @@ object StreamPlayShield {
     }
 
     fun newRequestInterceptor(): Interceptor = ShieldRequestInterceptor()
+
+    /**
+     * OkHttp network interceptor: the Tier-2b hop guard. Network interceptors observe every
+     * redirect hop (application interceptors only ever see the original request), so this
+     * closes the redirect-chain hole deterministically: a 30x into known ad/tracker
+     * infrastructure is vetoed at the hop boundary regardless of how the chain was reached —
+     * fresh redirect, retry, or a pooled connection that outlived a registry update.
+     *
+     * Deliberately block-only: request rewriting (particle strip / referer policy) stays in
+     * the single T2a contract — one owner per concern.
+     */
+    class ShieldHopGuardInterceptor : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val category = classifyHost(request.url.host)
+            if (category != CATEGORY_ALLOW) {
+                countBlockedRequest(category)
+                countBlockedHop()
+                throw AdBlockedException(request.url.host, categoryLabel(category))
+            }
+            return chain.proceed(request)
+        }
+    }
+
+    fun newHopGuardInterceptor(): Interceptor = ShieldHopGuardInterceptor()
 
     /** "scheme://host[:port]" of a header-style URL string, or null when not absolute. */
     fun originOf(urlish: String): String? {
@@ -570,6 +735,7 @@ object StreamPlayShield {
 
     private val blockedAdRequests = AtomicInteger(0)
     private val blockedTrackerRequests = AtomicInteger(0)
+    private val blockedRedirectHops = AtomicInteger(0)
     private val dnsGateCalls = AtomicInteger(0)
     private val particleScrubs = AtomicInteger(0)
     private val refererLeaned = AtomicInteger(0)
@@ -580,6 +746,8 @@ object StreamPlayShield {
         if ((category and CATEGORY_TRACKER) != 0) blockedTrackerRequests.incrementAndGet()
     }
 
+    /** A block that happened past the request preflight: a redirect hop or a final response. */
+    internal fun countBlockedHop() { blockedRedirectHops.incrementAndGet() }
     internal fun countDnsGate() { dnsGateCalls.incrementAndGet() }
     internal fun countParticleScrubbed() { particleScrubs.incrementAndGet() }
     internal fun countRefererLeaned() { refererLeaned.incrementAndGet() }
@@ -591,7 +759,8 @@ object StreamPlayShield {
         val dnsGateCalls: Int,
         val particleScrubs: Int,
         val refererLeaned: Int,
-        val emissionsBlocked: Int
+        val emissionsBlocked: Int,
+        val blockedRedirectHops: Int
     )
 
     fun metrics(): Metrics = Metrics(
@@ -600,19 +769,22 @@ object StreamPlayShield {
         dnsGateCalls.get(),
         particleScrubs.get(),
         refererLeaned.get(),
-        emissionsBlocked.get()
+        emissionsBlocked.get(),
+        blockedRedirectHops.get()
     )
 
     /** One-line observability summary for debug logs. */
     fun describe(): String {
         val m = metrics()
         return "StreamPlayShield[int] blocked: ${m.blockedAdRequests}ad/${m.blockedTrackerRequests}trk " +
-            "dns:${m.dnsGateCalls} scrub:${m.particleScrubs} ref:${m.refererLeaned} emit:${m.emissionsBlocked}"
+            "hop:${m.blockedRedirectHops} dns:${m.dnsGateCalls} scrub:${m.particleScrubs} " +
+            "ref:${m.refererLeaned} emit:${m.emissionsBlocked}"
     }
 
     fun resetMetrics() {
         blockedAdRequests.set(0)
         blockedTrackerRequests.set(0)
+        blockedRedirectHops.set(0)
         dnsGateCalls.set(0)
         particleScrubs.set(0)
         refererLeaned.set(0)

@@ -451,32 +451,6 @@ class VCloud : ExtractorApi() {
                     )
                 }
 
-                /*
-                text.contains("10Gbps", ignoreCase = true) -> {
-                    var currentLink = link
-                    var redirectUrl: String?
-
-                    while (true) {
-                        val response = app.get(currentLink, allowRedirects = false)
-                        redirectUrl = response.headers["location"]
-                        if (redirectUrl == null) {
-                            Log.e("HubCloud", "10Gbps: No redirect")
-                            return@amap
-                        }
-                        if ("link=" in redirectUrl) break
-                        currentLink = redirectUrl
-                    }
-                    val finalLink = redirectUrl.substringAfter("link=")
-                    callback.invoke(
-                        newExtractorLink(
-                            "10Gbps [Download]",
-                            "10Gbps [Download] $labelExtras",
-                            finalLink,
-                        ) { this.quality = quality }
-                    )
-                }
-                */
-
                 text.contains("S3 Server", ignoreCase = true) -> {
                     callback.invoke(
                         newExtractorLink(
@@ -3600,8 +3574,6 @@ data class DecryptKeys(
     val edge1: String,
     @JsonProperty("edge_2")
     val edge2: String,
-    @JsonProperty("legacy_fallback")
-    val legacyFallback: String,
 )
 
 data class PlaybackDecrypt(

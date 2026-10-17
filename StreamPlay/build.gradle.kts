@@ -11,7 +11,7 @@ import org.jetbrains.kotlin.konan.properties.Properties
 //    without ever needing to rewrite history.
 //  - Never decrement or re-issue an already-published number: users' apps compare
 //    `>` against the installed version, so any regression silently stops updates.
-version = 702
+version = 703
 
 android {
     buildFeatures {
@@ -84,7 +84,7 @@ cloudstream {
 }
 
 dependencies {
-    // FIXME remove this when crossplatform is fully supported
+    // Required while crossplatform support is incomplete: cloudstream3 must use the dedicated configuration below.
     val cloudstream by configurations
     implementation("com.google.android.material:material:1.14.0")
     implementation("androidx.browser:browser:1.10.0")

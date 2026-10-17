@@ -70,14 +70,6 @@ object StreamPlayCache {
             map[key] = CacheEntry(value, expiresAt)
         }
 
-        fun getOrPut(key: K, ttlMillis: Long = defaultTtlMillis, defaultValue: () -> V): V = synchronized(this) {
-            val cached = get(key)
-            if (cached != null) return cached
-            val computed = defaultValue()
-            put(key, computed, ttlMillis)
-            return computed
-        }
-
         fun remove(key: K): V? = synchronized(this) {
             return map.remove(key)?.value
         }
@@ -247,11 +239,6 @@ object StreamPlayCache {
 
     // ==================== Metadata Caching ====================
 
-    data class MetadataCache(
-        val data: String, // JSON string
-        val timestamp: Long = System.currentTimeMillis()
-    )
-
     private const val METADATA_CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
     private const val METADATA_CACHE_MAX_SIZE = 100
 
@@ -395,14 +382,6 @@ object StreamPlayCache {
     }
 
     // ==================== Persistence ====================
-
-    fun saveProviderStats(prefs: SharedPreferences?) {
-        ProviderTelemetryManager.scheduleSave(prefs)
-    }
-
-    fun flushProviderStats(prefs: SharedPreferences?) {
-        ProviderTelemetryManager.flushSync(prefs)
-    }
 
     fun loadProviderStatsOnce(prefs: SharedPreferences?) {
         if (prefs == null) return

@@ -93,87 +93,6 @@ data class WYZIESubtitle(
     val language: String? = null,
 )
 
-data class ResponseHash(
-    @param:JsonProperty("embed_url") val embed_url: String,
-    @param:JsonProperty("key") val key: String? = null,
-    @param:JsonProperty("type") val type: String? = null,
-)
-
-data class KisskhSources(
-    @param:JsonProperty("Video") val video: String?,
-    @param:JsonProperty("ThirdParty") val thirdParty: String?,
-)
-
-data class KisskhSubtitle(
-    @param:JsonProperty("src") val src: String?,
-    @param:JsonProperty("label") val label: String?,
-)
-
-data class KisskhEpisodes(
-    @param:JsonProperty("id") val id: Int?,
-    @param:JsonProperty("number") val number: Int?,
-)
-
-data class KisskhDetail(
-    @param:JsonProperty("episodes") val episodes: ArrayList<KisskhEpisodes>? = arrayListOf(),
-)
-
-data class KisskhResults(
-    @param:JsonProperty("id") val id: Int?,
-    @param:JsonProperty("title") val title: String?,
-)
-
-data class ZShowEmbed(
-    @param:JsonProperty("m") val meta: String? = null,
-)
-
-data class WatchsomuchTorrents(
-    @param:JsonProperty("id") val id: Int? = null,
-    @param:JsonProperty("movieId") val movieId: Int? = null,
-    @param:JsonProperty("season") val season: Int? = null,
-    @param:JsonProperty("episode") val episode: Int? = null,
-)
-
-data class WatchsomuchMovies(
-    @param:JsonProperty("torrents") val torrents: ArrayList<WatchsomuchTorrents>? = arrayListOf(),
-)
-
-data class WatchsomuchResponses(
-    @param:JsonProperty("movie") val movie: WatchsomuchMovies? = null,
-)
-
-data class WatchsomuchSubtitles(
-    @param:JsonProperty("url") val url: String? = null,
-    @param:JsonProperty("label") val label: String? = null,
-)
-
-data class WatchsomuchSubResponses(
-    @param:JsonProperty("subtitles") val subtitles: ArrayList<WatchsomuchSubtitles>? = arrayListOf(),
-)
-
-data class IndexMedia(
-    @param:JsonProperty("id") val id: String? = null,
-    @param:JsonProperty("driveId") val driveId: String? = null,
-    @param:JsonProperty("mimeType") val mimeType: String? = null,
-    @param:JsonProperty("size") val size: String? = null,
-    @param:JsonProperty("name") val name: String? = null,
-    @param:JsonProperty("modifiedTime") val modifiedTime: String? = null,
-)
-data class JikanExternal(
-    @param:JsonProperty("name") val name: String? = null,
-    @param:JsonProperty("url") val url: String? = null,
-)
-
-data class JikanData(
-    @param:JsonProperty("title") val title: String? = null,
-    @param:JsonProperty("external") val external: List<JikanExternal>? = null,
-    @param:JsonProperty("season") val season: String? = null,
-)
-
-data class JikanResponse(
-    @param:JsonProperty("data") val data: JikanData? = null,
-)
-
 //anime animepahe parser
 
 data class animepahe(
@@ -223,53 +142,11 @@ data class MALSyncSites(
 data class MALSyncResponses(
     @param:JsonProperty("Sites") val sites: MALSyncSites? = null,
 )
-
-data class AllMovielandEpisodeFolder(
-    @param:JsonProperty("title") val title: String? = null,
-    @param:JsonProperty("id") val id: String? = null,
-    @param:JsonProperty("file") val file: String? = null,
-)
-
-data class AllMovielandSeasonFolder(
-    @param:JsonProperty("episode") val episode: String? = null,
-    @param:JsonProperty("id") val id: String? = null,
-    @param:JsonProperty("folder") val folder: ArrayList<AllMovielandEpisodeFolder>? = arrayListOf(),
-)
-
-data class AllMovielandServer(
-    @param:JsonProperty("title") val title: String? = null,
-    @param:JsonProperty("id") val id: String? = null,
-    @param:JsonProperty("file") val file: String? = null,
-    @param:JsonProperty("folder") val folder: ArrayList<AllMovielandSeasonFolder>? = arrayListOf(),
-)
-
-data class AllMovielandPlaylist(
-    @param:JsonProperty("file") val file: String? = null,
-    @param:JsonProperty("key") val key: String? = null,
-    @param:JsonProperty("href") val href: String? = null,
-)
-data class RidoContentable(
-    @param:JsonProperty("imdbId") var imdbId: String? = null,
-    @param:JsonProperty("tmdbId") var tmdbId: Int? = null,
-)
-
-data class RidoItems(
-    @param:JsonProperty("slug") var slug: String? = null,
-    @param:JsonProperty("contentable") var contentable: RidoContentable? = null,
-)
-data class NepuSearch(
-    @param:JsonProperty("data") val data: ArrayList<Data>? = arrayListOf(),
-) {
-    data class Data(
-        @param:JsonProperty("url") val url: String? = null,
-        @param:JsonProperty("name") val name: String? = null,
-        @param:JsonProperty("type") val type: String? = null,
-    )
-}
 data class SubtitlesAPI(
     val subtitles: List<Subtitle>,
     val cacheMaxAge: Long,
 )
+
 data class Subtitle(
     val id: String,
     val url: String,
@@ -278,16 +155,6 @@ data class Subtitle(
     val lang: String,
     val m: String,
     val g: String,
-)
-
-data class RiveStreamSource(
-    val data: List<String>
-)
-
-data class KisskhKey(
-    val id: String,
-    val version: String,
-    val key: String,
 )
 data class EpisoderesponseKAA(
     val slug: String,
@@ -510,11 +377,6 @@ data class CinemetaRes(
     }
 }
 
-data class Watch32(
-    val type: String,
-    val link: String,
-)
-
 //Vidlink
 data class VidlinkResponse(
     @SerializedName("stream") val stream: VidlinkStream? = null
@@ -547,45 +409,6 @@ data class VidlinkCaption(
     @SerializedName("hasCorsRestrictions") val hasCorsRestrictions: Boolean? = null
 )
 
-data class VidFastRes(
-    val status: Long,
-    val result: VidFastResult,
-    val info: String,
-)
-
-data class VidFastResult(
-    val servers: String,
-    val stream: String,
-    val token: String,
-)
-
-
-data class VidFastServers(
-    val result: List<VidFastServersResult>,
-)
-
-data class VidFastServersResult(
-    val name: String,
-    val data: String,
-)
-
-data class VidFastServersStreamRoot(
-    val status: Long,
-    val result: VidFastServersStreamResult,
-    val info: String?
-)
-
-data class VidFastServersStreamResult(
-    val url: String?,
-    val tracks: List<VidFastServersTrack>?,
-    val noReferrer: Boolean?
-)
-
-data class VidFastServersTrack(
-    val file: String?,
-    val label: String?
-)
-
 class SearchData : ArrayList<SearchData.SearchDataItem>() {
     data class SearchDataItem(
         val audio_languages: String,
@@ -600,25 +423,6 @@ class SearchData : ArrayList<SearchData.SearchDataItem>() {
         val type: String
     )
 }
-
-//Vegamovies
-
-data class VegamoviesResponse(
-    val found: Int?,
-    val hits: List<VegamoviesHit>?
-)
-
-data class VegamoviesHit(
-    val document: VegamoviesDocument?
-)
-
-data class VegamoviesDocument(
-    val id: String?,
-    val imdb_id: String?,
-    val permalink: String?,
-    val post_title: String?,
-    val post_thumbnail: String?
-)
 
 //Dooflix
 
@@ -781,17 +585,6 @@ data class ReAnimeStreamResult(
     val stream: String,
 )
 
-data class ZinkTokenResponse(
-    val status: String? = null,
-    val token: String? = null
-)
-
-data class ZinkLink(
-    val name: String,
-    val url: String,
-    val title: String,
-)
-
 // Anikage
 
 data class AnikageSearchResponse(
@@ -842,92 +635,4 @@ data class AnikageSubtitle(
 
 data class AnikageEmbed(
     val url: String? = null
-)
-
-// Vidcore & Vidup Models
-data class VidcoreEncResponse(
-    @param:JsonProperty("status") val status: Int? = null,
-    @param:JsonProperty("result") val result: VidcoreEncResult? = null
-)
-
-data class VidcoreEncResult(
-    @param:JsonProperty("servers") val servers: String = "",
-    @param:JsonProperty("stream") val stream: String = "",
-    @param:JsonProperty("token") val token: String = ""
-)
-
-data class VidcoreServersResponse(
-    @param:JsonProperty("status") val status: Int? = null,
-    @param:JsonProperty("result") val result: List<VidcoreServerItem> = emptyList()
-)
-
-data class VidcoreServerItem(
-    @param:JsonProperty("name") val name: String = "",
-    @param:JsonProperty("data") val data: String = ""
-)
-
-data class VidcoreStreamResponse(
-    @param:JsonProperty("status") val status: Int? = null,
-    @param:JsonProperty("result") val result: VidcoreStreamResult? = null
-)
-
-data class VidcoreStreamResult(
-    @param:JsonProperty("url") val url: String? = null,
-    @param:JsonProperty("noReferrer") val noReferrer: Boolean? = null,
-    @param:JsonProperty("tracks") val tracks: List<VidcoreTrack>? = null,
-    @param:JsonProperty("4kAvailable") val fourKAvailable: Boolean? = null
-)
-
-data class VidcoreTrack(
-    @param:JsonProperty("file") val file: String? = null,
-    @param:JsonProperty("label") val label: String? = null
-)
-
-// CineJoy & Wing Models
-data class CinejoyServersResponse(
-    @param:JsonProperty("servers") val servers: List<CinejoyServerItem>? = null
-)
-
-data class CinejoyServerItem(
-    @param:JsonProperty("name") val name: String = "",
-    @param:JsonProperty("status") val status: String? = null
-)
-
-data class CinejoyEncResponse(
-    @param:JsonProperty("status") val status: Int? = null,
-    @param:JsonProperty("result") val result: CinejoyEncResult? = null
-)
-
-data class CinejoyEncResult(
-    @param:JsonProperty("data") val data: String = "",
-    @param:JsonProperty("state") val state: Any? = null
-)
-
-data class CinejoyDecResponse(
-    @param:JsonProperty("status") val status: Int? = null,
-    @param:JsonProperty("result") val result: CinejoyDecResult? = null
-)
-
-data class CinejoyDecResult(
-    @param:JsonProperty("data") val data: CinejoyDecData? = null,
-    @param:JsonProperty("status") val status: Int? = null
-)
-
-data class CinejoyDecData(
-    @param:JsonProperty("stream") val stream: List<CinejoyStreamItem>? = null
-)
-
-data class CinejoyStreamItem(
-    @param:JsonProperty("id") val id: String? = null,
-    @param:JsonProperty("type") val type: String? = null,
-    @param:JsonProperty("playlist") val playlist: String? = null,
-    @param:JsonProperty("url") val url: String? = null,
-    @param:JsonProperty("captions") val captions: List<CinejoyCaption>? = null
-)
-
-data class CinejoyCaption(
-    @param:JsonProperty("id") val id: String? = null,
-    @param:JsonProperty("url") val url: String? = null,
-    @param:JsonProperty("language") val language: String? = null,
-    @param:JsonProperty("type") val type: String? = null
 )

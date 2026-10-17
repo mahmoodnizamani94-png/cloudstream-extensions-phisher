@@ -266,26 +266,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             zinkmovies = "https://zinkmovies.com"
         )
 
-        suspend fun getDomains(forceRefresh: Boolean = false): DomainsParser {
-            if (cachedDomains != null && !forceRefresh) {
-                return cachedDomains!!
-            }
-            return domainsMutex.withLock {
-                if (cachedDomains != null && !forceRefresh) {
-                    return@withLock cachedDomains!!
-                }
-                val fetched = runCatching {
-                    withTimeoutOrNull(3500) {
-                        app.get(DOMAINS_URL, timeout = 4L).parsedSafe<DomainsParser>()
-                    }
-                }.getOrNull()
-
-                val resolved = fetched ?: cachedDomains ?: DEFAULT_DOMAINS
-                cachedDomains = resolved
-                resolved
-            }
-        }
-
         const val anilistAPI = "https://graphql.anilist.co"
         const val malsyncAPI = "https://api.malsync.moe"
         const val jikanAPI = "https://api.jikan.moe/v4"

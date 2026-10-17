@@ -26,15 +26,19 @@ class NetworkOptimizerMarker : Interceptor {
  *
  * Configures CloudStream's app.baseClient with:
  * - OptimizedDns (in-memory LRU cache, Happy Eyeballs IP racing, 4-operator DoH race)
- * - StreamPlayShield request interceptor (ad/tracker block, tracking particles, referer policy)
+ * - StreamPlayShield application interceptor (ad/tracker block, tracking particles, referer
+ *   policy, final-response verification)
+ * - StreamPlayShield network hop guard (per-redirect-hop ad/tracker veto)
  * - High-capacity ConnectionPool (64 max idle connections, 5 min keep-alive)
  * - High-concurrency Dispatcher (128 max concurrent requests, 32 per host)
  * - Optimized socket timeouts (6s connect, 10s read, 10s write)
  *
- * Thread-safe and cross-plugin idempotent: If multiple plugins (StreamPlay,
+ * Thread-safe, cross-plugin idempotent AND upgrade-safe: if multiple plugins (StreamPlay,
  * Ultima, StremioAddon, SuperStream) call initialize(), the existing ConnectionPool
  * is strictly preserved and NEVER re-allocated, preventing the severance of active
- * HTTP/2 multiplexed sockets.
+ * HTTP/2 multiplexed sockets. A client that already carries an earlier shield release
+ * receives only the missing enforcement tier — interceptors are never stacked twice
+ * across plugin reload generations.
  */
 object NetworkOptimizer {
     private const val TAG = "NetworkOptimizer"
@@ -44,7 +48,8 @@ object NetworkOptimizer {
 
     /**
      * Inspects the given OkHttpClient to determine if it has already been optimized.
-     * Uses cross-ClassLoader string matching for NetworkOptimizerMarker and OptimizedDns,
+     * Uses cross-ClassLoader string matching for NetworkOptimizerMarker, ShieldRequestInterceptor
+     * (application tier), ShieldHopGuardInterceptor (network tier) and OptimizedDns,
      * and verifies high-throughput dispatcher settings and optimized timeouts.
      */
     fun isAlreadyOptimized(client: OkHttpClient): Boolean {
@@ -54,12 +59,16 @@ object NetworkOptimizer {
         val hasShield = client.interceptors.any { interceptor ->
             interceptor.javaClass.name.endsWith("ShieldRequestInterceptor")
         }
+        val hasHopGuard = client.networkInterceptors.any { interceptor ->
+            interceptor.javaClass.name.endsWith("ShieldHopGuardInterceptor")
+        }
         val hasOptimizedDispatcher = client.dispatcher.maxRequests >= 128 &&
                 client.dispatcher.maxRequestsPerHost >= 32
         val hasOptimizedTimeouts = client.connectTimeoutMillis <= 6000
         val hasOptimizedDns = client.dns.javaClass.name.contains("OptimizedDns")
 
-        return hasMarker && hasShield && hasOptimizedDispatcher && hasOptimizedTimeouts && hasOptimizedDns
+        return hasMarker && hasShield && hasHopGuard && hasOptimizedDispatcher &&
+                hasOptimizedTimeouts && hasOptimizedDns
     }
 
     /**
@@ -81,27 +90,36 @@ object NetworkOptimizer {
             }
 
             try {
-                val dispatcher = Dispatcher().apply {
-                    maxRequests = 128
-                    maxRequestsPerHost = 32
-                }
+                // Per-tier detection: a client that already carries an earlier release of the
+                // shield receives only the missing tiers — interceptors must never be stacked
+                // twice across plugin reload generations.
+                val hasMarker = currentClient.interceptors.any { it.javaClass.name.endsWith("NetworkOptimizerMarker") }
+                val hasShield = currentClient.interceptors.any { it.javaClass.name.endsWith("ShieldRequestInterceptor") }
+                val hasHopGuard = currentClient.networkInterceptors.any { it.javaClass.name.endsWith("ShieldHopGuardInterceptor") }
 
-                val connectionPool = ConnectionPool(64, 5, TimeUnit.MINUTES)
-
-                val newClient = currentClient.newBuilder()
+                val builder = currentClient.newBuilder()
                     .dns(OptimizedDns)
-                    .dispatcher(dispatcher)
-                    .connectionPool(connectionPool)
                     .connectTimeout(6, TimeUnit.SECONDS)
                     .readTimeout(10, TimeUnit.SECONDS)
                     .writeTimeout(10, TimeUnit.SECONDS)
-                    .addInterceptor(NetworkOptimizerMarker())
-                    .addInterceptor(StreamPlayShield.newRequestInterceptor())
-                    .build()
 
-                app.baseClient = newClient
+                if (!hasMarker) {
+                    // First touch of a foreign client: allocate our own high-capacity pool and
+                    // dispatcher. Upgrade generations (marker already present) keep the live
+                    // pool so no in-flight HTTP/2 socket is ever severed by a plugin update.
+                    builder.dispatcher(Dispatcher().apply {
+                        maxRequests = 128
+                        maxRequestsPerHost = 32
+                    })
+                    builder.connectionPool(ConnectionPool(64, 5, TimeUnit.MINUTES))
+                    builder.addInterceptor(NetworkOptimizerMarker())
+                }
+                if (!hasShield) builder.addInterceptor(StreamPlayShield.newRequestInterceptor())
+                if (!hasHopGuard) builder.addNetworkInterceptor(StreamPlayShield.newHopGuardInterceptor())
+
+                app.baseClient = builder.build()
                 isLocallyInitialized = true
-                Log.d(TAG, "🚀 NetworkOptimizer initialized: pool=64, maxReq=128, maxPerHost=32, connect=6s, read=10s, dns=OptimizedDns, shield=StreamPlayShield")
+                Log.d(TAG, "🚀 NetworkOptimizer initialized: pool=64, maxReq=128, maxPerHost=32, connect=6s, read=10s, dns=OptimizedDns, shield=StreamPlayShield, hopGuard=on")
 
                 OptimizedDns.preResolveTopDomains()
             } catch (e: Exception) {

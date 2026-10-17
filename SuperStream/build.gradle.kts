@@ -58,7 +58,7 @@ cloudstream {
 }
 
 dependencies {
-    // FIXME remove this when crossplatform is fully supported
+    // Required while crossplatform support is incomplete: cloudstream3 must use the dedicated configuration below.
     val cloudstream by configurations
     implementation("com.google.android.material:material:1.13.0")
     implementation("androidx.leanback:leanback:1.2.0")

@@ -32,89 +32,6 @@ object ZeroAllocParser {
     // =========================================================================
 
     /**
-     * Extracts the value of [attribute] from the first occurrence of [tag] in [html].
-     * Scans directly on the [CharSequence] without constructing any DOM nodes or lowercased string copies.
-     *
-     * @param html The raw HTML string or CharSequence
-     * @param tag Tag name to match, e.g. "iframe", "a", "div", "meta" (case-insensitive)
-     * @param attribute Attribute name to match, e.g. "src", "href", "data-url" (case-insensitive)
-     * @param startIndex Character offset to start searching from
-     * @return Extracted attribute value, or null if not found
-     */
-    fun extractAttribute(
-        html: CharSequence,
-        tag: String,
-        attribute: String,
-        startIndex: Int = 0
-    ): String? {
-        var cursor = startIndex
-        val len = html.length
-
-        while (cursor < len) {
-            val tagIdx = indexOfIgnoreCase(html, "<$tag", cursor)
-            if (tagIdx == -1) return null
-
-            val afterTagIdx = tagIdx + 1 + tag.length
-            if (afterTagIdx < len) {
-                val nextChar = html[afterTagIdx]
-                if (nextChar != ' ' && nextChar != '\t' && nextChar != '\n' && nextChar != '\r' && nextChar != '>' && nextChar != '/') {
-                    cursor = afterTagIdx
-                    continue
-                }
-            }
-
-            val tagEnd = findTagClose(html, afterTagIdx)
-            if (tagEnd == -1) return null
-
-            val attrVal = extractAttributeInBounds(html, attribute, afterTagIdx, tagEnd)
-            if (attrVal != null) {
-                return decodeHtmlEntities(attrVal)
-            }
-
-            cursor = tagEnd + 1
-        }
-        return null
-    }
-
-    /**
-     * Extracts all occurrences of [attribute] from all [tag] elements in [html].
-     */
-    fun extractAllAttributes(
-        html: CharSequence,
-        tag: String,
-        attribute: String
-    ): List<String> {
-        val results = mutableListOf<String>()
-        var cursor = 0
-        val len = html.length
-
-        while (cursor < len) {
-            val tagIdx = indexOfIgnoreCase(html, "<$tag", cursor)
-            if (tagIdx == -1) break
-
-            val afterTagIdx = tagIdx + 1 + tag.length
-            if (afterTagIdx < len) {
-                val nextChar = html[afterTagIdx]
-                if (nextChar != ' ' && nextChar != '\t' && nextChar != '\n' && nextChar != '\r' && nextChar != '>' && nextChar != '/') {
-                    cursor = afterTagIdx
-                    continue
-                }
-            }
-
-            val tagEnd = findTagClose(html, afterTagIdx)
-            if (tagEnd == -1) break
-
-            val attrVal = extractAttributeInBounds(html, attribute, afterTagIdx, tagEnd)
-            if (attrVal != null && attrVal.isNotEmpty()) {
-                results.add(decodeHtmlEntities(attrVal))
-            }
-
-            cursor = tagEnd + 1
-        }
-        return results
-    }
-
-    /**
      * Extracts [targetAttr] from a [tag] element that satisfies a condition:
      * [whereAttr] must equal or contain [whereValue].
      *
@@ -260,61 +177,7 @@ object ZeroAllocParser {
     }
 
     // =========================================================================
-    // 3. Zero-Allocation HTML Tag Text Extraction
-    // =========================================================================
-
-    /**
-     * Extracts inner text of an HTML tag matching optional [id] or [className].
-     * Automatically strips any inner HTML tags and decodes HTML entities.
-     */
-    fun extractTagText(
-        html: CharSequence,
-        tag: String,
-        id: String? = null,
-        className: String? = null
-    ): String? {
-        var cursor = 0
-        val len = html.length
-        val closeTag = "</$tag>"
-
-        while (cursor < len) {
-            val tagIdx = indexOfIgnoreCase(html, "<$tag", cursor)
-            if (tagIdx == -1) return null
-
-            val afterTagIdx = tagIdx + 1 + tag.length
-            val tagEnd = findTagClose(html, afterTagIdx)
-            if (tagEnd == -1) return null
-
-            var matches = true
-            if (id != null) {
-                val actualId = extractAttributeInBounds(html, "id", afterTagIdx, tagEnd)
-                if (!actualId.equals(id, ignoreCase = true)) matches = false
-            }
-            if (matches && className != null) {
-                val actualClass = extractAttributeInBounds(html, "class", afterTagIdx, tagEnd)
-                if (actualClass == null || !containsClass(actualClass, className)) matches = false
-            }
-
-            if (matches) {
-                val bodyStart = tagEnd + 1
-                val bodyEnd = indexOfIgnoreCase(html, closeTag, bodyStart)
-                val rawText = if (bodyEnd != -1) {
-                    html.subSequence(bodyStart, bodyEnd)
-                } else {
-                    val nextTag = html.indexOf('<', bodyStart)
-                    if (nextTag != -1) html.subSequence(bodyStart, nextTag)
-                    else html.subSequence(bodyStart, len)
-                }
-                return stripTagsAndDecode(rawText)
-            }
-
-            cursor = tagEnd + 1
-        }
-        return null
-    }
-
-    // =========================================================================
-    // 4. SuperStream Quality List Token Scanner
+    // 3. SuperStream Quality List Token Scanner
     // =========================================================================
 
     /**
@@ -399,7 +262,7 @@ object ZeroAllocParser {
     }
 
     // =========================================================================
-    // 5. Zero-Allocation Balanced JSON & JS Block Extraction
+    // 4. Zero-Allocation Balanced JSON & JS Block Extraction
     // =========================================================================
 
     /**
@@ -552,7 +415,7 @@ object ZeroAllocParser {
     }
 
     // =========================================================================
-    // 6. Fast String Utilities & Zero-Alloc Helpers
+    // 5. Fast String Utilities & Zero-Alloc Helpers
     // =========================================================================
 
     /**
@@ -753,18 +616,6 @@ object ZeroAllocParser {
             start = end + 1
         }
         return false
-    }
-
-    private fun stripTagsAndDecode(rawText: CharSequence): String {
-        val sb = java.lang.StringBuilder(rawText.length)
-        var inTag = false
-        for (i in 0 until rawText.length) {
-            val c = rawText[i]
-            if (c == '<') inTag = true
-            else if (c == '>') inTag = false
-            else if (!inTag) sb.append(c)
-        }
-        return decodeHtmlEntities(sb.toString().trim())
     }
 
     private fun decodeHtmlEntities(text: String): String {

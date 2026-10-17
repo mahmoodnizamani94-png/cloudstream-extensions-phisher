@@ -194,4 +194,79 @@ class NetworkOptimizerTest {
         assertTrue(proceedCalled)
         assertEquals(200, response.code)
     }
+
+    @Test
+    fun testInitializeInstallsHopGuardExactlyOnceAcrossGenerations() {
+        NetworkOptimizer.resetForTesting(OkHttpClient.Builder().build())
+        NetworkOptimizer.initialize()
+
+        val first = app.baseClient
+        assertEquals(
+            "T2b hop guard must be installed exactly once",
+            1,
+            first.networkInterceptors.count { it.javaClass.name.endsWith("ShieldHopGuardInterceptor") }
+        )
+        assertTrue(NetworkOptimizer.isAlreadyOptimized(first))
+
+        // Simulate a plugin reload generation: local flag cleared, optimized client kept.
+        NetworkOptimizer.resetForTesting(first)
+        NetworkOptimizer.initialize()
+
+        assertSame(
+            "Upgrade generations must preserve the live connection pool",
+            first.connectionPool,
+            app.baseClient.connectionPool
+        )
+        assertEquals(
+            "Hop guard must never stack across generations",
+            1,
+            app.baseClient.networkInterceptors.count { it.javaClass.name.endsWith("ShieldHopGuardInterceptor") }
+        )
+    }
+
+    @Test
+    fun testUpgradeFromV702ShieldAddsOnlyTheMissingTier() {
+        // v702-shaped client: marker + T2a application shield + tuned dispatcher/timeouts +
+        // OptimizedDns, but no T2b hop guard.
+        val pool = ConnectionPool(64, 5, TimeUnit.MINUTES)
+        val v702 = OkHttpClient.Builder()
+            .dns(OptimizedDns)
+            .dispatcher(Dispatcher().apply {
+                maxRequests = 128
+                maxRequestsPerHost = 32
+            })
+            .connectionPool(pool)
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .addInterceptor(NetworkOptimizerMarker())
+            .addInterceptor(StreamPlayShield.newRequestInterceptor())
+            .build()
+        NetworkOptimizer.resetForTesting(v702)
+        assertFalse(
+            "A pre-v703 client (no hop guard) must fail the optimized check",
+            NetworkOptimizer.isAlreadyOptimized(app.baseClient)
+        )
+
+        NetworkOptimizer.initialize()
+        val upgraded = app.baseClient
+
+        assertTrue(NetworkOptimizer.isAlreadyOptimized(upgraded))
+        assertEquals(
+            "Hop guard must be added on upgrade",
+            1,
+            upgraded.networkInterceptors.count { it.javaClass.name.endsWith("ShieldHopGuardInterceptor") }
+        )
+        assertEquals(
+            "Shield must not stack on upgrade",
+            1,
+            upgraded.interceptors.count { it.javaClass.name.endsWith("ShieldRequestInterceptor") }
+        )
+        assertEquals(
+            "Marker must not stack on upgrade",
+            1,
+            upgraded.interceptors.count { it.javaClass.name.endsWith("NetworkOptimizerMarker") }
+        )
+        assertSame("Upgrade must never sever the live HTTP/2 pool", pool, upgraded.connectionPool)
+    }
 }
