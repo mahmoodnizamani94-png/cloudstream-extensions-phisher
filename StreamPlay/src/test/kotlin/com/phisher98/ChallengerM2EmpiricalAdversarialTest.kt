@@ -73,76 +73,7 @@ class ChallengerM2EmpiricalAdversarialTest {
     // =========================================================================
 
     @Test
-    fun testInvokeYFlixCancellationPropagatesImmediately() = runBlocking {
-        val cancelledFlag = AtomicBoolean(false)
-        val startedFlag = AtomicBoolean(false)
-
-        val job = launch(Dispatchers.IO) {
-            try {
-                startedFlag.set(true)
-                StreamPlayExtractor.invokeYFlix(
-                    title = "Inception",
-                    tmdbId = 27205,
-                    imdbId = "tt1375666",
-                    year = 2010,
-                    season = null,
-                    episode = null,
-                    subtitleCallback = null,
-                    callback = {}
-                )
-            } catch (e: CancellationException) {
-                cancelledFlag.set(true)
-                throw e
-            }
-        }
-
-        // Allow coroutine to start
-        delay(20)
-
-        val cancelStartMs = System.currentTimeMillis()
-        job.cancelAndJoin()
-        val cancelDurationMs = System.currentTimeMillis() - cancelStartMs
-
-        assertTrue("Job must have been marked cancelled", job.isCancelled)
-        assertTrue("CancellationException must be propagated to caller", cancelledFlag.get())
-        assertTrue("Cancellation must complete promptly (< 2500ms bounded by inner timeout), actual: ${cancelDurationMs}ms", cancelDurationMs < 2500L)
-    }
-
-    @Test
-    fun testInvokeCineJoyCancellationPropagatesImmediately() = runBlocking {
-        val cancelledFlag = AtomicBoolean(false)
-
-        val job = launch(Dispatchers.IO) {
-            try {
-                StreamPlayExtractor.invokeCineJoy(
-                    title = "The Dark Knight",
-                    tmdbId = 155,
-                    imdbId = "tt0468569",
-                    year = 2008,
-                    season = null,
-                    episode = null,
-                    subtitleCallback = null,
-                    callback = {}
-                )
-            } catch (e: CancellationException) {
-                cancelledFlag.set(true)
-                throw e
-            }
-        }
-
-        delay(20)
-
-        val cancelStartMs = System.currentTimeMillis()
-        job.cancelAndJoin()
-        val cancelDurationMs = System.currentTimeMillis() - cancelStartMs
-
-        assertTrue("Job must have been marked cancelled", job.isCancelled)
-        assertTrue("CancellationException must be propagated to caller", cancelledFlag.get())
-        assertTrue("Cancellation must complete promptly (< 2500ms bounded by inner timeout), actual: ${cancelDurationMs}ms", cancelDurationMs < 2500L)
-    }
-
-    @Test
-    fun testTop6ExtractorsCancellationStormPreservesSemaphores() = runBlocking {
+    fun testSotaExtractorsCancellationStormPreservesSemaphores() = runBlocking {
         val initialPermits = StreamPlayExtractor.encDecApiSemaphore.availablePermits
         assertEquals("Initial semaphore permits must be 4", 4, initialPermits)
 
@@ -153,10 +84,18 @@ class ChallengerM2EmpiricalAdversarialTest {
             val job = launch(Dispatchers.IO) {
                 try {
                     when (idx % 4) {
-                        0 -> StreamPlayExtractor.invokeVidlink(tmdbId = 550, season = null, episode = null) {}
-                        1 -> StreamPlayExtractor.invokeYFlix(title = "Matrix", tmdbId = 603, year = 1999, season = null, episode = null) {}
-                        2 -> StreamPlayExtractor.invokeCineJoy(title = "Interstellar", tmdbId = 157336, season = null, episode = null) {}
-                        else -> StreamPlayExtractor.invokeVidSrc(tmdbId = 550, season = null, episode = null) {}
+                        0 -> StreamPlayExtractor.invokeVidlink(
+                            tmdbId = 550, season = null, episode = null, subtitleCallback = null, callback = {}
+                        )
+                        1 -> StreamPlayExtractor.invokeCineby(
+                            tmdbId = 550, season = null, episode = null, callback = {}
+                        )
+                        2 -> StreamPlayExtractor.invokeVidSrc(
+                            tmdbId = 550, season = null, episode = null, subtitleCallback = null, callback = {}
+                        )
+                        else -> StreamPlayExtractor.invokeVidSrcSU(
+                            tmdbId = 550, season = null, episode = null, callback = {}
+                        )
                     }
                 } catch (e: CancellationException) {
                     cancelledCounter.incrementAndGet()
@@ -196,36 +135,36 @@ class ChallengerM2EmpiricalAdversarialTest {
             )
         )
 
-        // Construct a bare minimum 720p stream from a rank-0 secondary provider (YFlix)
-        val bareYFlix720 = createLink(
-            source = "YFlix",
-            name = "YFlix [720p]",
+        // Construct a bare minimum 720p stream from a rank-0 secondary provider (UnknownCDN)
+        val bareUnknownCDN720 = createLink(
+            source = "UnknownCDN",
+            name = "UnknownCDN [720p]",
             url = "https://yflix.to/bare_stream.m3u8",
             quality = Qualities.P720.value
         )
 
         val scoreSpoofed1080 = StreamLinkOptimizer.getStreamCompositeScore(spoofed1080)
-        val scoreBare720 = StreamLinkOptimizer.getStreamCompositeScore(bareYFlix720)
+        val scoreBare720 = StreamLinkOptimizer.getStreamCompositeScore(bareUnknownCDN720)
 
         // SOURCE RANK IS PRIMARY: the top-tier VidLink 1080p always outranks a rank-0
         // secondary 720p (VidLink 100 x 8,000 = 1,008,000+, secondary 720p = 800.0).
         assertTrue(
-            "Spoofed VidLink 1080p ($scoreSpoofed1080) must beat bare YFlix 720p ($scoreBare720): source rank decides",
+            "Spoofed VidLink 1080p ($scoreSpoofed1080) must beat bare UnknownCDN 720p ($scoreBare720): source rank decides",
             scoreSpoofed1080 > scoreBare720
         )
 
         assertTrue(
             "isStreamBetter must return true for the higher-ranked 1080p",
-            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareYFlix720)
+            StreamLinkOptimizer.isStreamBetter(spoofed1080, bareUnknownCDN720)
         )
         assertFalse(
             "isStreamBetter must return false for the lower-ranked bare 720p",
-            StreamLinkOptimizer.isStreamBetter(bareYFlix720, spoofed1080)
+            StreamLinkOptimizer.isStreamBetter(bareUnknownCDN720, spoofed1080)
         )
 
-        val sorted = listOf(spoofed1080, bareYFlix720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+        val sorted = listOf(spoofed1080, bareUnknownCDN720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
         assertEquals("Comparator must sort the higher-ranked 1080p first", spoofed1080, sorted[0])
-        assertEquals("Comparator must sort the secondary 720p second", bareYFlix720, sorted[1])
+        assertEquals("Comparator must sort the secondary 720p second", bareUnknownCDN720, sorted[1])
 
         // WITHIN one source the metadata spoofing is still powerless: a bare VidLink 720p
         // must beat the maximally badged VidLink 1080p.
@@ -291,8 +230,8 @@ class ChallengerM2EmpiricalAdversarialTest {
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator { emittedLinks.add(it) }
 
         val cleanMasterUrl = "https://cdn.example.com/hls/master.m3u8"
-        val link1080 = createLink("YFlix", "YFlix [1080p]", cleanMasterUrl, Qualities.P1080.value, ExtractorLinkType.M3U8)
-        val link720 = createLink("YFlix", "YFlix [720p]", cleanMasterUrl, Qualities.P720.value, ExtractorLinkType.M3U8)
+        val link1080 = createLink("UnknownCDN", "UnknownCDN [1080p]", cleanMasterUrl, Qualities.P1080.value, ExtractorLinkType.M3U8)
+        val link720 = createLink("UnknownCDN", "UnknownCDN [720p]", cleanMasterUrl, Qualities.P720.value, ExtractorLinkType.M3U8)
 
         val res1080 = deduplicator.emitDetailed(link1080)
         val res720 = deduplicator.emitDetailed(link720)
@@ -310,8 +249,8 @@ class ChallengerM2EmpiricalAdversarialTest {
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator { emittedLinks.add(it) }
 
         val directMp4Url = "https://cdn.example.com/files/movie.mp4"
-        val link1080 = createLink("CineJoy", "CineJoy [1080p]", directMp4Url, Qualities.P1080.value, ExtractorLinkType.VIDEO)
-        val link720 = createLink("CineJoy", "CineJoy [720p]", directMp4Url, Qualities.P720.value, ExtractorLinkType.VIDEO)
+        val link1080 = createLink("UnknownSource", "UnknownSource [1080p]", directMp4Url, Qualities.P1080.value, ExtractorLinkType.VIDEO)
+        val link720 = createLink("UnknownSource", "UnknownSource [720p]", directMp4Url, Qualities.P720.value, ExtractorLinkType.VIDEO)
 
         val res1080 = deduplicator.emitDetailed(link1080)
         val res720 = deduplicator.emitDetailed(link720)
@@ -341,22 +280,22 @@ class ChallengerM2EmpiricalAdversarialTest {
 
         dispatcher.onSubtitleReceived()
 
-        val vidup720 = createLink("Vidup", "Vidup [720p]", "https://vidup.io/720.m3u8", Qualities.P720.value)
+        val vidup720 = createLink("ExampleCDN", "ExampleCDN [720p]", "https://vidup.io/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
         val animex1080 = createLink("Animex", "Animex [1080p]", "https://animex.one/1080.m3u8", Qualities.P1080.value)
         val vidlink480 = createLink("VidLink", "VidLink [480p]", "https://vidlink.pro/480.m3u8", Qualities.P480.value)
 
         // Lower-tier 720p arrives first -> staged waiting for pinnacle VidLink (rank 100)
         dispatcher.onLinkAccepted(vidup720)
-        assertTrue("Vidup 720p staged waiting for top source grace period", dispatched.isEmpty())
+        assertTrue("ExampleCDN 720p staged waiting for top source grace period", dispatched.isEmpty())
 
         // Pinnacle VidLink 720p arrives within grace period -> dispatched as #1 immediately!
         delay(20)
         dispatcher.onLinkAccepted(vidlink720)
-        // VidLink 720p is emitted as #1, unblocking staged Vidup 720p as #2
+        // VidLink 720p is emitted as #1, unblocking staged ExampleCDN 720p as #2
         assertEquals("Both 720p streams must be emitted in rank priority order", 2, dispatched.size)
         assertEquals("VidLink 720p (rank 100) must be first", vidlink720, dispatched[0])
-        assertEquals("Vidup 720p (rank 0) must be second", vidup720, dispatched[1])
+        assertEquals("ExampleCDN 720p (rank 0) must be second", vidup720, dispatched[1])
 
         // 480p arrives before 1080p -> staged waiting for 1080p
         dispatcher.onLinkAccepted(vidlink480)
@@ -395,10 +334,10 @@ class ChallengerM2EmpiricalAdversarialTest {
                     val localEmitted = mutableListOf<ExtractorLink>()
                     val input = if (threadIdx % 2 == 0) listOf(spoofed1080, bare720) else listOf(bare720, spoofed1080)
                     StreamLinkOptimizer.emitTopTierDualQualityStreamLinks(
-                        source = "CineJoy",
-                        baseName = "CineJoy",
+                        source = "UnknownSource",
+                        baseName = "UnknownSource",
                         url = "https://cdn.example.com/hls/master.m3u8",
-                        referer = "https://solarpanelcleaning.cc/",
+                        referer = "https://cdn.example.com/",
                         generatedLinks = input
                     ) { link ->
                         localEmitted.add(link)

@@ -12,13 +12,13 @@ import java.util.concurrent.TimeUnit
 
 class StreamPlayProviderDefaultsTest {
 
-    private val v23TopTier = setOf("vidlink", "vidsrc", "vidfast", "vidsrcsu", "vidrock", "meowtv", "animex")
+    private val v24TopTier = setOf("vidlink", "cineby", "vidsrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
 
     @Test
     fun testRemovedSourcesAreAbsentFromProviderList() {
         val providers = buildProviders()
 
-        listOf("vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
+        listOf("vidrock", "vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
             .forEach { id ->
                 val found = providers.find { it.id.equals(id, ignoreCase = true) }
                 assertNull("$id must be completely removed from providers list", found)
@@ -29,11 +29,11 @@ class StreamPlayProviderDefaultsTest {
     @Test
     fun testDefaultTopTierProvidersContainsExactlyTheSevenCuratedSources() {
         assertEquals(
-            "Top tier default providers must contain exactly 7 sources",
-            7,
+            "Top tier default providers must contain exactly 8 sources",
+            8,
             DEFAULT_TOP_TIER_PROVIDERS.size
         )
-        assertEquals("Top tier default providers must match expected IDs", v23TopTier, DEFAULT_TOP_TIER_PROVIDERS)
+        assertEquals("Top tier default providers must match expected IDs", v24TopTier, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
     @Test
@@ -59,7 +59,7 @@ class StreamPlayProviderDefaultsTest {
         assertEquals("No source should be disabled by default", expectedDisabledCount, disabledIds.size)
 
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("All curated sources should be active by default", 7, activeProviders.size)
+        assertEquals("All curated sources should be active by default", 8, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,
@@ -84,9 +84,9 @@ class StreamPlayProviderDefaultsTest {
         val initialDisabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
-        assertEquals(v23TopTier, activeProviders)
-        v23TopTier.forEach { id ->
+        assertEquals("Clean install must activate exactly 8 curated sources", 8, activeProviders.size)
+        assertEquals(v24TopTier, activeProviders)
+        v24TopTier.forEach { id ->
             assertFalse("$id must NOT be in disabled set", initialDisabled.contains(id))
         }
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
@@ -122,7 +122,7 @@ class StreamPlayProviderDefaultsTest {
         assertFalse("vidsrc must be re-enabled", migratedDisabled.contains("vidsrc"))
 
         val active = buildProviders().map { it.id }.filterNot { migratedDisabled.contains(it) }.toSet()
-        assertEquals("Exactly the curated sources must be active after migration", v23TopTier, active)
+        assertEquals("Exactly the curated sources must be active after migration", v24TopTier, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // Idempotency.
@@ -155,8 +155,8 @@ class StreamPlayProviderDefaultsTest {
         val allProviders = buildProviders()
         for (res in results) {
             val active = allProviders.map { it.id }.filterNot { res.contains(it) }.toSet()
-            assertEquals("Every concurrent call must activate exactly the curated sources", v23TopTier, active)
-            for (top in v23TopTier) {
+            assertEquals("Every concurrent call must activate exactly the curated sources", v24TopTier, active)
+            for (top in v24TopTier) {
                 assertFalse("Top tier provider $top must not be disabled", res.contains(top))
             }
         }

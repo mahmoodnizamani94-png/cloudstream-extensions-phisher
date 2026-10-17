@@ -315,16 +315,22 @@ open class OptimizedDns(
             "raw.githubusercontent.com",
             "megacloud.tv",
             "rabbitstream.net",
-            // v23 SOTA streaming tier: every provider API + its live verified CDNs,
+            // v24 SOTA streaming tier: every provider API + its live verified CDNs,
             // warmed so the first play attempt never pays a cold DNS roundtrip.
             "vidlink.pro",
+            "api.wecollege.net",
+            "player.videasy.to",
+            "sun.paleoak.top",
+            "e2e.majorplay.net",
             "vidsrc.pm",
             "vidfast.vc",
             "moon.zenoak.top",
             "vidsrc.su",
             "themoviedb.vidsrc.su",
             "dragonballzfans.xyz",
-            "vidrock.net",
+            "megaplay.buzz",
+            "fetch.nexabloom.top",
+            "broforgotsave.online",
             "meowtv.ru",
             "api.meowtv.ru",
             "img1.hscow.com",
@@ -334,11 +340,12 @@ open class OptimizedDns(
             "i-arch-400.krico443jez.com",
             "graphql.animex.one",
             "pp.animex.one",
+            "hls.krussdomi.com",
+            "subst.krussdomi.com",
+            "hlsxst2.echovideo.to",
             "kwik.cx",
             "bcdn.hakunaymatata.com",
-            "lit.cheaptruckrepairs.cc",
-            "galacticvoyagers.xyz",
-            "moonfirekeeper.lol"
+            "lit.cheaptruckrepairs.cc"
         )
 
         private val bootstrapClient: OkHttpClient by lazy {

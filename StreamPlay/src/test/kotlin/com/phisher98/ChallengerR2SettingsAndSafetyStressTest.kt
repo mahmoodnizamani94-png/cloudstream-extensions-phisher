@@ -1,12 +1,10 @@
 package com.phisher98
 
-import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,10 +42,10 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
+        assertEquals("Clean install must activate exactly 8 curated sources", 8, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "vidsrc", "vidfast", "vidsrcsu", "vidrock", "meowtv", "animex")
+        val expectedCurated = setOf("vidlink", "cineby", "vidsrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.
@@ -70,7 +68,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 7 curated sources", 7, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 8 curated sources", 8, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
@@ -151,7 +149,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
     }
 
     // =========================================================================
-    // 2. DEAD PROVIDER SAFETY & TIMEOUT BOUNDS
+    // 2. SOTA PROVIDER INPUT VALIDATION & TIMEOUT BOUNDS
     // =========================================================================
 
     @Test
@@ -221,21 +219,20 @@ class ChallengerR2SettingsAndSafetyStressTest {
     }
 
     @Test
-    fun testInvokeAutoembedNullInputsReturnZeroLinksImmediately() = runBlocking {
+    fun testVidlinkAndCinebyNullInputsReturnZeroLinksImmediately() = runBlocking {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
-            // Null tmdbId
-            StreamPlayExtractor.invokeAutoembed(
+            // Null tmdbId on both SOTA universal primaries
+            StreamPlayExtractor.invokeVidlink(
                 tmdbId = null,
-                season = 1,
-                episode = 1,
+                season = null,
+                episode = null,
                 subtitleCallback = {},
                 callback = { links.add(it) }
             )
-            // TV show with season but null episode
-            StreamPlayExtractor.invokeAutoembed(
-                tmdbId = 12345,
-                season = 1,
+            StreamPlayExtractor.invokeCineby(
+                tmdbId = null,
+                season = null,
                 episode = null,
                 subtitleCallback = {},
                 callback = { links.add(it) }
@@ -245,224 +242,15 @@ class ChallengerR2SettingsAndSafetyStressTest {
         assertTrue("Input validation must short-circuit in < 50ms, took ${elapsed}ms", elapsed < 50)
     }
 
-    @Test
-    fun testInvokeAutoembedDeadEndpointsCompleteCleanlyWithinBoundedTimeout() = runBlocking {
-        val links = mutableListOf<ExtractorLink>()
-        val elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeAutoembed(
-                tmdbId = 999999,
-                season = null,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals("Dead AutoEmbed must emit 0 links", 0, links.size)
-        // Must complete within the extractor's own bounded timeout (withTimeoutOrNull 25000ms);
-        // allow margin for DNS/connect teardown so the guard does not flake on network variance.
-        assertTrue("invokeAutoembed must complete within 30000ms bound, took ${elapsed}ms", elapsed <= 30000)
-    }
-
-    @Test
-    fun testInvokeAutoembedCancellationSafety() = runBlocking {
-        val job = launch {
-            StreamPlayExtractor.invokeAutoembed(
-                tmdbId = 999999,
-                season = null,
-                episode = null,
-                subtitleCallback = {},
-                callback = {}
-            )
-        }
-        job.cancelAndJoin()
-        assertTrue("invokeAutoembed must propagate CancellationException", job.isCancelled)
-    }
-
     // =========================================================================
-    // 3. EXTRACTOR INPUT VALIDATION (YFlix & CineJoy)
+    // 3. SOTA EXTRACTOR ADVERSARIAL STRESS
     // =========================================================================
 
     @Test
-    fun testInvokeYFlixInputValidationBoundaryConditions() = runBlocking {
-        val links = mutableListOf<ExtractorLink>()
-
-        // 1. All null parameters
-        var elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeYFlix(
-                title = null,
-                tmdbId = null,
-                imdbId = null,
-                year = null,
-                season = null,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals(0, links.size)
-        assertTrue("All-null parameters must short-circuit immediately (< 50ms)", elapsed < 50)
-
-        // 2. Blank title and null IDs
-        elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeYFlix(
-                title = "   ",
-                tmdbId = null,
-                imdbId = null,
-                year = null,
-                season = null,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals(0, links.size)
-        assertTrue("Blank title must short-circuit immediately (< 50ms)", elapsed < 50)
-
-        // 3. TV show with season > 0 but episode == null
-        elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeYFlix(
-                title = "Breaking Bad",
-                tmdbId = 1396,
-                imdbId = "tt0903747",
-                year = 2008,
-                season = 1,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals(0, links.size)
-        assertTrue("TV show with null episode must short-circuit immediately (< 50ms)", elapsed < 50)
-
-        // 4. Overloaded method calls with null subtitle callback
-        StreamPlayExtractor.invokeYFlix(
-            title = null,
-            year = null,
-            season = null,
-            episode = null,
-            callback = { links.add(it) }
-        )
-        StreamPlayExtractor.invokeYFlix(
-            title = null,
-            tmdbId = null,
-            year = null,
-            season = null,
-            episode = null,
-            callback = { links.add(it) }
-        )
-        assertEquals(0, links.size)
-    }
-
-    @Test
-    fun testInvokeYFlixDeadHostCompletesCleanlyWithinTimeout() = runBlocking {
-        val links = mutableListOf<ExtractorLink>()
-        val subtitles = mutableListOf<SubtitleFile>()
-
-        val elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeYFlix(
-                title = "NonExistentDummyMovieTitleForChallenge12345",
-                tmdbId = 99999999,
-                imdbId = "tt99999999",
-                year = 2026,
-                season = null,
-                episode = null,
-                subtitleCallback = { subtitles.add(it) },
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals("No links from unreachable/dead host", 0, links.size)
-        assertEquals("No subtitles from unreachable/dead host", 0, subtitles.size)
-        assertTrue("invokeYFlix must complete within 3500ms bounded timeout, took ${elapsed}ms", elapsed <= 3500)
-    }
-
-    @Test
-    fun testInvokeCineJoyInputValidationBoundaryConditions() = runBlocking {
-        val links = mutableListOf<ExtractorLink>()
-
-        // 1. All null parameters
-        var elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeCineJoy(
-                title = null,
-                tmdbId = null,
-                imdbId = null,
-                year = null,
-                season = null,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals(0, links.size)
-        assertTrue("All-null parameters must short-circuit immediately (< 50ms)", elapsed < 50)
-
-        // 2. Blank title and null IDs
-        elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeCineJoy(
-                title = "  \t\n  ",
-                tmdbId = null,
-                imdbId = null,
-                year = null,
-                season = null,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals(0, links.size)
-        assertTrue("Blank title must short-circuit immediately (< 50ms)", elapsed < 50)
-
-        // 3. TV show with season > 0 but episode == null
-        elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeCineJoy(
-                title = "Stranger Things",
-                tmdbId = 66732,
-                imdbId = "tt4574334",
-                year = 2016,
-                season = 2,
-                episode = null,
-                subtitleCallback = {},
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals(0, links.size)
-        assertTrue("TV show with null episode must short-circuit immediately (< 50ms)", elapsed < 50)
-
-        // 4. Overloaded method calls with null subtitle callback
-        StreamPlayExtractor.invokeCineJoy(
-            title = null,
-            tmdbId = null,
-            season = null,
-            episode = null,
-            callback = { links.add(it) }
-        )
-        assertEquals(0, links.size)
-    }
-
-    @Test
-    fun testInvokeCineJoyDeadHostCompletesCleanlyWithinTimeout() = runBlocking {
-        val links = mutableListOf<ExtractorLink>()
-        val subtitles = mutableListOf<SubtitleFile>()
-
-        val elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeCineJoy(
-                title = "NonExistentDummyMovieTitleForChallenge12345",
-                tmdbId = 99999999,
-                imdbId = "tt99999999",
-                year = 2026,
-                season = null,
-                episode = null,
-                subtitleCallback = { subtitles.add(it) },
-                callback = { links.add(it) }
-            )
-        }
-        assertEquals("No links from unreachable/dead host", 0, links.size)
-        assertEquals("No subtitles from unreachable/dead host", 0, subtitles.size)
-        assertTrue("invokeCineJoy must complete within 3500ms bounded timeout, took ${elapsed}ms", elapsed <= 3500)
-    }
-
-    @Test
-    fun testDeadProvidersAndModernExtractorsNeverThrowUnhandledExceptionsUnderStress() = runBlocking {
-        // Run 20 stress cycles across all 4 extractors with permutations of degenerate inputs
+    fun testSotaExtractorsNeverThrowUnhandledExceptionsUnderStress() = runBlocking {
+        // Run 10 stress cycles across the SOTA extractors with degenerate inputs.
+        // Every id below resolves to "no usable id", so the extractors must
+        // short-circuit locally (no network) and never throw.
         val corruptTitles = listOf(
             null,
             "",
@@ -471,21 +259,21 @@ class ChallengerR2SettingsAndSafetyStressTest {
             "A".repeat(500),
             "\u0000\u0001\u0002"
         )
-        val testIds = listOf(null, 0, -1, 99999999)
+        val invalidIds = listOf(null, 0, -1)
         val seasons = listOf(null, 0, 1, -1)
         val episodes = listOf(null, 0, 1, -1)
 
         for (i in 0 until 10) {
             val title = corruptTitles[i % corruptTitles.size]
-            val tmdbId = testIds[i % testIds.size]
+            val tmdbId = invalidIds[i % invalidIds.size]
             val season = seasons[i % seasons.size]
             val episode = episodes[i % episodes.size]
 
             // None of these should throw any unhandled exceptions
-            StreamPlayExtractor.invokeVidSrcSU(tmdbId, season, episode) {}
-            StreamPlayExtractor.invokeAutoembed(tmdbId, season, episode) {}
-            StreamPlayExtractor.invokeYFlix(title, tmdbId, year = null, season = season, episode = episode) {}
-            StreamPlayExtractor.invokeCineJoy(title, tmdbId, season = season, episode = episode) {}
+            StreamPlayExtractor.invokeVidlink(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
+            StreamPlayExtractor.invokeCineby(tmdbId = tmdbId, season = season, episode = episode, title = title, callback = {})
+            StreamPlayExtractor.invokeVidSrc(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
+            StreamPlayExtractor.invokeVidSrcSU(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
         }
         assertTrue("Stress cycles with corrupt inputs executed with zero uncaught exceptions", true)
     }

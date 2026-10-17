@@ -304,15 +304,19 @@ object StreamPlayShield {
      */
     internal val VETTED_SOURCE_DOMAINS: Set<String> = setOf(
         "vidlink.pro",
+        "wecollege.net",
+        "videasy.to",
+        "paleoak.top",
+        "majorplay.net",
         "vidsrc.pm",
         "vidfast.vc",
         "moon.zenoak.top",
         "vidsrc.su",
         "themoviedb.vidsrc.su",
         "dragonballzfans.xyz",
-        "vidrock.net",
-        "galacticvoyagers.xyz",
-        "moonfirekeeper.lol",
+        "megaplay.buzz",
+        "nexabloom.top",
+        "broforgotsave.online",
         "meowtv.ru",
         "hscow.com",
         "fcxmb.com",
@@ -320,6 +324,8 @@ object StreamPlayShield {
         "krico443jez.com",
         "slast430did.com",
         "animex.one",
+        "krussdomi.com",
+        "echovideo.to",
         "aniwatchtv.site",
         "cheaptruckrepairs.cc",
         "netoda.tech",
@@ -590,7 +596,7 @@ object StreamPlayShield {
      *  2. intact URLs on allowed hosts pass with `rewritten == null` (zero-copy fast path);
      *  3. particle-bearing URLs are rebuilt via OkHttp's own builder (encodings preserved);
      *  4. ONLY cross-host, non-vetted `Referer` headers are rewritten to origin form;
-     *     vetted/pinned anti-hotlink referers (vidrock/CDN family) and same-host referers
+     *     vetted/pinned anti-hotlink referers (top-tier SOTA CDN family) and same-host referers
      *     stay byte-for-byte identical.
      */
     fun evaluateRequest(request: Request): ShieldDecision {

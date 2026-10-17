@@ -201,31 +201,6 @@ suspend fun loadSourceNameExtractor(
 }
 
 
-suspend fun loadDisplaySourceNameExtractor(
-    sourceName: String?,
-    displayName: String?,
-    url: String,
-    referer: String? = null,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit,
-    quality: Int? = null,
-) {
-    loadExtractor(url, referer, subtitleCallback) { link ->
-        @Suppress("DEPRECATION")
-        val rawLink = ExtractorLink(
-            source = sourceName ?: link.source,
-            name = displayName ?: link.name,
-            url = link.url,
-            referer = link.referer,
-            quality = quality ?: link.quality,
-            type = link.type,
-            headers = link.headers,
-            extractorData = link.extractorData
-        )
-        callback(StreamPlayLinkOptimizer.optimize(rawLink))
-    }
-}
-
 fun getSeason(month: Int?): String? {
     val seasons = arrayOf(
         "Winter", "Winter", "Spring", "Spring", "Spring", "Summer",
@@ -456,122 +431,6 @@ object CryptoJS {
         }
     }
 }
-
-fun parseJsonToEpisodes(json: String): List<EpisoderesponseKAA> {
-    data class Response(val result: List<EpisoderesponseKAA>)
-    val response = sharedGson.fromJson(json, Response::class.java)
-    return response.result
-}
-
-
-fun getSignature(
-    html: String,
-    server: String,
-    query: String,
-    key: ByteArray
-): Triple<String, String, String>? {
-    // Define the order based on the server type
-    val headers =
-        mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-    val order = when (server) {
-        "VidStreaming", "DuckStream" -> listOf(
-            "IP",
-            "USERAGENT",
-            "ROUTE",
-            "MID",
-            "TIMESTAMP",
-            "KEY"
-        )
-
-        "BirdStream" -> listOf("IP", "USERAGENT", "ROUTE", "MID", "KEY")
-        else -> return null
-    }
-
-    // Parse the HTML using Jsoup
-    val document = Jsoup.parse(html)
-    val cidRaw = document.select("script:containsData(cid:)").firstOrNull()
-        ?.html()?.substringAfter("cid: '")?.substringBefore("'")?.decodeHex()
-        ?: return null
-    val cid = String(cidRaw).split("|")
-
-    // Generate timestamp
-    val timeStamp = (System.currentTimeMillis() / 1000 + 60).toString()
-
-    // Update route
-    val route = cid[1].replace("player.php", "source.php")
-
-    val signature = buildString {
-        order.forEach {
-            when (it) {
-                "IP" -> append(cid[0])
-                "USERAGENT" -> append(headers["User-Agent"] ?: "")
-                "ROUTE" -> append(route)
-                "MID" -> append(query)
-                "TIMESTAMP" -> append(timeStamp)
-                "KEY" -> append(String(key))
-                "SIG" -> append(html.substringAfter("signature: '").substringBefore("'"))
-                else -> {}
-            }
-        }
-    }
-    // Compute SHA-1 hash of the signature
-    return Triple(sha1sum(signature), timeStamp, route)
-}
-
-// Helper function to decode a hexadecimal string
-
-private fun sha1sum(value: String): String {
-    return try {
-        val md = MessageDigest.getInstance("SHA-1")
-        val bytes = md.digest(value.toByteArray())
-        bytes.joinToString("") { "%02x".format(it) }
-    } catch (e: Exception) {
-        throw Exception("Attempt to create the signature failed miserably.")
-    }
-}
-
-fun String.decodeHex(): ByteArray {
-    check(length % 2 == 0) { "Must have an even length" }
-    return chunked(2)
-        .map { it.toInt(16).toByte() }
-        .toByteArray()
-}
-
-
-object CryptoAES {
-    private const val HASH_CIPHER = "AES/CBC/PKCS7PADDING"
-    private const val HASH_CIPHER_FALLBACK = "AES/CBC/PKCS5PADDING"
-    private const val AES = "AES"
-
-    fun decrypt(cipherText: String, keyBytes: ByteArray, ivBytes: ByteArray): String {
-        return try {
-            val cipherTextBytes = base64DecodeArray(cipherText)
-            decryptAES(cipherTextBytes, keyBytes, ivBytes)
-        } catch (_: Exception) {
-            ""
-        }
-    }
-
-    private fun decryptAES(
-        cipherTextBytes: ByteArray,
-        keyBytes: ByteArray,
-        ivBytes: ByteArray
-    ): String {
-        return try {
-            val cipher = try {
-                Cipher.getInstance(HASH_CIPHER)
-            } catch (_: Throwable) {
-                Cipher.getInstance(HASH_CIPHER_FALLBACK)
-            }
-            val keyS = SecretKeySpec(keyBytes, AES)
-            cipher.init(Cipher.DECRYPT_MODE, keyS, IvParameterSpec(ivBytes))
-            cipher.doFinal(cipherTextBytes).toString(Charsets.UTF_8)
-        } catch (_: Exception) {
-            ""
-        }
-    }
-}
-
 
 val languageMap: Map<String, Set<String>> = mapOf(
     "Afrikaans"   to setOf("af", "afr"),
@@ -989,42 +848,8 @@ suspend fun runLimitedAsync(
 ) = StreamPlayConcurrency.runLimitedAsync(concurrency, taskTimeoutMs, *tasks)
 
 
-fun decryptVidzeeUrl(encrypted: String, key: ByteArray): String {
-    val decoded = base64Decode(encrypted)
-    val parts = decoded.split(":")
-    if (parts.size != 2) throw IllegalArgumentException("Invalid encrypted format")
-
-    val iv = base64DecodeArray(parts[0])
-    val cipherData = base64DecodeArray(parts[1])
-
-    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-    val secretKey = SecretKeySpec(key, "AES")
-    cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
-
-    val decryptedBytes = cipher.doFinal(cipherData)
-    return decryptedBytes.toString(Charsets.UTF_8)
-}
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
-
-suspend fun yflixDecodeReverse(text: String): String {
-    val jsonBody = """{"text":"$text"}""".toRequestBody(JSON)
-
-    return try {
-        val res = app.post(
-            BuildConfig.YFXDEC,
-            requestBody = jsonBody
-        ).text
-        JSONObject(res).getString("result")
-    } catch (_: Exception) {
-        ""
-    }
-}
-
-fun yflixextractVideoUrlFromJson(jsonData: String): String {
-    val jsonObject = JSONObject(jsonData)
-    return jsonObject.getString("url")
-}
 
 
 fun String.fixSourceUrl(): String {

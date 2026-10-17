@@ -6,10 +6,11 @@ import androidx.core.content.edit
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.phisher98.StreamPlayExtractor.invokeAnimex
+import com.phisher98.StreamPlayExtractor.invokeCineby
+import com.phisher98.StreamPlayExtractor.invokeMegaPlay
 import com.phisher98.StreamPlayExtractor.invokeMeowTV
 import com.phisher98.StreamPlayExtractor.invokeVidFast
 import com.phisher98.StreamPlayExtractor.invokeVidlink
-import com.phisher98.StreamPlayExtractor.invokeVidrock
 import com.phisher98.StreamPlayExtractor.invokeVidSrc
 import com.phisher98.StreamPlayExtractor.invokeVidSrcSU
 import com.phisher98.StreamPlayExtractor.resolveAnimeIds
@@ -97,83 +98,40 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
 }
 
 /**
- * ===================== StreamPlay SOTA Provider Registry (v23) =====================
+ * ===================== StreamPlay SOTA Provider Registry (v24) =====================
  *
- * Seven sources, every one of them verified end-to-end against live playback with plain
- * HTTP (no browser, no JS execution, no Cloudflare interstitial) during the v22/v23
- * research passes. VidLink is the retained universal primary; VidSrc and VidRock are the
- * v22 discoveries; VidFast, VidSrcSU and MeowTV were reverse-engineered and integrated
- * from scratch in the v23 pass (2026-10-16); Animex is the dedicated anime source.
+ * Eight sources, every one of them verified end-to-end against live playback with plain
+ * HTTP (no browser, no JS execution, no Cloudflare interstitial).
  *
- *   1. VidLink   - vidlink.pro | Movie/TV/Universal | native JSON API + direct HLS masters.
- *                                                   Ranking #1, cannot be disabled.
- *   2. VidSrc    - vidsrc.pm   | Movie/TV | Vidora JSON API (`x-player-key`) -> multi-CDN
- *                                          HLS masters directly behind 1 RTT. Ranking #2.
- *   3. VidFast   - vidfast.vc  | Movie/TV | page token -> enc-vidfast stage 1/2 handshake ->
- *                                          per-server stream() decrypt -> moon.zenoak.top HLS
- *                                          ladder (2160/1080/720/480). Ranking #3.
- *   4. VidSrcSU  - vidsrc.su   | Movie/TV | X-Api-Key + X-Cap-Token images() metadata ->
- *                                          dec-hexa -> multi-CDN HLS (dragonballzfans.xyz).
- *                                          Ranking #4. Checked BEFORE VidSrc (name collision).
- *   5. VidRock   - vidrock.net | Movie/TV | lane API + offline AES-256-GCM unwrap ->
- *                                          multi-CDN HLS ladder; every media request is
- *                                          Origin/Referer pinned to vidrock.net. Rank #5.
- *   6. MeowTV    - meowtv.ru   | Movie/TV | single-use stream ticket -> per-server stream
- *                                          payload -> dec-meowtv -> hscow/vidjoy/fcxmb HLS.
- *                                          Ranking #6.
- *   7. Animex    - animex.one  | Anime    | GraphQL catalog + nero provider HLS with soft
- *                                          subs. Ranking #7, Anime-gated.
+ *   1. VidLink   - vidlink.pro       | Universal (Movie/TV/Anime) | Rank 100 (#1, mandatory)
+ *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 96  (#2, multi-server + dec-videasy)
+ *   3. VidSrc    - vidsrc.pm         | Movie/TV                   | Rank 95  (#3, Vidora API)
+ *   4. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 94  (#4, enc-vidfast handshake)
+ *   5. VidSrcSU  - vidsrc.su         | Movie/TV                   | Rank 93  (#5, hexa protocol)
+ *   6. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#6, MAL/AniList + dec-megaplay)
+ *   7. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#7, single-use ticket + dec-meowtv)
+ *   8. Animex    - animex.one        | Anime                      | Rank 90  (#8, GraphQL + concurrent multi-provider fan-out)
  *
- * Ordering note: the Movie/TV tier is VidLink (100) > VidSrc (95) > VidFast (94) >
- * VidSrcSU (93) > VidRock (92) > MeowTV (91) and Animex (90) is Anime-only. VidFast and
- * VidSrcSU rank above VidRock because both complete their handshake from a single resolver
- * round trip, while MeowTV trades one extra ticket round trip for its own CDN failover set;
- * all five were live-verified on 2026-10-15/16.
- *
- * Candidates that were researched and REJECTED, recorded so they are not re-introduced on a
- * later "find SOTA sources" pass:
- *
- *   - AnimePahe (animepahe.ru/.pw/.com/.org/.si): REMOVED in v23. The .ru front now injects a
- *     base64 redirect to `https://qyvir.com/go/2954557?...` (ad gateway, not a player); .pw,
- *     .com and .org fronts answer 403 behind Cloudflare; .si no longer resolves. The kwik.cx
- *     conveyor and its cached URL plumbing are retained for other extractors, but no
- *     registry entry depends on AnimePahe any more.
- *   - Dead / parked / hijacked DNS: moviesapi.club, embed.su, vidjoy.pro (obfuscated shell),
- *     vidjoy.to, vidplay.stream, vidbinge.com + api.vidbinge.com (parked on
- *     router.parklogic.com), peachify.to, smashystream.com, vidsrc.icu, vidsrc.cc,
- *     vidsrc.net (redirect shell), 2embed.to, autoembed.cc, rivestream.org, vidlink.cc,
- *     vidlink.live, vidjoy.pro, 2embed.cc.
- *   - Cloudflare / browser only: multiembed.mov (302 -> Turnstile), superembed, viduki.net
- *     (disable-devtool + fubuki.js), api.allanime.day ("Just a moment..." challenge).
- *   - Works but only through a fragile multi-hop + WASM/ChaCha20 + IP-bound token chain
- *     (vidsrc.to -> vsembed.ru -> stellarconductornexus -> data.vidsrc.sh; the wasm rotates
- *     its root key every 5 minutes): deliberately NOT ported, because that is a workaround
- *     rather than a production solution.
- *   - Requires re-implementing an obfuscated client proxy: miruro.tv (VITE_PROXY_OBF_KEY +
- *     s1/s2.keeply.top), 2embed.cc (streamsrcs.swish indirection), vidapi.cloud
- *     (metadata only; stream endpoint not exposed).
- *   - Removed API dependency: api.consumet.org now 301s away and its Railway deployment is
- *     gone ("Application not found"), so no Consumet-backed provider is registerable.
- *   - Superseded in-extractor mirrors: videm.xyz / vidsrc.buzz (VidEm) and animegg.org were
- *     both verified live during the v21 pass, but VidEm serves a single mintage origin with
- *     no CDN failover and AnimeGG leeches upstream mirrors; VidSrc + VidRock verified faster
- *     and more redundant in the v22 pass, so both entries were decommissioned.
- *
- * Consequently the whole legacy tier (rivestream, videasy, vidflix, vixsrc, hexasu,
- * autoembed, vidup, vidnest, cinejoy, yflix, the vidsrc family, and the entire
- * Indian/Hindi download-only scraper tier) stays removed. Note that `vidfast` was
- * decommissioned after the v19 pass and has been re-issued to the new v23 VidFast extractor:
- * it is deliberately NOT in REMOVED_PROVIDER_IDS so upgraded installs get it re-enabled.
- * VidFast and VidRock anchor the stream-only contract: both are declared in
- * DOWNLOAD_EXCLUDED_PROVIDER_IDS, so the host keeps them fully ranked for playback while
- * never routing them into downloads. VidRock is barred because its direct mp4 lanes serve
- * index-less, non-seekable containers (raw stream payloads behind .mp4 URLs) — a downloaded
- * copy cannot be scrubbed, so the provider stays a live streaming-only member.
+ * VidRock (`vidrock`, `vidrock.net`, `galacticvoyagers.xyz`, `moonfirekeeper.lol`) is
+ * permanently removed and banned in v24 because it serves index-less, non-seekable files.
  */
 private val providers by lazy {
     listOf(
         Provider("vidlink", "VidLink") { res, subtitleCallback, callback, _, _ ->
             invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
+        },
+        Provider("cineby", "Cineby") { res, subtitleCallback, callback, _, _ ->
+            invokeCineby(
+                tmdbId = res.id,
+                season = res.season,
+                episode = res.episode,
+                subtitleCallback = subtitleCallback,
+                callback = callback,
+                imdbId = res.imdbId,
+                title = res.title,
+                year = res.year ?: res.airedYear,
+                isAnime = res.isAnime
+            )
         },
         Provider("vidsrc", "VidSrc") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) {
@@ -190,9 +148,17 @@ private val providers by lazy {
                 invokeVidSrcSU(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
-        Provider("vidrock", "VidRock") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) {
-                invokeVidrock(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
+        Provider("megaplay", "MegaPlay") { res, subtitleCallback, callback, _, _ ->
+            if (res.isAnime) {
+                val ids = getAnimeIds(res)
+                invokeMegaPlay(
+                    malId = ids.malId,
+                    anilistId = ids.anilistId,
+                    episode = res.episode,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback,
+                    dubtype = getDubStatus(res)
+                )
             }
         },
         Provider("meowtv", "MeowTV") { res, subtitleCallback, callback, _, _ ->
@@ -218,19 +184,18 @@ private val providers by lazy {
 }
 
 /**
- * The curated SOTA set. Order defines the authoritative source hierarchy:
- * VidLink (100) universal primary, VidSrc (95) > VidFast (94) > VidSrcSU (93) > VidRock (92)
- * > MeowTV (91) verified backups for Movie/TV, Animex (90) primary for Anime. The Movie/TV
- * set and the Anime source never race each other because each source is gated on the
- * request's `isAnime` classification, so source rank only ever decides between alternatives
- * that both serve the same content.
+ * The curated v24 SOTA set. Order defines the authoritative source hierarchy:
+ * VidLink (100) and Cineby (96) are universal primaries (Movie, TV, Anime);
+ * VidSrc (95) > VidFast (94) > VidSrcSU (93) > MeowTV (91) serve Movie/TV;
+ * MegaPlay (92) > Animex (90) serve Anime alongside VidLink (100) and Cineby (96).
  */
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
+    "cineby",
     "vidsrc",
     "vidfast",
     "vidsrcsu",
-    "vidrock",
+    "megaplay",
     "meowtv",
     "animex"
 )
@@ -242,43 +207,26 @@ val DEFAULT_TOP_TIER_PROVIDERS = setOf(
  *
  * Rationale per member:
  *  - `vidfast`: HLS-only delivery chain serves download-hostile renditions.
- *  - `vidrock`: direct mp4 lanes serve index-less, non-seekable containers (raw stream
- *    payloads behind .mp4 URLs); a downloaded copy cannot be scrubbed on any player.
  *
- * Contract with the CloudStream host: the host reads this set through its provider bridge
- * (`StreamPlayDynamicBridge`; the bridge also carries a static fallback for the current
- * members, so the ban holds even before the plugin snapshot loads) and funnels every
- * download stage — automatic selection, queue refreshes, and the manual download-mirror
- * picker — through it. Declaring an id here keeps the provider at full stream rank
- * (playback, fallbacks and mirror hunting are untouched) while making it permanently
- * ineligible for downloads, regardless of link ranking.
- *
- * Invariants enforced by the test suite:
- *  - every id must be a registered provider of the curated registry (excluding an
- *    unregistered id would be dead bookkeeping),
- *  - every id must be absent from [REMOVED_PROVIDER_IDS] (a stream-only source is live,
- *    not decommissioned),
- *  - and the download exclusion must never demote the provider's stream rank.
+ * Note: `vidrock` was completely stripped and moved to [REMOVED_PROVIDER_IDS] in v24 because
+ * it served non-seekable index-less files.
  */
-val DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast", "vidrock")
+val DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast")
 
 /**
  * Identifiers of every provider that has ever shipped in StreamPlay but is now
  * decommissioned. Retained so that upgrades of existing installs can scrub stale
- * user preferences entries. The exact ids `vidsrc`, `vidrock` and `vidfast` are
- * intentionally NOT listed: those identifiers were re-issued to the v22/v23 SOTA
- * sources, and listing them here would make the freshly registered providers
- * impossible to disable. `animepahe` (and its display-name spellings) is listed
- * because the v23 pass removed AnimePahe after its fronts were hijacked.
+ * user preferences entries. `vidrock` is permanently decommissioned here as of v24.
  */
 val REMOVED_PROVIDER_IDS = setOf(
+    "vidrock", "Vidrock", "VidRock",
     "rivestream", "RiveStream", "videasy", "VidEasy",
     "vixsrc", "VixSrc",
     "videm", "VidEm", "animegg", "AnimeGG",
     "vidflix", "Vidflix", "Vidflix (Multi)",
     "superstream", "vaplayer", "vidcore", "Vidcore", "vidsrcxyz", "vidsrccc",
     "vidsrcto", "vidnest", "VidNest", "vidup", "Vidup",
-    "cinejoy", "CineJoy", "HexaSU", "autoembed", "moviebox", "yflix", "YFlix",
+    "cinejoy", "CineJoy", "hexasu", "HexaSU", "autoembed", "moviebox", "yflix", "YFlix",
     "vidsrcme", "vidsrcin", "vidsrcpm", "vidsrcnet", "peachify", "moviesapi",
     "vidzeeapi", "2Embed", "2embed", "uhdmovies", "multimovies", "4khdhub", "hdhub4u",
     "hdmovie2", "topmovies", "moviesmod", "bollyflix", "vegamovies", "Rogmovies",
@@ -295,10 +243,10 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v23_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v24_initialized"
 
 /**
- * Provider settings bootstrap + migration to the curated v23 SOTA registry.
+ * Provider settings bootstrap + migration to the curated v24 SOTA registry.
  *
  * Clean installs: enable exactly [DEFAULT_TOP_TIER_PROVIDERS], disable nothing else.
  * VidLink is the pinnacle #1 provider and cannot be disabled.
@@ -336,7 +284,7 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
     }
     Log.d(
         "StreamPlay",
-        "🎯 Migrated to curated SOTA registry v23: VidLink guaranteed active, " +
+        "🎯 Migrated to curated SOTA registry v24: VidLink guaranteed active, " +
             "scrubbed ${REMOVED_PROVIDER_IDS.size} decommissioned provider identifiers"
     )
     return finalDisabled

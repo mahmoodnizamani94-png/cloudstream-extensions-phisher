@@ -498,12 +498,18 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.buzz") ||
             referer?.contains("videm.xyz", ignoreCase = true) == true ||
             referer?.contains("vidsrc.buzz", ignoreCase = true) == true
-        val isVidRock = source?.contains("vidrock", ignoreCase = true) == true ||
-            name?.contains("vidrock", ignoreCase = true) == true ||
-            lowerUrl.contains("vidrock.net") ||
-            referer?.contains("vidrock.net", ignoreCase = true) == true ||
-            lowerUrl.contains("galacticvoyagers") ||
-            lowerUrl.contains("moonfirekeeper")
+        val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
+            name?.contains("cineby", ignoreCase = true) == true ||
+            lowerUrl.contains("wecollege.net") ||
+            lowerUrl.contains("paleoak.top") ||
+            lowerUrl.contains("majorplay.net") ||
+            referer?.contains("player.videasy.to", ignoreCase = true) == true
+        val isMegaPlay = source?.contains("megaplay", ignoreCase = true) == true ||
+            name?.contains("megaplay", ignoreCase = true) == true ||
+            lowerUrl.contains("megaplay.buzz") ||
+            lowerUrl.contains("nexabloom.top") ||
+            lowerUrl.contains("broforgotsave.online") ||
+            referer?.contains("megaplay.buzz", ignoreCase = true) == true
         val isAnimegg = source?.contains("animegg", ignoreCase = true) == true ||
             name?.contains("animegg", ignoreCase = true) == true ||
             lowerUrl.contains("animegg.org") ||
@@ -564,11 +570,11 @@ object StreamLinkOptimizer {
         val isVideasy = source?.contains("videasy", ignoreCase = true) == true ||
             name?.contains("videasy", ignoreCase = true) == true ||
             referer?.contains("videasy", ignoreCase = true) == true ||
-            referer?.contains("cineby", ignoreCase = true) == true ||
+            referer?.contains("cineby.sc", ignoreCase = true) == true ||
             referer?.contains("speedracelight", ignoreCase = true) == true ||
             headers.entries.any {
                 it.value.contains("videasy", ignoreCase = true) ||
-                    it.value.contains("cineby", ignoreCase = true) ||
+                    it.value.contains("cineby.sc", ignoreCase = true) ||
                     it.value.contains("speedracelight", ignoreCase = true)
             }
         val isVidfast = (source?.contains("vidfast", ignoreCase = true) == true ||
@@ -599,14 +605,15 @@ object StreamLinkOptimizer {
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
             }
-            isVidRock -> {
-                // The VidRock CDN (galacticvoyagers.xyz / moonfirekeeper.lol) rejects every
-                // media request that lacks BOTH the site Origin and Referer, so they are
-                // pinned exactly the way the site's own player sends them. Verified live:
-                // with both headers the 1080p master playlist is returned; with either
-                // alone the CDN answers 403 with an HTML challenge page.
-                headers[HEADER_REFERER] = "https://vidrock.net/"
-                headers[HEADER_ORIGIN] = "https://vidrock.net"
+            isCineby -> {
+                headers[HEADER_REFERER] = "https://player.videasy.to/"
+                headers[HEADER_ORIGIN] = "https://player.videasy.to"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
+                headers[HEADER_ACCEPT] = "*/*"
+            }
+            isMegaPlay -> {
+                headers[HEADER_REFERER] = "https://megaplay.buzz/"
+                headers[HEADER_ORIGIN] = "https://megaplay.buzz"
                 headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
             }
@@ -933,11 +940,11 @@ object StreamLinkOptimizer {
         val isVideasy = source?.contains("videasy", ignoreCase = true) == true ||
             name?.contains("videasy", ignoreCase = true) == true ||
             referer?.contains("videasy", ignoreCase = true) == true ||
-            referer?.contains("cineby", ignoreCase = true) == true ||
+            referer?.contains("cineby.sc", ignoreCase = true) == true ||
             referer?.contains("speedracelight", ignoreCase = true) == true ||
             headers.entries.any {
                 it.value.contains("videasy", ignoreCase = true) ||
-                    it.value.contains("cineby", ignoreCase = true) ||
+                    it.value.contains("cineby.sc", ignoreCase = true) ||
                     it.value.contains("speedracelight", ignoreCase = true)
             }
         val hadVidlinkHeader = headers.entries.any {
@@ -960,12 +967,18 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.buzz") ||
             referer?.contains("videm.xyz", ignoreCase = true) == true ||
             referer?.contains("vidsrc.buzz", ignoreCase = true) == true
-        val isVidRock = source?.contains("vidrock", ignoreCase = true) == true ||
-            name?.contains("vidrock", ignoreCase = true) == true ||
-            lowerUrl.contains("vidrock.net") ||
-            referer?.contains("vidrock.net", ignoreCase = true) == true ||
-            lowerUrl.contains("galacticvoyagers") ||
-            lowerUrl.contains("moonfirekeeper")
+        val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
+            name?.contains("cineby", ignoreCase = true) == true ||
+            lowerUrl.contains("wecollege.net") ||
+            lowerUrl.contains("paleoak.top") ||
+            lowerUrl.contains("majorplay.net") ||
+            referer?.contains("player.videasy.to", ignoreCase = true) == true
+        val isMegaPlay = source?.contains("megaplay", ignoreCase = true) == true ||
+            name?.contains("megaplay", ignoreCase = true) == true ||
+            lowerUrl.contains("megaplay.buzz") ||
+            lowerUrl.contains("nexabloom.top") ||
+            lowerUrl.contains("broforgotsave.online") ||
+            referer?.contains("megaplay.buzz", ignoreCase = true) == true
         val isAnimegg = source?.contains("animegg", ignoreCase = true) == true ||
             name?.contains("animegg", ignoreCase = true) == true ||
             lowerUrl.contains("animegg.org") ||
@@ -1042,7 +1055,8 @@ object StreamLinkOptimizer {
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
             isVidlink -> ""
-            isVidRock -> "https://vidrock.net/"
+            isCineby -> "https://player.videasy.to/"
+            isMegaPlay -> "https://megaplay.buzz/"
             isVixSrc || lowerUrl.contains("vixsrc.to") -> "https://vixsrc.to/"
             isVidEm -> {
                 val supplied = headers.entries.firstOrNull {
@@ -1659,7 +1673,7 @@ object StreamLinkOptimizer {
 
     /**
      * Checks if a stream link belongs to one of the curated top-tier primary sources
-     * (VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 > MeowTV 91 > Animex 90).
+     * (VidLink 100 > Cineby 96 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90).
      */
     fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 85
 
@@ -1669,9 +1683,10 @@ object StreamLinkOptimizer {
     fun isTopTierProvider(providerId: String): Boolean {
         val p = providerId.lowercase(Locale.ROOT)
         return p.contains("vidlink") ||
+            p.contains("cineby") ||
             p.contains("vidsrc") ||
             p.contains("vidfast") ||
-            p.contains("vidrock") ||
+            p.contains("megaplay") ||
             p.contains("meowtv") ||
             p.contains("animex")
     }
@@ -1683,8 +1698,8 @@ object StreamLinkOptimizer {
 
     /**
      * Executes the Universal Top-Tier Stream Guard on any stream link:
-     * Validates top-tier streams (VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 >
-     * MeowTV 91 > Animex 90) and forwards them cleanly to
+     * Validates top-tier streams (VidLink 100 > Cineby 96 > VidSrc 95 > VidFast 94 > VidSrcSU 93 >
+     * MegaPlay 92 > MeowTV 91 > Animex 90) and forwards them cleanly to
      * emitAction without creating artificial or duplicated companion links.
      *
      * @param link The incoming stream link.
@@ -1905,7 +1920,7 @@ object StreamLinkOptimizer {
 
     /**
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
-     * 1. Top-tier source priority rank (VidLink > VidSrc > VidFast > VidSrcSU > VidRock > MeowTV > Animex > Secondary)
+     * 1. Top-tier source priority rank (VidLink > Cineby > VidSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex > Secondary)
      * 2. Quality priority score within the same source (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
      * 3. Genuine non-synthetic streams over synthetic companions
      * 4. Higher bitrate (kbps) (when quality score and source rank are equivalent)
@@ -1917,7 +1932,7 @@ object StreamLinkOptimizer {
      * 10. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Top-Tier Source Priority Rank (VidLink > VidSrc > VidFast > VidSrcSU > VidRock > MeowTV > Animex > Secondary).
+        // 1. Top-Tier Source Priority Rank (VidLink > Cineby > VidSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex > Secondary).
         // Source rank is primary so a higher-ranked source can never be replaced by a
         // lower-ranked one that merely exposes a higher resolution ladder.
         val sourceRank1 = getSourcePriorityRank(candidate)
@@ -2001,21 +2016,20 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Definitive source priority ranking for the curated v23 SOTA registry:
+     * Definitive source priority ranking for the curated v24 SOTA registry:
      *
      *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)      -> 100
-     *   2. VidSrc    (vidsrc.pm Vidora API, quasar/scrapify HLS masters)                  -> 95
-     *   3. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 94
-     *   4. VidSrcSU  (vidsrc.su, X-Api-Key images decrypt, dragonballzfans.xyz CDN HLS)   -> 93
-     *   5. VidRock   (vidrock.net, AES-256-GCM lanes, Origin-pinned CDN HLS)              -> 92
-     *   6. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
-     *   7. Animex    (animex.one, GraphQL catalog, nero provider soft-subbed HLS)         -> 90
+     *   2. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 96
+     *   3. VidSrc    (vidsrc.pm Vidora API, quasar/scrapify HLS masters)                  -> 95
+     *   4. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 94
+     *   5. VidSrcSU  (vidsrc.su, X-Api-Key images decrypt, dragonballzfans.xyz CDN HLS)   -> 93
+     *   6. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
+     *   7. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
+     *   8. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 90
      *
      * VidSrcSU is matched BEFORE VidSrc because the "VidSrcSU" label contains the
-     * "vidsrc" substring, and the AnimePahe/kwik mapping was dropped together with the
-     * decommissioned source. Every other label or CDN host scores 0, because every other
-     * source was decommissioned after live research showed it dead, parked, or
-     * Cloudflare/browser gated.
+     * "vidsrc" substring, and the VidRock/AnimePahe mappings were dropped together with the
+     * decommissioned sources. Every other label or CDN host scores 0.
      *
      * Matching is done on the source label as well as on the CDN hosts each source
      * actually serves from, so a link keeps its ranking even when it is re-wrapped by the
@@ -2025,22 +2039,28 @@ object StreamLinkOptimizer {
         val s = link.source.lowercase(Locale.ROOT)
         val n = link.name.lowercase(Locale.ROOT)
         val u = link.url.lowercase(Locale.ROOT)
+        val r = link.referer.lowercase(Locale.ROOT)
         return when {
             s.contains("vidlink") || n.contains("vidlink") ||
                 u.contains("vidlink.pro") || u.contains("hakunaymatata") -> 100
+            s.contains("cineby") || n.contains("cineby") ||
+                u.contains("wecollege.net") || u.contains("paleoak.top") ||
+                u.contains("majorplay.net") || r.contains("player.videasy.to") -> 96
             s.contains("vidsrcsu") || n.contains("vidsrcsu") ||
                 u.contains("dragonballzfans") -> 93
             s.contains("vidsrc") || n.contains("vidsrc") ||
                 u.contains("vidsrc.pm") || u.contains("cheaptruckrepairs") || u.contains("netoda.tech") -> 95
             s.contains("vidfast") || n.contains("vidfast") ||
                 u.contains("vidfast.vc") || u.contains("zenoak") -> 94
-            s.contains("vidrock") || n.contains("vidrock") ||
-                u.contains("vidrock.net") || u.contains("galacticvoyagers") || u.contains("moonfirekeeper") -> 92
+            s.contains("megaplay") || n.contains("megaplay") ||
+                u.contains("megaplay.buzz") || u.contains("nexabloom.top") ||
+                u.contains("broforgotsave.online") -> 92
             s.contains("meowtv") || n.contains("meowtv") ||
                 u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
                 u.contains("krico443jez.com") -> 91
             s.contains("animex") || n.contains("animex") ||
-                u.contains("animex.one") || u.contains("aniwatchtv.site") -> 90
+                u.contains("animex.one") || u.contains("aniwatchtv.site") ||
+                u.contains("krussdomi.com") || u.contains("echovideo.to") -> 90
             else -> 0
         }
     }
@@ -2297,7 +2317,7 @@ object StreamLinkOptimizer {
      * State-Of-The-Art Priority-Ordered Stream Dispatcher for CloudStream.
      *
      * Guarantees that the highest-ranked source is always the #1 result (VidLink 100 >
-     * VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 > MeowTV 91 > Animex 90), and only
+     * Cineby 96 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90), and only
      * then orders that source's own variants by the
      * quality hierarchy (720p > 1080p > 480p > above-1080p).
      *
@@ -2956,21 +2976,21 @@ object StreamLinkOptimizer {
             /**
              * The v22-era top-tier ranks, kept only for the standalone fallback path of
              * [hasHigherPendingTop720Rank] (no [activeTopRanks] and no [isRankInFlight]):
-             * in that mode the dispatcher knows nothing about which v23 registry sources
+             * in that mode the dispatcher knows nothing about which v24 registry sources
              * are live, so it waits only for these historic ranks plus any rank it has
              * actually observed in the current session. Every production caller passes
-             * [activeTopRanks]/[isRankInFlight], where the full v23 [TOP_TIER_RANKS] set
+             * [activeTopRanks]/[isRankInFlight], where the full v24 [TOP_TIER_RANKS] set
              * is used against the live provider picture instead.
              */
             private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90, 85)
 
             /**
-             * The complete set of top-tier ranks in the curated v23 registry. Kept as an
+             * The complete set of top-tier ranks in the curated v24 registry. Kept as an
              * explicit list (rather than derived from the string-keyed boost map) so the
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.
              */
-            private val TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 90)
+            private val TOP_TIER_RANKS = listOf(100, 96, 95, 94, 93, 92, 91, 90)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

@@ -163,15 +163,16 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
-        // The v23 registry has seven ranked sources; every other label scores rank 0, so
+        // The v24 registry has eight ranked sources; every other label scores rank 0, so
         // monotonicity is asserted across the full distinct-rank chain:
-        // VidLink 100 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > VidRock 92 > MeowTV 91 > Animex 90.
+        // VidLink 100 > Cineby 96 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90.
         val providersInOrder = listOf(
             "VidLink" to 100,
+            "Cineby" to 96,
             "VidSrc" to 95,
             "VidFast" to 94,
             "VidSrcSU" to 93,
-            "VidRock" to 92,
+            "MegaPlay" to 92,
             "MeowTV" to 91,
             "Animex" to 90
         )
@@ -305,7 +306,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 150L,
             top720GraceMs = 1000L,
-            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
+            activeTopRanks = setOf(100, 96, 95, 94, 93, 92, 91, 90),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
@@ -314,16 +315,16 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         // MeowTV (rank 91) emits 1080p at t=0ms, while higher ranks (VidSrc 95, VidFast 94)
         // are still in flight.
         val meowtv1080 = createLink("MeowTV", "MeowTV [1080p]", "https://meowtv.ru/1080.m3u8", Qualities.P1080.value)
-        // VidRock (rank 92) arrives later with 720p and must preempt the held 1080p.
-        val vidrock720 = createLink("VidRock", "VidRock [720p]", "https://vidrock.net/720.m3u8", Qualities.P720.value)
+        // MegaPlay (rank 92) arrives later with 720p and must preempt the held 1080p.
+        val megaplay720 = createLink("MegaPlay", "MegaPlay [720p]", "https://fetch.nexabloom.top/720.m3u8", Qualities.P720.value)
 
         dispatcher.onLinkAccepted(meowtv1080)
         delay(50L)
         // MeowTV 1080p must be held because higher-ranked candidates (ranks 95/94) are in flight.
         assertTrue("MeowTV 1080p must be held waiting for higher-ranked candidates", emitted.isEmpty())
 
-        // VidRock 720p (rank 92) arrives at t=60ms
-        dispatcher.onLinkAccepted(vidrock720)
+        // MegaPlay 720p (rank 92) arrives at t=60ms
+        dispatcher.onLinkAccepted(megaplay720)
 
         // The higher-ranked in-flight sources finish with no 720p of their own
         inFlightRanks.remove(95)
@@ -332,7 +333,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         dispatcher.markRankCompleted(94)
 
         assertEquals("Both streams must be emitted", 2, emitted.size)
-        assertEquals("VidRock 720p MUST be emitted BEFORE MeowTV 1080p", vidrock720, emitted[0])
+        assertEquals("MegaPlay 720p MUST be emitted BEFORE MeowTV 1080p", megaplay720, emitted[0])
         assertEquals("MeowTV 1080p must be emitted AFTER the higher-ranked 720p", meowtv1080, emitted[1])
     }
 

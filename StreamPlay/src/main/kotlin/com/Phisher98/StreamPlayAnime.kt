@@ -44,16 +44,10 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.nicehttp.RequestBodyTypes
 import com.phisher98.StreamPlay.Companion.anilistAPI
-import com.phisher98.StreamPlay.Companion.malsyncAPI
-import com.phisher98.StreamPlayExtractor.invokeAnichi
-import com.phisher98.StreamPlayExtractor.invokeAnikage
-import com.phisher98.StreamPlayExtractor.invokeAnineko
-import com.phisher98.StreamPlayExtractor.invokeAnimetosho
 import com.phisher98.StreamPlayExtractor.invokeAnimex
-import com.phisher98.StreamPlayExtractor.invokeAnizone
-import com.phisher98.StreamPlayExtractor.invokeHianime
-import com.phisher98.StreamPlayExtractor.invokeKickAssAnime
-import com.phisher98.StreamPlayExtractor.invokeReAnime
+import com.phisher98.StreamPlayExtractor.invokeCineby
+import com.phisher98.StreamPlayExtractor.invokeMegaPlay
+import com.phisher98.StreamPlayExtractor.invokeVidlink
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.coroutineScope
@@ -208,6 +202,7 @@ class StreamPlayAnime : MainAPI() {
             }
             val animeMetaData = parseAnimeData(syncMetaData)
             val tmdbid = animeMetaData?.mappings?.themoviedbId?.toIntOrNull()
+            val imdbid = animeMetaData?.mappings?.imdbId
             val kitsuid = animeMetaData?.mappings?.kitsuid
 
             val type = if (data.format.contains("Movie", ignoreCase = true)) TvType.Movie else TvType.TvSeries
@@ -242,6 +237,8 @@ class StreamPlayAnime : MainAPI() {
             val href = LinkData(
                 malId = ids.idMal,
                 aniId = ids.id,
+                tmdbId = tmdbid,
+                imdbId = imdbid,
                 title = data.getTitle(),
                 jpTitle = jpTitle,
                 year = data.startDate.year,
@@ -255,6 +252,8 @@ class StreamPlayAnime : MainAPI() {
                 val linkData = LinkData(
                     malId = ids.idMal,
                     aniId = ids.id,
+                    tmdbId = tmdbid,
+                    imdbId = imdbid,
                     title = data.getTitle(),
                     jpTitle = jpTitle,
                     year = data.startDate.year,
@@ -282,6 +281,8 @@ class StreamPlayAnime : MainAPI() {
                 val dubLinkData = LinkData(
                     malId = ids.idMal,
                     aniId = ids.id,
+                    tmdbId = tmdbid,
+                    imdbId = imdbid,
                     title = data.getTitle(),
                     jpTitle = jpTitle,
                     year = data.startDate.year,
@@ -350,7 +351,6 @@ class StreamPlayAnime : MainAPI() {
         val episode = mediaData.episode
         val jpTitle = mediaData.jpTitle
         val anititle = mediaData.title
-        val anidbEid = mediaData.anidbEid
         val aniid = mediaData.aniId
         val year = mediaData.year
 
@@ -358,31 +358,13 @@ class StreamPlayAnime : MainAPI() {
             upstreamCallback = callback,
             scope = this,
             top720GraceMs = 350L,
-            activeTopRanks = setOf(90)
+            activeTopRanks = setOf(100, 96, 92, 90)
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
             onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) }
         )
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-
-        val malsync = if (malId != null) {
-            val cacheKey = "malsync_$malId"
-            val cached = StreamPlayCache.getCachedMetadata(cacheKey)
-            if (cached != null) {
-                AppUtils.tryParseJson<MALSyncResponses>(cached)?.sites
-            } else {
-                runCatching {
-                    val raw = app.get("$malsyncAPI/mal/anime/$malId", timeout = 6L).text
-                    if (raw.isNotBlank() && raw.startsWith("{")) {
-                        StreamPlayCache.cacheMetadata(cacheKey, raw)
-                        AppUtils.tryParseJson<MALSyncResponses>(raw)?.sites
-                    } else null
-                }.getOrNull()
-            }
-        } else null
-
-        val kaasSlug = malsync?.KickAssAnime?.values?.firstNotNullOfOrNull { it["identifier"] }
 
         val dubStatus: String? =
             if (mediaData.season == null) "Movie"
@@ -443,34 +425,38 @@ class StreamPlayAnime : MainAPI() {
         }
 
         val tasks = buildList {
-            add(PipelinedTask("Hianime", LatencyTier.TIER_1) {
-                invokeHianime(malId, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            add(PipelinedTask("vidlink", LatencyTier.TIER_1, priorityBoost = 100f) {
+                if (mediaData.tmdbId != null) {
+                    invokeVidlink(
+                        mediaData.tmdbId,
+                        if (mediaData.season == null) null else 1,
+                        episode,
+                        trackedSubtitleCallback,
+                        trackedCallback,
+                        mediaData.imdbId
+                    )
+                }
             })
-            add(PipelinedTask("Anizone", LatencyTier.TIER_1) {
-                invokeAnizone(jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 96f) {
+                if (mediaData.tmdbId != null) {
+                    invokeCineby(
+                        tmdbId = mediaData.tmdbId,
+                        season = if (mediaData.season == null) null else 1,
+                        episode = episode,
+                        subtitleCallback = trackedSubtitleCallback,
+                        callback = trackedCallback,
+                        imdbId = mediaData.imdbId,
+                        title = anititle ?: jpTitle,
+                        year = year,
+                        isAnime = true
+                    )
+                }
             })
-            add(PipelinedTask("Anikage", LatencyTier.TIER_2) {
-                invokeAnikage(aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            add(PipelinedTask("megaplay", LatencyTier.TIER_1, priorityBoost = 92f) {
+                invokeMegaPlay(malId, aniid, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
             })
-            add(PipelinedTask("Anichi", LatencyTier.TIER_2) {
-                invokeAnichi(jpTitle, anititle, year, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
-            })
-            add(PipelinedTask("KickAssAnime", LatencyTier.TIER_2) {
-                invokeKickAssAnime(jpTitle, kaasSlug, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
-            })
-            add(PipelinedTask("Animex", LatencyTier.TIER_2) {
-                invokeAnimex(malId, aniid, jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
-            })
-            malId?.let {
-                add(PipelinedTask("Animetosho", LatencyTier.TIER_2) {
-                    invokeAnimetosho(trackedSubtitleCallback, trackedCallback, dubStatus, anidbEid)
-                })
-            }
-            add(PipelinedTask("ReAnime", LatencyTier.TIER_2) {
-                invokeReAnime(aniid, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
-            })
-            add(PipelinedTask("Anineko", LatencyTier.TIER_3) {
-                invokeAnineko(anititle, jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+            add(PipelinedTask("animex", LatencyTier.TIER_1, priorityBoost = 90f) {
+                invokeAnimex(malId, aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
             })
         }
 

@@ -234,7 +234,7 @@ class EarlySatisfactionController(
 }
 
 /**
- * Authoritative cold-start priority boost for the curated v23 SOTA registry.
+ * Authoritative cold-start priority boost for the curated v24 SOTA registry.
  *
  * The hierarchy is deliberately flat and small: every entry is a source that has been
  * verified live with a plain HTTP probe, and the ordering is the order a well-behaved
@@ -245,6 +245,8 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "vidlink" to 100f,
     "Vidlink" to 100f,
     "VidLink" to 100f,
+    "cineby" to 96f,
+    "Cineby" to 96f,
     "vidsrc" to 95f,
     "Vidsrc" to 95f,
     "VidSrc" to 95f,
@@ -254,9 +256,9 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "vidsrcsu" to 93f,
     "Vidsrcsu" to 93f,
     "VidSrcSU" to 93f,
-    "vidrock" to 92f,
-    "Vidrock" to 92f,
-    "VidRock" to 92f,
+    "megaplay" to 92f,
+    "Megaplay" to 92f,
+    "MegaPlay" to 92f,
     "meowtv" to 91f,
     "Meowtv" to 91f,
     "MeowTV" to 91f,
@@ -271,10 +273,9 @@ object SpeculativePipeliner {
     private const val TAG = "SpeculativePipeliner"
 
     /**
-     * Cold-start latency expectation for the curated v23 registry. Every surviving source
-     * is a single-round-trip JSON API (VidRock additionally unwraps its lanes fully
-     * offline), so they all live in TIER_1; the intent is that the pipeline starts them
-     * together instead of serialising them.
+     * Cold-start latency expectation for the curated v24 registry. Every surviving source
+     * is a single-round-trip JSON API, so they all live in TIER_1; the intent is that the
+     * pipeline starts them together instead of serialising them.
      */
     val STATIC_COLD_START_TIERS: Map<String, LatencyTier> = mapOf(
         // Tier 0: Direct cache / instant player
@@ -285,6 +286,8 @@ object SpeculativePipeliner {
         "vidlink" to LatencyTier.TIER_1,
         "Vidlink" to LatencyTier.TIER_1,
         "VidLink" to LatencyTier.TIER_1,
+        "cineby" to LatencyTier.TIER_1,
+        "Cineby" to LatencyTier.TIER_1,
         "vidsrc" to LatencyTier.TIER_1,
         "Vidsrc" to LatencyTier.TIER_1,
         "VidSrc" to LatencyTier.TIER_1,
@@ -294,9 +297,9 @@ object SpeculativePipeliner {
         "vidsrcsu" to LatencyTier.TIER_1,
         "Vidsrcsu" to LatencyTier.TIER_1,
         "VidSrcSU" to LatencyTier.TIER_1,
-        "vidrock" to LatencyTier.TIER_1,
-        "Vidrock" to LatencyTier.TIER_1,
-        "VidRock" to LatencyTier.TIER_1,
+        "megaplay" to LatencyTier.TIER_1,
+        "Megaplay" to LatencyTier.TIER_1,
+        "MegaPlay" to LatencyTier.TIER_1,
         "meowtv" to LatencyTier.TIER_1,
         "Meowtv" to LatencyTier.TIER_1,
         "MeowTV" to LatencyTier.TIER_1,

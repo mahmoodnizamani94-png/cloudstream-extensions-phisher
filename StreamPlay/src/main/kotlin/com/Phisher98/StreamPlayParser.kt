@@ -156,51 +156,6 @@ data class Subtitle(
     val m: String,
     val g: String,
 )
-data class EpisoderesponseKAA(
-    val slug: String,
-    val title: String,
-    val duration_ms: Long,
-    val episode_number: Number,
-    val episode_string: String,
-    val thumbnail: ThumbnailKAA
-)
-
-data class ThumbnailKAA(
-    val formats: List<String>,
-    val sm: String,
-    val aspectRatio: Double,
-    val hq: String
-)
-
-
-data class ServersResKAA(
-    val servers: List<ServerKAA>,
-
-    )
-
-data class ServerKAA(
-    val name: String,
-    val shortName: String,
-    val src: String,
-)
-
-
-data class EncryptedKAA(
-    val data: String,
-)
-
-
-data class m3u8KAA(
-    val hls: String,
-    val subtitles: List<SubtitleKAA>,
-    val key: String,
-)
-
-data class SubtitleKAA(
-    val language: String,
-    val name: String,
-    val src: String,
-)
 
 data class AnichiStream(
     @param:JsonProperty("format") val format: String? = null,
@@ -584,55 +539,3 @@ data class ReAnimeStream(
 data class ReAnimeStreamResult(
     val stream: String,
 )
-
-// Anikage
-
-data class AnikageSearchResponse(
-    val results: List<AnikageSearchResult>? = null
-)
-
-data class AnikageSearchResult(
-    val id: Int? = null,
-    val anilistId: Int? = null,
-    val slug: String? = null
-)
-
-data class AnikageEpisodesResponse(
-    val episodes: List<AnikageEpisode>? = null
-)
-
-data class AnikageEpisode(
-    val number: Int? = null,
-    val episode: Int? = null
-)
-
-data class AnikageServersResponse(
-    val servers: List<AnikageServer>? = null
-)
-
-data class AnikageServer(
-    val id: String? = null,
-    val name: String? = null
-)
-
-data class AnikageSourcesResponse(
-    val sources: List<AnikageSource>? = null,
-    val subtitles: List<AnikageSubtitle>? = null,
-    val embeds: List<AnikageEmbed>? = null
-)
-
-data class AnikageSource(
-    val url: String? = null,
-    val quality: String? = null,
-    val isM3U8: Boolean? = null,
-    val type: String? = null
-)
-
-data class AnikageSubtitle(
-    val file: String? = null,
-    val label: String? = null
-)
-
-data class AnikageEmbed(
-    val url: String? = null
-)

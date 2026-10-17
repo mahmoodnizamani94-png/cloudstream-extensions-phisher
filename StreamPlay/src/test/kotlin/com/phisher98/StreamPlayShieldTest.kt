@@ -87,7 +87,7 @@ class StreamPlayShieldTest {
             assertFalse("registry entry '$entry' must not be a subdomain of a vetted source", vettedOwner)
         }
         // And every subdomain of a vetted source is released too.
-        for (sub in listOf("bcdn.hakunaymatata.com", "lit.cheaptruckrepairs.cc", "cdn.vidrock.net", "e1.vidlink.pro")) {
+        for (sub in listOf("bcdn.hakunaymatata.com", "lit.cheaptruckrepairs.cc", "sun.paleoak.top", "fetch.nexabloom.top", "e1.vidlink.pro")) {
             assertEquals("vetted subdomain '$sub' must be ALLOW", StreamPlayShield.CATEGORY_ALLOW, StreamPlayShield.classifyHost(sub))
         }
     }
@@ -141,7 +141,7 @@ class StreamPlayShieldTest {
     fun testUppercaseHostsNormalizeToLowerRegistry() {
         assertTrue(StreamPlayShield.isBlockedHost("PAGEAD2.GOOGLESYNDICATION.COM"))
         assertTrue(StreamPlayShield.isBlockedHost("Connect.Facebook.Net"))
-        assertFalse("vetted hosts release regardless of case", StreamPlayShield.isBlockedHost("CDN.VIDROCK.NET"))
+        assertFalse("vetted hosts release regardless of case", StreamPlayShield.isBlockedHost("SUN.PALEOAK.TOP"))
     }
 
     // =========================================================================
@@ -151,8 +151,8 @@ class StreamPlayShieldTest {
     @Test
     fun testHostOfExtractionMatrix() {
         assertEquals("vidlink.pro", StreamPlayShield.hostOf("https://vidlink.pro/bd/token"))
-        assertEquals("cdn.vidrock.net", StreamPlayShield.hostOf("https://CDN.vidrock.net"))
-        assertEquals("moonfirekeeper.lol", StreamPlayShield.hostOf("https://moonfirekeeper.lol:8443/file2/a.m3u8"))
+        assertEquals("sun.paleoak.top", StreamPlayShield.hostOf("https://SUN.paleoak.top"))
+        assertEquals("fetch.nexabloom.top", StreamPlayShield.hostOf("https://fetch.nexabloom.top:8443/hls/a.m3u8"))
         assertEquals("usercdn.example.com", StreamPlayShield.hostOf("https://user:pass@usercdn.example.com/api"))
         assertEquals("workers.dev.example", StreamPlayShield.hostOf("workers.dev.example/hls/now"))
         assertEquals("barehost.io", StreamPlayShield.hostOf("barehost.io"))
@@ -165,7 +165,7 @@ class StreamPlayShieldTest {
     @Test
     fun testIsBlockedUrl() {
         assertTrue(StreamPlayShield.isBlockedUrl("https://ads.pubmatic.com/openbid/v9/type/b/getuid?pid=36"))
-        assertFalse(StreamPlayShield.isBlockedUrl("https://vidrock.net/api/movie/550"))
+        assertFalse(StreamPlayShield.isBlockedUrl("https://api.wecollege.net/seed"))
         assertFalse(StreamPlayShield.isBlockedUrl(""))
     }
 
@@ -175,7 +175,7 @@ class StreamPlayShieldTest {
 
     @Test
     fun testStripKeepsCleanUrlsWithZeroAllocationFastPath() {
-        val url = "https://galacticvoyagers.xyz/file3/abc/master.m3u8"
+        val url = "https://sun.paleoak.top/file3/abc/master.m3u8"
         assertSame("clean URL must be returned by reference (zero-copy fast path)", url, StreamPlayShield.stripTrackingParticles(url))
         val withEmptyQuery = "$url?"
         assertSame(
@@ -314,20 +314,20 @@ class StreamPlayShieldTest {
         val sameDecision = StreamPlayShield.evaluateRequest(sameHost)
         assertNull((sameDecision as StreamPlayShield.ShieldDecision.Allowed).rewritten)
 
-        // Pinned extractor referers (vidrock CDN family): byte-for-byte untouched.
+        // Pinned extractor referers (Cineby/MegaPlay CDN family): byte-for-byte untouched.
         val pinned = Request.Builder()
-            .url("https://galacticvoyagers.xyz/file3/abc/master.m3u8")
-            .header("Referer", "https://vidrock.net/")
+            .url("https://sun.paleoak.top/file3/abc/master.m3u8")
+            .header("Referer", "https://player.videasy.to/")
             .build()
         val pinnedDecision = StreamPlayShield.evaluateRequest(pinned)
         val pinnedRewritten = (pinnedDecision as StreamPlayShield.ShieldDecision.Allowed).rewritten
         assertNull("vetted pinned referer must survive untouched", pinnedRewritten)
         assertEquals(0, StreamPlayShield.metrics().refererLeaned)
 
-        // Subdomain source referers also count as pinned (cdn.vidrock.net etc.).
+        // Subdomain source referers also count as pinned (fetch.nexabloom.top etc.).
         val pinnedSub = Request.Builder()
             .url("https://media.example.com/x")
-            .header("Referer", "https://cdn2.moonfirekeeper.lol/file2/abc/master.m3u8")
+            .header("Referer", "https://fetch.nexabloom.top/file2/abc/master.m3u8")
             .build()
         assertNull((StreamPlayShield.evaluateRequest(pinnedSub) as StreamPlayShield.ShieldDecision.Allowed).rewritten)
     }
@@ -395,9 +395,9 @@ class StreamPlayShieldTest {
     fun testDnsGateLetsVettedAndCleanHostsResolve() {
         val delegate = RecordingDelegate()
         val dns = OptimizedDns(delegate = delegate)
-        val resolved = dns.lookup("vidrock.net")
+        val resolved = dns.lookup("megaplay.buzz")
         assertEquals(listOf(InetAddress.getByName("10.9.8.7")), resolved)
-        assertEquals(listOf("vidrock.net"), delegate.requested)
+        assertEquals(listOf("megaplay.buzz"), delegate.requested)
         assertEquals(0, StreamPlayShield.metrics().dnsGateCalls)
     }
 
@@ -471,7 +471,7 @@ class StreamPlayShieldTest {
     @Test
     fun testVettedSourceUrlsSurviveHygieneByteForByte() {
         val urls = listOf(
-            "https://galacticvoyagers.xyz/file3/YTk2/master.m3u8",
+            "https://sun.paleoak.top/file3/YTk2/master.m3u8",
             "https://bcdn.hakunaymatata.com/bt/a/101.m3u8",
             "https://lit.cheaptruckrepairs.cc/h/master.m3u8"
         )
