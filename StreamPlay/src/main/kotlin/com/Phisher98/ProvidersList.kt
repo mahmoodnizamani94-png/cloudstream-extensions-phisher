@@ -164,9 +164,11 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
  * Indian/Hindi download-only scraper tier) stays removed. Note that `vidfast` was
  * decommissioned after the v19 pass and has been re-issued to the new v23 VidFast extractor:
  * it is deliberately NOT in REMOVED_PROVIDER_IDS so upgraded installs get it re-enabled.
- * VidFast also anchors the stream-only contract: it is declared in
- * DOWNLOAD_EXCLUDED_PROVIDER_IDS, so the host keeps it fully ranked for playback while
- * never routing it into downloads.
+ * VidFast and VidRock anchor the stream-only contract: both are declared in
+ * DOWNLOAD_EXCLUDED_PROVIDER_IDS, so the host keeps them fully ranked for playback while
+ * never routing them into downloads. VidRock is barred because its direct mp4 lanes serve
+ * index-less, non-seekable containers (raw stream payloads behind .mp4 URLs) — a downloaded
+ * copy cannot be scrubbed, so the provider stays a live streaming-only member.
  */
 private val providers by lazy {
     listOf(
@@ -235,14 +237,21 @@ val DEFAULT_TOP_TIER_PROVIDERS = setOf(
 
 /**
  * Stream-only providers: fully live members of the curated streaming hierarchy above whose
- * delivery chain serves oversized, download-hostile renditions, so they must NEVER be used
- * as a download source.
+ * delivery chain cannot produce a scrubbable library file, so they must NEVER be used as a
+ * download source.
+ *
+ * Rationale per member:
+ *  - `vidfast`: HLS-only delivery chain serves download-hostile renditions.
+ *  - `vidrock`: direct mp4 lanes serve index-less, non-seekable containers (raw stream
+ *    payloads behind .mp4 URLs); a downloaded copy cannot be scrubbed on any player.
  *
  * Contract with the CloudStream host: the host reads this set through its provider bridge
- * (`StreamPlayDynamicBridge`) and funnels every download stage — automatic selection, queue
- * refreshes, and the manual download-mirror picker — through it. Declaring an id here keeps
- * the provider at full stream rank (playback, fallbacks and mirror hunting are untouched)
- * while making it permanently ineligible for downloads, regardless of link ranking.
+ * (`StreamPlayDynamicBridge`; the bridge also carries a static fallback for the current
+ * members, so the ban holds even before the plugin snapshot loads) and funnels every
+ * download stage — automatic selection, queue refreshes, and the manual download-mirror
+ * picker — through it. Declaring an id here keeps the provider at full stream rank
+ * (playback, fallbacks and mirror hunting are untouched) while making it permanently
+ * ineligible for downloads, regardless of link ranking.
  *
  * Invariants enforced by the test suite:
  *  - every id must be a registered provider of the curated registry (excluding an
@@ -251,7 +260,7 @@ val DEFAULT_TOP_TIER_PROVIDERS = setOf(
  *    not decommissioned),
  *  - and the download exclusion must never demote the provider's stream rank.
  */
-val DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast")
+val DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast", "vidrock")
 
 /**
  * Identifiers of every provider that has ever shipped in StreamPlay but is now

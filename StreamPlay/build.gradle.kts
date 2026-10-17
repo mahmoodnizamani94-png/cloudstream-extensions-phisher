@@ -11,7 +11,7 @@ import org.jetbrains.kotlin.konan.properties.Properties
 //    without ever needing to rewrite history.
 //  - Never decrement or re-issue an already-published number: users' apps compare
 //    `>` against the installed version, so any regression silently stops updates.
-version = 703
+version = 704
 
 android {
     buildFeatures {

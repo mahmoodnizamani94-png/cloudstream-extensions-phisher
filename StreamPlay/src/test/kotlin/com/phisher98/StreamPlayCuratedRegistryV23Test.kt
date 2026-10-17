@@ -35,7 +35,8 @@ import java.util.concurrent.CountDownLatch
  *  6. known-answer vectors for the VidRock AES-256-GCM lane unwrap,
  *  7. the exception gates that keep the Movie/TV and Anime halves of the registry apart, and
  *  8. the stream-only download-exclusion contract (`DOWNLOAD_EXCLUDED_PROVIDER_IDS`) that
- *     keeps VidFast fully streamable but structurally ineligible as a download source.
+ *     keeps VidFast and VidRock fully streamable but structurally ineligible as download
+ *     sources.
  */
 class StreamPlayCuratedRegistryV23Test {
 
@@ -897,12 +898,17 @@ class StreamPlayCuratedRegistryV23Test {
     // =========================================================================
 
     @Test
-    fun testVidFastIsTheDeclaredStreamOnlyProvider() {
-        // VidFast is the pilot (and currently sole member) of the stream-only contract.
-        // The set must reference live curated providers only: excluding an id that is not
-        // registered, or one that already lives in the removed-tier bookkeeping, would make
-        // the host contract meaningless.
-        assertEquals("The stream-only declaration must be exactly VidFast", setOf("vidfast"), DOWNLOAD_EXCLUDED_PROVIDER_IDS)
+    fun testVidFastAndVidRockAreTheDeclaredStreamOnlyProviders() {
+        // VidFast pilots the stream-only contract; VidRock joined it because its direct mp4
+        // lanes serve index-less, non-seekable containers. The set must reference live
+        // curated providers only: excluding an id that is not registered, or one that
+        // already lives in the removed-tier bookkeeping, would make the host contract
+        // meaningless.
+        assertEquals(
+            "The stream-only declaration must be exactly VidFast and VidRock",
+            setOf("vidfast", "vidrock"),
+            DOWNLOAD_EXCLUDED_PROVIDER_IDS
+        )
 
         val providerIds = buildProviders().map { it.id }.toSet()
         DOWNLOAD_EXCLUDED_PROVIDER_IDS.forEach { id ->
@@ -954,6 +960,19 @@ class StreamPlayCuratedRegistryV23Test {
         assertTrue(
             "VidFast must still outrank VidSrcSU for playback",
             StreamLinkOptimizer.getStreamCompositeScore(vidfast) > StreamLinkOptimizer.getStreamCompositeScore(vidsrcsu)
+        )
+
+        // Concretely for VidRock: rank 92 for playback, recovered from both CDN hosts even
+        // when the provider label was lost, and still ahead of MeowTV.
+        assertEquals(92, rankOf("VidRock", "VidRock [720p]", "https://vidrock.net/play.mp4"))
+        assertEquals(92, rankOf("Unknown", "stream", "https://galacticvoyagers.xyz/hls/master.m3u8"))
+        assertEquals(92, rankOf("Unknown", "stream", "https://moonfirekeeper.lol/hls/master.m3u8"))
+
+        val vidrock = createLink("VidRock", "VidRock [720p]", "https://vidrock.net/play.mp4", Qualities.P720.value)
+        val meowtv = createLink("MeowTV", "MeowTV [720p]", "https://example.com/video.mp4", Qualities.P720.value)
+        assertTrue(
+            "VidRock must still outrank MeowTV for playback",
+            StreamLinkOptimizer.getStreamCompositeScore(vidrock) > StreamLinkOptimizer.getStreamCompositeScore(meowtv)
         )
     }
 }

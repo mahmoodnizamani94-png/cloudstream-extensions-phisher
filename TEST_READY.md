@@ -1,5 +1,14 @@
 # TEST_READY: Milestone 6 Acceptance & E2E Verification Report
 
+## VidRock Stream-Only Addendum (2026-10-17, commit v704)
+
+Follow-up to the v703 download-contract addendum: VidRock is now a declared stream-only provider — fully ranked for playback, structurally barred from every download surface — after a live delivery-chain probe showed it cannot produce a scrubbable library file:
+
+- **Evidence (live probe, 2026-10-17)**: `vidrock.net/api/movie/550` → Luna lane (HLS): master playlist with `#EXT-X-INDEPENDENT-SEGMENTS`, variant playlist `#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST` (1668 × ~5.00 s segments), and every segment a raw MPEG-TS payload (0x47 sync, ffmpeg PIDs 256/257) proxied by a Cloudflare Worker that ignores `Range`, labels media `text/html` and intermittently answers 502. HLS itself seeks fine in ExoPlayer (the playlist is the index) — which is exactly why VidRock stays a first-class stream source; a copy dumped into one file is index-less MPEG-TS — the "pause-only" class — so downloads are banned.
+- **Extension declaration**: `DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast", "vidrock")` with per-member rationale documented; tests pin the exact set, the registered/curated/boost/not-removed invariants for both members, and VidRock playback-rank recovery (92 from the label, 92 from `galacticvoyagers.xyz`/`moonfirekeeper.lol` when the label is lost, still ahead of MeowTV).
+- **Host bridge parity**: `StreamPlayDynamicBridge`'s static download-excluded floor now lists `vidrock` alongside its CDN-host markers, so the ban holds before/without the plugin snapshot; `isRejectedDownloadSource` gates every download surface (selection, sorting, stage lattice, walk order, manual mirror picker) by construction, and the host policy docs describe both stream-only members.
+- **Acceptance at this addendum**: `.\gradlew.bat :StreamPlay:testDebugUnitTest` — **509 tests, 0 failures, 0 errors, 0 skipped (35 suites)**; `:StreamPlay:assembleDebug` BUILD SUCCESSFUL.
+
 ## SOTA Download Contract + Shield T2b Addendum (2026-10-17, commit v703)
 
 Follow-up to the v696 Shield addendum: v703 closes the end-to-end download contract, upgrades the shield to a two-layer network guard, and strips every remaining legacy path in the StreamPlay module:
