@@ -110,8 +110,8 @@ class DualQualityAndSotaHierarchyTest {
 
     @Test
     fun testSourcePriorityRankStrictMonotonicity() {
-        // Priority order: VidLink (100) > Cineby (96) > CineSrc (95) > VidFast (94) > VidSrcSU (93) >
-        // MegaPlay (92) > MeowTV (91) > Animex (90) > every decommissioned label (0, incl. VidRock & VidSrc)
+        // Priority order: VidLink (100) > Cineby (95) > CineSrc (94) > VidFast (93) >
+        // MegaPlay (92) > MeowTV (91) > Animex (90) > every decommissioned label (0, incl. VidRock, VidSrc, VidSrcSU)
         val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidLink", "VidLink", "https://vidlink.pro/v.m3u8"))
         val rCineby = StreamLinkOptimizer.getSourcePriorityRank(createLink("Cineby", "Cineby", "https://sun.paleoak.top/v.m3u8"))
         val rCineSrc = StreamLinkOptimizer.getSourcePriorityRank(createLink("CineSrc", "CineSrc", "https://nebula.bright67.online/hls2/master.txt"))
@@ -138,14 +138,14 @@ class DualQualityAndSotaHierarchyTest {
         val rKwikCdn = StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://kwik.cx/e/v.m3u8"))
 
         assertEquals(100, rVidlink)
-        assertEquals(96, rCineby)
-        assertEquals(95, rCineSrc)
-        assertEquals(94, rVidFast)
-        assertEquals(93, rVidSrcSU)
+        assertEquals(95, rCineby)
+        assertEquals(94, rCineSrc)
+        assertEquals(93, rVidFast)
         assertEquals(92, rMegaPlay)
         assertEquals(91, rMeowTv)
         assertEquals(90, rAnimex)
-        // Every other source (including VidRock and VidSrc) was decommissioned -> rank 0
+        // Every other source (including VidRock, VidSrc, and VidSrcSU) was decommissioned -> rank 0
+        assertEquals(0, rVidSrcSU)
         assertEquals(0, rVidRock)
         assertEquals(0, rVidSrc)
         assertEquals(0, rVidnest)
@@ -166,10 +166,10 @@ class DualQualityAndSotaHierarchyTest {
         assertTrue(rVidlink > rCineby)
         assertTrue(rCineby > rCineSrc)
         assertTrue(rCineSrc > rVidFast)
-        assertTrue(rVidFast > rVidSrcSU)
-        assertTrue(rVidSrcSU > rMegaPlay)
+        assertTrue(rVidFast > rMegaPlay)
         assertTrue(rMegaPlay > rMeowTv)
         assertTrue(rMeowTv > rAnimex)
+        assertTrue(rAnimex > rVidSrcSU)
         assertTrue(rAnimex > rVidRock)
         assertTrue(rAnimex > rVidSrc)
         assertTrue(rAnimex > rVidnest)
@@ -636,7 +636,8 @@ class DualQualityAndSotaHierarchyTest {
     fun testTopTierSourcesDirectVideoQualityCoexistenceInDeduplicator() {
         val topSources = listOf(
             "VidLink" to 100,
-            "cinesrc" to 95,
+            "cineby" to 95,
+            "cinesrc" to 94,
             "animex" to 90
         )
 
@@ -891,7 +892,8 @@ class DualQualityAndSotaHierarchyTest {
     fun testEmitTopTierDualQualityStreamLinksAllTopSourcesDirectVideo() = runBlocking {
         val topSources = listOf(
             "VidLink" to 100,
-            "cinesrc" to 95,
+            "cineby" to 95,
+            "cinesrc" to 94,
             "animex" to 90
         )
 
@@ -1592,7 +1594,7 @@ class DualQualityAndSotaHierarchyTest {
     @Test
     fun testPriorityStreamDispatcherDisabledProviderDoesNotStallLowerRankSources() = runBlocking {
         val emittedLinks = mutableListOf<ExtractorLink>()
-        // VidLink (100) is DISABLED. Only CineSrc (95), VidNest (90), vidup (80), CineJoy (75), HexaSU (70) are active
+        // VidLink (100) and Cineby (95) are DISABLED. Only CineSrc (94), VidNest (90), vidup (80), CineJoy (75), HexaSU (70) are active
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emittedLinks.add(it) },
             scope = this,
@@ -1600,7 +1602,7 @@ class DualQualityAndSotaHierarchyTest {
             subtitleGraceMs = 50L,
             topSourceGraceMs = 50L,
             top720GraceMs = 500L,
-            activeTopRanks = setOf(95, 90, 80, 75, 70)
+            activeTopRanks = setOf(94, 90, 80, 75, 70)
         )
 
         val cinesrc720 = createLink("CineSrc", "CineSrc [720p]", "https://nebula.bright67.online/hls2/720.m3u8", Qualities.P720.value)
@@ -1609,8 +1611,8 @@ class DualQualityAndSotaHierarchyTest {
         // Subtitles present
         dispatcher.onSubtitleReceived()
 
-        // CineSrc 720p arrives at t=0. Because VidLink 100 is disabled, CineSrc 95 is the top active rank
-        // and must NOT be stalled waiting for rank 100!
+        // CineSrc 720p arrives at t=0. Because VidLink 100 and Cineby 95 are disabled, CineSrc 94 is the top active rank
+        // and must NOT be stalled waiting for rank 100 or 95!
         dispatcher.onLinkAccepted(cinesrc720)
         assertEquals("cinesrc 720p must emit immediately without waiting for disabled VidLink 100", 1, emittedLinks.size)
         assertEquals(cinesrc720, emittedLinks[0])
@@ -1792,35 +1794,32 @@ class DualQualityAndSotaHierarchyTest {
 
     @Test
     fun testSotaTopTierMonotonicityModernProviders() {
-        // Strict top-tier SOTA priority: VidLink 100 > Cineby 96 > CineSrc 95 > VidFast 94 >
-        // VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90; all else (including VidRock and VidSrc) 0.
+        // Strict top-tier SOTA priority: VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
+        // MegaPlay 92 > MeowTV 91 > Animex 90; all else (including VidRock, VidSrc, and VidSrcSU) 0.
         val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidLink", "VidLink", "https://vidlink.pro/v.m3u8"))
         val rCineby = StreamLinkOptimizer.getSourcePriorityRank(createLink("cineby", "cineby", "https://sun.paleoak.top/v.m3u8"))
         val rCineSrc = StreamLinkOptimizer.getSourcePriorityRank(createLink("cinesrc", "cinesrc", "https://nebula.bright67.online/hls2/v.m3u8"))
         val rVidFast = StreamLinkOptimizer.getSourcePriorityRank(createLink("vidfast", "vidfast", "https://vidfast.vc/v.m3u8"))
-        val rVidSrcSU = StreamLinkOptimizer.getSourcePriorityRank(createLink("vidsrcsu", "vidsrcsu", "https://vidsrc.su/v.m3u8"))
         val rMegaPlay = StreamLinkOptimizer.getSourcePriorityRank(createLink("megaplay", "megaplay", "https://fetch.nexabloom.top/v.m3u8"))
         val rMeowTv = StreamLinkOptimizer.getSourcePriorityRank(createLink("meowtv", "meowtv", "https://meowtv.ru/v.m3u8"))
         val rAnimex = StreamLinkOptimizer.getSourcePriorityRank(createLink("animex", "animex", "https://animex.one/v.m3u8"))
 
         assertEquals(100, rVidlink)
-        assertEquals(96, rCineby)
-        assertEquals(95, rCineSrc)
-        assertEquals(94, rVidFast)
-        assertEquals(93, rVidSrcSU)
+        assertEquals(95, rCineby)
+        assertEquals(94, rCineSrc)
+        assertEquals(93, rVidFast)
         assertEquals(92, rMegaPlay)
         assertEquals(91, rMeowTv)
         assertEquals(90, rAnimex)
         assertTrue("VidLink > cineby", rVidlink > rCineby)
         assertTrue("cineby > cinesrc", rCineby > rCineSrc)
         assertTrue("cinesrc > vidfast", rCineSrc > rVidFast)
-        assertTrue("vidfast > vidsrcsu", rVidFast > rVidSrcSU)
-        assertTrue("vidsrcsu > megaplay", rVidSrcSU > rMegaPlay)
+        assertTrue("vidfast > megaplay", rVidFast > rMegaPlay)
         assertTrue("megaplay > meowtv", rMegaPlay > rMeowTv)
         assertTrue("meowtv > animex", rMeowTv > rAnimex)
 
-        // Every decommissioned label (including vidrock and vidsrc) scores zero.
-        listOf("vidrock", "VidRock", "vidsrc", "VidSrc", "vidnest", "vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox", "rivestream", "animepahe", "VidEasy", "vidcore", "yflix", "videm")
+        // Every decommissioned label (including vidrock, vidsrc, and vidsrcsu) scores zero.
+        listOf("vidrock", "VidRock", "vidsrc", "VidSrc", "vidsrcsu", "VidSrcSU", "vidnest", "vidup", "CineJoy", "HexaSU", "AutoEmbed", "MovieBox", "rivestream", "animepahe", "VidEasy", "vidcore", "yflix", "videm")
             .forEach { label ->
                 assertEquals("$label must be rank 0 after decommissioning", 0,
                     StreamLinkOptimizer.getSourcePriorityRank(createLink(label, label, "https://x.example/v.m3u8")))
@@ -1828,25 +1827,26 @@ class DualQualityAndSotaHierarchyTest {
 
         // Verify FAST_PROVIDER_BOOST (only the curated set has boosts).
         assertEquals(100f, FAST_PROVIDER_BOOST["vidlink"])
-        assertEquals(96f, FAST_PROVIDER_BOOST["cineby"])
-        assertEquals(95f, FAST_PROVIDER_BOOST["cinesrc"])
-        assertEquals(94f, FAST_PROVIDER_BOOST["vidfast"])
-        assertEquals(93f, FAST_PROVIDER_BOOST["vidsrcsu"])
+        assertEquals(95f, FAST_PROVIDER_BOOST["cineby"])
+        assertEquals(94f, FAST_PROVIDER_BOOST["cinesrc"])
+        assertEquals(93f, FAST_PROVIDER_BOOST["vidfast"])
         assertEquals(92f, FAST_PROVIDER_BOOST["megaplay"])
         assertEquals(91f, FAST_PROVIDER_BOOST["meowtv"])
         assertEquals(90f, FAST_PROVIDER_BOOST["animex"])
         assertNull("vidrock must not have a boost", FAST_PROVIDER_BOOST["vidrock"])
         assertNull("vidsrc must not have a boost", FAST_PROVIDER_BOOST["vidsrc"])
+        assertNull("vidsrcsu must not have a boost", FAST_PROVIDER_BOOST["vidsrcsu"])
         assertNull("vidnest must not have a boost", FAST_PROVIDER_BOOST["vidnest"])
         assertNull("moviebox must not have a boost", FAST_PROVIDER_BOOST["moviebox"])
         assertNull("animepahe must not have a boost", FAST_PROVIDER_BOOST["animepahe"])
 
         // Curated sources are tier-1; decommissioned ones are absent from the tier table.
-        listOf("vidlink", "cineby", "cinesrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex").forEach { id ->
+        listOf("vidlink", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv", "animex").forEach { id ->
             assertEquals(LatencyTier.TIER_1, SpeculativePipeliner.classifyProvider(id))
         }
         assertNull("vidrock must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["vidrock"])
         assertNull("vidsrc must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrc"])
+        assertNull("vidsrcsu must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["vidsrcsu"])
         assertNull("vidcore must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["vidcore"])
         assertNull("animepahe must not exist in static cold start tiers", SpeculativePipeliner.STATIC_COLD_START_TIERS["animepahe"])
     }
@@ -1892,13 +1892,14 @@ class DualQualityAndSotaHierarchyTest {
 
         val active = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 8 curated sources", 8, active.size)
+        assertEquals("Clean install must activate exactly 7 curated sources", 7, active.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue("vidlink must be active", active.contains("vidlink"))
         assertTrue("cineby must be active", active.contains("cineby"))
         assertTrue("cinesrc must be active", active.contains("cinesrc"))
         assertTrue("vidfast must be active (re-issued id)", active.contains("vidfast"))
         assertTrue("megaplay must be active", active.contains("megaplay"))
+        assertTrue("meowtv must be active", active.contains("meowtv"))
         assertTrue("animex must be active", active.contains("animex"))
 
         // No decommissioned provider may be injected into the clean-install disabled set.
@@ -1934,17 +1935,17 @@ class DualQualityAndSotaHierarchyTest {
     }
 
     @Test
-    fun testUnindexedTitlesGracefulZeroLinksForVidSrcSUAndCineby() = runBlocking {
-        val vidsrcsuLinks = mutableListOf<ExtractorLink>()
-        StreamPlayExtractor.invokeVidSrcSU(
+    fun testUnindexedTitlesGracefulZeroLinksForCineSrcAndCineby() = runBlocking {
+        val cinesrcLinks = mutableListOf<ExtractorLink>()
+        StreamPlayExtractor.invokeCineSrc(
             // 99999999 lies beyond TMDB's id space (404) — a genuinely unindexed title.
             tmdbId = 99999999,
             season = null,
             episode = null,
             subtitleCallback = {},
-            callback = { vidsrcsuLinks.add(it) }
+            callback = { cinesrcLinks.add(it) }
         )
-        assertEquals("Unindexed VidSrcSU must complete cleanly with 0 links", 0, vidsrcsuLinks.size)
+        assertEquals("Unindexed CineSrc must complete cleanly with 0 links", 0, cinesrcLinks.size)
 
         val cinebyLinks = mutableListOf<ExtractorLink>()
         StreamPlayExtractor.invokeCineby(

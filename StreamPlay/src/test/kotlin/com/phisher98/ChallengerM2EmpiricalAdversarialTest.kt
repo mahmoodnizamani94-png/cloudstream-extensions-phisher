@@ -93,7 +93,7 @@ class ChallengerM2EmpiricalAdversarialTest {
                         2 -> StreamPlayExtractor.invokeCineSrc(
                             tmdbId = 550, season = null, episode = null, subtitleCallback = null, callback = {}
                         )
-                        else -> StreamPlayExtractor.invokeVidSrcSU(
+                        else -> StreamPlayExtractor.invokeMeowTV(
                             tmdbId = 550, season = null, episode = null, callback = {}
                         )
                     }

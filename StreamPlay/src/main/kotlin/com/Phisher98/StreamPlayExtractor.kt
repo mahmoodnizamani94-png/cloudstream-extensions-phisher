@@ -2292,9 +2292,9 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    // ==================== v24 SOTA Extractor Suite (VidFast / VidSrcSU / MeowTV) ====================
+    // ==================== v24 SOTA Extractor Suite (VidFast / MeowTV) ====================
     //
-    // Three protocols reverse-engineered and verified end-to-end over plain HTTP in the v23/v24
+    // Protocols reverse-engineered and verified end-to-end over plain HTTP in the v23/v24
     // research passes. Each one hides its media URL behind a small closed-source
     // client crypto chain; the per-request decryptor calls are delegated to enc-dec.app, the
     // continuously maintained decrypt toolkit already trusted by this extension for other
@@ -2305,13 +2305,6 @@ object StreamPlayExtractor : StreamPlay() {
 
     /** VidFast player origin. Protocol: page token -> enc-vidfast stage 1/2 -> per-server stream. */
     private const val VIDFAST_HOST = "https://vidfast.vc"
-
-    /** VidSrcSU (hexa protocol) TMDB metadata origin + its web front used for Referer pinning. */
-    private const val VIDSRCSU_API = "https://themoviedb.vidsrc.su"
-    private const val VIDSRCSU_ORIGIN = "https://vidsrc.su"
-
-    /** Public per-player fingerprint constant published by the vidsrc.su web bundle. */
-    private const val VIDSRCSU_FINGERPRINT = "e9136c41504646444"
 
     /** MeowTV web front (Origin/Referer) + ticket/stream API. */
     private const val MEOWTV_HOST = "https://meowtv.ru"
@@ -2637,124 +2630,6 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit
     ) {
         invokeVidFast(tmdbId, season, episode, subtitleCallback = null, callback = callback)
-    }
-
-    // -------------------- VidSrcSU (hexa protocol) --------------------
-
-    private const val VIDSRCSU_FALLBACK_API = "https://theemoviedb.hexa.su"
-
-    suspend fun invokeVidSrcSU(
-        tmdbId: Int? = null,
-        season: Int? = null,
-        episode: Int? = null,
-        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
-        callback: (ExtractorLink) -> Unit,
-        imdbId: String? = null
-    ) {
-        try {
-            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
-            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
-                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
-            }
-            val id = effectiveTmdbId ?: return
-            val isMovie = season == null || (season == 0 && episode == null)
-            if (!isMovie && episode == null) return
-
-            withTimeoutOrNull(24_000L) {
-                val key = generateHexKey32()
-
-                val baseHeaders = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to "$VIDSRCSU_ORIGIN/",
-                    "Accept" to "text/plain",
-                    "X-Fingerprint-Lite" to VIDSRCSU_FINGERPRINT,
-                    "X-Api-Key" to key
-                )
-
-                val tokenRaw = encDecGet("$ENC_DEC_API/enc-hexa", headers = baseHeaders, timeoutSec = 4L)
-                    ?: return@withTimeoutOrNull
-                val token = tryParseJson<VidSrcSUEn>(tokenRaw)?.result?.token?.takeIf { it.isNotBlank() }
-                    ?: return@withTimeoutOrNull
-
-                val imagesPath = if (isMovie) {
-                    "/api/tmdb/movie/$id/images"
-                } else {
-                    "/api/tmdb/tv/$id/season/$season/episode/$episode/images"
-                }
-
-                val capHeaders = baseHeaders + mapOf("X-Cap-Token" to token)
-                val imagesRaw = cancellableGetText(
-                    "$VIDSRCSU_API$imagesPath",
-                    headers = capHeaders,
-                    timeoutSec = 5L
-                )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") }
-                    ?: cancellableGetText(
-                        "$VIDSRCSU_FALLBACK_API$imagesPath",
-                        headers = capHeaders + mapOf("Referer" to "https://hexa.su/"),
-                        timeoutSec = 5L
-                    )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") }
-                    ?: return@withTimeoutOrNull
-
-                val decryptRaw = encDecPost(
-                    "dec-hexa",
-                    JSONObject().put("text", imagesRaw).put("key", key).toString(),
-                    timeoutSec = 5L
-                ) ?: return@withTimeoutOrNull
-                val decryptRes = tryParseJson<VidSrcSUResponse>(decryptRaw) ?: return@withTimeoutOrNull
-                if (decryptRes.status != 200) return@withTimeoutOrNull
-
-                decryptRes.result?.tracks?.forEach { track ->
-                    if (track.kind?.equals("thumbnails", ignoreCase = true) == true) return@forEach
-                    val rawFile = track.file?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
-                    val file = when {
-                        rawFile.startsWith("http://", ignoreCase = true) || rawFile.startsWith("https://", ignoreCase = true) -> rawFile
-                        rawFile.startsWith("//") -> "https:$rawFile"
-                        else -> return@forEach
-                    }
-                    subtitleCallback?.invoke(newSubtitleFile(cleanSubtitleLabel(track.label ?: "English"), file))
-                }
-
-                val sources = decryptRes.result?.sources.orEmpty()
-                val cdnHeaders = mapOf("Referer" to "$VIDSRCSU_ORIGIN/", "Origin" to VIDSRCSU_ORIGIN)
-
-                coroutineScope {
-                    sources.map { src ->
-                        async {
-                            try {
-                                currentCoroutineContext().ensureActive()
-                                val server = src.server ?: return@async
-                                val link = src.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return@async
-                                val displayName = server.replaceFirstChar {
-                                    if (it.isLowerCase()) it.titlecase() else it.toString()
-                                }
-                                emitVerifiedStream(
-                                    source = "VidSrcSU",
-                                    baseName = "VidSrcSU $displayName",
-                                    url = link,
-                                    referer = "$VIDSRCSU_ORIGIN/",
-                                    headers = cdnHeaders,
-                                    callback = callback
-                                )
-                            } catch (e: Exception) {
-                                if (e is CancellationException) throw e
-                            }
-                        }
-                    }.awaitAll()
-                }
-            }
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            Log.w("StreamPlay", "invokeVidSrcSU failed: ${e.message}")
-        }
-    }
-
-    suspend fun invokeVidSrcSU(
-        tmdbId: Int?,
-        season: Int?,
-        episode: Int?,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        invokeVidSrcSU(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
     // -------------------- MeowTV --------------------

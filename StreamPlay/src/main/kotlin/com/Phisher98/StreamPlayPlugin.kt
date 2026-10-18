@@ -66,7 +66,7 @@ class StreamPlayPlugin: Plugin() {
         }
 
         // Bootstrap the curated v24 registry defaults (VidLink, Cineby, CineSrc, VidFast,
-        // VidSrcSU, MegaPlay, MeowTV, Animex) and scrub every decommissioned provider id from
+        // MegaPlay, MeowTV, Animex) and scrub every decommissioned provider id from
         // an upgrading install's preferences.
         getOrInitializeDisabledProviders(sharedPref)
 
@@ -157,8 +157,8 @@ class StreamPlayPlugin: Plugin() {
         registerExtractorAPI(Driveseed())
         registerExtractorAPI(Driveleech())
         registerExtractorAPI(VidHidePro6())
-        registerExtractorAPI(MixDropSi())
         registerExtractorAPI(MixDropPs())
+        registerExtractorAPI(MixDropSi())
         registerExtractorAPI(Streamlare())
         registerExtractorAPI(StreamSB8())
         registerExtractorAPI(StreamSB())
@@ -185,7 +185,6 @@ class StreamPlayPlugin: Plugin() {
         registerExtractorAPI(FilemoonV2())
         registerExtractorAPI(StreamwishHG())
         registerExtractorAPI(PixelServer())
-        registerExtractorAPI(Vidora())
         registerExtractorAPI(XdMoviesExtractor())
         registerExtractorAPI(Hubdrive())
         registerExtractorAPI(HdStream4u())

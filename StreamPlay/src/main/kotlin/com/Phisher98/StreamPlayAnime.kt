@@ -355,11 +355,16 @@ class StreamPlayAnime : MainAPI() {
         val aniid = mediaData.aniId
         val year = mediaData.year
 
+        val animeTopRanks = setOf(100, 95, 94, 92, 90)
+        val runningTopRanks = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>().apply {
+            addAll(animeTopRanks)
+        }
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
             top720GraceMs = 350L,
-            activeTopRanks = setOf(100, 96, 95, 92, 90)
+            activeTopRanks = animeTopRanks,
+            isRankInFlight = { rank -> runningTopRanks.contains(rank) }
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
@@ -427,52 +432,77 @@ class StreamPlayAnime : MainAPI() {
 
         val tasks = buildList {
             add(PipelinedTask("vidlink", LatencyTier.TIER_1, priorityBoost = 100f) {
-                if (mediaData.tmdbId != null) {
-                    invokeVidlink(
-                        mediaData.tmdbId,
-                        if (mediaData.season == null) null else 1,
-                        episode,
-                        trackedSubtitleCallback,
-                        trackedCallback,
-                        mediaData.imdbId
-                    )
+                try {
+                    if (mediaData.tmdbId != null) {
+                        invokeVidlink(
+                            mediaData.tmdbId,
+                            if (mediaData.season == null) null else 1,
+                            episode,
+                            trackedSubtitleCallback,
+                            trackedCallback,
+                            mediaData.imdbId
+                        )
+                    }
+                } finally {
+                    runningTopRanks.remove(100)
+                    dispatcher.markRankCompleted(100)
                 }
             })
-            add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 96f) {
-                if (mediaData.tmdbId != null) {
-                    invokeCineby(
-                        tmdbId = mediaData.tmdbId,
-                        season = if (mediaData.season == null) null else 1,
-                        episode = episode,
-                        subtitleCallback = trackedSubtitleCallback,
-                        callback = trackedCallback,
-                        imdbId = mediaData.imdbId,
-                        title = anititle ?: jpTitle,
-                        year = year,
-                        isAnime = true
-                    )
+            add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 95f) {
+                try {
+                    if (mediaData.tmdbId != null) {
+                        invokeCineby(
+                            tmdbId = mediaData.tmdbId,
+                            season = if (mediaData.season == null) null else 1,
+                            episode = episode,
+                            subtitleCallback = trackedSubtitleCallback,
+                            callback = trackedCallback,
+                            imdbId = mediaData.imdbId,
+                            title = anititle ?: jpTitle,
+                            year = year,
+                            isAnime = true
+                        )
+                    }
+                } finally {
+                    runningTopRanks.remove(95)
+                    dispatcher.markRankCompleted(95)
                 }
             })
-            add(PipelinedTask("cinesrc", LatencyTier.TIER_1, priorityBoost = 95f) {
-                if (mediaData.tmdbId != null) {
-                    invokeCineSrc(
-                        tmdbId = mediaData.tmdbId,
-                        season = if (mediaData.season == null) null else 1,
-                        episode = episode,
-                        subtitleCallback = trackedSubtitleCallback,
-                        callback = trackedCallback,
-                        imdbId = mediaData.imdbId,
-                        title = anititle ?: jpTitle,
-                        year = year,
-                        isAnime = true
-                    )
+            add(PipelinedTask("cinesrc", LatencyTier.TIER_1, priorityBoost = 94f) {
+                try {
+                    if (mediaData.tmdbId != null) {
+                        invokeCineSrc(
+                            tmdbId = mediaData.tmdbId,
+                            season = if (mediaData.season == null) null else 1,
+                            episode = episode,
+                            subtitleCallback = trackedSubtitleCallback,
+                            callback = trackedCallback,
+                            imdbId = mediaData.imdbId,
+                            title = anititle ?: jpTitle,
+                            year = year,
+                            isAnime = true
+                        )
+                    }
+                } finally {
+                    runningTopRanks.remove(94)
+                    dispatcher.markRankCompleted(94)
                 }
             })
             add(PipelinedTask("megaplay", LatencyTier.TIER_1, priorityBoost = 92f) {
-                invokeMegaPlay(malId, aniid, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+                try {
+                    invokeMegaPlay(malId, aniid, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+                } finally {
+                    runningTopRanks.remove(92)
+                    dispatcher.markRankCompleted(92)
+                }
             })
             add(PipelinedTask("animex", LatencyTier.TIER_1, priorityBoost = 90f) {
-                invokeAnimex(malId, aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+                try {
+                    invokeAnimex(malId, aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+                } finally {
+                    runningTopRanks.remove(90)
+                    dispatcher.markRankCompleted(90)
+                }
             })
         }
 

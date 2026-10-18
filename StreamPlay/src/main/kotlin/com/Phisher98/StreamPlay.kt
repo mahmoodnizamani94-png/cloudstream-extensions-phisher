@@ -58,7 +58,7 @@ const val TOP_TIER_BOOST_THRESHOLD = 85f
 
 /**
  * The curated v24 registry has no subtitle-only entries: every surviving source ships its
- * own captions (VidLink's native caption tracks, Cineby/CineSrc/VidFast/VidSrcSU/MeowTV decrypted
+ * own captions (VidLink's native caption tracks, Cineby/CineSrc/VidFast/MeowTV decrypted
  * track lists, MegaPlay and Animex soft-subs), which keeps subtitle timing exactly in sync with the
  * stream that was chosen. VidLink, Cineby, and CineSrc are deliberately absent from both gates:
  * they are universal primaries and are always applicable across Movies, TV Series, and Anime.
@@ -70,7 +70,6 @@ internal val ANIME_ONLY_PROVIDERS = setOf(
 
 internal val NON_ANIME_PROVIDERS = setOf(
     "vidfast",
-    "vidsrcsu",
     "meowtv"
 )
 

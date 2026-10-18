@@ -12,13 +12,13 @@ import java.util.concurrent.TimeUnit
 
 class StreamPlayProviderDefaultsTest {
 
-    private val v24TopTier = setOf("vidlink", "cineby", "cinesrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
+    private val v24TopTier = setOf("vidlink", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv", "animex")
 
     @Test
     fun testRemovedSourcesAreAbsentFromProviderList() {
         val providers = buildProviders()
 
-        listOf("vidrock", "vidsrc", "vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
+        listOf("vidrock", "vidsrc", "vidsrcsu", "vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
             .forEach { id ->
                 val found = providers.find { it.id.equals(id, ignoreCase = true) }
                 assertNull("$id must be completely removed from providers list", found)
@@ -29,8 +29,8 @@ class StreamPlayProviderDefaultsTest {
     @Test
     fun testDefaultTopTierProvidersContainsExactlyTheSevenCuratedSources() {
         assertEquals(
-            "Top tier default providers must contain exactly 8 sources",
-            8,
+            "Top tier default providers must contain exactly 7 sources",
+            7,
             DEFAULT_TOP_TIER_PROVIDERS.size
         )
         assertEquals("Top tier default providers must match expected IDs", v24TopTier, DEFAULT_TOP_TIER_PROVIDERS)
@@ -59,7 +59,7 @@ class StreamPlayProviderDefaultsTest {
         assertEquals("No source should be disabled by default", expectedDisabledCount, disabledIds.size)
 
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("All curated sources should be active by default", 8, activeProviders.size)
+        assertEquals("All curated sources should be active by default", 7, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,
@@ -84,7 +84,7 @@ class StreamPlayProviderDefaultsTest {
         val initialDisabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 8 curated sources", 8, activeProviders.size)
+        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
         assertEquals(v24TopTier, activeProviders)
         v24TopTier.forEach { id ->
             assertFalse("$id must NOT be in disabled set", initialDisabled.contains(id))

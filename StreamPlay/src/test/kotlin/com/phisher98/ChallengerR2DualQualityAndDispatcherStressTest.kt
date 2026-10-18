@@ -163,15 +163,14 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
-        // The v24 registry has eight ranked sources; every other label scores rank 0, so
+        // The v24 registry has seven ranked sources; every other label scores rank 0, so
         // monotonicity is asserted across the full distinct-rank chain:
-        // VidLink 100 > Cineby 96 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90.
+        // VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 > Animex 90.
         val providersInOrder = listOf(
             "VidLink" to 100,
-            "Cineby" to 96,
-            "CineSrc" to 95,
-            "VidFast" to 94,
-            "VidSrcSU" to 93,
+            "Cineby" to 95,
+            "CineSrc" to 94,
+            "VidFast" to 93,
             "MegaPlay" to 92,
             "MeowTV" to 91,
             "Animex" to 90
@@ -296,7 +295,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     @Test
     fun testHigherRanking720pArrivesDuring1080pGraceWindowPreempts1080p() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
-        // VidSrc (95) and VidFast (94) are still in flight when the 1080p candidate lands.
+        // Cineby (95) and CineSrc (94) are still in flight when the 1080p candidate lands.
         val inFlightRanks = mutableSetOf(95, 94)
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
@@ -306,7 +305,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 150L,
             top720GraceMs = 1000L,
-            activeTopRanks = setOf(100, 96, 95, 94, 93, 92, 91, 90),
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 

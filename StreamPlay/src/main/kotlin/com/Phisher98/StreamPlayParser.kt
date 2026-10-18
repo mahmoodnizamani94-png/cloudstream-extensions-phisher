@@ -401,40 +401,6 @@ data class DooflixLink(
     val updatedAt: String,
 )
 
-//VidSrcSU (hexa protocol)
-
-data class VidSrcSUEn(
-    val status: Long? = null,
-    val result: VidSrcSUEnResult? = null,
-)
-
-data class VidSrcSUEnResult(
-    val token: String? = null,
-    val expires: String? = null,
-)
-
-data class VidSrcSUResponse(
-    val status: Int? = null,
-    val result: VidSrcSUResult? = null
-)
-
-data class VidSrcSUResult(
-    val sources: List<VidSrcSUSource>? = null,
-    val tracks: List<VidSrcSUTrack>? = null,
-    val skipTime: Any? = null
-)
-
-data class VidSrcSUTrack(
-    val file: String? = null,
-    val label: String? = null,
-    val kind: String? = null
-)
-
-data class VidSrcSUSource(
-    val server: String? = null,
-    val url: String? = null
-)
-
 //VidFast
 
 data class VidFastStage1Response(

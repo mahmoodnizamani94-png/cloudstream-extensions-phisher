@@ -12,7 +12,6 @@ import com.phisher98.StreamPlayExtractor.invokeMegaPlay
 import com.phisher98.StreamPlayExtractor.invokeMeowTV
 import com.phisher98.StreamPlayExtractor.invokeVidFast
 import com.phisher98.StreamPlayExtractor.invokeVidlink
-import com.phisher98.StreamPlayExtractor.invokeVidSrcSU
 import com.phisher98.StreamPlayExtractor.resolveAnimeIds
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -100,22 +99,21 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
 /**
  * ===================== StreamPlay SOTA Provider Registry (v24) =====================
  *
- * Eight sources, every one of them verified end-to-end against live playback with plain
+ * Seven sources, every one of them verified end-to-end against live playback with plain
  * HTTP (no browser, no JS execution, no Cloudflare interstitial).
  *
  *   1. VidLink   - vidlink.pro       | Universal (Movie/TV/Anime) | Rank 100 (#1, mandatory)
- *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 96  (#2, multi-server + dec-videasy)
- *   3. CineSrc   - cinesrc.st        | Universal (Movie/TV/Anime) | Rank 95  (#3, CSP4 PoW + Nebula/Wave/Surge + subs)
- *   4. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 94  (#4, enc-vidfast handshake)
- *   5. VidSrcSU  - vidsrc.su         | Movie/TV                   | Rank 93  (#5, hexa protocol)
- *   6. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#6, MAL/AniList + dec-megaplay)
- *   7. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#7, single-use ticket + dec-meowtv)
- *   8. Animex    - animex.one        | Anime                      | Rank 90  (#8, GraphQL + concurrent multi-provider fan-out)
+ *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 95  (#2, multi-server + dec-videasy)
+ *   3. CineSrc   - cinesrc.st        | Universal (Movie/TV/Anime) | Rank 94  (#3, CSP4 PoW + Nebula/Wave/Surge + subs)
+ *   4. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 93  (#4, enc-vidfast handshake)
+ *   5. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#5, MAL/AniList + dec-megaplay)
+ *   6. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#6, single-use ticket + dec-meowtv)
+ *   7. Animex    - animex.one        | Anime                      | Rank 90  (#7, GraphQL + concurrent multi-provider fan-out)
  *
- * VidRock (`vidrock`, `vidrock.net`, `galacticvoyagers.xyz`, `moonfirekeeper.lol`) and
- * VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs.cc`, `netoda.tech`, `mov2day.xyz`) are
- * permanently removed and banned because VidRock serves index-less non-seekable files and
- * VidSrc stalls/throttles downloads after ~1 MB.
+ * VidRock (`vidrock`, `vidrock.net`, `galacticvoyagers.xyz`, `moonfirekeeper.lol`),
+ * VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs.cc`, `netoda.tech`, `mov2day.xyz`), and
+ * VidSrcSU (`vidsrcsu`, `vidsrc.su`, `themoviedb.vidsrc.su`, `theemoviedb.hexa.su`, `dragonballzfans.xyz`)
+ * are permanently removed and banned.
  */
 private val providers by lazy {
     listOf(
@@ -151,11 +149,6 @@ private val providers by lazy {
         Provider("vidfast", "VidFast") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) {
                 invokeVidFast(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
-            }
-        },
-        Provider("vidsrcsu", "VidSrcSU") { res, subtitleCallback, callback, _, _ ->
-            if (!res.isAnime) {
-                invokeVidSrcSU(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
         Provider("megaplay", "MegaPlay") { res, subtitleCallback, callback, _, _ ->
@@ -195,16 +188,15 @@ private val providers by lazy {
 
 /**
  * The curated v24 SOTA set. Order defines the authoritative source hierarchy:
- * VidLink (100), Cineby (96), and CineSrc (95) are universal primaries (Movie, TV, Anime);
- * VidFast (94) > VidSrcSU (93) > MeowTV (91) serve Movie/TV;
- * MegaPlay (92) > Animex (90) serve Anime alongside VidLink (100), Cineby (96), and CineSrc (95).
+ * VidLink (100), Cineby (95), and CineSrc (94) are universal primaries (Movie, TV, Anime);
+ * VidFast (93) > MeowTV (91) serve Movie/TV;
+ * MegaPlay (92) > Animex (90) serve Anime alongside VidLink (100), Cineby (95), and CineSrc (94).
  */
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
     "cineby",
     "cinesrc",
     "vidfast",
-    "vidsrcsu",
     "megaplay",
     "meowtv",
     "animex"
@@ -218,21 +210,21 @@ val DEFAULT_TOP_TIER_PROVIDERS = setOf(
  * Rationale per member:
  *  - `vidfast`: HLS-only delivery chain serves download-hostile renditions.
  *
- * Note: `vidrock` and `vidsrc` (`vidsrc.pm`) were completely stripped and moved to
- * [REMOVED_PROVIDER_IDS] because VidRock served non-seekable index-less files and VidSrc
- * throttled/stalled downloads after ~1 MB.
+ * Note: `vidrock`, `vidsrc` (`vidsrc.pm`), and `vidsrcsu` (`vidsrc.su`) were completely stripped
+ * and moved to [REMOVED_PROVIDER_IDS].
  */
 val DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast")
 
 /**
  * Identifiers of every provider that has ever shipped in StreamPlay but is now
  * decommissioned. Retained so that upgrades of existing installs can scrub stale
- * user preferences entries. `vidrock` and `vidsrc` (`vidsrc.pm`) are permanently
+ * user preferences entries. `vidrock`, `vidsrc`, and `vidsrcsu` are permanently
  * decommissioned here.
  */
 val REMOVED_PROVIDER_IDS = setOf(
     "vidrock", "Vidrock", "VidRock",
     "vidsrc", "Vidsrc", "VidSrc", "vidsrc.pm",
+    "vidsrcsu", "Vidsrcsu", "VidSrcSU", "vidsrc.su", "themoviedb.vidsrc.su", "theemoviedb.hexa.su", "dragonballzfans",
     "rivestream", "RiveStream", "videasy", "VidEasy",
     "vixsrc", "VixSrc",
     "videm", "VidEm", "animegg", "AnimeGG",

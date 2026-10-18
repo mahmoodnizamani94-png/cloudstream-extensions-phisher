@@ -53,7 +53,6 @@ class StreamPlayCuratedRegistryV24Test {
         "cineby",
         "cinesrc",
         "vidfast",
-        "vidsrcsu",
         "megaplay",
         "meowtv",
         "animex"
@@ -62,10 +61,9 @@ class StreamPlayCuratedRegistryV24Test {
     /** Authoritative launch hierarchy: strictly descending boost per provider id. */
     private val boostByProvider = linkedMapOf(
         "vidlink" to 100f,
-        "cineby" to 96f,
-        "cinesrc" to 95f,
-        "vidfast" to 94f,
-        "vidsrcsu" to 93f,
+        "cineby" to 95f,
+        "cinesrc" to 94f,
+        "vidfast" to 93f,
         "megaplay" to 92f,
         "meowtv" to 91f,
         "animex" to 90f
@@ -122,7 +120,6 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals("Cineby", byId.getValue("cineby").name)
         assertEquals("CineSrc", byId.getValue("cinesrc").name)
         assertEquals("VidFast", byId.getValue("vidfast").name)
-        assertEquals("VidSrcSU", byId.getValue("vidsrcsu").name)
         assertEquals("MegaPlay", byId.getValue("megaplay").name)
         assertEquals("MeowTV", byId.getValue("meowtv").name)
         assertEquals("Animex", byId.getValue("animex").name)
@@ -145,10 +142,11 @@ class StreamPlayCuratedRegistryV24Test {
             assertFalse("$removed must not be a default top tier source", DEFAULT_TOP_TIER_PROVIDERS.contains(removed))
         }
 
-        // VidRock and VidSrc are explicitly decommissioned.
+        // VidRock, VidSrc, and VidSrcSU are explicitly decommissioned.
         listOf(
             "vidrock", "Vidrock", "VidRock",
             "vidsrc", "Vidsrc", "VidSrc", "vidsrc.pm",
+            "vidsrcsu", "Vidsrcsu", "VidSrcSU", "vidsrc.su", "themoviedb.vidsrc.su", "theemoviedb.hexa.su", "dragonballzfans",
             "rivestream", "videasy", "superstream", "vaplayer", "vidcore", "vidnest",
             "vidup", "hexasu", "autoembed", "videm", "animegg", "animepahe", "AnimePahe"
         ).forEach {
@@ -186,32 +184,31 @@ class StreamPlayCuratedRegistryV24Test {
     @Test
     fun testSourcePriorityRankCoversLabelsAndCdnHosts() {
         assertEquals(100, rankOf("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4"))
-        assertEquals(96, rankOf("Cineby", "Cineby Tampa [1080p]", "https://sun.paleoak.top/x.m3u8"))
-        assertEquals(95, rankOf("CineSrc", "CineSrc Nebula [720p]", "https://nebula.bright67.online/hls2/master.txt"))
-        assertEquals(94, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
-        assertEquals(93, rankOf("VidSrcSU", "VidSrcSU [1080p]", "https://cdn.example/su.m3u8"))
+        assertEquals(95, rankOf("Cineby", "Cineby Tampa [1080p]", "https://sun.paleoak.top/x.m3u8"))
+        assertEquals(94, rankOf("CineSrc", "CineSrc Nebula [720p]", "https://nebula.bright67.online/hls2/master.txt"))
+        assertEquals(93, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
         assertEquals(92, rankOf("MegaPlay", "MegaPlay [Sub] [Original]", "https://fetch.nexabloom.top/e.m3u8"))
         assertEquals(91, rankOf("MeowTV", "MeowTV [1080p]", "https://cdn.example/m.m3u8"))
         assertEquals(90, rankOf("Animex", "Animex [Sub] [Original]", "https://cdn.example/x.m3u8"))
 
-        // VidSrcSU must be matched at 93 while decommissioned VidSrc scores 0.
-        assertEquals(93, rankOf("VidSrcSU", "VidSrcSU HLS", "https://cdn.example/su.m3u8"))
+        // Both VidSrc and VidSrcSU are decommissioned and score 0.
+        assertEquals(0, rankOf("VidSrcSU", "VidSrcSU HLS", "https://cdn.example/su.m3u8"))
         assertEquals(0, rankOf("VidSrc", "VidSrc HLS", "https://lit.cheaptruckrepairs.cc/b.m3u8"))
         assertEquals(0, rankOf("VidSrc", "VidSrc HLS", "https://netoda.tech/f.m3u8"))
         assertEquals(0, rankOf("Unknown", "stream", "https://vidsrc.pm/vidora/stream.m3u8"))
         assertEquals(0, rankOf("VidSrc", "VidSrc 720p", "https://mov2day.xyz/proxy?url=https%3A%2F%2Fbcdn.hakunaymatata.com%2Fbt%2F720.mp4"))
 
         // Every provider also ranks on the CDN hosts it actually serves from.
-        assertEquals(96, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
-        assertEquals(96, rankOf("Unknown", "stream", "https://e2e.majorplay.net/hls/master.m3u8"))
-        assertEquals(95, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/01/master.txt"))
-        assertEquals(95, rankOf("Unknown", "stream", "https://ice.bright67.online/Deadpool/720p/playlist.jpg"))
-        assertEquals(95, rankOf("Unknown", "stream", "https://cinesrc.st/api/v2/stream"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://e2e.majorplay.net/hls/master.m3u8"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/01/master.txt"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://ice.bright67.online/Deadpool/720p/playlist.jpg"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://cinesrc.st/api/v2/stream"))
         assertEquals(0, rankOf("Unknown", "stream", "https://vidsrc.buzz/_stream?id=abc"))
-        assertEquals(94, rankOf("Unknown", "stream", "https://vidfast.vc/e/abc.m3u8"))
-        assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
-        assertEquals(93, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
-        assertEquals(93, rankOf("Unknown", "stream", "https://theemoviedb.hexa.su/api/tmdb/movie/550/images"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://vidfast.vc/e/abc.m3u8"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(0, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
+        assertEquals(0, rankOf("Unknown", "stream", "https://theemoviedb.hexa.su/api/tmdb/movie/550/images"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://megaplay.buzz/stream/s-2/123/sub"))
         assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/thumb.jpg"))
@@ -226,16 +223,17 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals(100, rankOf("Unknown", "stream", "https://bcdnxw.hakunaymatata.com/bt/a.mp4"))
         assertEquals(0, rankOf("Unknown", "stream", "https://sc-u18-01.vix-content.net/hls/master.m3u8"))
 
-        // Decommissioned VidRock and VidSrc and their CDNs must score 0.
+        // Decommissioned VidRock, VidSrc, and VidSrcSU and their CDNs must score 0.
         assertEquals(0, rankOf("VidRock", "VidRock [1080p]", "https://vidrock.net/api/movie/550"))
         assertEquals(0, rankOf("Unknown", "stream", "https://galacticvoyagers.xyz/x.m3u8"))
         assertEquals(0, rankOf("Unknown", "stream", "https://moonfirekeeper.lol/file2/master.m3u8"))
         assertFalse("VidRock must not be top-tier", StreamLinkOptimizer.isTopTierProvider("vidrock"))
         assertFalse("VidSrc must not be top-tier", StreamLinkOptimizer.isTopTierProvider("vidsrc"))
+        assertFalse("VidSrcSU must not be top-tier", StreamLinkOptimizer.isTopTierProvider("vidsrcsu"))
 
         // Decommissioned sources must score zero rather than inheriting a legacy rank.
         listOf(
-            "VidRock", "VidSrc", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix",
+            "VidRock", "VidSrc", "VidSrcSU", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix",
             "HexaSU", "MovieBox", "VidEm", "AnimePahe"
         ).forEach { label ->
             assertEquals(
@@ -669,8 +667,8 @@ class StreamPlayCuratedRegistryV24Test {
         assertFalse("CineSrc must not be in ANIME_ONLY_PROVIDERS", ANIME_ONLY_PROVIDERS.contains("cinesrc"))
 
         assertEquals(100f, FAST_PROVIDER_BOOST.getValue("vidlink"))
-        assertEquals(96f, FAST_PROVIDER_BOOST.getValue("cineby"))
-        assertEquals(95f, FAST_PROVIDER_BOOST.getValue("cinesrc"))
+        assertEquals(95f, FAST_PROVIDER_BOOST.getValue("cineby"))
+        assertEquals(94f, FAST_PROVIDER_BOOST.getValue("cinesrc"))
     }
 
     @Test
@@ -864,10 +862,11 @@ class StreamPlayCuratedRegistryV24Test {
     @Test
     fun testSegmentGatesForMovieTvAndAnime() {
         // Movie/TV-only sources must never race an anime title.
-        listOf("vidfast", "vidsrcsu", "meowtv").forEach { id ->
+        listOf("vidfast", "meowtv").forEach { id ->
             assertTrue("$id must be a NON_ANIME provider", NON_ANIME_PROVIDERS.contains(id))
             assertFalse("$id must not be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
         }
+        assertFalse("Decommissioned vidsrcsu must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains("vidsrcsu"))
         // Dedicated Anime SOTA sources must only run on anime titles.
         listOf("megaplay", "animex").forEach { id ->
             assertTrue("$id must be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
@@ -896,10 +895,10 @@ class StreamPlayCuratedRegistryV24Test {
     @Test
     fun testEveryProviderCdnHostCarriesRankForRewrappedLinks() {
         assertEquals(100, rankOf("Unknown", "stream", "https://bcdn.hakunaymatata.com/bt/master.m3u8"))
-        assertEquals(96, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
-        assertEquals(95, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/master.txt"))
-        assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
-        assertEquals(93, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/master.txt"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(0, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
         assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/i/master.m3u8"))
         assertEquals(90, rankOf("Unknown", "stream", "https://hls.krussdomi.com/e/master.m3u8"))
@@ -921,7 +920,6 @@ class StreamPlayCuratedRegistryV24Test {
                 "api.wecollege.net", "player.videasy.to", "sun.paleoak.top", "e2e.majorplay.net",
                 "cinesrc.st", "nebula.bright67.online", "ice.bright67.online", "subs.bright67.online", "api.wing.st",
                 "vidfast.vc", "moon.zenoak.top",
-                "vidsrc.su", "themoviedb.vidsrc.su", "theemoviedb.hexa.su", "dragonballzfans.xyz",
                 "megaplay.buzz", "fetch.nexabloom.top", "broforgotsave.online",
                 "meowtv.ru", "api.meowtv.ru", "img1.hscow.com", "img1.fcxmb.com",
                 "cdn.vidjoy.org", "cdn2.vidjoy.org", "i-arch-400.krico443jez.com",
@@ -935,8 +933,12 @@ class StreamPlayCuratedRegistryV24Test {
                 domains.none { it.contains("vidrock") || it.contains("galacticvoyagers") || it.contains("moonfirekeeper") }
             )
             assertTrue(
-                "Decommissioned VidSrc domains must not be warmed",
-                domains.none { it == "vidsrc.pm" || it.contains("cheaptruckrepairs") || it.contains("netoda.tech") }
+                "Decommissioned VidSrc and VidSrcSU domains must not be warmed",
+                domains.none {
+                    it == "vidsrc.pm" || it == "vidsrc.su" || it.contains("themoviedb.vidsrc.su") ||
+                        it.contains("theemoviedb.hexa.su") || it.contains("dragonballzfans") ||
+                        it.contains("cheaptruckrepairs") || it.contains("netoda.tech")
+                }
             )
             assertTrue(
                 "Decommissioned AnimePahe domains must not be warmed",
@@ -991,14 +993,14 @@ class StreamPlayCuratedRegistryV24Test {
             assertTrue("Stream-only $id must stay a recognised top-tier provider", StreamLinkOptimizer.isTopTierProvider(id))
         }
 
-        assertEquals(94, rankOf("VidFast", "VidFast [720p]", "https://moon.zenoak.top/hls/master.m3u8"))
-        assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(93, rankOf("VidFast", "VidFast [720p]", "https://moon.zenoak.top/hls/master.m3u8"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
 
         val vidfast = createLink("VidFast", "VidFast [720p]", "https://moon.zenoak.top/hls/master.m3u8", Qualities.P720.value)
-        val vidsrcsu = createLink("VidSrcSU", "VidSrcSU [720p]", "https://dragonballzfans.xyz/x/master.m3u8", Qualities.P720.value)
+        val megaplay = createLink("MegaPlay", "MegaPlay [720p]", "https://fetch.nexabloom.top/x/master.m3u8", Qualities.P720.value)
         assertTrue(
-            "VidFast must still outrank VidSrcSU for playback",
-            StreamLinkOptimizer.getStreamCompositeScore(vidfast) > StreamLinkOptimizer.getStreamCompositeScore(vidsrcsu)
+            "VidFast must still outrank MegaPlay for playback",
+            StreamLinkOptimizer.getStreamCompositeScore(vidfast) > StreamLinkOptimizer.getStreamCompositeScore(megaplay)
         )
     }
 }

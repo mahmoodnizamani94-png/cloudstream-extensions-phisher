@@ -1699,7 +1699,7 @@ object StreamLinkOptimizer {
 
     /**
      * Checks if a stream link belongs to one of the curated top-tier primary sources
-     * (VidLink 100 > Cineby 96 > CineSrc 95 > VidFast 94 > VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90).
+     * (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 > Animex 90).
      */
     fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 85
 
@@ -1712,7 +1712,6 @@ object StreamLinkOptimizer {
             p.contains("cineby") ||
             p.contains("cinesrc") ||
             p.contains("vidfast") ||
-            p.contains("vidsrcsu") ||
             p.contains("megaplay") ||
             p.contains("meowtv") ||
             p.contains("animex")
@@ -1725,7 +1724,7 @@ object StreamLinkOptimizer {
 
     /**
      * Executes the Universal Top-Tier Stream Guard on any stream link:
-     * Validates top-tier streams (VidLink 100 > Cineby 96 > CineSrc 95 > VidFast 94 > VidSrcSU 93 >
+     * Validates top-tier streams (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
      * MegaPlay 92 > MeowTV 91 > Animex 90) and forwards them cleanly to
      * emitAction without creating artificial or duplicated companion links.
      *
@@ -2046,16 +2045,16 @@ object StreamLinkOptimizer {
      * Definitive source priority ranking for the curated v24 SOTA registry:
      *
      *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)      -> 100
-     *   2. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 96
-     *   3. CineSrc   (cinesrc.st, CSP4 PoW + Nebula/Wave/Surge bright67.online HLS + subs)-> 95
-     *   4. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 94
-     *   5. VidSrcSU  (vidsrc.su, X-Api-Key images decrypt, dragonballzfans.xyz CDN HLS)   -> 93
-     *   6. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
-     *   7. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
-     *   8. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 90
+     *   2. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 95
+     *   3. CineSrc   (cinesrc.st, CSP4 PoW + Nebula/Wave/Surge bright67.online HLS + subs)-> 94
+     *   4. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 93
+     *   5. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
+     *   6. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
+     *   7. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 90
      *
-     * VidRock (`vidrock`) and VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs`, `netoda.tech`,
-     * `mov2day.xyz`) are decommissioned and score 0.
+     * VidRock (`vidrock`), VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs`, `netoda.tech`,
+     * `mov2day.xyz`, `vidora`), and VidSrcSU (`vidsrcsu`, `vidsrc.su`, `themoviedb.vidsrc.su`,
+     * `theemoviedb.hexa.su`, `dragonballzfans.xyz`) are decommissioned and score 0.
      *
      * Matching is done on the source label as well as on the CDN hosts each source
      * actually serves from, so a link keeps its ranking even when it is re-wrapped by the
@@ -2073,13 +2072,11 @@ object StreamLinkOptimizer {
                 !s.contains("vidsrc") -> 100
             s.contains("cineby") || n.contains("cineby") ||
                 u.contains("wecollege.net") || u.contains("paleoak.top") ||
-                u.contains("majorplay.net") || r.contains("player.videasy.to") -> 96
+                u.contains("majorplay.net") || r.contains("player.videasy.to") -> 95
             s.contains("cinesrc") || n.contains("cinesrc") ||
-                u.contains("cinesrc.st") || u.contains("bright67.online") || u.contains("api.wing.st") -> 95
+                u.contains("cinesrc.st") || u.contains("bright67.online") || u.contains("api.wing.st") -> 94
             s.contains("vidfast") || n.contains("vidfast") ||
-                u.contains("vidfast.vc") || u.contains("zenoak") -> 94
-            s.contains("vidsrcsu") || n.contains("vidsrcsu") ||
-                u.contains("dragonballzfans") || u.contains("vidsrc.su") || u.contains("theemoviedb.hexa.su") -> 93
+                u.contains("vidfast.vc") || u.contains("zenoak") -> 93
             s.contains("megaplay") || n.contains("megaplay") ||
                 u.contains("megaplay.buzz") || u.contains("nexabloom.top") ||
                 u.contains("broforgotsave.online") -> 92
@@ -2136,8 +2133,9 @@ object StreamLinkOptimizer {
      *    it offers. VidLink (100) x 1080p therefore always outranks any secondary source
      *    x 720p, which is what makes VidLink the #1 result instead of being skipped in
      *    favour of a lower-ranked source that happens to expose a 720p ladder. The source
-     *    term is scaled by 10,000 while the whole quality term spans at most 10,000, so
-     *    adjacent source ranks (a gap of >=10 -> 100,000) can never be crossed by quality.
+     *    term is scaled by 10,000 while quality + tiebreaker is strictly < 10,000 (at most
+     *    9,509.9), so adjacent integer source ranks (a gap of >=1 -> 10,000) can never be
+     *    crossed by quality or bitrate tiebreakers.
      *
      * 2. QUALITY IS SECONDARY, and only orders variants of the same source:
      *    720p > 1080p > 480p > other SD > 1440p/4K > Unknown.
@@ -2165,9 +2163,10 @@ object StreamLinkOptimizer {
         // Normalized tiebreaker (0.0f .. 9.9f) strictly prevents inverting source or quality tiers:
         val tiebreaker = minOf(9.9f, (minOf(50_000L, bitrate) / 10_000f) + (videoScore * 0.05f) + (audioScore * 0.05f) + (headerScore * 0.02f))
 
-        // Quality term, deliberately source-independent: 10,000 (720p) down to 1,200.
+        // Quality term, deliberately source-independent: 9,500 (720p) down to 1,200 so
+        // qualityTerm + tiebreaker <= 9,509.9 < 10,000 (1 rank step).
         val qualityTerm = when {
-            is720 -> 10_000f
+            is720 -> 9_600f
             is1080 -> 8_000f
             quality == Qualities.P480.value -> 6_000f
             isBelow720 -> {
@@ -2186,7 +2185,7 @@ object StreamLinkOptimizer {
         }
 
         val baseScore = if (isTopTier) {
-            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; VidSrc(95) -> 950,000+; Animex(90) -> 900,000+.
+            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; Cineby(95) -> 950,000+; Animex(90) -> 900,000+.
             (sourceRank * 10_000f) + qualityTerm
         } else {
             // Secondary / fallback sources stay strictly below every top-tier stream.
@@ -3010,7 +3009,7 @@ object StreamLinkOptimizer {
              * [activeTopRanks]/[isRankInFlight], where the full v24 [TOP_TIER_RANKS] set
              * is used against the live provider picture instead.
              */
-            private val LEGACY_TOP_TIER_RANKS = listOf(100, 95, 90, 85)
+            private val LEGACY_TOP_TIER_RANKS = listOf(100, 94, 90, 85)
 
             /**
              * The complete set of top-tier ranks in the curated v24 registry. Kept as an
@@ -3018,7 +3017,7 @@ object StreamLinkOptimizer {
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.
              */
-            private val TOP_TIER_RANKS = listOf(100, 96, 95, 94, 93, 92, 91, 90)
+            private val TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 90)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

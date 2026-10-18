@@ -44,10 +44,10 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 8 curated sources", 8, activeProviders.size)
+        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "cineby", "cinesrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
+        val expectedCurated = setOf("vidlink", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv", "animex")
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.
@@ -70,7 +70,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 8 curated sources", 8, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 7 curated sources", 7, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }
@@ -83,7 +83,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         // wrongly, a stale disable of VidLink.
         val legacyDisabled = setOf(
             "vidlink", "HexaSU", "autoembed", "moviebox", "vidcore", "vidfast",
-            "VidEasy", "rivestream", "yflix", "vidsrc", "cinejoy", "vidflix", "animegg"
+            "VidEasy", "rivestream", "yflix", "vidsrc", "vidsrcsu", "cinejoy", "vidflix", "animegg"
         )
         mockPrefs.edit()
             .putStringSet("disabled_providers", legacyDisabled)
@@ -155,11 +155,11 @@ class ChallengerR2SettingsAndSafetyStressTest {
     // =========================================================================
 
     @Test
-    fun testInvokeVidSrcSUNullInputsReturnZeroLinksImmediately() = runBlocking {
+    fun testInvokeMeowTVNullInputsReturnZeroLinksImmediately() = runBlocking {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
             // Null tmdbId
-            StreamPlayExtractor.invokeVidSrcSU(
+            StreamPlayExtractor.invokeMeowTV(
                 tmdbId = null,
                 season = 1,
                 episode = 1,
@@ -167,7 +167,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
                 callback = { links.add(it) }
             )
             // TV show with season but null episode
-            StreamPlayExtractor.invokeVidSrcSU(
+            StreamPlayExtractor.invokeMeowTV(
                 tmdbId = 12345,
                 season = 1,
                 episode = null,
@@ -180,10 +180,10 @@ class ChallengerR2SettingsAndSafetyStressTest {
     }
 
     @Test
-    fun testInvokeVidSrcSUUnindexedTitleCompletesCleanlyWithinBoundedTimeout() = runBlocking {
+    fun testInvokeMeowTVUnindexedTitleCompletesCleanlyWithinBoundedTimeout() = runBlocking {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
-            StreamPlayExtractor.invokeVidSrcSU(
+            StreamPlayExtractor.invokeMeowTV(
                 // 99999999 lies beyond TMDB's id space (404) — a genuinely unindexed title.
                 tmdbId = 99999999,
                 season = null,
@@ -192,18 +192,16 @@ class ChallengerR2SettingsAndSafetyStressTest {
                 callback = { links.add(it) }
             )
         }
-        assertEquals("Unindexed title on VidSrcSU must emit 0 links", 0, links.size)
-        // Must complete within the extractor's own bounded timeout (withTimeoutOrNull 24000ms);
-        // the handshake itself is 3 RTTs, so this bound is about clean early-exit, not latency.
-        assertTrue("invokeVidSrcSU must complete within 30000ms bound, took ${elapsed}ms", elapsed <= 30000)
+        assertEquals("Unindexed title on MeowTV must emit 0 links", 0, links.size)
+        assertTrue("invokeMeowTV must complete within 30000ms bound, took ${elapsed}ms", elapsed <= 30000)
     }
 
     @Test
-    fun testInvokeVidSrcSUCancellationSafety() = runBlocking {
+    fun testInvokeMeowTVCancellationSafety() = runBlocking {
         var cancellationObserved = false
         val job = launch {
             try {
-                StreamPlayExtractor.invokeVidSrcSU(
+                StreamPlayExtractor.invokeMeowTV(
                     tmdbId = 999999,
                     season = null,
                     episode = null,
@@ -217,7 +215,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         }
         // Cancel the job immediately
         job.cancelAndJoin()
-        assertTrue("invokeVidSrcSU must propagate CancellationException to preserve coroutine hierarchy", job.isCancelled)
+        assertTrue("invokeMeowTV must propagate CancellationException to preserve coroutine hierarchy", job.isCancelled)
     }
 
     @Test
@@ -282,7 +280,6 @@ class ChallengerR2SettingsAndSafetyStressTest {
             StreamPlayExtractor.invokeVidlink(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
             StreamPlayExtractor.invokeCineby(tmdbId = tmdbId, season = season, episode = episode, title = title, callback = {})
             StreamPlayExtractor.invokeCineSrc(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
-            StreamPlayExtractor.invokeVidSrcSU(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
         }
         assertTrue("Stress cycles with corrupt inputs executed with zero uncaught exceptions", true)
     }
