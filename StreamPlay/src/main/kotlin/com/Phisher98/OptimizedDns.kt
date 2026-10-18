@@ -322,11 +322,16 @@ open class OptimizedDns(
             "player.videasy.to",
             "sun.paleoak.top",
             "e2e.majorplay.net",
-            "vidsrc.pm",
+            "cinesrc.st",
+            "nebula.bright67.online",
+            "ice.bright67.online",
+            "subs.bright67.online",
+            "api.wing.st",
             "vidfast.vc",
             "moon.zenoak.top",
             "vidsrc.su",
             "themoviedb.vidsrc.su",
+            "theemoviedb.hexa.su",
             "dragonballzfans.xyz",
             "megaplay.buzz",
             "fetch.nexabloom.top",
@@ -344,8 +349,7 @@ open class OptimizedDns(
             "subst.krussdomi.com",
             "hlsxst2.echovideo.to",
             "kwik.cx",
-            "bcdn.hakunaymatata.com",
-            "lit.cheaptruckrepairs.cc"
+            "bcdn.hakunaymatata.com"
         )
 
         private val bootstrapClient: OkHttpClient by lazy {

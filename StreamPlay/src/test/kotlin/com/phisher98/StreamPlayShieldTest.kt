@@ -87,7 +87,7 @@ class StreamPlayShieldTest {
             assertFalse("registry entry '$entry' must not be a subdomain of a vetted source", vettedOwner)
         }
         // And every subdomain of a vetted source is released too.
-        for (sub in listOf("bcdn.hakunaymatata.com", "lit.cheaptruckrepairs.cc", "sun.paleoak.top", "fetch.nexabloom.top", "e1.vidlink.pro")) {
+        for (sub in listOf("bcdn.hakunaymatata.com", "nebula.bright67.online", "sun.paleoak.top", "fetch.nexabloom.top", "e1.vidlink.pro")) {
             assertEquals("vetted subdomain '$sub' must be ALLOW", StreamPlayShield.CATEGORY_ALLOW, StreamPlayShield.classifyHost(sub))
         }
     }
@@ -473,7 +473,7 @@ class StreamPlayShieldTest {
         val urls = listOf(
             "https://sun.paleoak.top/file3/YTk2/master.m3u8",
             "https://bcdn.hakunaymatata.com/bt/a/101.m3u8",
-            "https://lit.cheaptruckrepairs.cc/h/master.m3u8"
+            "https://nebula.bright67.online/hls2/master.txt"
         )
         for (url in urls) {
             val prepared = StreamLinkOptimizer.optimize(linkOf(url))

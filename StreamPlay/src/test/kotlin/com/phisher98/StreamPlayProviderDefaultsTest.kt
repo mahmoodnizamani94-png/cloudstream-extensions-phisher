@@ -12,13 +12,13 @@ import java.util.concurrent.TimeUnit
 
 class StreamPlayProviderDefaultsTest {
 
-    private val v24TopTier = setOf("vidlink", "cineby", "vidsrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
+    private val v24TopTier = setOf("vidlink", "cineby", "cinesrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
 
     @Test
     fun testRemovedSourcesAreAbsentFromProviderList() {
         val providers = buildProviders()
 
-        listOf("vidrock", "vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
+        listOf("vidrock", "vidsrc", "vaplayer", "superstream", "vidcore", "rivestream", "videasy", "vidflix", "vixsrc", "animepahe")
             .forEach { id ->
                 val found = providers.find { it.id.equals(id, ignoreCase = true) }
                 assertNull("$id must be completely removed from providers list", found)
@@ -119,7 +119,7 @@ class StreamPlayProviderDefaultsTest {
         }
         // Curated sources are always re-enabled by a version migration.
         assertFalse("vidlink must be re-enabled", migratedDisabled.contains("vidlink"))
-        assertFalse("vidsrc must be re-enabled", migratedDisabled.contains("vidsrc"))
+        assertFalse("cinesrc must be re-enabled", migratedDisabled.contains("cinesrc"))
 
         val active = buildProviders().map { it.id }.filterNot { migratedDisabled.contains(it) }.toSet()
         assertEquals("Exactly the curated sources must be active after migration", v24TopTier, active)

@@ -65,7 +65,7 @@ class StreamPlayPlugin: Plugin() {
             Log.d("StreamPlay", "⚙️ Set recommended concurrency: $recommended")
         }
 
-        // Bootstrap the curated v24 registry defaults (VidLink, Cineby, VidSrc, VidFast,
+        // Bootstrap the curated v24 registry defaults (VidLink, Cineby, CineSrc, VidFast,
         // VidSrcSU, MegaPlay, MeowTV, Animex) and scrub every decommissioned provider id from
         // an upgrading install's preferences.
         getOrInitializeDisabledProviders(sharedPref)

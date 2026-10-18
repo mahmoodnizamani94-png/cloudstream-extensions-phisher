@@ -5,6 +5,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.phisher98.StreamPlayExtractor.animexParseSourceJson
 import com.phisher98.StreamPlayExtractor.cinebyParseDecryptedResult
+import com.phisher98.StreamPlayExtractor.cinesrcParseDecryptedResult
+import com.phisher98.StreamPlayExtractor.cinesrcSolveStage1
+import com.phisher98.StreamPlayExtractor.cinesrcSolveStage2
 import com.phisher98.StreamPlayExtractor.megaplayExtractFileId
 import com.phisher98.StreamPlayExtractor.megaplayParseSourcesPayload
 import com.phisher98.StreamPlayExtractor.parseHlsMasterVariants
@@ -29,15 +32,16 @@ import java.util.concurrent.CountDownLatch
  * Acceptance suite for the curated v24 SOTA StreamPlay source registry.
  *
  * It pins down, as executable contracts:
- *  1. exactly which sources may surface in the UI (VidLink, Cineby, VidSrc, VidFast, VidSrcSU,
+ *  1. exactly which sources may surface in the UI (VidLink, Cineby, CineSrc, VidFast, VidSrcSU,
  *     MegaPlay, MeowTV, Animex) and their strict launch hierarchy,
- *  2. the ranking of those sources and of the CDN hosts they serve from, plus VidRock's
- *     complete decommissioning,
- *  3. the settings migration that removes every decommissioned provider (including VidRock)
- *     from an existing install while enabling the v24 SOTA sources,
+ *  2. the ranking of those sources and of the CDN hosts they serve from, plus VidRock's and
+ *     VidSrc's complete decommissioning,
+ *  3. the settings migration that removes every decommissioned provider (including VidRock and
+ *     VidSrc) from an existing install while enabling the v24 SOTA sources,
  *  4. the bounded ordering windows of [StreamLinkOptimizer.PriorityStreamDispatcher],
  *  5. known-answer vectors for the offline VidLink token encryptor,
- *  6. protocol parsers for Cineby, MegaPlay, Animex, and HLS Master Variant + Size Estimation,
+ *  6. protocol parsers for Cineby, CineSrc (CSP4 PoW + Nebula/Wave/Surge), MegaPlay, Animex,
+ *     and HLS Master Variant + Size Estimation,
  *  7. the exception gates that keep the Movie/TV, Anime, and Universal segments of the registry
  *     properly partitioned, and
  *  8. the stream-only download-exclusion contract (`DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast")`).
@@ -47,7 +51,7 @@ class StreamPlayCuratedRegistryV24Test {
     private val curatedIds = setOf(
         "vidlink",
         "cineby",
-        "vidsrc",
+        "cinesrc",
         "vidfast",
         "vidsrcsu",
         "megaplay",
@@ -59,7 +63,7 @@ class StreamPlayCuratedRegistryV24Test {
     private val boostByProvider = linkedMapOf(
         "vidlink" to 100f,
         "cineby" to 96f,
-        "vidsrc" to 95f,
+        "cinesrc" to 95f,
         "vidfast" to 94f,
         "vidsrcsu" to 93f,
         "megaplay" to 92f,
@@ -116,7 +120,7 @@ class StreamPlayCuratedRegistryV24Test {
         val byId = providers.associateBy { it.id }
         assertEquals("VidLink", byId.getValue("vidlink").name)
         assertEquals("Cineby", byId.getValue("cineby").name)
-        assertEquals("VidSrc", byId.getValue("vidsrc").name)
+        assertEquals("CineSrc", byId.getValue("cinesrc").name)
         assertEquals("VidFast", byId.getValue("vidfast").name)
         assertEquals("VidSrcSU", byId.getValue("vidsrcsu").name)
         assertEquals("MegaPlay", byId.getValue("megaplay").name)
@@ -141,9 +145,10 @@ class StreamPlayCuratedRegistryV24Test {
             assertFalse("$removed must not be a default top tier source", DEFAULT_TOP_TIER_PROVIDERS.contains(removed))
         }
 
-        // VidRock is explicitly decommissioned because it serves non-seekable, index-less files.
+        // VidRock and VidSrc are explicitly decommissioned.
         listOf(
             "vidrock", "Vidrock", "VidRock",
+            "vidsrc", "Vidsrc", "VidSrc", "vidsrc.pm",
             "rivestream", "videasy", "superstream", "vaplayer", "vidcore", "vidnest",
             "vidup", "hexasu", "autoembed", "videm", "animegg", "animepahe", "AnimePahe"
         ).forEach {
@@ -182,25 +187,31 @@ class StreamPlayCuratedRegistryV24Test {
     fun testSourcePriorityRankCoversLabelsAndCdnHosts() {
         assertEquals(100, rankOf("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4"))
         assertEquals(96, rankOf("Cineby", "Cineby Tampa [1080p]", "https://sun.paleoak.top/x.m3u8"))
-        assertEquals(95, rankOf("VidSrc", "VidSrc HLS", "https://lit.cheaptruckrepairs.cc/b.m3u8"))
+        assertEquals(95, rankOf("CineSrc", "CineSrc Nebula [720p]", "https://nebula.bright67.online/hls2/master.txt"))
         assertEquals(94, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
         assertEquals(93, rankOf("VidSrcSU", "VidSrcSU [1080p]", "https://cdn.example/su.m3u8"))
         assertEquals(92, rankOf("MegaPlay", "MegaPlay [Sub] [Original]", "https://fetch.nexabloom.top/e.m3u8"))
         assertEquals(91, rankOf("MeowTV", "MeowTV [1080p]", "https://cdn.example/m.m3u8"))
         assertEquals(90, rankOf("Animex", "Animex [Sub] [Original]", "https://cdn.example/x.m3u8"))
 
-        // VidSrcSU must be matched before the generic `vidsrc` substring.
+        // VidSrcSU must be matched at 93 while decommissioned VidSrc scores 0.
         assertEquals(93, rankOf("VidSrcSU", "VidSrcSU HLS", "https://cdn.example/su.m3u8"))
+        assertEquals(0, rankOf("VidSrc", "VidSrc HLS", "https://lit.cheaptruckrepairs.cc/b.m3u8"))
+        assertEquals(0, rankOf("VidSrc", "VidSrc HLS", "https://netoda.tech/f.m3u8"))
+        assertEquals(0, rankOf("Unknown", "stream", "https://vidsrc.pm/vidora/stream.m3u8"))
+        assertEquals(0, rankOf("VidSrc", "VidSrc 720p", "https://mov2day.xyz/proxy?url=https%3A%2F%2Fbcdn.hakunaymatata.com%2Fbt%2F720.mp4"))
 
         // Every provider also ranks on the CDN hosts it actually serves from.
         assertEquals(96, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
         assertEquals(96, rankOf("Unknown", "stream", "https://e2e.majorplay.net/hls/master.m3u8"))
-        assertEquals(95, rankOf("VidSrc", "VidSrc HLS", "https://netoda.tech/f.m3u8"))
-        assertEquals(95, rankOf("Unknown", "stream", "https://vidsrc.pm/vidora/stream.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/01/master.txt"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://ice.bright67.online/Deadpool/720p/playlist.jpg"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://cinesrc.st/api/v2/stream"))
         assertEquals(0, rankOf("Unknown", "stream", "https://vidsrc.buzz/_stream?id=abc"))
         assertEquals(94, rankOf("Unknown", "stream", "https://vidfast.vc/e/abc.m3u8"))
         assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
         assertEquals(93, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
+        assertEquals(93, rankOf("Unknown", "stream", "https://theemoviedb.hexa.su/api/tmdb/movie/550/images"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://megaplay.buzz/stream/s-2/123/sub"))
         assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/thumb.jpg"))
@@ -215,15 +226,16 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals(100, rankOf("Unknown", "stream", "https://bcdnxw.hakunaymatata.com/bt/a.mp4"))
         assertEquals(0, rankOf("Unknown", "stream", "https://sc-u18-01.vix-content.net/hls/master.m3u8"))
 
-        // Decommissioned VidRock and its CDNs must score 0.
+        // Decommissioned VidRock and VidSrc and their CDNs must score 0.
         assertEquals(0, rankOf("VidRock", "VidRock [1080p]", "https://vidrock.net/api/movie/550"))
         assertEquals(0, rankOf("Unknown", "stream", "https://galacticvoyagers.xyz/x.m3u8"))
         assertEquals(0, rankOf("Unknown", "stream", "https://moonfirekeeper.lol/file2/master.m3u8"))
         assertFalse("VidRock must not be top-tier", StreamLinkOptimizer.isTopTierProvider("vidrock"))
+        assertFalse("VidSrc must not be top-tier", StreamLinkOptimizer.isTopTierProvider("vidsrc"))
 
         // Decommissioned sources must score zero rather than inheriting a legacy rank.
         listOf(
-            "VidRock", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix",
+            "VidRock", "VidSrc", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix",
             "HexaSU", "MovieBox", "VidEm", "AnimePahe"
         ).forEach { label ->
             assertEquals(
@@ -643,34 +655,38 @@ class StreamPlayCuratedRegistryV24Test {
     }
 
     @Test
-    fun testVidLinkAndCinebyAreUniversalAcrossMovieTvAndAnime() {
+    fun testVidLinkCinebyAndCineSrcAreUniversalAcrossMovieTvAndAnime() {
         val providers = buildProviders()
         assertNotNull(providers.first { it.id == "vidlink" })
         assertNotNull(providers.first { it.id == "cineby" })
+        assertNotNull(providers.first { it.id == "cinesrc" })
 
         assertFalse("VidLink must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains("vidlink"))
         assertFalse("VidLink must not be in ANIME_ONLY_PROVIDERS", ANIME_ONLY_PROVIDERS.contains("vidlink"))
         assertFalse("Cineby must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains("cineby"))
         assertFalse("Cineby must not be in ANIME_ONLY_PROVIDERS", ANIME_ONLY_PROVIDERS.contains("cineby"))
+        assertFalse("CineSrc must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains("cinesrc"))
+        assertFalse("CineSrc must not be in ANIME_ONLY_PROVIDERS", ANIME_ONLY_PROVIDERS.contains("cinesrc"))
 
         assertEquals(100f, FAST_PROVIDER_BOOST.getValue("vidlink"))
         assertEquals(96f, FAST_PROVIDER_BOOST.getValue("cineby"))
+        assertEquals(95f, FAST_PROVIDER_BOOST.getValue("cinesrc"))
     }
 
     @Test
     fun testVidLinkOutranksEveryOtherSourceInCompositeScore() {
         val vidlink360 = createLink("Vidlink", "Vidlink 360p", "https://bcdn.hakunaymatata.com/bt/360.mp4", Qualities.P360.value)
         val cineby1080 = createLink("Cineby", "Cineby 1080p", "https://sun.paleoak.top/file2/1080.m3u8", Qualities.P1080.value)
-        val vidsrc1080 = createLink("VidSrc", "VidSrc 1080p", "https://vidsrc.pm/stream/1080.mp4", Qualities.P1080.value)
+        val cinesrc1080 = createLink("CineSrc", "CineSrc 1080p", "https://nebula.bright67.online/hls2/1080/master.txt", Qualities.P1080.value)
         val animex1080 = createLink("Animex", "Animex 1080p", "https://animex.one/e/1080.m3u8", Qualities.P1080.value)
 
         val scoreVidlink360 = StreamLinkOptimizer.getStreamCompositeScore(vidlink360)
         val scoreCineby1080 = StreamLinkOptimizer.getStreamCompositeScore(cineby1080)
-        val scoreVidSrc1080 = StreamLinkOptimizer.getStreamCompositeScore(vidsrc1080)
+        val scoreCineSrc1080 = StreamLinkOptimizer.getStreamCompositeScore(cinesrc1080)
         val scoreAnimex1080 = StreamLinkOptimizer.getStreamCompositeScore(animex1080)
 
         assertTrue("VidLink composite score must dominate Cineby", scoreVidlink360 > scoreCineby1080)
-        assertTrue("Cineby composite score must dominate VidSrc", scoreCineby1080 > scoreVidSrc1080)
+        assertTrue("Cineby composite score must dominate CineSrc", scoreCineby1080 > scoreCineSrc1080)
         assertTrue("VidLink composite score must dominate Animex", scoreVidlink360 > scoreAnimex1080)
         assertTrue("VidLink must score >= 1,000,000", scoreVidlink360 >= 1_000_000f)
     }
@@ -701,8 +717,64 @@ class StreamPlayCuratedRegistryV24Test {
     }
 
     // =========================================================================
-    // 6. CINEBY, MEGAPLAY, ANIMEX & HLS MASTER PARSER CONTRACTS
+    // 6. CINEBY, CINESRC, MEGAPLAY, ANIMEX & HLS MASTER PARSER CONTRACTS
     // =========================================================================
+
+    @Test
+    fun testCineSrcPowSolversAndDecryptedPayloadParsing() {
+        // Stage 1: CSP4 custom stream hash PoW (28-byte config with difficulty=2 bits, rounds=4, memBits=4, sI=0, pI=0)
+        val stage1Config = ByteArray(28)
+        stage1Config[21] = 1 // mode
+        stage1Config[22] = 2 // difficulty bits
+        stage1Config[23] = 0 // v
+        stage1Config[24] = 4 // rounds
+        stage1Config[25] = 4 // mB (size = 16)
+        stage1Config[26] = 0 // sI
+        stage1Config[27] = 0 // pI
+        val wB64 = StreamPlayExtractor.cinesrcBase64UrlEncode(stage1Config)
+        val seedHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val stage1Solution = StreamPlayExtractor.cinesrcSolveStage1(wB64, seedHex)
+        assertTrue("Stage 1 PoW solution must start with m4.", stage1Solution.startsWith("m4."))
+
+        // Stage 2: SHA-256 PoW (difficulty = 4 bits -> width = 1 hex char, key = "3")
+        val salt = "cinesrc_salt_"
+        val expectedKey = "3"
+        val sha256 = java.security.MessageDigest.getInstance("SHA-256")
+        val targetHex = sha256.digest((salt + expectedKey).toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val innerJsonB64 = StreamPlayExtractor.cinesrcBase64UrlEncode("""{"d":4}""".toByteArray(Charsets.UTF_8))
+        val bodyB64 = StreamPlayExtractor.cinesrcBase64UrlEncode("hdr.$innerJsonB64".toByteArray(Charsets.UTF_8))
+        val rToken = "v1.$bodyB64.sig"
+        val pack = listOf(targetHex.reversed(), "unused1", "unused2", salt.reversed(), rToken.reversed())
+        val solvedKey = StreamPlayExtractor.cinesrcSolveStage2(pack)
+        assertEquals(expectedKey, solvedKey)
+
+        // Wave / Surge multi-quality array format (`url` array with discrete `source` quality keys)
+        val wavePayload = """{
+            "result": {
+                "url": [
+                    {"url": "https://ice.bright67.online/Deadpool/720p/playlist.jpg", "source": "720p"},
+                    {"url": "https://ice.bright67.online/Deadpool/1080p/playlist.jpg", "source": "1080p"}
+                ]
+            }
+        }"""
+        val waveParsed = StreamPlayExtractor.cinesrcParseDecryptedResult(wavePayload)
+        assertNotNull(waveParsed)
+        assertEquals(2, waveParsed!!.entries.size)
+        val entry720 = waveParsed.entries.first { it.url.contains("720p") }
+        val entry1080 = waveParsed.entries.first { it.url.contains("1080p") }
+        assertEquals(Qualities.P720.value, entry720.quality)
+        assertEquals(410, entry720.estimatedSizeMb)
+        assertEquals(Qualities.P1080.value, entry1080.quality)
+        assertEquals(760, entry1080.estimatedSizeMb)
+
+        // Nebula master manifest string format (`url` string)
+        val nebulaPayload = """{"result": {"url": "https://nebula.bright67.online/hls2/01/00105/abc/playlist.jpg"}}"""
+        val nebulaParsed = StreamPlayExtractor.cinesrcParseDecryptedResult(nebulaPayload)
+        assertNotNull(nebulaParsed)
+        assertEquals(1, nebulaParsed!!.entries.size)
+        assertEquals("https://nebula.bright67.online/hls2/01/00105/abc/playlist.jpg", nebulaParsed.entries[0].url)
+    }
 
     @Test
     fun testCinebyDecryptedPayloadParsing() {
@@ -792,7 +864,7 @@ class StreamPlayCuratedRegistryV24Test {
     @Test
     fun testSegmentGatesForMovieTvAndAnime() {
         // Movie/TV-only sources must never race an anime title.
-        listOf("vidsrc", "vidfast", "vidsrcsu", "meowtv").forEach { id ->
+        listOf("vidfast", "vidsrcsu", "meowtv").forEach { id ->
             assertTrue("$id must be a NON_ANIME provider", NON_ANIME_PROVIDERS.contains(id))
             assertFalse("$id must not be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
         }
@@ -801,8 +873,8 @@ class StreamPlayCuratedRegistryV24Test {
             assertTrue("$id must be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
             assertFalse("$id must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains(id))
         }
-        // Universal SOTA sources (VidLink, Cineby) run on Movie, TV, and Anime.
-        listOf("vidlink", "cineby").forEach { id ->
+        // Universal SOTA sources (VidLink, Cineby, CineSrc) run on Movie, TV, and Anime.
+        listOf("vidlink", "cineby", "cinesrc").forEach { id ->
             assertFalse("$id must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains(id))
             assertFalse("$id must not be in ANIME_ONLY_PROVIDERS", ANIME_ONLY_PROVIDERS.contains(id))
         }
@@ -825,7 +897,7 @@ class StreamPlayCuratedRegistryV24Test {
     fun testEveryProviderCdnHostCarriesRankForRewrappedLinks() {
         assertEquals(100, rankOf("Unknown", "stream", "https://bcdn.hakunaymatata.com/bt/master.m3u8"))
         assertEquals(96, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
-        assertEquals(95, rankOf("Unknown", "stream", "https://lit.cheaptruckrepairs.cc/h/master.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/master.txt"))
         assertEquals(94, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
         assertEquals(93, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
@@ -847,9 +919,9 @@ class StreamPlayCuratedRegistryV24Test {
             listOf(
                 "vidlink.pro", "bcdn.hakunaymatata.com",
                 "api.wecollege.net", "player.videasy.to", "sun.paleoak.top", "e2e.majorplay.net",
-                "vidsrc.pm", "lit.cheaptruckrepairs.cc",
+                "cinesrc.st", "nebula.bright67.online", "ice.bright67.online", "subs.bright67.online", "api.wing.st",
                 "vidfast.vc", "moon.zenoak.top",
-                "vidsrc.su", "themoviedb.vidsrc.su", "dragonballzfans.xyz",
+                "vidsrc.su", "themoviedb.vidsrc.su", "theemoviedb.hexa.su", "dragonballzfans.xyz",
                 "megaplay.buzz", "fetch.nexabloom.top", "broforgotsave.online",
                 "meowtv.ru", "api.meowtv.ru", "img1.hscow.com", "img1.fcxmb.com",
                 "cdn.vidjoy.org", "cdn2.vidjoy.org", "i-arch-400.krico443jez.com",
@@ -861,6 +933,10 @@ class StreamPlayCuratedRegistryV24Test {
             assertTrue(
                 "Decommissioned VidRock domains must not be warmed",
                 domains.none { it.contains("vidrock") || it.contains("galacticvoyagers") || it.contains("moonfirekeeper") }
+            )
+            assertTrue(
+                "Decommissioned VidSrc domains must not be warmed",
+                domains.none { it == "vidsrc.pm" || it.contains("cheaptruckrepairs") || it.contains("netoda.tech") }
             )
             assertTrue(
                 "Decommissioned AnimePahe domains must not be warmed",
@@ -893,13 +969,13 @@ class StreamPlayCuratedRegistryV24Test {
     @Test
     fun testStreamOnlyProvidersAreNeverDisabledByTheSettingsPipeline() {
         val prefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
-        prefs.edit().putStringSet("disabled_providers", setOf("vidfast", "vidsrc")).apply()
+        prefs.edit().putStringSet("disabled_providers", setOf("vidfast", "cinesrc")).apply()
 
         val disabled = getOrInitializeDisabledProviders(prefs)
         DOWNLOAD_EXCLUDED_PROVIDER_IDS.forEach { id ->
             assertFalse("Stream-only $id must be active after migration", disabled.contains(id))
         }
-        assertFalse("VidSrc must be active after migration", disabled.contains("vidsrc"))
+        assertFalse("CineSrc must be active after migration", disabled.contains("cinesrc"))
     }
 
     @Test

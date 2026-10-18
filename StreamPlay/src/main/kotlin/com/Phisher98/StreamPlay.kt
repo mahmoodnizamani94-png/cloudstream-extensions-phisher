@@ -58,10 +58,10 @@ const val TOP_TIER_BOOST_THRESHOLD = 85f
 
 /**
  * The curated v24 registry has no subtitle-only entries: every surviving source ships its
- * own captions (VidLink's native caption tracks, Cineby/VidSrc/VidFast/VidSrcSU/MeowTV decrypted
+ * own captions (VidLink's native caption tracks, Cineby/CineSrc/VidFast/VidSrcSU/MeowTV decrypted
  * track lists, MegaPlay and Animex soft-subs), which keeps subtitle timing exactly in sync with the
- * stream that was chosen. VidLink and Cineby are deliberately absent from both gates: they are
- * universal primaries and are always applicable across Movies, TV Series, and Anime.
+ * stream that was chosen. VidLink, Cineby, and CineSrc are deliberately absent from both gates:
+ * they are universal primaries and are always applicable across Movies, TV Series, and Anime.
  */
 internal val ANIME_ONLY_PROVIDERS = setOf(
     "megaplay",
@@ -69,7 +69,6 @@ internal val ANIME_ONLY_PROVIDERS = setOf(
 )
 
 internal val NON_ANIME_PROVIDERS = setOf(
-    "vidsrc",
     "vidfast",
     "vidsrcsu",
     "meowtv"
@@ -960,7 +959,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > Cineby > VidSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex)
+        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > Cineby > CineSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex)
         val primaryTasks = prioritizedPrimary.map { provider ->
             val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                 .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }

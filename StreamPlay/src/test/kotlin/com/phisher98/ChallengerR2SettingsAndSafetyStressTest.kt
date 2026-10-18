@@ -20,6 +20,8 @@ class ChallengerR2SettingsAndSafetyStressTest {
     fun setUp() {
         ProviderTelemetryManager.clearAllForTesting()
         DeviceProfiler.resetForTesting()
+        // Ensure StreamPlayExtractor object is classloaded before timing assertions
+        StreamPlayExtractor.encDecApiSemaphore.availablePermits
     }
 
     @After
@@ -45,7 +47,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         assertEquals("Clean install must activate exactly 8 curated sources", 8, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "cineby", "vidsrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
+        val expectedCurated = setOf("vidlink", "cineby", "cinesrc", "vidfast", "vidsrcsu", "megaplay", "meowtv", "animex")
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.
@@ -222,7 +224,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
     fun testVidlinkAndCinebyNullInputsReturnZeroLinksImmediately() = runBlocking {
         val links = mutableListOf<ExtractorLink>()
         val elapsed = measureTimeMillis {
-            // Null tmdbId on both SOTA universal primaries
+            // Null tmdbId on SOTA universal primaries
             StreamPlayExtractor.invokeVidlink(
                 tmdbId = null,
                 season = null,
@@ -231,6 +233,13 @@ class ChallengerR2SettingsAndSafetyStressTest {
                 callback = { links.add(it) }
             )
             StreamPlayExtractor.invokeCineby(
+                tmdbId = null,
+                season = null,
+                episode = null,
+                subtitleCallback = {},
+                callback = { links.add(it) }
+            )
+            StreamPlayExtractor.invokeCineSrc(
                 tmdbId = null,
                 season = null,
                 episode = null,
@@ -272,7 +281,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
             // None of these should throw any unhandled exceptions
             StreamPlayExtractor.invokeVidlink(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
             StreamPlayExtractor.invokeCineby(tmdbId = tmdbId, season = season, episode = episode, title = title, callback = {})
-            StreamPlayExtractor.invokeVidSrc(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
+            StreamPlayExtractor.invokeCineSrc(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
             StreamPlayExtractor.invokeVidSrcSU(tmdbId = tmdbId, season = season, episode = episode, subtitleCallback = null, callback = {})
         }
         assertTrue("Stress cycles with corrupt inputs executed with zero uncaught exceptions", true)

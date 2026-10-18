@@ -46,6 +46,7 @@ import com.lagradost.nicehttp.RequestBodyTypes
 import com.phisher98.StreamPlay.Companion.anilistAPI
 import com.phisher98.StreamPlayExtractor.invokeAnimex
 import com.phisher98.StreamPlayExtractor.invokeCineby
+import com.phisher98.StreamPlayExtractor.invokeCineSrc
 import com.phisher98.StreamPlayExtractor.invokeMegaPlay
 import com.phisher98.StreamPlayExtractor.invokeVidlink
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -358,7 +359,7 @@ class StreamPlayAnime : MainAPI() {
             upstreamCallback = callback,
             scope = this,
             top720GraceMs = 350L,
-            activeTopRanks = setOf(100, 96, 92, 90)
+            activeTopRanks = setOf(100, 96, 95, 92, 90)
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
@@ -440,6 +441,21 @@ class StreamPlayAnime : MainAPI() {
             add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 96f) {
                 if (mediaData.tmdbId != null) {
                     invokeCineby(
+                        tmdbId = mediaData.tmdbId,
+                        season = if (mediaData.season == null) null else 1,
+                        episode = episode,
+                        subtitleCallback = trackedSubtitleCallback,
+                        callback = trackedCallback,
+                        imdbId = mediaData.imdbId,
+                        title = anititle ?: jpTitle,
+                        year = year,
+                        isAnime = true
+                    )
+                }
+            })
+            add(PipelinedTask("cinesrc", LatencyTier.TIER_1, priorityBoost = 95f) {
+                if (mediaData.tmdbId != null) {
+                    invokeCineSrc(
                         tmdbId = mediaData.tmdbId,
                         season = if (mediaData.season == null) null else 1,
                         episode = episode,

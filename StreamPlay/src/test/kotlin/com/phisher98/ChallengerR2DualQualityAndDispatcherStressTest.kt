@@ -169,7 +169,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         val providersInOrder = listOf(
             "VidLink" to 100,
             "Cineby" to 96,
-            "VidSrc" to 95,
+            "CineSrc" to 95,
             "VidFast" to 94,
             "VidSrcSU" to 93,
             "MegaPlay" to 92,
