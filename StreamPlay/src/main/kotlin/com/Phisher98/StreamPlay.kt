@@ -463,8 +463,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         coroutineScope {
             val resDeferred = async {
                 SingleFlight.executeShared("tmdb:${data.type}:${data.id}:$langCode") {
-                    withTimeoutOrNull(8000.milliseconds) {
-                        app.get(resUrl).parsedSafe<MediaDetail>()
+                    withTimeoutOrNull(15000.milliseconds) {
+                        StreamPlayExtractor.retryTransient(2, 350L) {
+                            app.get(resUrl).parsedSafe<MediaDetail>()
+                        }
                     }
                 }
             }
@@ -472,14 +474,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             val enResDeferred = async {
                 if (enResUrl == null) null
                 else SingleFlight.executeShared("tmdb:${data.type}:${data.id}:en-US") {
-                    withTimeoutOrNull(5000.milliseconds) {
+                    withTimeoutOrNull(8000.milliseconds) {
                         app.get(enResUrl).parsedSafe<MediaDetail>()
                     }
                 }
             }
 
             val logoDeferred = async {
-                withTimeoutOrNull(3000.milliseconds) {
+                withTimeoutOrNull(4000.milliseconds) {
                     val tempRes = resDeferred.await()
                     fetchTmdbLogoUrl(
                         tmdbAPI = tmdbAPI,
@@ -496,7 +498,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 if (tempRes?.external_ids?.imdb_id != null) {
                     val cinetype = if (type == TvType.TvSeries) "series" else "movie"
                     SingleFlight.executeShared("cinemeta:$cinetype:${tempRes.external_ids.imdb_id}") {
-                        withTimeoutOrNull(3000.milliseconds) {
+                        withTimeoutOrNull(6000.milliseconds) {
                             app.get("$Cinemeta/meta/$cinetype/${tempRes.external_ids.imdb_id}.json")
                                 .parsedSafe<CinemetaRes>()
                         }
@@ -540,9 +542,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val recommendations = res.recommendations?.results?.mapNotNull { media -> media.toSearchResponse() }
         val trailer = res.videos?.results.orEmpty().filter { it.type == "Trailer" }.map { "https://www.youtube.com/watch?v=${it.key}" }.reversed().ifEmpty { res.videos?.results?.map { "https://www.youtube.com/watch?v=${it.key}" } ?: emptyList() }
 
+        val hasPassedReleaseDate = !releaseDate.isNullOrBlank() && !isUpcoming(releaseDate)
         val comingSoonFlag = when (res.status?.lowercase()) {
-            "released" -> false
-            "post production", "in production", "planned" -> true
+            "released", "returning series", "ended" -> false
+            "post production", "in production", "planned", "rumored" -> !hasPassedReleaseDate
             else -> isUpcoming(releaseDate)
         }
 
@@ -559,7 +562,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                             val seasonEpisodes = if (cachedSeason != null) {
                                 cachedSeason
                             } else {
-                                withTimeoutOrNull(5000.milliseconds) {
+                                withTimeoutOrNull(8000.milliseconds) {
                                     SingleFlight.executeShared("tmdb:season:${data.id}:${season.seasonNumber}:$langCode") {
                                         val fetched = app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=$langCode")
                                             .parsedSafe<MediaDetailEpisodes>()
@@ -630,7 +633,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     }?.title
                     ?: cineRes?.meta?.name
                 val syncMetaData = SingleFlight.executeShared("anizip:${imdbId.ifBlank { "tmdb_${data.id}" }}") {
-                    withTimeoutOrNull(4000.milliseconds) {
+                    withTimeoutOrNull(5000.milliseconds) {
                         val byImdb = if (imdbId.isNotBlank()) {
                             runCatching { app.get("https://api.ani.zip/mappings?imdb_id=$imdbId").text }.getOrNull()
                         } else null
@@ -648,8 +651,41 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 val resolvedAniId = animeMetaData?.mappings?.anilistId ?: data.aniId?.toIntOrNull()
                 val resolvedMalId = animeMetaData?.mappings?.malId ?: data.malId
 
+                val tmdbSeasonEpisodes = episodes.filter { (it.season ?: 1) != 0 }.map { ep ->
+                    val parsed = runCatching { parseJson<LinkData>(ep.data) }.getOrNull()
+                    val epSeason = ep.season ?: parsed?.season ?: 1
+                    val epNum = ep.episode ?: parsed?.episode
+                    val anidbEid = if (epSeason <= 1) {
+                        epNum?.let { animeMetaData?.episodes?.get(it.toString())?.anidbEid }
+                    } else null
+                    val enrichedData = (parsed ?: LinkData(
+                        id = data.id,
+                        imdbId = imdbId,
+                        tvdbId = res.external_ids?.tvdb_id,
+                        type = data.type,
+                        season = epSeason,
+                        episode = epNum,
+                        title = enTitle ?: title,
+                        year = year,
+                        orgTitle = orgTitle,
+                        isAnime = true,
+                        airedYear = year,
+                        jpTitle = jpTitle,
+                        airedDate = res.releaseDate ?: res.firstAirDate,
+                        alttitle = res.title,
+                        nametitle = res.name
+                    )).copy(
+                        aniId = if (epSeason <= 1) resolvedAniId?.toString() else null,
+                        malId = if (epSeason <= 1) resolvedMalId else null,
+                        anidbEid = anidbEid,
+                        isAnime = true,
+                        isDub = false
+                    ).toJson()
+                    ep.copy(data = enrichedData)
+                }
+
                 val subbedList = if (animeVideos.isNotEmpty()) {
-                    animeVideos.map { video ->
+                    val cinemetaEpisodes = animeVideos.map { video ->
                         val epNum = video.episode ?: video.number
                         val epSeason = video.season ?: 1
                         val epTitle = video.title ?: video.name ?: "Episode ${epNum ?: 1}"
@@ -658,7 +694,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         val videoYear = epReleased?.split("-")?.firstOrNull()?.toIntOrNull()
                             ?: cineRes?.meta?.year?.split("–", "-")?.firstOrNull()?.trim()?.toIntOrNull()
                             ?: year ?: 0
-                        val anidbEid = epNum?.let { animeMetaData?.episodes?.get(it.toString())?.anidbEid }
+                        val anidbEid = if (epSeason <= 1) {
+                            epNum?.let { animeMetaData?.episodes?.get(it.toString())?.anidbEid }
+                        } else null
 
                         newEpisode(
                             LinkData(
@@ -668,8 +706,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                 type = data.type,
                                 season = epSeason,
                                 episode = epNum,
-                                aniId = resolvedAniId?.toString(),
-                                malId = resolvedMalId,
+                                aniId = if (epSeason <= 1) resolvedAniId?.toString() else null,
+                                malId = if (epSeason <= 1) resolvedMalId else null,
                                 anidbEid = anidbEid,
                                 title = enTitle ?: title,
                                 year = videoYear,
@@ -696,83 +734,60 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                             addDate(epReleased)
                         }
                     }
+                    // Merge any TMDB episodes (e.g. newer seasons/episodes) missing from Cinemeta
+                    val existingKeys = cinemetaEpisodes.mapTo(HashSet()) { (it.season ?: 1) to (it.episode ?: 1) }
+                    val missingTmdbEpisodes = tmdbSeasonEpisodes.filter { ep ->
+                        ((ep.season ?: 1) to (ep.episode ?: 1)) !in existingKeys
+                    }
+                    (cinemetaEpisodes + missingTmdbEpisodes).sortedWith(
+                        compareBy({ it.season ?: 1 }, { it.episode ?: 1 })
+                    )
+                } else if (tmdbSeasonEpisodes.isNotEmpty()) {
+                    tmdbSeasonEpisodes
                 } else {
-                    val tmdbSeasonEpisodes = episodes.filter { (it.season ?: 1) != 0 }
-                    if (tmdbSeasonEpisodes.isNotEmpty()) {
-                        tmdbSeasonEpisodes.map { ep ->
-                            val parsed = runCatching { parseJson<LinkData>(ep.data) }.getOrNull()
-                            val epNum = ep.episode ?: parsed?.episode
-                            val anidbEid = epNum?.let { animeMetaData?.episodes?.get(it.toString())?.anidbEid }
-                            val enrichedData = (parsed ?: LinkData(
+                    val metaEps = animeMetaData?.episodes
+                        ?.entries
+                        ?.filter { it.key.all(Char::isDigit) }
+                        ?.sortedBy { it.key.toIntOrNull() ?: 0 }
+                        .orEmpty()
+                    metaEps.map { (epKey, metaEp) ->
+                        val epNum = metaEp.episodeNumber ?: epKey.toIntOrNull() ?: 1
+                        val epSeason = metaEp.seasonNumber?.takeIf { it > 0 } ?: 1
+                        val epTitle = metaEp.title?.get("en") ?: metaEp.title?.get("ja") ?: "Episode $epNum"
+                        newEpisode(
+                            LinkData(
                                 id = data.id,
                                 imdbId = imdbId,
                                 tvdbId = res.external_ids?.tvdb_id,
                                 type = data.type,
-                                season = ep.season ?: 1,
+                                season = epSeason,
                                 episode = epNum,
+                                aniId = if (epSeason <= 1) resolvedAniId?.toString() else null,
+                                malId = if (epSeason <= 1) resolvedMalId else null,
+                                anidbEid = metaEp.anidbEid,
                                 title = enTitle ?: title,
                                 year = year,
                                 orgTitle = orgTitle,
                                 isAnime = true,
                                 airedYear = year,
+                                epsTitle = epTitle,
                                 jpTitle = jpTitle,
+                                date = metaEp.airDate,
                                 airedDate = res.releaseDate ?: res.firstAirDate,
+                                isAsian = isAsian,
+                                isBollywood = isBollywood,
+                                isCartoon = isCartoon,
                                 alttitle = res.title,
-                                nametitle = res.name
-                            )).copy(
-                                aniId = resolvedAniId?.toString(),
-                                malId = resolvedMalId,
-                                anidbEid = anidbEid,
-                                isAnime = true,
+                                nametitle = res.name,
                                 isDub = false
                             ).toJson()
-                            ep.copy(data = enrichedData)
-                        }
-                    } else {
-                        val metaEps = animeMetaData?.episodes
-                            ?.entries
-                            ?.filter { it.key.all(Char::isDigit) }
-                            ?.sortedBy { it.key.toIntOrNull() ?: 0 }
-                            .orEmpty()
-                        metaEps.map { (epKey, metaEp) ->
-                            val epNum = metaEp.episodeNumber ?: epKey.toIntOrNull() ?: 1
-                            val epSeason = metaEp.seasonNumber?.takeIf { it > 0 } ?: 1
-                            val epTitle = metaEp.title?.get("en") ?: metaEp.title?.get("ja") ?: "Episode $epNum"
-                            newEpisode(
-                                LinkData(
-                                    id = data.id,
-                                    imdbId = imdbId,
-                                    tvdbId = res.external_ids?.tvdb_id,
-                                    type = data.type,
-                                    season = epSeason,
-                                    episode = epNum,
-                                    aniId = resolvedAniId?.toString(),
-                                    malId = resolvedMalId,
-                                    anidbEid = metaEp.anidbEid,
-                                    title = enTitle ?: title,
-                                    year = year,
-                                    orgTitle = orgTitle,
-                                    isAnime = true,
-                                    airedYear = year,
-                                    epsTitle = epTitle,
-                                    jpTitle = jpTitle,
-                                    date = metaEp.airDate,
-                                    airedDate = res.releaseDate ?: res.firstAirDate,
-                                    isAsian = isAsian,
-                                    isBollywood = isBollywood,
-                                    isCartoon = isCartoon,
-                                    alttitle = res.title,
-                                    nametitle = res.name,
-                                    isDub = false
-                                ).toJson()
-                            ) {
-                                this.name = epTitle
-                                this.season = epSeason
-                                this.episode = epNum
-                                this.posterUrl = metaEp.image ?: poster
-                                this.description = metaEp.overview
-                                addDate(metaEp.airDate)
-                            }
+                        ) {
+                            this.name = epTitle
+                            this.season = epSeason
+                            this.episode = epNum
+                            this.posterUrl = metaEp.image ?: poster
+                            this.description = metaEp.overview
+                            addDate(metaEp.airDate)
                         }
                     }
                 }
@@ -989,7 +1004,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
             satisfyWithOneLinkIfSubsFound = false,
-            requireSubtitles = false,
+            requireSubtitles = true,
             requireDualQualities = false,
             require720p = false,
             adaptiveTierEscalation = true,
@@ -1083,7 +1098,39 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun totalResultsFound(): Int = linksFound.get() + subtitlesFound.get()
 
-        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > Cineby > CineSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex)
+        val subtitleHarvestTasks = buildList {
+            val subLookupId = res.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: res.id?.toString()
+            if (!subLookupId.isNullOrBlank()) {
+                add(
+                    PipelinedTask(
+                        providerId = "wyziesub",
+                        isVideo = false,
+                        taskTimeoutMs = 10_000L,
+                        priorityBoost = 99f
+                    ) {
+                        StreamPlayExtractor.invokeWYZIESubs(subLookupId, res.season, res.episode) { sub ->
+                            emitSubtitle(sub)
+                        }
+                    }
+                )
+            }
+            if (!res.imdbId.isNullOrBlank()) {
+                add(
+                    PipelinedTask(
+                        providerId = "subtitles",
+                        isVideo = false,
+                        taskTimeoutMs = 10_000L,
+                        priorityBoost = 98f
+                    ) {
+                        StreamPlayExtractor.invokeSubtitleAPI(res.imdbId, res.season, res.episode) { sub ->
+                            emitSubtitle(sub)
+                        }
+                    }
+                )
+            }
+        }
+
+        // Phase 1: Prioritize top-tier zero-setup primary sources (VidLink > Cineby > CineSrc > VidFast > MegaPlay > MeowTV > Animex)
         val primaryTasks = prioritizedPrimary.map { provider ->
             val providerTimeout = StreamPlayConcurrency.getProviderExecutionTimeout(provider.id)
                 .let { if (slowInternetMode) (it * 1.35).toLong().coerceAtMost(45_000L) else it }
@@ -1113,7 +1160,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     }
                 }
             }
-        } + stremioAddons.map { (addonId, addon) ->
+        } + subtitleHarvestTasks + stremioAddons.map { (addonId, addon) ->
             PipelinedTask(
                 providerId = addonId,
                 isVideo = true,

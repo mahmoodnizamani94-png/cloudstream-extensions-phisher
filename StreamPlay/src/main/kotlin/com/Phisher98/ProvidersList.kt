@@ -204,7 +204,8 @@ private val providers by lazy {
                     episode = res.episode,
                     subtitleCallback = subtitleCallback,
                     callback = callback,
-                    dubtype = getDubStatus(res)
+                    dubtype = getDubStatus(res),
+                    jpTitle = res.jpTitle
                 )
             }
         }

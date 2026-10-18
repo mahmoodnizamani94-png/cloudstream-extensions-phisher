@@ -325,7 +325,10 @@ class StreamPlayAnime : MainAPI() {
                 ep.copy(data = dubLinkData)
             }
 
-            val isUnreleased = data.status.equals("NOT_YET_RELEASED", ignoreCase = true)
+            val hasReleasedYear = aniyear != null && aniyear < java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+            val isUnreleased = data.status.equals("NOT_YET_RELEASED", ignoreCase = true) &&
+                !hasReleasedYear &&
+                animeMetaData?.episodes.isNullOrEmpty()
 
             if (isMovie) {
                 newMovieLoadResponse(anititle, url, TvType.AnimeMovie, href) {
@@ -428,7 +431,7 @@ class StreamPlayAnime : MainAPI() {
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
             satisfyWithOneLinkIfSubsFound = false,
-            requireSubtitles = false,
+            requireSubtitles = true,
             requireDualQualities = false,
             require720p = false,
             adaptiveTierEscalation = true,
@@ -586,12 +589,23 @@ class StreamPlayAnime : MainAPI() {
             })
             add(PipelinedTask("animex", LatencyTier.TIER_1, priorityBoost = 90f) {
                 try {
-                    invokeAnimex(malId, aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
+                    invokeAnimex(malId, aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus, jpTitle = jpTitle)
                 } finally {
                     runningTopRanks.remove(90)
                     dispatcher.markRankCompleted(90)
                 }
             })
+            val subLookupId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
+            if (!subLookupId.isNullOrBlank()) {
+                add(PipelinedTask("wyziesub", LatencyTier.TIER_1, isVideo = false, taskTimeoutMs = 10_000L, priorityBoost = 99f) {
+                    StreamPlayExtractor.invokeWYZIESubs(subLookupId, tmdbSeason, tmdbEpisode, trackedSubtitleCallback)
+                })
+            }
+            if (!mediaData.imdbId.isNullOrBlank()) {
+                add(PipelinedTask("subtitles", LatencyTier.TIER_1, isVideo = false, taskTimeoutMs = 10_000L, priorityBoost = 98f) {
+                    StreamPlayExtractor.invokeSubtitleAPI(mediaData.imdbId, tmdbSeason, tmdbEpisode, trackedSubtitleCallback)
+                })
+            }
         }
 
         try {

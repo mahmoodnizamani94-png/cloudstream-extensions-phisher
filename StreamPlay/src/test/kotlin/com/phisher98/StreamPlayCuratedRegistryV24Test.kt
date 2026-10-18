@@ -1003,4 +1003,12 @@ class StreamPlayCuratedRegistryV24Test {
             StreamLinkOptimizer.getStreamCompositeScore(vidfast) > StreamLinkOptimizer.getStreamCompositeScore(megaplay)
         )
     }
+
+    @Test
+    fun testIsUpcomingTimezoneSafetyBufferPreventsFalseComingSoon() {
+        assertFalse("Past dates must never be upcoming", isUpcoming("2020-01-01"))
+        assertFalse("Blank dates must never be upcoming", isUpcoming(""))
+        assertFalse("Null dates must never be upcoming", isUpcoming(null))
+        assertTrue("Far future dates must still be marked upcoming", isUpcoming("2099-12-31"))
+    }
 }

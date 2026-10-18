@@ -236,7 +236,9 @@ fun isUpcoming(dateString: String?): Boolean {
     return try {
         val format = getTmdbDateFormatter()
         val dateTime = dateString?.let { format.parse(it)?.time } ?: return false
-        unixTimeMS < dateTime
+        // 36-hour buffer accounts for global release timezone differences (e.g. JST UTC+9 vs UTC-12)
+        // so movies and anime episodes released today are never falsely gated as Upcoming/Coming Soon.
+        unixTimeMS < (dateTime - 36L * 3600L * 1000L)
     } catch (t: Throwable) {
         logError(t)
         false

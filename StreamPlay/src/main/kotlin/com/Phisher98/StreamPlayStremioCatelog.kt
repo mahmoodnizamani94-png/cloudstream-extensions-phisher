@@ -141,7 +141,7 @@ class StreamPlayStremioCatelog(
             upstreamCallback = callback,
             scope = this,
             top720GraceMs = 350L,
-            activeTopRanks = setOf(100, 95, 90)
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90)
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },

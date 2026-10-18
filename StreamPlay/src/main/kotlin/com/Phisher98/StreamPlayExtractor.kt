@@ -125,10 +125,13 @@ object StreamPlayExtractor : StreamPlay() {
         timeoutSec: Long = 3L
     ): String? = suspendCancellableCoroutine { cont ->
         try {
+            val connectSec = timeoutSec.coerceAtLeast(5L)
+            val readSec = timeoutSec.coerceAtLeast(6L)
+            val totalCallSec = (timeoutSec * 2L).coerceAtLeast(10L)
             val client = app.baseClient.newBuilder()
-                .callTimeout(timeoutSec, TimeUnit.SECONDS)
-                .connectTimeout(timeoutSec, TimeUnit.SECONDS)
-                .readTimeout(timeoutSec, TimeUnit.SECONDS)
+                .callTimeout(totalCallSec, TimeUnit.SECONDS)
+                .connectTimeout(connectSec, TimeUnit.SECONDS)
+                .readTimeout(readSec, TimeUnit.SECONDS)
                 .build()
             val req = Request.Builder()
                 .url(url)
@@ -186,10 +189,13 @@ object StreamPlayExtractor : StreamPlay() {
         timeoutSec: Long = 3L
     ): Response? = suspendCancellableCoroutine { cont ->
         try {
+            val connectSec = timeoutSec.coerceAtLeast(5L)
+            val readSec = timeoutSec.coerceAtLeast(6L)
+            val totalCallSec = (timeoutSec * 2L).coerceAtLeast(10L)
             val client = app.baseClient.newBuilder()
-                .callTimeout(timeoutSec, TimeUnit.SECONDS)
-                .connectTimeout(timeoutSec, TimeUnit.SECONDS)
-                .readTimeout(timeoutSec, TimeUnit.SECONDS)
+                .callTimeout(totalCallSec, TimeUnit.SECONDS)
+                .connectTimeout(connectSec, TimeUnit.SECONDS)
+                .readTimeout(readSec, TimeUnit.SECONDS)
                 .build()
             val req = Request.Builder()
                 .url(url)
@@ -247,8 +253,8 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * SOTA Emission for Top-Tier Sources (VidLink 100 > Cineby 96 > CineSrc 95 > VidFast 94 >
-     * VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90). Emits only genuine, manifest-verified variants:
+     * SOTA Emission for Top-Tier Sources (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
+     * MegaPlay 92 > MeowTV 91 > Animex 90). Emits only genuine, manifest-verified variants:
      * 720p is prioritized #1 and 1080p #2 by STREAM_PRIORITY_COMPARATOR, followed by the
      * remaining qualities (480p, 4K, ...); no synthetic companions are ever fabricated.
      *
@@ -306,10 +312,32 @@ object StreamPlayExtractor : StreamPlay() {
         var resolvedAnilistId: Int? = null
         var resolvedMalId: Int? = null
         var preFetchedAniJson: String? = null
+        val isMultiSeasonContinuation = (season ?: 1) >= 2
 
-        // Fast path: resolve via api.ani.zip using IMDb ID or TMDB ID when available
+        // For Season 2+ of multi-season anime on TMDB/IMDb, show-level IMDb/TMDB mappings on
+        // api.ani.zip point to Season 1's MAL/AniList entry. Resolve Season 2+ via season-aware
+        // AniList search first so MegaPlay & Animex receive the exact season's MAL/AniList ID.
+        if (isMultiSeasonContinuation && !title.isNullOrBlank()) {
+            val seasonalTitle = "$title Season $season"
+            val (sAni, sMal) = runCatching {
+                convertTmdbToAnimeId(seasonalTitle, date, airedDate, TvType.Anime)
+            }.getOrDefault(AniIds(null, null))
+            if (sAni != null || sMal != null) {
+                resolvedAnilistId = sAni
+                resolvedMalId = sMal
+            } else {
+                val (fallbackAni, fallbackMal) = runCatching {
+                    convertTmdbToAnimeId(title, date, airedDate, TvType.Anime)
+                }.getOrDefault(AniIds(null, null))
+                resolvedAnilistId = fallbackAni
+                resolvedMalId = fallbackMal
+            }
+        }
+
+        // Fast path for Season 1 / Movies (or fallback if Season 2+ search returned nothing):
+        // resolve via api.ani.zip using IMDb ID or TMDB ID when available
         val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
-        if (cleanImdb != null) {
+        if ((resolvedAnilistId == null && resolvedMalId == null) && cleanImdb != null) {
             val raw = runCatching {
                 cancellableGetText("https://api.ani.zip/mappings?imdb_id=$cleanImdb", timeoutSec = 5L)
             }.getOrNull()
@@ -402,13 +430,18 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
-        dubtype: String?
+        dubtype: String?,
+        jpTitle: String? = null
     ) {
         try {
             val isMovie = dubtype.equals("Movie", ignoreCase = true)
             val json = "application/json; charset=utf-8".toMediaType()
             val epNum = if (isMovie) 1 else (episode ?: return)
-            val searchTitle = title?.takeIf { it.isNotBlank() } ?: return
+            val candidateTitles = listOfNotNull(
+                title?.trim()?.takeIf { it.isNotBlank() },
+                jpTitle?.trim()?.takeIf { it.isNotBlank() && !it.equals(title?.trim(), ignoreCase = true) }
+            )
+            if (candidateTitles.isEmpty()) return
 
             val animexOrigin = "https://animex.one"
             val animexPlyrOrigin = "https://plyr.animex.one"
@@ -425,35 +458,48 @@ object StreamPlayExtractor : StreamPlay() {
                 "Accept" to "application/json, text/plain, */*"
             )
 
-            val queryPayload = JSONObject().apply {
-                put(
-                    "query",
-                    "query FastSearch(\$query: String, \$limit: Int) { catalogAnime(filter: { query: \$query }, limit: \$limit) { items { id anilistId malId titleRomaji titleEnglish format } } }"
-                )
-                put("variables", JSONObject().apply {
-                    put("query", searchTitle)
-                    put("limit", 15)
-                })
-            }.toString()
+            suspend fun queryCatalog(queryStr: String): List<AnimeItem> {
+                val queryPayload = JSONObject().apply {
+                    put(
+                        "query",
+                        "query FastSearch(\$query: String, \$limit: Int) { catalogAnime(filter: { query: \$query }, limit: \$limit) { items { id anilistId malId titleRomaji titleEnglish format } } }"
+                    )
+                    put("variables", JSONObject().apply {
+                        put("query", queryStr)
+                        put("limit", 15)
+                    })
+                }.toString()
 
-            val responseText = cancellablePostText(
-                "https://graphql.animex.one/graphql",
-                headers = graphqlHeaders,
-                requestBody = queryPayload.toRequestBody(json),
-                timeoutSec = 6L
-            ) ?: return
-            val response = tryParseJson<SearchResponse>(responseText) ?: return
+                val responseText = cancellablePostText(
+                    "https://graphql.animex.one/graphql",
+                    headers = graphqlHeaders,
+                    requestBody = queryPayload.toRequestBody(json),
+                    timeoutSec = 6L
+                ) ?: return emptyList()
+                return tryParseJson<SearchResponse>(responseText)?.data?.catalogAnime?.items.orEmpty()
+            }
 
-            val items = response.data.catalogAnime.items
-            val normSearch = normalizeTitle(searchTitle)
-            val anime = items.firstOrNull {
-                (anilistId != null && it.anilistId == anilistId) ||
-                    (malId != null && it.malId == malId)
-            } ?: items.firstOrNull {
-                it.titleEnglish.equals(searchTitle, true) ||
-                    it.titleRomaji.equals(searchTitle, true) ||
-                    (normSearch != null && (normalizeTitle(it.titleEnglish) == normSearch || normalizeTitle(it.titleRomaji) == normSearch))
-            } ?: items.firstOrNull() ?: return
+            var matchedAnime: AnimeItem? = null
+            var fallbackItems: List<AnimeItem> = emptyList()
+            for (searchTitle in candidateTitles) {
+                val items = queryCatalog(searchTitle)
+                if (items.isEmpty()) continue
+                if (fallbackItems.isEmpty()) fallbackItems = items
+                val normSearch = normalizeTitle(searchTitle)
+                val exactMatch = items.firstOrNull {
+                    (anilistId != null && it.anilistId == anilistId) ||
+                        (malId != null && it.malId == malId)
+                } ?: items.firstOrNull {
+                    it.titleEnglish.equals(searchTitle, true) ||
+                        it.titleRomaji.equals(searchTitle, true) ||
+                        (normSearch != null && (normalizeTitle(it.titleEnglish) == normSearch || normalizeTitle(it.titleRomaji) == normSearch))
+                }
+                if (exactMatch != null) {
+                    matchedAnime = exactMatch
+                    break
+                }
+            }
+            val anime = matchedAnime ?: fallbackItems.firstOrNull() ?: return
 
             val serversText = cancellableGetText(
                 "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
@@ -970,28 +1016,28 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
-        val url = if (season == null) {
-            "$SubtitlesAPI/subtitles/movie/$id.json"
-        } else {
-            "$SubtitlesAPI/subtitles/series/$id:$season:$episode.json"
-        }
-        val headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        )
-        val response = safeGet(url, headers = headers, timeout = 10L)
-        if (response.code != 200) return
-        response.parsedSafe<SubtitlesAPI>()?.subtitles?.safeAmap { it ->
-            val lan = getLanguage(it.lang)
-            val suburl = it.url
-            subtitleCallback.invoke(
-                newSubtitleFile(
-                    lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
-                    suburl
-                )
+        val cleanId = id?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) } ?: return
+        try {
+            val url = if (season == null || season == 0) {
+                "$SubtitlesAPI/subtitles/movie/$cleanId.json"
+            } else {
+                "$SubtitlesAPI/subtitles/series/$cleanId:$season:${episode ?: 1}.json"
+            }
+            val headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
             )
+            val body = cancellableGetText(url, headers = headers, timeoutSec = 8L) ?: return
+            tryParseJson<SubtitlesAPI>(body)?.subtitles?.forEach { sub ->
+                val subUrl = sub.url.trim()
+                if (subUrl.startsWith("http", ignoreCase = true)) {
+                    val lan = cleanSubtitleLabel(getLanguage(sub.lang))
+                    subtitleCallback.invoke(newSubtitleFile(lan, subUrl))
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
         }
     }
-
 
     suspend fun invokeWYZIESubs(
         id: String? = null,
@@ -999,28 +1045,26 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
+        val cleanId = id?.trim()?.takeIf { it.isNotBlank() && it != "0" && it != "null" } ?: return
         val key = wyziekey.takeIf { !it.isNullOrBlank() } ?: return
-
-        val url = if (season != null) {
-            "$WYZIESubsAPI/search?id=$id&season=$season&episode=$episode&source=all&key=$key"
-        } else {
-            "$WYZIESubsAPI/search?id=$id&source=all&key=$key"
-        }
-
-        val data = app.get(
-            url,
-            timeout = 10L
-        ).parsedSafe<Array<WYZIESubtitle>>() ?: return
-
-        data.forEach { sub ->
-            val lang = sub.language ?: return@forEach
-
-            subtitleCallback.invoke(
-                newSubtitleFile(
-                    sub.display ?: getLanguage(lang),
-                    sub.url
-                )
-            )
+        try {
+            val url = if (season != null && season > 0) {
+                "$WYZIESubsAPI/search?id=$cleanId&season=$season&episode=${episode ?: 1}&source=all&key=$key"
+            } else {
+                "$WYZIESubsAPI/search?id=$cleanId&source=all&key=$key"
+            }
+            val body = cancellableGetText(url, timeoutSec = 8L) ?: return
+            val data = tryParseJson<Array<WYZIESubtitle>>(body) ?: return
+            data.forEach { sub ->
+                val lang = sub.language ?: return@forEach
+                val subUrl = sub.url.trim()
+                if (subUrl.startsWith("http", ignoreCase = true)) {
+                    val label = cleanSubtitleLabel(sub.display ?: getLanguage(lang))
+                    subtitleCallback.invoke(newSubtitleFile(label, subUrl))
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
         }
     }
 
@@ -1262,6 +1306,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                 // 1. Parse captions / subtitles
                 var hasCaptions = false
+                var hasEnglishCaptions = false
                 stream.captions?.forEach { caption ->
                     val rawSubUrl = caption?.url?.trim()
                     val subUrl = when {
@@ -1273,6 +1318,9 @@ object StreamPlayExtractor : StreamPlay() {
                     if (!subUrl.isNullOrBlank()) {
                         hasCaptions = true
                         val lang = cleanSubtitleLabel(caption?.language)
+                        if (lang.contains("en", ignoreCase = true)) {
+                            hasEnglishCaptions = true
+                        }
                         subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
                     }
                 }
@@ -1448,6 +1496,18 @@ object StreamPlayExtractor : StreamPlay() {
                         generatedLinks = directQualitiesLinks,
                         callback = callback
                     )
+                }
+
+                // When vidlink.pro returns a stream without native English captions (common on Anime),
+                // harvest English subtitles from WyZIESUB and SubtitleAPI immediately after emitting video links.
+                if (!hasEnglishCaptions && subtitleCallback != null) {
+                    val subLookupId = imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
+                    if (!subLookupId.isNullOrBlank()) {
+                        invokeWYZIESubs(subLookupId, season, episode, subtitleCallback)
+                    }
+                    if (!imdbId.isNullOrBlank()) {
+                        invokeSubtitleAPI(imdbId.trim(), season, episode, subtitleCallback)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -2653,13 +2713,13 @@ object StreamPlayExtractor : StreamPlay() {
         val isDirectVideo = url.contains(".mp4", ignoreCase = true) || url.contains(".mkv", ignoreCase = true)
         val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
         val generated = if (!isDirectVideo) {
-            withTimeoutOrNull(4500L) {
+            withTimeoutOrNull(8000L) {
                 val reqHeaders = buildMap {
                     put("User-Agent", USER_AGENT)
                     if (referer.isNotBlank()) put("Referer", referer)
                     headers.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
                 }
-                val manifestText = cancellableGetText(url, headers = reqHeaders, timeoutSec = 4L)
+                val manifestText = cancellableGetText(url, headers = reqHeaders, timeoutSec = 6L)
                 val parsedVariants = if (!manifestText.isNullOrBlank()) {
                     parseHlsMasterVariants(url, manifestText)
                 } else {
