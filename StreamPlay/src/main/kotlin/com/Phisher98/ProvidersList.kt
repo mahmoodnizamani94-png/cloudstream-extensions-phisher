@@ -56,7 +56,8 @@ private fun StreamPlayCache.AnimeIdMapping.toResolvedAnimeIds(): StreamPlayExtra
         kaasSlug = kaasSlug,
         animepaheUrl = animepaheUrl,
         animekaiId = animekaiId,
-        tmdbYear = tmdbYear
+        tmdbYear = tmdbYear,
+        resolvedEpisode = resolvedEpisode
     )
 }
 
@@ -74,11 +75,12 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
             kaasSlug = null,
             animepaheUrl = null,
             animekaiId = null,
-            tmdbYear = res.year ?: res.airedYear
+            tmdbYear = res.year ?: res.airedYear,
+            resolvedEpisode = res.episode
         )
     }
 
-    val cacheKey = "${res.id ?: 0}_${res.imdbId.orEmpty()}_${res.title}_${res.date ?: res.airedDate}_${res.season ?: 0}"
+    val cacheKey = "${res.id ?: 0}_${res.imdbId.orEmpty()}_${res.title}_${res.date ?: res.airedDate}_${res.season ?: 0}_${res.episode ?: 0}"
 
     val cached = StreamPlayCache.getCachedAnimeIds(cacheKey)
     if (cached != null) {
@@ -114,7 +116,8 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
             kaasSlug = ids.kaasSlug,
             animepaheUrl = ids.animepaheUrl,
             animekaiId = ids.animekaiId,
-            tmdbYear = ids.tmdbYear
+            tmdbYear = ids.tmdbYear,
+            resolvedEpisode = ids.resolvedEpisode
         )
     )
 
@@ -182,7 +185,7 @@ private val providers by lazy {
                 invokeMegaPlay(
                     malId = ids.malId,
                     anilistId = ids.anilistId,
-                    episode = res.episode,
+                    episode = ids.resolvedEpisode ?: res.episode,
                     subtitleCallback = subtitleCallback,
                     callback = callback,
                     dubtype = getDubStatus(res)
@@ -200,12 +203,12 @@ private val providers by lazy {
                 invokeAnimex(
                     malId = ids.malId,
                     anilistId = ids.anilistId,
-                    title = res.title,
-                    episode = res.episode,
+                    title = ids.zoroTitle ?: res.title,
+                    episode = ids.resolvedEpisode ?: res.episode,
                     subtitleCallback = subtitleCallback,
                     callback = callback,
                     dubtype = getDubStatus(res),
-                    jpTitle = res.jpTitle
+                    jpTitle = res.jpTitle ?: res.title
                 )
             }
         }

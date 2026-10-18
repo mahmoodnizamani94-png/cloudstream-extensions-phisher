@@ -148,6 +148,7 @@ object StreamPlayCache {
         val animepaheUrl: String? = null,
         val animekaiId: String? = null,
         val tmdbYear: Int? = null,
+        val resolvedEpisode: Int? = null,
         val timestamp: Long = System.currentTimeMillis()
     )
 

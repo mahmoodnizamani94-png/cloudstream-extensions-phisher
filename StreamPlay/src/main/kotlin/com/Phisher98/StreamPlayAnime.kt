@@ -251,7 +251,21 @@ class StreamPlayAnime : MainAPI() {
                 return if (!jsonTitle.isNullOrBlank()) jsonTitle else "Episode ${epData?.episode ?: epNum}"
             }
 
+            val tmdbEpMappings = if (isMovie) {
+                emptyMap()
+            } else {
+                StreamPlayExtractor.resolveAccurateTmdbSeriesMapping(
+                    tmdbId = tmdbid,
+                    aniTitle = anititle,
+                    jpTitle = jpTitle,
+                    aniYear = aniyear,
+                    totalEps = totalEps,
+                    epMetaMap = epMetaMap
+                )
+            }
+
             val anidbEid = anidbEidMap[1] ?: 0
+            val firstVerifiedTmdb = tmdbEpMappings[1]
             val href = LinkData(
                 malId = resolvedMalId,
                 aniId = resolvedAniId,
@@ -264,14 +278,15 @@ class StreamPlayAnime : MainAPI() {
                 anidbEid = anidbEid,
                 season = if (isMovie) null else 1,
                 episode = 1,
-                tmdbSeason = if (isMovie) null else (epMetaMap[1]?.seasonNumber?.takeIf { it > 0 } ?: 1),
-                tmdbEpisode = epMetaMap[1]?.episodeNumber?.takeIf { it > 0 } ?: 1
+                tmdbSeason = if (isMovie) null else (firstVerifiedTmdb?.first ?: -1),
+                tmdbEpisode = if (isMovie) 1 else (firstVerifiedTmdb?.second ?: -1)
             ).toStringData()
 
             val episodes = (1..totalEps).map { i ->
                 val epData = epMetaMap[i]
-                val tmdbSeason = epData?.seasonNumber?.takeIf { it > 0 } ?: 1
-                val tmdbEpisode = epData?.episodeNumber?.takeIf { it > 0 } ?: i
+                val verifiedTmdb = tmdbEpMappings[i]
+                val tmdbSeason = verifiedTmdb?.first ?: -1
+                val tmdbEpisode = verifiedTmdb?.second ?: -1
                 val linkData = LinkData(
                     malId = resolvedMalId,
                     aniId = resolvedAniId,
@@ -303,9 +318,9 @@ class StreamPlayAnime : MainAPI() {
 
             val episodesDub = episodes.mapIndexed { idx, ep ->
                 val i = idx + 1
-                val epData = epMetaMap[i]
-                val tmdbSeason = epData?.seasonNumber?.takeIf { it > 0 } ?: 1
-                val tmdbEpisode = epData?.episodeNumber?.takeIf { it > 0 } ?: i
+                val verifiedTmdb = tmdbEpMappings[i]
+                val tmdbSeason = verifiedTmdb?.first ?: -1
+                val tmdbEpisode = verifiedTmdb?.second ?: -1
                 val dubLinkData = LinkData(
                     malId = resolvedMalId,
                     aniId = resolvedAniId,
@@ -392,13 +407,30 @@ class StreamPlayAnime : MainAPI() {
         val aniid = mediaData.aniId
         val year = mediaData.year
         val isMovie = mediaData.season == null
-        val tmdbSeason = if (isMovie) null else (mediaData.tmdbSeason ?: mediaData.season ?: 1)
-        val tmdbEpisode = if (isMovie) null else (mediaData.tmdbEpisode ?: episode ?: 1)
 
         val effectiveTmdbId = mediaData.tmdbId
-            ?: mediaData.imdbId?.let { resolveTmdbIdFromImdb(it, tmdbSeason) }
+            ?: mediaData.imdbId?.let { resolveTmdbIdFromImdb(it, if (isMovie) null else 1) }
             ?: resolveTmdbIdByTitle(anititle, year, isMovie)
             ?: resolveTmdbIdByTitle(jpTitle, year, isMovie)
+
+        val verifiedTmdbPair = if (isMovie) {
+            null
+        } else {
+            StreamPlayExtractor.resolveVerifiedTmdbEpisodeForAnime(
+                tmdbId = effectiveTmdbId,
+                aniId = aniid,
+                malId = malId,
+                aniTitle = anititle,
+                jpTitle = jpTitle,
+                aniYear = year,
+                courEpisode = episode,
+                rawTmdbSeason = mediaData.tmdbSeason,
+                rawTmdbEpisode = mediaData.tmdbEpisode
+            )
+        }
+        val tmdbSeason = if (isMovie) null else verifiedTmdbPair?.first
+        val tmdbEpisode = if (isMovie) null else verifiedTmdbPair?.second
+        val canUseTmdbProviders = isMovie || (tmdbSeason != null && tmdbSeason > 0 && tmdbEpisode != null && tmdbEpisode > 0)
 
         val animeTopRanks = setOf(100, 95, 94, 92, 90)
         val runningTopRanks = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>().apply {
@@ -486,7 +518,7 @@ class StreamPlayAnime : MainAPI() {
         val tasks = buildList {
             add(PipelinedTask("vidlink", LatencyTier.TIER_1, priorityBoost = 100f) {
                 try {
-                    if (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank()) {
+                    if (canUseTmdbProviders && (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank())) {
                         invokeVidlink(
                             tmdbId = effectiveTmdbId,
                             season = tmdbSeason,
@@ -496,17 +528,6 @@ class StreamPlayAnime : MainAPI() {
                             imdbId = mediaData.imdbId,
                             isAnime = true
                         )
-                        if (!isMovie && (tmdbSeason != 1 || tmdbEpisode != episode) && episode != null) {
-                            invokeVidlink(
-                                tmdbId = effectiveTmdbId,
-                                season = 1,
-                                episode = episode,
-                                subtitleCallback = trackedSubtitleCallback,
-                                callback = trackedCallback,
-                                imdbId = mediaData.imdbId,
-                                isAnime = true
-                            )
-                        }
                     }
                 } finally {
                     runningTopRanks.remove(100)
@@ -515,7 +536,7 @@ class StreamPlayAnime : MainAPI() {
             })
             add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 95f) {
                 try {
-                    if (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank()) {
+                    if (canUseTmdbProviders && (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank())) {
                         invokeCineby(
                             tmdbId = effectiveTmdbId,
                             season = tmdbSeason,
@@ -527,19 +548,6 @@ class StreamPlayAnime : MainAPI() {
                             year = year,
                             isAnime = true
                         )
-                        if (!isMovie && (tmdbSeason != 1 || tmdbEpisode != episode) && episode != null) {
-                            invokeCineby(
-                                tmdbId = effectiveTmdbId,
-                                season = 1,
-                                episode = episode,
-                                subtitleCallback = trackedSubtitleCallback,
-                                callback = trackedCallback,
-                                imdbId = mediaData.imdbId,
-                                title = anititle ?: jpTitle,
-                                year = year,
-                                isAnime = true
-                            )
-                        }
                     }
                 } finally {
                     runningTopRanks.remove(95)
@@ -548,7 +556,7 @@ class StreamPlayAnime : MainAPI() {
             })
             add(PipelinedTask("cinesrc", LatencyTier.TIER_1, priorityBoost = 94f) {
                 try {
-                    if (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank()) {
+                    if (canUseTmdbProviders && (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank())) {
                         invokeCineSrc(
                             tmdbId = effectiveTmdbId,
                             season = tmdbSeason,
@@ -560,19 +568,6 @@ class StreamPlayAnime : MainAPI() {
                             year = year,
                             isAnime = true
                         )
-                        if (!isMovie && (tmdbSeason != 1 || tmdbEpisode != episode) && episode != null) {
-                            invokeCineSrc(
-                                tmdbId = effectiveTmdbId,
-                                season = 1,
-                                episode = episode,
-                                subtitleCallback = trackedSubtitleCallback,
-                                callback = trackedCallback,
-                                imdbId = mediaData.imdbId,
-                                title = anititle ?: jpTitle,
-                                year = year,
-                                isAnime = true
-                            )
-                        }
                     }
                 } finally {
                     runningTopRanks.remove(94)
@@ -596,12 +591,12 @@ class StreamPlayAnime : MainAPI() {
                 }
             })
             val subLookupId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
-            if (!subLookupId.isNullOrBlank()) {
+            if (canUseTmdbProviders && !subLookupId.isNullOrBlank()) {
                 add(PipelinedTask("wyziesub", LatencyTier.TIER_1, isVideo = false, taskTimeoutMs = 10_000L, priorityBoost = 99f) {
                     StreamPlayExtractor.invokeWYZIESubs(subLookupId, tmdbSeason, tmdbEpisode, trackedSubtitleCallback)
                 })
             }
-            if (!mediaData.imdbId.isNullOrBlank()) {
+            if (canUseTmdbProviders && !mediaData.imdbId.isNullOrBlank()) {
                 add(PipelinedTask("subtitles", LatencyTier.TIER_1, isVideo = false, taskTimeoutMs = 10_000L, priorityBoost = 98f) {
                     StreamPlayExtractor.invokeSubtitleAPI(mediaData.imdbId, tmdbSeason, tmdbEpisode, trackedSubtitleCallback)
                 })

@@ -298,7 +298,143 @@ object StreamPlayExtractor : StreamPlay() {
         val animepaheUrl: String?,
         val animekaiId: String?,
         val tmdbYear: Int?,
+        val resolvedEpisode: Int? = null,
     )
+
+    private suspend fun queryAniListNodeWithSequels(aniId: Int?, malId: Int?, searchTitle: String? = null): JSONObject? {
+        val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+        val query = when {
+            aniId != null -> """
+                query (${'$'}id: Int) {
+                  Media(id: ${'$'}id, type: ANIME) {
+                    id idMal episodes format status
+                    startDate { year month day }
+                    title { english romaji }
+                    relations {
+                      edges {
+                        relationType(version: 2)
+                        node { id idMal episodes format status type startDate { year month day } title { english romaji } }
+                      }
+                    }
+                  }
+                }
+            """.trimIndent()
+            malId != null -> """
+                query (${'$'}idMal: Int) {
+                  Media(idMal: ${'$'}idMal, type: ANIME) {
+                    id idMal episodes format status
+                    startDate { year month day }
+                    title { english romaji }
+                    relations {
+                      edges {
+                        relationType(version: 2)
+                        node { id idMal episodes format status type startDate { year month day } title { english romaji } }
+                      }
+                    }
+                  }
+                }
+            """.trimIndent()
+            !searchTitle.isNullOrBlank() -> """
+                query (${'$'}search: String) {
+                  Media(search: ${'$'}search, type: ANIME, sort: [SEARCH_MATCH, POPULARITY_DESC], format_in: [TV, ONA]) {
+                    id idMal episodes format status
+                    startDate { year month day }
+                    title { english romaji }
+                    relations {
+                      edges {
+                        relationType(version: 2)
+                        node { id idMal episodes format status type startDate { year month day } title { english romaji } }
+                      }
+                    }
+                  }
+                }
+            """.trimIndent()
+            else -> return null
+        }
+        val variables = JSONObject().apply {
+            if (aniId != null) put("id", aniId)
+            else if (malId != null) put("idMal", malId)
+            else if (!searchTitle.isNullOrBlank()) put("search", searchTitle)
+        }
+        val body = JSONObject().apply {
+            put("query", query)
+            put("variables", variables)
+        }.toString().toRequestBody(jsonMediaType)
+        val raw = cancellablePostText(
+            StreamPlay.anilistAPI,
+            headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"),
+            requestBody = body,
+            timeoutSec = 5L
+        ) ?: return null
+        return runCatching { JSONObject(raw).optJSONObject("data")?.optJSONObject("Media") }.getOrNull()
+    }
+
+    private data class CourResolution(
+        val anilistId: Int?,
+        val malId: Int?,
+        val resolvedEpisode: Int?,
+        val courTitle: String? = null
+    )
+
+    /**
+     * Walks the AniList `SEQUEL` chain when a TMDB season aggregates multiple split-cour
+     * AniList/MAL entries (e.g. TMDB Bleach Season 2 "Thousand-Year Blood War" has 52 episodes
+     * spanning 4 AniList cours: Part 1 [13 eps] -> Part 2 [13 eps] -> Part 3 [14 eps] -> Part 4 [12 eps]).
+     * For S02E45, this resolves `(aniId = 185874, malId = 60636, resolvedEpisode = 5)`.
+     */
+    private suspend fun resolveAniListCourForEpisode(
+        baseAniId: Int?,
+        baseMalId: Int?,
+        title: String?,
+        season: Int?,
+        episode: Int?
+    ): CourResolution {
+        val targetEp = episode ?: return CourResolution(baseAniId, baseMalId, episode, null)
+        if (season == null || targetEp <= 1) return CourResolution(baseAniId, baseMalId, episode, null)
+
+        var currentNode = queryAniListNodeWithSequels(baseAniId, baseMalId, title)
+            ?: return CourResolution(baseAniId, baseMalId, episode, null)
+        var curAniId = currentNode.optInt("id", 0).takeIf { it > 0 } ?: baseAniId
+        var curMalId = currentNode.optInt("idMal", 0).takeIf { it > 0 } ?: baseMalId
+        var remainingEp = targetEp
+        val visited = mutableSetOf<Int>()
+
+        fun extractNodeTitle(node: JSONObject): String? {
+            val tObj = node.optJSONObject("title") ?: return null
+            return tObj.optString("english").takeIf { it.isNotBlank() && it != "null" }
+                ?: tObj.optString("romaji").takeIf { it.isNotBlank() && it != "null" }
+        }
+
+        for (step in 0 until 8) {
+            if (curAniId != null && !visited.add(curAniId)) break
+            val courEps = currentNode.optInt("episodes", 0)
+            if (courEps <= 0 || remainingEp <= courEps) {
+                return CourResolution(curAniId, curMalId, remainingEp, extractNodeTitle(currentNode))
+            }
+            val edges = currentNode.optJSONObject("relations")?.optJSONArray("edges") ?: break
+            var nextSequelId: Int? = null
+            for (i in 0 until edges.length()) {
+                val edge = edges.optJSONObject(i) ?: continue
+                if (!edge.optString("relationType").equals("SEQUEL", ignoreCase = true)) continue
+                val node = edge.optJSONObject("node") ?: continue
+                val fmt = node.optString("format")
+                if (fmt.equals("TV", ignoreCase = true) || fmt.equals("ONA", ignoreCase = true)) {
+                    val id = node.optInt("id", 0)
+                    if (id > 0 && id !in visited) {
+                        nextSequelId = id
+                        break
+                    }
+                }
+            }
+            val nextId = nextSequelId ?: break
+            remainingEp -= courEps
+            val nextNode = queryAniListNodeWithSequels(nextId, null, null) ?: break
+            currentNode = nextNode
+            curAniId = currentNode.optInt("id", 0).takeIf { it > 0 } ?: nextId
+            curMalId = currentNode.optInt("idMal", 0).takeIf { it > 0 } ?: curMalId
+        }
+        return CourResolution(curAniId, curMalId, remainingEp, extractNodeTitle(currentNode))
+    }
 
     suspend fun resolveAnimeIds(
         title: String?,
@@ -311,6 +447,8 @@ object StreamPlayExtractor : StreamPlay() {
     ): AnimeResolvedIds {
         var resolvedAnilistId: Int? = null
         var resolvedMalId: Int? = null
+        var resolvedEpisode: Int? = episode
+        var resolvedCourTitle: String? = null
         var preFetchedAniJson: String? = null
         val isMultiSeasonContinuation = (season ?: 1) >= 2
 
@@ -318,14 +456,30 @@ object StreamPlayExtractor : StreamPlay() {
         // api.ani.zip point to Season 1's MAL/AniList entry. Resolve Season 2+ via season-aware
         // AniList search first so MegaPlay & Animex receive the exact season's MAL/AniList ID.
         if (isMultiSeasonContinuation && !title.isNullOrBlank()) {
-            val seasonalTitle = "$title Season $season"
-            val (sAni, sMal) = runCatching {
-                convertTmdbToAnimeId(seasonalTitle, date, airedDate, TvType.Anime)
-            }.getOrDefault(AniIds(null, null))
-            if (sAni != null || sMal != null) {
-                resolvedAnilistId = sAni
-                resolvedMalId = sMal
-            } else {
+            val seasonSearchQueries = buildList {
+                if (tmdbId != null && tmdbId > 0) {
+                    val tmdbSeasonName = fetchTmdbSeasonName(tmdbId, season ?: 2)
+                    if (!tmdbSeasonName.isNullOrBlank() &&
+                        !tmdbSeasonName.equals("Season $season", ignoreCase = true) &&
+                        !tmdbSeasonName.equals("Series $season", ignoreCase = true)
+                    ) {
+                        add("$title: $tmdbSeasonName")
+                        add("$title $tmdbSeasonName")
+                    }
+                }
+                add("$title Season $season")
+            }
+            for (q in seasonSearchQueries) {
+                val (sAni, sMal) = runCatching {
+                    convertTmdbToAnimeId(q, date, airedDate, TvType.Anime)
+                }.getOrDefault(AniIds(null, null))
+                if (sAni != null || sMal != null) {
+                    resolvedAnilistId = sAni
+                    resolvedMalId = sMal
+                    break
+                }
+            }
+            if (resolvedAnilistId == null && resolvedMalId == null) {
                 val (fallbackAni, fallbackMal) = runCatching {
                     convertTmdbToAnimeId(title, date, airedDate, TvType.Anime)
                 }.getOrDefault(AniIds(null, null))
@@ -368,6 +522,20 @@ object StreamPlayExtractor : StreamPlay() {
             resolvedMalId = malFromSearch
         }
 
+        // Walk the AniList SEQUEL chain when the requested episode exceeds the base cour's episode count
+        if (season != null && episode != null && episode > 1 && (resolvedAnilistId != null || resolvedMalId != null)) {
+            val cour = runCatching {
+                resolveAniListCourForEpisode(resolvedAnilistId, resolvedMalId, title, season, episode)
+            }.getOrDefault(CourResolution(resolvedAnilistId, resolvedMalId, episode, null))
+            if (cour.anilistId != null && cour.anilistId != resolvedAnilistId) {
+                preFetchedAniJson = null
+            }
+            resolvedAnilistId = cour.anilistId ?: resolvedAnilistId
+            resolvedMalId = cour.malId ?: resolvedMalId
+            resolvedEpisode = cour.resolvedEpisode ?: episode
+            resolvedCourTitle = cour.courTitle
+        }
+
         val (anijson, malsync) = coroutineScope {
             val aniZipDeferred = async(Dispatchers.IO) {
                 when {
@@ -397,20 +565,22 @@ object StreamPlayExtractor : StreamPlay() {
             if (resolvedMalId == null) resolvedMalId = parsed?.mappings?.malId
         }
 
-        val anidbEid = getAnidbEid(anijson ?: "{}", episode ?: 1) ?: 0
+        val effectiveEp = resolvedEpisode ?: episode ?: 1
+        val anidbEid = getAnidbEid(anijson ?: "{}", effectiveEp) ?: 0
 
         return AnimeResolvedIds(
             malId = resolvedMalId,
             anilistId = resolvedAnilistId,
             anidbEid = anidbEid,
             zoroIds = malsync?.zoro?.keys?.toList()?.filterNotNull(),
-            zoroTitle = malsync?.zoro?.values?.firstNotNullOfOrNull { it["title"] }
+            zoroTitle = (malsync?.zoro?.values?.firstNotNullOfOrNull { it["title"] } ?: resolvedCourTitle)
                 ?.replace(":", " "),
             aniXL = malsync?.AniXL?.values?.firstNotNullOfOrNull { it["url"] },
             kaasSlug = malsync?.KickAssAnime?.values?.firstNotNullOfOrNull { it["identifier"] },
             animepaheUrl = malsync?.animepahe?.values?.firstNotNullOfOrNull { it["url"] },
             animekaiId = malsync?.AnimeKAI?.values?.firstNotNullOfOrNull { it["identifier"] },
             tmdbYear = date?.substringBefore("-")?.toIntOrNull(),
+            resolvedEpisode = resolvedEpisode,
         )
     }
 
@@ -466,7 +636,7 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                     put("variables", JSONObject().apply {
                         put("query", queryStr)
-                        put("limit", 15)
+                        put("limit", 30)
                     })
                 }.toString()
 
@@ -489,17 +659,24 @@ object StreamPlayExtractor : StreamPlay() {
                 val exactMatch = items.firstOrNull {
                     (anilistId != null && it.anilistId == anilistId) ||
                         (malId != null && it.malId == malId)
-                } ?: items.firstOrNull {
-                    it.titleEnglish.equals(searchTitle, true) ||
-                        it.titleRomaji.equals(searchTitle, true) ||
-                        (normSearch != null && (normalizeTitle(it.titleEnglish) == normSearch || normalizeTitle(it.titleRomaji) == normSearch))
+                } ?: items.firstOrNull { item ->
+                    val idCompatible = (anilistId == null || item.anilistId == null || item.anilistId == anilistId) &&
+                        (malId == null || item.malId == null || item.malId == malId)
+                    idCompatible && (
+                        item.titleEnglish.equals(searchTitle, true) ||
+                            item.titleRomaji.equals(searchTitle, true) ||
+                            (normSearch != null && (normalizeTitle(item.titleEnglish) == normSearch || normalizeTitle(item.titleRomaji) == normSearch))
+                        )
                 }
                 if (exactMatch != null) {
                     matchedAnime = exactMatch
                     break
                 }
             }
-            val anime = matchedAnime ?: fallbackItems.firstOrNull() ?: return
+            val anime = matchedAnime ?: fallbackItems.firstOrNull { item ->
+                (anilistId == null || item.anilistId == null || item.anilistId == anilistId) &&
+                    (malId == null || item.malId == null || item.malId == malId)
+            } ?: return
 
             val serversText = cancellableGetText(
                 "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
@@ -1173,6 +1350,334 @@ object StreamPlayExtractor : StreamPlay() {
             if (e is CancellationException) throw e
             null
         }
+    }
+
+    private val tmdbShowJsonCache = ConcurrentHashMap<Int, JSONObject>()
+    private val tmdbSeasonJsonCache = ConcurrentHashMap<String, JSONObject>()
+
+    private suspend fun fetchTmdbShowJson(tmdbId: Int): JSONObject? {
+        if (tmdbId <= 0) return null
+        tmdbShowJsonCache[tmdbId]?.let { return it }
+        val tmdbKey = BuildConfig.TMDB_API.takeIf { it.isNotBlank() } ?: "98ae14df2b8d8f8f8136499daf79f0e0"
+        val raw = cancellableGetText("https://api.themoviedb.org/3/tv/$tmdbId?api_key=$tmdbKey", timeoutSec = 5L)
+            ?: return null
+        val parsed = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        if (parsed.optInt("id", 0) > 0) {
+            tmdbShowJsonCache[tmdbId] = parsed
+        }
+        return parsed
+    }
+
+    private suspend fun fetchTmdbSeasonJson(tmdbId: Int, seasonNumber: Int): JSONObject? {
+        if (tmdbId <= 0 || seasonNumber < 0) return null
+        val key = "$tmdbId:$seasonNumber"
+        tmdbSeasonJsonCache[key]?.let { return it }
+        val tmdbKey = BuildConfig.TMDB_API.takeIf { it.isNotBlank() } ?: "98ae14df2b8d8f8f8136499daf79f0e0"
+        val raw = cancellableGetText(
+            "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNumber?api_key=$tmdbKey",
+            timeoutSec = 5L
+        ) ?: return null
+        val parsed = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        if (parsed.has("episodes")) {
+            tmdbSeasonJsonCache[key] = parsed
+        }
+        return parsed
+    }
+
+    suspend fun fetchTmdbSeasonName(tmdbId: Int, seasonNumber: Int): String? {
+        val show = fetchTmdbShowJson(tmdbId) ?: return null
+        val seasons = show.optJSONArray("seasons") ?: return null
+        for (i in 0 until seasons.length()) {
+            val s = seasons.optJSONObject(i) ?: continue
+            if (s.optInt("season_number", -1) == seasonNumber) {
+                return s.optString("name").takeIf { it.isNotBlank() }
+            }
+        }
+        return null
+    }
+
+    private fun normalizeEpisodeTitleForMatch(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        return raw.lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    /**
+     * Resolves verified TMDB `(season_number, episode_number)` pairs for each episode of an anime entry.
+     *
+     * Fixes the critical TVDB-vs-TMDB mismatch in `api.ani.zip`:
+     * `api.ani.zip` returns `mappings.themoviedb_id` alongside TheTVDB `seasonNumber` (e.g. `seasonNumber = 17,
+     * episodeNumber = 45` for `BLEACH: Thousand-Year Blood War - The Calamity` on `tmdbId = 30984`),
+     * whereas TMDB `tv/30984` only has 2 seasons (`Season 1`: 2004 Bleach, `Season 2`: Thousand-Year Blood War
+     * where S02E45 is `"DEFEND YOU"`).
+     *
+     * Furthermore, if an anime entry is a sequel / later cour (`tvdbSeason > 1` or `epData.episodeNumber != epIdx`
+     * or `aniYear > tmdbFirstAirYear + 1`) and cannot be verified on TMDB, it maps to `null` (stored as `-1`
+     * in `LinkData`) so TMDB providers (`VidLink`, `Cineby`, `CineSrc`) never fall back to `Season 1 Episode N`
+     * of the root 2004 anime!
+     */
+    suspend fun resolveAccurateTmdbSeriesMapping(
+        tmdbId: Int?,
+        aniTitle: String?,
+        jpTitle: String?,
+        aniYear: Int?,
+        totalEps: Int,
+        epMetaMap: Map<Int, MetaEpisode?>
+    ): Map<Int, Pair<Int, Int>?> {
+        if (tmdbId == null || tmdbId <= 0 || totalEps <= 0) return emptyMap()
+        val showJson = fetchTmdbShowJson(tmdbId) ?: return emptyMap()
+        val seasonsArr = showJson.optJSONArray("seasons") ?: return emptyMap()
+
+        data class TmdbSeasonInfo(
+            val seasonNumber: Int,
+            val episodeCount: Int,
+            val name: String,
+            val airYear: Int?
+        )
+
+        val validSeasons = mutableListOf<TmdbSeasonInfo>()
+        for (i in 0 until seasonsArr.length()) {
+            val s = seasonsArr.optJSONObject(i) ?: continue
+            val sNum = s.optInt("season_number", -1)
+            if (sNum <= 0) continue
+            val epCount = s.optInt("episode_count", 0)
+            val sName = s.optString("name", "")
+            val sAirYear = s.optString("air_date", "").take(4).toIntOrNull()
+            validSeasons.add(TmdbSeasonInfo(sNum, epCount, sName, sAirYear))
+        }
+        if (validSeasons.isEmpty()) return emptyMap()
+
+        val firstAirYear = showJson.optString("first_air_date", "").take(4).toIntOrNull()
+            ?: validSeasons.firstOrNull { it.seasonNumber == 1 }?.airYear
+        val maxTmdbSeason = validSeasons.maxOf { it.seasonNumber }
+
+        val firstMeta = epMetaMap[1] ?: epMetaMap.values.firstOrNull { it != null }
+        val tvdbSeason = firstMeta?.seasonNumber ?: 1
+        val firstMetaEpNum = firstMeta?.episodeNumber ?: 1
+
+        val isSequelOrOffsetCour = tvdbSeason > 1 ||
+            firstMetaEpNum > 1 ||
+            (aniYear != null && firstAirYear != null && aniYear > firstAirYear + 1)
+
+        // Fast path: 1-season TMDB show where this anime IS Season 1 Episode 1..N
+        if (!isSequelOrOffsetCour && validSeasons.any { it.seasonNumber == 1 }) {
+            return (1..totalEps).associateWith { epIdx ->
+                val epData = epMetaMap[epIdx]
+                val s = epData?.seasonNumber?.takeIf { it in 1..maxTmdbSeason } ?: 1
+                val e = epData?.episodeNumber?.takeIf { it > 0 } ?: epIdx
+                s to e
+            }
+        }
+
+        val normAniTitle = normalizeEpisodeTitleForMatch(aniTitle)
+        val normJpTitle = normalizeEpisodeTitleForMatch(jpTitle)
+
+        // Rank candidate TMDB seasons most likely to contain this cour
+        val candidateSeasons = validSeasons.sortedByDescending { s ->
+            var score = 0
+            val normSName = normalizeEpisodeTitleForMatch(s.name)
+            if (normSName.isNotEmpty() && normSName != "season ${s.seasonNumber}") {
+                if (normAniTitle.contains(normSName) || normJpTitle.contains(normSName)) score += 500
+            }
+            if (s.seasonNumber == tvdbSeason) score += 200
+            if (aniYear != null && s.airYear != null) {
+                val diff = kotlin.math.abs(aniYear - s.airYear)
+                if (diff == 0) score += 150
+                else if (diff <= 2) score += 80
+            }
+            if (firstMetaEpNum > 1 && s.episodeCount >= firstMetaEpNum) score += 100
+            if (s.seasonNumber > 1 && isSequelOrOffsetCour) score += 60
+            score
+        }.take(3)
+
+        data class TmdbEpEntry(
+            val seasonNumber: Int,
+            val episodeNumber: Int,
+            val airDate: String,
+            val normName: String
+        )
+
+        val tmdbEpisodesBySeason = mutableMapOf<Int, List<TmdbEpEntry>>()
+        for (cand in candidateSeasons) {
+            val sJson = fetchTmdbSeasonJson(tmdbId, cand.seasonNumber) ?: continue
+            val epsArr = sJson.optJSONArray("episodes") ?: continue
+            val list = ArrayList<TmdbEpEntry>(epsArr.length())
+            for (j in 0 until epsArr.length()) {
+                val epObj = epsArr.optJSONObject(j) ?: continue
+                val epNum = epObj.optInt("episode_number", -1)
+                if (epNum <= 0) continue
+                list.add(
+                    TmdbEpEntry(
+                        seasonNumber = cand.seasonNumber,
+                        episodeNumber = epNum,
+                        airDate = epObj.optString("air_date", "").trim(),
+                        normName = normalizeEpisodeTitleForMatch(epObj.optString("name", ""))
+                    )
+                )
+            }
+            if (list.isNotEmpty()) {
+                tmdbEpisodesBySeason[cand.seasonNumber] = list
+            }
+        }
+
+        val allTmdbEpisodes = tmdbEpisodesBySeason.values.flatten()
+        val result = mutableMapOf<Int, Pair<Int, Int>?>()
+
+        for (epIdx in 1..totalEps) {
+            val epData = epMetaMap[epIdx]
+            val targetAirDate = (epData?.airDate ?: epData?.airdate)?.trim()?.take(10).orEmpty()
+            val candidateTitles = listOfNotNull(
+                epData?.title?.get("en"),
+                epData?.title?.get("x-jat"),
+                epData?.title?.get("ja")
+            ).map { normalizeEpisodeTitleForMatch(it) }
+                .filter { it.isNotEmpty() && !it.startsWith("episode ") && it != "tba" }
+
+            var matched: Pair<Int, Int>? = null
+
+            // 1. Exact airDate match
+            if (targetAirDate.length == 10) {
+                val byDate = allTmdbEpisodes.firstOrNull { it.airDate == targetAirDate }
+                if (byDate != null) {
+                    matched = byDate.seasonNumber to byDate.episodeNumber
+                }
+            }
+
+            // 2. Exact or substring episode title match
+            if (matched == null && candidateTitles.isNotEmpty()) {
+                val byTitle = allTmdbEpisodes.firstOrNull { tmdbEp ->
+                    tmdbEp.normName.isNotEmpty() &&
+                        !tmdbEp.normName.startsWith("episode ") &&
+                        candidateTitles.any { t ->
+                            tmdbEp.normName == t ||
+                                (t.length >= 6 && (tmdbEp.normName.contains(t) || t.contains(tmdbEp.normName)))
+                        }
+                }
+                if (byTitle != null) {
+                    matched = byTitle.seasonNumber to byTitle.episodeNumber
+                }
+            }
+
+            // 3. Match by epData.episodeNumber in the highest-ranked matching TMDB season (e.g. S2E45 for Bleach TYBW)
+            val metaEpNum = epData?.episodeNumber ?: 0
+            if (matched == null && metaEpNum > 0) {
+                for ((sNum, epList) in tmdbEpisodesBySeason) {
+                    // Never map a sequel/offset cour onto Season 1 Episode 1..N unless verified by airDate/title above
+                    if (sNum == 1 && isSequelOrOffsetCour && metaEpNum <= 52) continue
+                    val byNum = epList.firstOrNull { it.episodeNumber == metaEpNum }
+                    if (byNum != null) {
+                        matched = sNum to byNum.episodeNumber
+                        break
+                    }
+                }
+            }
+
+            // 4. Sequential continuation from previous episode in the same cour
+            if (matched == null && epIdx > 1) {
+                val prev = result[epIdx - 1]
+                if (prev != null) {
+                    val (prevS, prevE) = prev
+                    val epList = tmdbEpisodesBySeason[prevS]
+                    if (epList != null && epList.any { it.episodeNumber == prevE + 1 }) {
+                        matched = prevS to (prevE + 1)
+                    }
+                }
+            }
+
+            result[epIdx] = matched
+        }
+
+        // Backfill earlier episodes in the cour if a later episode matched
+        for (epIdx in (totalEps - 1) downTo 1) {
+            if (result[epIdx] == null) {
+                val next = result[epIdx + 1]
+                if (next != null && next.second > 1) {
+                    val (nextS, nextE) = next
+                    val epList = tmdbEpisodesBySeason[nextS]
+                    if (epList != null && epList.any { it.episodeNumber == nextE - 1 }) {
+                        result[epIdx] = nextS to (nextE - 1)
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * Verifies `(tmdbSeason, tmdbEpisode)` at `loadLinks` time in `StreamPlayAnime` so even cached
+     * `LinkData` or unverified `api.ani.zip` TVDB season numbers are resolved to the true TMDB
+     * `(season, episode)` or rejected (`null`) if the episode does not exist on TMDB.
+     */
+    suspend fun resolveVerifiedTmdbEpisodeForAnime(
+        tmdbId: Int?,
+        aniId: Int?,
+        malId: Int?,
+        aniTitle: String?,
+        jpTitle: String?,
+        aniYear: Int?,
+        courEpisode: Int?,
+        rawTmdbSeason: Int?,
+        rawTmdbEpisode: Int?
+    ): Pair<Int, Int>? {
+        val id = tmdbId?.takeIf { it > 0 } ?: return null
+        val ep = courEpisode?.takeIf { it > 0 } ?: return null
+        if (rawTmdbSeason != null && rawTmdbSeason < 0) return null
+        if (rawTmdbEpisode != null && rawTmdbEpisode < 0) return null
+
+        val showJson = fetchTmdbShowJson(id) ?: return null
+        val seasonsArr = showJson.optJSONArray("seasons") ?: return null
+        val validSeasonNums = mutableSetOf<Int>()
+        for (i in 0 until seasonsArr.length()) {
+            val s = seasonsArr.optJSONObject(i)?.optInt("season_number", -1) ?: -1
+            if (s > 0) validSeasonNums.add(s)
+        }
+        val firstAirYear = showJson.optString("first_air_date", "").take(4).toIntOrNull()
+        val isLikelySequel = (rawTmdbSeason != null && rawTmdbSeason > 1) ||
+            (rawTmdbEpisode != null && rawTmdbEpisode != ep) ||
+            (aniYear != null && firstAirYear != null && aniYear > firstAirYear + 1)
+
+        // If rawTmdbSeason is already a valid TMDB season and either not a sequel or > 1, check if episode exists
+        if (rawTmdbSeason != null && rawTmdbSeason in validSeasonNums && (!isLikelySequel || rawTmdbSeason > 1)) {
+            val sJson = fetchTmdbSeasonJson(id, rawTmdbSeason)
+            val epsArr = sJson?.optJSONArray("episodes")
+            val targetEp = rawTmdbEpisode ?: ep
+            if (epsArr != null) {
+                for (i in 0 until epsArr.length()) {
+                    if (epsArr.optJSONObject(i)?.optInt("episode_number", -1) == targetEp) {
+                        return rawTmdbSeason to targetEp
+                    }
+                }
+            }
+        }
+
+        // Otherwise resolve via api.ani.zip + resolveAccurateTmdbSeriesMapping
+        val aniZipKey = "anizip_${aniId ?: malId ?: id}"
+        val rawAniZip = StreamPlayCache.getCachedAniZip(aniZipKey) ?: run {
+            val url = when {
+                aniId != null -> "https://api.ani.zip/mappings?anilist_id=$aniId"
+                malId != null -> "https://api.ani.zip/mappings?mal_id=$malId"
+                else -> "https://api.ani.zip/mappings?themoviedb_id=$id"
+            }
+            val fetched = cancellableGetText(url, timeoutSec = 5L).orEmpty()
+            if (fetched.startsWith("{")) StreamPlayCache.cacheAniZip(aniZipKey, fetched)
+            fetched
+        }
+        val parsed = parseAnimeData(rawAniZip)
+        val epMetaMap = (1..maxOf(ep, parsed?.episodeCount ?: ep)).associateWith { idx ->
+            parsed?.episodes?.get(idx.toString())
+        }
+        val mapped = resolveAccurateTmdbSeriesMapping(
+            tmdbId = id,
+            aniTitle = aniTitle,
+            jpTitle = jpTitle,
+            aniYear = aniYear,
+            totalEps = maxOf(ep, parsed?.episodeCount ?: ep),
+            epMetaMap = epMetaMap
+        )
+        return mapped[ep]
     }
 
     suspend fun invokeVidlink(
