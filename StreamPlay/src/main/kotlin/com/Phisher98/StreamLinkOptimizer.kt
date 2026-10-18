@@ -2072,7 +2072,8 @@ object StreamLinkOptimizer {
                 !s.contains("vidsrc") -> 100
             s.contains("cineby") || n.contains("cineby") ||
                 u.contains("wecollege.net") || u.contains("paleoak.top") ||
-                u.contains("majorplay.net") || r.contains("player.videasy.to") -> 95
+                u.contains("majorplay.net") || u.contains("falseparadise.workers.dev") ||
+                r.contains("player.videasy.to") -> 95
             s.contains("cinesrc") || n.contains("cinesrc") ||
                 u.contains("cinesrc.st") || u.contains("bright67.online") || u.contains("api.wing.st") -> 94
             s.contains("vidfast") || n.contains("vidfast") ||

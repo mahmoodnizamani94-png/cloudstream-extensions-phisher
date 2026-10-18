@@ -300,34 +300,80 @@ object StreamPlayExtractor : StreamPlay() {
         airedDate: String?,
         season: Int?,
         episode: Int?,
+        tmdbId: Int? = null,
+        imdbId: String? = null,
     ): AnimeResolvedIds {
-        val (anilistId, malId) = convertTmdbToAnimeId(
-            title, date, airedDate, if (season == null) TvType.AnimeMovie else TvType.Anime
-        )
+        var resolvedAnilistId: Int? = null
+        var resolvedMalId: Int? = null
+        var preFetchedAniJson: String? = null
+
+        // Fast path: resolve via api.ani.zip using IMDb ID or TMDB ID when available
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+        if (cleanImdb != null) {
+            val raw = runCatching {
+                cancellableGetText("https://api.ani.zip/mappings?imdb_id=$cleanImdb", timeoutSec = 5L)
+            }.getOrNull()
+            if (!raw.isNullOrBlank() && raw.trimStart().startsWith("{")) {
+                preFetchedAniJson = raw
+                val parsed = parseAnimeData(raw)
+                resolvedAnilistId = parsed?.mappings?.anilistId
+                resolvedMalId = parsed?.mappings?.malId
+            }
+        }
+        if ((resolvedAnilistId == null && resolvedMalId == null) && tmdbId != null && tmdbId > 0) {
+            val raw = runCatching {
+                cancellableGetText("https://api.ani.zip/mappings?themoviedb_id=$tmdbId", timeoutSec = 5L)
+            }.getOrNull()
+            if (!raw.isNullOrBlank() && raw.trimStart().startsWith("{")) {
+                preFetchedAniJson = raw
+                val parsed = parseAnimeData(raw)
+                resolvedAnilistId = parsed?.mappings?.anilistId
+                resolvedMalId = parsed?.mappings?.malId
+            }
+        }
+
+        if (resolvedAnilistId == null && resolvedMalId == null) {
+            val (aniFromSearch, malFromSearch) = convertTmdbToAnimeId(
+                title, date, airedDate, if (season == null) TvType.AnimeMovie else TvType.Anime
+            )
+            resolvedAnilistId = aniFromSearch
+            resolvedMalId = malFromSearch
+        }
 
         val (anijson, malsync) = coroutineScope {
             val aniZipDeferred = async(Dispatchers.IO) {
-                if (malId != null) {
-                    runCatching {
-                        safeGet("https://api.ani.zip/mappings?mal_id=$malId", timeout = 5L).text
+                when {
+                    !preFetchedAniJson.isNullOrBlank() -> preFetchedAniJson
+                    resolvedMalId != null -> runCatching {
+                        safeGet("https://api.ani.zip/mappings?mal_id=$resolvedMalId", timeout = 5L).text
                     }.getOrNull()
-                } else null
+                    resolvedAnilistId != null -> runCatching {
+                        safeGet("https://api.ani.zip/mappings?anilist_id=$resolvedAnilistId", timeout = 5L).text
+                    }.getOrNull()
+                    else -> null
+                }
             }
             val malSyncDeferred = async(Dispatchers.IO) {
-                if (malId != null) {
+                if (resolvedMalId != null) {
                     runCatching {
-                        safeGet("$malsyncAPI/mal/anime/$malId", timeout = 5L).parsedSafe<MALSyncResponses>()?.sites
+                        safeGet("$malsyncAPI/mal/anime/$resolvedMalId", timeout = 5L).parsedSafe<MALSyncResponses>()?.sites
                     }.getOrNull()
                 } else null
             }
             aniZipDeferred.await() to malSyncDeferred.await()
         }
 
+        if ((resolvedAnilistId == null || resolvedMalId == null) && !anijson.isNullOrBlank()) {
+            val parsed = parseAnimeData(anijson)
+            if (resolvedAnilistId == null) resolvedAnilistId = parsed?.mappings?.anilistId
+            if (resolvedMalId == null) resolvedMalId = parsed?.mappings?.malId
+        }
+
         val anidbEid = getAnidbEid(anijson ?: "{}", episode ?: 1) ?: 0
 
         return AnimeResolvedIds(
-            malId = malId,
-            anilistId = anilistId,
+            malId = resolvedMalId,
+            anilistId = resolvedAnilistId,
             anidbEid = anidbEid,
             zoroIds = malsync?.zoro?.keys?.toList()?.filterNotNull(),
             zoroTitle = malsync?.zoro?.values?.firstNotNullOfOrNull { it["title"] }
@@ -365,11 +411,18 @@ object StreamPlayExtractor : StreamPlay() {
             val searchTitle = title?.takeIf { it.isNotBlank() } ?: return
 
             val animexOrigin = "https://animex.one"
-            val headers = mapOf(
+            val animexPlyrOrigin = "https://plyr.animex.one"
+            val graphqlHeaders = mapOf(
                 "Origin" to animexOrigin,
                 "Referer" to "$animexOrigin/",
                 "User-Agent" to USER_AGENT,
                 "Content-Type" to "application/json"
+            )
+            val plyrHeaders = mapOf(
+                "Origin" to animexPlyrOrigin,
+                "Referer" to "$animexPlyrOrigin/",
+                "User-Agent" to USER_AGENT,
+                "Accept" to "application/json, text/plain, */*"
             )
 
             val queryPayload = JSONObject().apply {
@@ -379,30 +432,36 @@ object StreamPlayExtractor : StreamPlay() {
                 )
                 put("variables", JSONObject().apply {
                     put("query", searchTitle)
-                    put("limit", 10)
+                    put("limit", 15)
                 })
             }.toString()
 
             val responseText = cancellablePostText(
                 "https://graphql.animex.one/graphql",
-                headers = headers,
+                headers = graphqlHeaders,
                 requestBody = queryPayload.toRequestBody(json),
-                timeoutSec = 5L
+                timeoutSec = 6L
             ) ?: return
             val response = tryParseJson<SearchResponse>(responseText) ?: return
 
             val items = response.data.catalogAnime.items
+            val normSearch = normalizeTitle(searchTitle)
             val anime = items.firstOrNull {
                 (anilistId != null && it.anilistId == anilistId) ||
                     (malId != null && it.malId == malId)
             } ?: items.firstOrNull {
                 it.titleEnglish.equals(searchTitle, true) ||
-                    it.titleRomaji.equals(searchTitle, true)
+                    it.titleRomaji.equals(searchTitle, true) ||
+                    (normSearch != null && (normalizeTitle(it.titleEnglish) == normSearch || normalizeTitle(it.titleRomaji) == normSearch))
             } ?: items.firstOrNull() ?: return
 
             val serversText = cancellableGetText(
                 "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
-                headers = headers,
+                headers = plyrHeaders,
+                timeoutSec = 6L
+            ) ?: cancellableGetText(
+                "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
+                headers = graphqlHeaders,
                 timeoutSec = 5L
             ) ?: return
             val servers = tryParseJson<ServerResponse>(serversText) ?: return
@@ -430,22 +489,29 @@ object StreamPlayExtractor : StreamPlay() {
                         try {
                             currentCoroutineContext().ensureActive()
                             val providerId = provider.id
-                            val sourceResponse = animexFetchSource(anime.id, epNum, type, providerId, headers)
+                            val sourceResponse = animexFetchSource(anime.id, epNum, type, providerId, plyrHeaders)
                                 ?: return@async
 
                             val respHeaders = sourceResponse.headers.orEmpty()
                             val referer = respHeaders.entries
                                 .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
-                                ?: "$animexOrigin/"
+                                ?: "$animexPlyrOrigin/"
                             val origin = respHeaders.entries
                                 .firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
-                                ?: referer.removeSuffix("/")
+                                ?: getBaseUrl(referer).takeIf { it.startsWith("http", ignoreCase = true) }
+                                ?: animexPlyrOrigin
                             val streamHeaders = buildMap {
                                 put("User-Agent", USER_AGENT)
                                 if (referer.isNotBlank()) put("Referer", referer)
                                 if (origin.isNotBlank()) put("Origin", origin)
                                 respHeaders.forEach { (k, v) ->
-                                    if (!k.equals("User-Agent", true) && v.isNotBlank()) put(k, v)
+                                    if (!k.equals("User-Agent", true) &&
+                                        !k.equals("Referer", true) &&
+                                        !k.equals("Origin", true) &&
+                                        v.isNotBlank()
+                                    ) {
+                                        put(k, v)
+                                    }
                                 }
                             }
 
@@ -549,14 +615,17 @@ object StreamPlayExtractor : StreamPlay() {
         providerId: String,
         headers: Map<String, String>
     ): SourceResponse? {
-        val directUrl = "https://pp.animex.one/rest/api/sources?id=${URLEncoder.encode(animeId, "UTF-8")}&epNum=$epNum&type=$type&providerId=$providerId"
-        val directRaw = cancellableGetText(directUrl, headers = headers, timeoutSec = 5L)
-        if (!directRaw.isNullOrBlank() && directRaw.trimStart().startsWith("{")) {
+        val directUrl = "https://pp.animex.one/rest/api/sources?id=${URLEncoder.encode(animeId, "UTF-8")}&epNum=$epNum&type=$type&providerId=${URLEncoder.encode(providerId, "UTF-8")}"
+        val directRaw = retryTransient(1, 200L) {
+            cancellableGetText(directUrl, headers = headers, timeoutSec = 8L)
+                ?.takeIf { it.isNotBlank() && it.trimStart().startsWith("{") }
+        }
+        if (!directRaw.isNullOrBlank()) {
             val parsed = animexParseSourceJson(directRaw)
             if (parsed != null && !parsed.sources.isNullOrEmpty()) return parsed
         }
 
-        // Fallback to enc-animex -> pp.animex.one -> dec-animex when endpoint requires encrypted query
+        // Secondary fallback to enc-animex -> pp.animex.one -> dec-animex if endpoint requires encrypted query
         val encRaw = encDecGet(
             "$ENC_DEC_API/enc-animex?id=${URLEncoder.encode(animeId, "UTF-8")}&ep=$epNum&type=$type&provider=$providerId",
             headers = mapOf("User-Agent" to USER_AGENT),
@@ -567,7 +636,7 @@ object StreamPlayExtractor : StreamPlay() {
         val encSourceRaw = cancellableGetText(
             "https://pp.animex.one/rest/api/sources?data=${URLEncoder.encode(encParam, "UTF-8")}",
             headers = headers,
-            timeoutSec = 5L
+            timeoutSec = 6L
         )?.takeIf { it.isNotBlank() } ?: return null
 
         if (encSourceRaw.trimStart().startsWith("{")) {
@@ -959,6 +1028,44 @@ object StreamPlayExtractor : StreamPlay() {
 
 
     private val imdbToTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val titleToTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    suspend fun resolveTmdbIdByTitle(title: String?, year: Int? = null, isMovie: Boolean = false): Int? {
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val cacheKey = "${cleanTitle.lowercase()}_${year ?: 0}_$isMovie"
+        titleToTmdbCache[cacheKey]?.let { return it }
+        return try {
+            val tmdbKey = BuildConfig.TMDB_API.takeIf { it.isNotBlank() } ?: "98ae14df2b8d8f8f8136499daf79f0e0"
+            val encoded = URLEncoder.encode(cleanTitle, "UTF-8")
+            val endpoint = if (isMovie) "movie" else "tv"
+            val yearParam = if (year != null && year > 1900) {
+                if (isMovie) "&year=$year" else "&first_air_date_year=$year"
+            } else ""
+            val searchUrls = buildList {
+                if (yearParam.isNotEmpty()) {
+                    add("https://api.themoviedb.org/3/search/$endpoint?api_key=$tmdbKey&query=$encoded$yearParam")
+                }
+                add("https://api.themoviedb.org/3/search/$endpoint?api_key=$tmdbKey&query=$encoded")
+            }
+            for (url in searchUrls) {
+                val resp = suspendCancellable {
+                    runCatching { app.get(url, timeout = 5L).text }.getOrNull()
+                } ?: continue
+                val results = runCatching { JSONObject(resp).optJSONArray("results") }.getOrNull() ?: continue
+                if (results.length() > 0) {
+                    val id = results.getJSONObject(0).optInt("id", 0)
+                    if (id > 0) {
+                        titleToTmdbCache[cacheKey] = id
+                        return id
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            null
+        }
+    }
 
     suspend fun resolveTmdbIdFromImdb(imdbId: String, season: Int? = null): Int? {
         val cleanImdb = imdbId.trim()
@@ -1030,7 +1137,8 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
-        imdbId: String? = null
+        imdbId: String? = null,
+        isAnime: Boolean = false
     ) {
         try {
             var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
@@ -1048,7 +1156,8 @@ object StreamPlayExtractor : StreamPlay() {
                     "User-Agent" to StreamLinkOptimizer.MODERN_DESKTOP_UA,
                     "Accept" to "application/json",
                     "Referer" to "$base/",
-                    "Origin" to base
+                    "Origin" to base,
+                    "X-Playback-Environment" to "standard"
                 )
 
                 fun buildApiUrls(token: String): List<String> = when {
@@ -1168,6 +1277,9 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
                 val captionMeta = if (hasCaptions) "captions=sub" else null
+                val animeTag = if (isAnime) " [Sub] [Original]" else ""
+                val hlsBaseName = "Vidlink HLS$animeTag"
+                val directBaseName = "Vidlink$animeTag"
 
                 // 2. Parse playlist (HLS m3u8)
                 val m3u8 = stream.playlist?.trim()
@@ -1221,9 +1333,14 @@ object StreamPlayExtractor : StreamPlay() {
                         val finalHeaders = sanitizeVidlinkHeaders(genLink.headers)
                         if (effHlsRef.isNotBlank()) finalHeaders["Referer"] = effHlsRef
                         if (effHlsOrig.isNotBlank()) finalHeaders["Origin"] = effHlsOrig
+                        val linkName = if (isAnime && !genLink.name.contains("[Original]", ignoreCase = true)) {
+                            "${genLink.name}$animeTag"
+                        } else {
+                            genLink.name
+                        }
                         newExtractorLink(
                             genLink.source,
-                            genLink.name,
+                            linkName,
                             genLink.url,
                             genLink.type
                         ) {
@@ -1237,7 +1354,7 @@ object StreamPlayExtractor : StreamPlay() {
                     if (!mappedGenerated.isNullOrEmpty()) {
                         emitTopTierDualQualityStreamLinks(
                             source = "Vidlink",
-                            baseName = "Vidlink HLS",
+                            baseName = hlsBaseName,
                             url = cleanM3u8Url,
                             referer = effHlsRef,
                             headers = hlsHeaders,
@@ -1248,7 +1365,7 @@ object StreamPlayExtractor : StreamPlay() {
                     } else if (cleanM3u8Url.startsWith("http", ignoreCase = true)) {
                         emitTopTierDualQualityStreamLinks(
                             source = "Vidlink",
-                            baseName = "Vidlink HLS",
+                            baseName = hlsBaseName,
                             url = cleanM3u8Url,
                             referer = effHlsRef,
                             headers = hlsHeaders,
@@ -1299,9 +1416,9 @@ object StreamPlayExtractor : StreamPlay() {
                             // from this label, so it must never be fabricated or rounded away.
                             val sizeLabel = StreamLinkOptimizer.normalizeSizeLabel(qualityObj.size)
                             val displayName = if (sizeLabel != null) {
-                                "Vidlink $effectiveQuality [$sizeLabel]"
+                                "$directBaseName $effectiveQuality [$sizeLabel]"
                             } else {
-                                "Vidlink $effectiveQuality"
+                                "$directBaseName $effectiveQuality"
                             }
                             directQualitiesLinks.add(
                                 newExtractorLink(
@@ -1323,7 +1440,7 @@ object StreamPlayExtractor : StreamPlay() {
                 if (directQualitiesLinks.isNotEmpty()) {
                     emitTopTierDualQualityStreamLinks(
                         source = "Vidlink",
-                        baseName = "Vidlink",
+                        baseName = directBaseName,
                         url = directQualitiesLinks.first().url,
                         referer = directQualitiesLinks.first().referer,
                         headers = directQualitiesLinks.first().headers,
@@ -2053,7 +2170,7 @@ object StreamPlayExtractor : StreamPlay() {
         invokeCineSrc(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== Cineby SOTA Universal Extractor (api.wecollege.net, Rank 96) ====================
+    // ==================== Cineby SOTA Universal Extractor (api.wecollege.net, Rank 95) ====================
 
     private const val CINEBY_API = "https://api.wecollege.net"
     private const val CINEBY_ORIGIN = "https://player.videasy.to"
@@ -2069,9 +2186,92 @@ object StreamPlayExtractor : StreamPlay() {
         val subtitles: List<Pair<String, String>>
     )
 
+    internal fun cinebyMix32(x: Int): Int {
+        var e = x
+        e = e xor (e ushr 16)
+        e *= 2246822507L.toInt()
+        e = e xor (e ushr 13)
+        e *= 3266489909L.toInt()
+        e = e xor (e ushr 16)
+        return e
+    }
+
+    internal fun cinebyRotl32(x: Int, shift: Int): Int {
+        val t = shift and 31
+        return if (t == 0) x else (x shl t) or (x ushr (32 - t))
+    }
+
     /**
-     * Parses the `dec-videasy` JSON envelope returned for a Cineby (`api.wecollege.net`) server
-     * payload. Extracts both `sources` (`url`, `quality`) and `subtitles` (`url`, `lang`/`language`).
+     * Offline native `mvm1` stream cipher decryption for `api.wecollege.net` (`enc=2`).
+     * Derived from `player.videasy.to/_next/static/chunks/8351-ad3ea010cfe1b6bd.js` (`f(cipher, seed, mediaId)`).
+     * Decrypts the Base64URL payload in <0.1ms with zero network requests and verifies the `mvm1` magic header.
+     */
+    internal fun cinebyDecryptMvm1(cipherTextBase64Url: String, seed: String, mediaId: Int): String? {
+        if (cipherTextBase64Url.isBlank() || seed.isBlank()) return null
+        val bytes = runCatching { cinesrcBase64UrlDecode(cipherTextBase64Url) }.getOrNull() ?: return null
+        if (bytes.size <= 4) return null
+
+        var fnv = 2166136261L.toInt()
+        for (i in seed.indices) {
+            fnv = (fnv xor seed[i].code) * 16777619
+        }
+        val golden = 2654435769L.toInt()
+        var a = cinebyMix32(cinebyMix32(fnv) xor cinebyMix32(mediaId xor golden))
+        val s = IntArray(61)
+        val sPresent = BooleanArray(61)
+        for (e in 0 until 8) {
+            val t = ((a.toLong() and 0xFFFFFFFFL) % 61L).toInt()
+            a = cinebyRotl32(a + golden, 7 + (7 and e))
+            s[t] = a xor cinebyMix32(a)
+            sPresent[t] = true
+            a = cinebyMix32(a + t)
+        }
+        var acc = cinebyMix32(2779096485L.toInt() xor a)
+        var ctr = 0
+        var idx = 0
+        while (idx < bytes.size) {
+            val o = acc
+            val n = ((o.toLong() and 0xFFFFFFFFL) % 61L).toInt()
+            val iMask = if (sPresent[n]) -1 else 0
+            val d = if (sPresent[n]) s[n] else 0
+            val aval = d xor (golden * (ctr + 1))
+            val l = (o xor aval) or (o and aval and iMask)
+            val nextO = cinebyMix32(
+                (cinebyRotl32(l + o, 31 and n) xor cinebyRotl32(o, 31 and (n * 7))) + golden
+            )
+            s[n] = nextO
+            sPresent[n] = true
+            acc = nextO
+            ctr++
+            bytes[idx] = (bytes[idx].toInt() xor (nextO and 0xFF)).toByte()
+            idx++
+            if (idx < bytes.size) {
+                bytes[idx] = (bytes[idx].toInt() xor ((nextO ushr 8) and 0xFF)).toByte()
+                idx++
+            }
+            if (idx < bytes.size) {
+                bytes[idx] = (bytes[idx].toInt() xor ((nextO ushr 16) and 0xFF)).toByte()
+                idx++
+            }
+            if (idx < bytes.size) {
+                bytes[idx] = (bytes[idx].toInt() xor ((nextO ushr 24) and 0xFF)).toByte()
+                idx++
+            }
+        }
+        // Verify 4-byte magic header "mvm1" (109, 118, 109, 49)
+        if ((bytes[0].toInt() and 0xFF) != 109 ||
+            (bytes[1].toInt() and 0xFF) != 118 ||
+            (bytes[2].toInt() and 0xFF) != 109 ||
+            (bytes[3].toInt() and 0xFF) != 49
+        ) {
+            return null
+        }
+        return String(bytes, 4, bytes.size - 4, Charsets.UTF_8)
+    }
+
+    /**
+     * Parses the decrypted JSON payload (`mvm1` or `dec-videasy` envelope) returned for a Cineby
+     * (`api.wecollege.net`) server payload. Extracts both `sources` (`url`, `quality`) and `subtitles` (`url`, `lang`/`language`).
      */
     internal fun cinebyParseDecryptedResult(rawJson: String): CinebyDecryptedPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
@@ -2141,13 +2341,13 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * SOTA Universal Extractor for Cineby (`api.wecollege.net`, Rank 96).
+     * SOTA Universal Extractor for Cineby (`api.wecollege.net`, Rank 95).
      *
-     * Protocol (verified live 2026-10-17 across Movies, TV Shows, and Anime):
+     * Protocol (verified live across Movies, TV Shows, and Anime):
      *   1. GET `https://api.wecollege.net/seed?mediaId={tmdbId}` -> `{"seed": "..."}`
      *   2. Concurrent fan-out across `tampa`, `dallas`, `oakland`, `seattle`, `vegas`, `portland`:
      *      `GET https://api.wecollege.net/{server}/sources?title=...&mediaType={movie|tv}&year=...&tmdbId={id}&imdbId=...&seasonId=...&episodeId=...&enc=2&seed={seed}`
-     *   3. POST `https://enc-dec.app/api/dec-videasy` with `{"text": ciphertext, "id": "{tmdbId}"}`
+     *   3. Offline `mvm1` stream cipher decryption (`cinebyDecryptMvm1(ciphertext, seed, tmdbId)`) with fallback to `dec-videasy`
      *   4. Emits multi-CDN HLS (`sun.paleoak.top`, `e2e.majorplay.net`) + multi-language subtitles
      */
     suspend fun invokeCineby(
@@ -2224,7 +2424,7 @@ object StreamPlayExtractor : StreamPlay() {
                                     return@async
                                 }
 
-                                val decRaw = encDecPost(
+                                val decRaw = cinebyDecryptMvm1(encBody, seed, id) ?: encDecPost(
                                     "dec-videasy",
                                     JSONObject().put("text", encBody).put("id", id.toString()).toString(),
                                     timeoutSec = 5L

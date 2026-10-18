@@ -61,7 +61,24 @@ private fun StreamPlayCache.AnimeIdMapping.toResolvedAnimeIds(): StreamPlayExtra
 }
 
 private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.AnimeResolvedIds {
-    val cacheKey = "${res.title}_${res.date ?: res.airedDate}_${res.season ?: 0}"
+    val directAniId = res.aniId?.toIntOrNull()
+    val directMalId = res.malId
+    if (directAniId != null || directMalId != null) {
+        return StreamPlayExtractor.AnimeResolvedIds(
+            malId = directMalId,
+            anilistId = directAniId,
+            anidbEid = res.anidbEid ?: 0,
+            zoroIds = null,
+            zoroTitle = res.title,
+            aniXL = null,
+            kaasSlug = null,
+            animepaheUrl = null,
+            animekaiId = null,
+            tmdbYear = res.year ?: res.airedYear
+        )
+    }
+
+    val cacheKey = "${res.id ?: 0}_${res.imdbId.orEmpty()}_${res.title}_${res.date ?: res.airedDate}_${res.season ?: 0}"
 
     val cached = StreamPlayCache.getCachedAnimeIds(cacheKey)
     if (cached != null) {
@@ -73,7 +90,15 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
             return@withLock cachedAfterWait.toResolvedAnimeIds()
         }
 
-        resolveAnimeIds(res.title, res.date, res.airedDate, res.season, res.episode)
+        resolveAnimeIds(
+            title = res.title,
+            date = res.date,
+            airedDate = res.airedDate,
+            season = res.season,
+            episode = res.episode,
+            tmdbId = res.id,
+            imdbId = res.imdbId
+        )
     }
 
     StreamPlayCache.cacheAnimeIds(
@@ -103,7 +128,7 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
  * HTTP (no browser, no JS execution, no Cloudflare interstitial).
  *
  *   1. VidLink   - vidlink.pro       | Universal (Movie/TV/Anime) | Rank 100 (#1, mandatory)
- *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 95  (#2, multi-server + dec-videasy)
+ *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 95  (#2, multi-server + offline mvm1)
  *   3. CineSrc   - cinesrc.st        | Universal (Movie/TV/Anime) | Rank 94  (#3, CSP4 PoW + Nebula/Wave/Surge + subs)
  *   4. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 93  (#4, enc-vidfast handshake)
  *   5. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#5, MAL/AniList + dec-megaplay)
@@ -118,7 +143,7 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
 private val providers by lazy {
     listOf(
         Provider("vidlink", "VidLink") { res, subtitleCallback, callback, _, _ ->
-            invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
+            invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId, isAnime = res.isAnime)
         },
         Provider("cineby", "Cineby") { res, subtitleCallback, callback, _, _ ->
             invokeCineby(

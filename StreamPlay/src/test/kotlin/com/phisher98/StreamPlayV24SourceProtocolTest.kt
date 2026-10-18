@@ -1,11 +1,16 @@
 package com.phisher98
 
+import com.lagradost.cloudstream3.mapper
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.phisher98.StreamPlayExtractor.animexParseSourceJson
+import com.phisher98.StreamPlayExtractor.cinebyDecryptMvm1
+import com.phisher98.StreamPlayExtractor.cinebyMix32
 import com.phisher98.StreamPlayExtractor.cinebyParseDecryptedResult
 import com.phisher98.StreamPlayExtractor.cinebyQualityOf
+import com.phisher98.StreamPlayExtractor.cinebyRotl32
+import com.phisher98.StreamPlayExtractor.cinesrcBase64UrlEncode
 import com.phisher98.StreamPlayExtractor.megaplayExtractFileId
 import com.phisher98.StreamPlayExtractor.megaplayParseSourcesPayload
 import com.phisher98.StreamPlayExtractor.parseHlsMasterVariants
@@ -23,7 +28,71 @@ import org.junit.Test
  */
 class StreamPlayV24SourceProtocolTest {
 
-    // ==================== 1. Cineby Protocol ====================
+    // ==================== 1. Cineby Protocol & Offline mvm1 Stream Cipher ====================
+
+    @Test
+    fun testCinebyOfflineMvm1StreamCipherDecryptsRoundTrip() {
+        val seed = "test_seed_dbs_62715"
+        val mediaId = 62715
+        val plaintextJson = """{"sources":[{"url":"https://sun.paleoak.top/hls2/01/master.m3u8","quality":"1080p"}],"subtitles":[{"url":"https://sub.videasy.net/en.vtt","language":"English","lang":"en"}]}"""
+        val rawPlain = ("mvm1" + plaintextJson).toByteArray(Charsets.UTF_8)
+        val encrypted = rawPlain.copyOf()
+
+        // Encrypt using identical keystream (XOR stream cipher is symmetric)
+        var fnv = 2166136261L.toInt()
+        for (i in seed.indices) {
+            fnv = (fnv xor seed[i].code) * 16777619
+        }
+        val golden = 2654435769L.toInt()
+        var a = cinebyMix32(cinebyMix32(fnv) xor cinebyMix32(mediaId xor golden))
+        val s = IntArray(61)
+        val sPresent = BooleanArray(61)
+        for (e in 0 until 8) {
+            val t = ((a.toLong() and 0xFFFFFFFFL) % 61L).toInt()
+            a = cinebyRotl32(a + golden, 7 + (7 and e))
+            s[t] = a xor cinebyMix32(a)
+            sPresent[t] = true
+            a = cinebyMix32(a + t)
+        }
+        var acc = cinebyMix32(2779096485L.toInt() xor a)
+        var ctr = 0
+        var idx = 0
+        while (idx < encrypted.size) {
+            val o = acc
+            val n = ((o.toLong() and 0xFFFFFFFFL) % 61L).toInt()
+            val iMask = if (sPresent[n]) -1 else 0
+            val d = if (sPresent[n]) s[n] else 0
+            val aval = d xor (golden * (ctr + 1))
+            val l = (o xor aval) or (o and aval and iMask)
+            val nextO = cinebyMix32(
+                (cinebyRotl32(l + o, 31 and n) xor cinebyRotl32(o, 31 and (n * 7))) + golden
+            )
+            s[n] = nextO
+            sPresent[n] = true
+            acc = nextO
+            ctr++
+            for (shift in intArrayOf(0, 8, 16, 24)) {
+                if (idx < encrypted.size) {
+                    encrypted[idx] = (encrypted[idx].toInt() xor ((nextO ushr shift) and 0xFF)).toByte()
+                    idx++
+                }
+            }
+        }
+        val cipherBase64Url = cinesrcBase64UrlEncode(encrypted)
+        val decrypted = cinebyDecryptMvm1(cipherBase64Url, seed, mediaId)
+        assertEquals(plaintextJson, decrypted)
+
+        val parsed = cinebyParseDecryptedResult(decrypted!!)
+        assertNotNull(parsed)
+        assertEquals(1, parsed!!.sources.size)
+        assertEquals("https://sun.paleoak.top/hls2/01/master.m3u8", parsed.sources[0].url)
+        assertEquals(1, parsed.subtitles.size)
+        assertEquals("English" to "https://sub.videasy.net/en.vtt", parsed.subtitles[0])
+
+        // Wrong mediaId or seed must fail magic header verification and return null
+        assertNull(cinebyDecryptMvm1(cipherBase64Url, seed, mediaId + 1))
+        assertNull(cinebyDecryptMvm1(cipherBase64Url, "wrong_seed", mediaId))
+    }
 
     @Test
     fun testCinebyDecryptedPayloadParsesMultiQualityAndSubtitles() {
@@ -183,7 +252,87 @@ class StreamPlayV24SourceProtocolTest {
         assertTrue(v720.estimatedSizeMb!! < v1080.estimatedSizeMb!!)
     }
 
-    // ==================== 5. VidRock Decommissioning Contract ====================
+    // ==================== 5. Cinemeta Array Deserialization & StreamPlayAnime Self-Contained Models ====================
+
+    @Test
+    fun testCinemetaResDeserializesArrayWriterAndDirectorWithoutFailing() {
+        val cinemetaJson = """{
+            "meta": {
+                "id": "tt4644488",
+                "type": "series",
+                "name": "Dragon Ball Super",
+                "year": "2015–2018",
+                "director": ["Kimitoshi Chioka", "Morio Hatano"],
+                "writer": ["Akira Toriyama"],
+                "videos": [
+                    {
+                        "id": "tt4644488:1:1",
+                        "name": "The Peace Prize: Who'll Get the 100 Million Zeni?!",
+                        "season": 1,
+                        "number": 1,
+                        "episode": 1,
+                        "firstAired": "2015-07-05T00:00:00.000Z",
+                        "released": "2015-07-05T00:00:00.000Z",
+                        "description": "Goku works as a farmer."
+                    }
+                ]
+            }
+        }"""
+        val parsed = mapper.readValue(cinemetaJson, CinemetaRes::class.java)
+        assertNotNull(parsed.meta)
+        assertEquals("Dragon Ball Super", parsed.meta!!.name)
+        assertEquals(1, parsed.meta!!.videos?.size)
+        assertEquals(1, parsed.meta!!.videos?.first()?.episode)
+    }
+
+    @Test
+    fun testStreamPlayAnimeSelfContainedAnilistModelsParseRecommendationsWithoutAniListApiStubs() {
+        val anilistJson = """{
+            "data": {
+                "Media": {
+                    "id": 21175,
+                    "idMal": 30694,
+                    "title": {"romaji": "Dragon Ball Super", "english": "Dragon Ball Super"},
+                    "startDate": {"year": 2015},
+                    "genres": ["Action", "Adventure", "Comedy"],
+                    "description": "Seven years after the events of Dragon Ball Z...",
+                    "averageScore": 73,
+                    "status": "FINISHED",
+                    "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/21175.jpg",
+                    "coverImage": {"extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21175.jpg"},
+                    "episodes": 131,
+                    "format": "TV",
+                    "recommendations": {
+                        "edges": [
+                            {
+                                "node": {
+                                    "id": 1001,
+                                    "mediaRecommendation": {
+                                        "id": 813,
+                                        "title": {"romaji": "Dragon Ball Z", "english": "Dragon Ball Z"},
+                                        "coverImage": {"large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx813.jpg"}
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }"""
+        val parsed = mapper.readValue(anilistJson, StreamPlayAnime.AnilistAPIResponse::class.java)
+        val media = parsed.data?.media
+        assertNotNull(media)
+        assertEquals(21175, media!!.id)
+        assertEquals(30694, media.idMal)
+        assertEquals(131, media.totalEpisodes())
+        assertEquals("Dragon Ball Super", media.getTitle())
+        val rec = media.recommendations?.edges?.firstOrNull()?.node?.mediaRecommendation
+        assertNotNull(rec)
+        assertEquals(813, rec!!.id)
+        assertEquals("Dragon Ball Z", rec.title?.english)
+    }
+
+    // ==================== 6. VidRock Decommissioning Contract ====================
 
     @Test
     fun testVidrockIsCompletelyDecommissionedAndScoresZero() {

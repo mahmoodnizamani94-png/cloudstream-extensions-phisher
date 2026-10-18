@@ -1,7 +1,8 @@
 package com.phisher98
 
-import com.lagradost.api.Log
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity.activity
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.HomePageList
@@ -28,15 +29,9 @@ import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.runAllAsync
 import com.lagradost.cloudstream3.syncproviders.AccountManager
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.syncproviders.SyncRepo
-import com.lagradost.cloudstream3.syncproviders.providers.AniListApi.CoverImage
-import com.lagradost.cloudstream3.syncproviders.providers.AniListApi.LikePageInfo
-import com.lagradost.cloudstream3.syncproviders.providers.AniListApi.RecommendationConnection
-import com.lagradost.cloudstream3.syncproviders.providers.AniListApi.SeasonNextAiringEpisode
-import com.lagradost.cloudstream3.syncproviders.providers.AniListApi.Title
 import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -49,9 +44,11 @@ import com.phisher98.StreamPlayExtractor.invokeCineby
 import com.phisher98.StreamPlayExtractor.invokeCineSrc
 import com.phisher98.StreamPlayExtractor.invokeMegaPlay
 import com.phisher98.StreamPlayExtractor.invokeVidlink
+import com.phisher98.StreamPlayExtractor.resolveTmdbIdByTitle
+import com.phisher98.StreamPlayExtractor.resolveTmdbIdFromImdb
+import kotlinx.coroutines.coroutineScope
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
-import kotlinx.coroutines.coroutineScope
 import java.util.Calendar
 
 class StreamPlayAnime : MainAPI() {
@@ -59,7 +56,7 @@ class StreamPlayAnime : MainAPI() {
     override var mainUrl = "https://anilist.co"
     override var supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
     override var lang = "en"
-    override val supportedSyncNames = setOf(SyncIdName.Anilist,SyncIdName.MyAnimeList)
+    override val supportedSyncNames = setOf(SyncIdName.Anilist, SyncIdName.MyAnimeList)
     override val hasMainPage = true
     override val hasQuickSearch = false
     private val repo = SyncRepo(AccountManager.aniListApi)
@@ -76,20 +73,18 @@ class StreamPlayAnime : MainAPI() {
     private suspend fun anilistAPICall(query: String): AnilistAPIResponse {
         val data = mapOf("query" to query)
         val test = app.post(apiUrl, headers = headerJSON, data = data)
-        val res =
-            test.parsedSafe<AnilistAPIResponse>()
-                ?: throw Exception("Unable to fetch or parse Anilist api response")
-        return res
+        return test.parsedSafe<AnilistAPIResponse>()
+            ?: throw Exception("Unable to fetch or parse Anilist api response")
     }
 
     private fun Media.toSearchResponse(): SearchResponse {
-        val title = this.title.english ?: this.title.romaji ?: ""
+        val title = this.title?.english ?: this.title?.romaji ?: ""
         val url = "$mainUrl/anime/${this.id}"
-        val posterUrl = this.coverImage.large
+        val posterUrl = this.coverImage?.large ?: this.coverImage?.extraLarge ?: this.coverImage?.medium
         val rating = this.averageScore
         return newAnimeSearchResponse(title, url, TvType.Anime) {
             this.posterUrl = posterUrl
-            this.score= Score.from100(rating)
+            this.score = Score.from100(rating)
         }
     }
 
@@ -98,9 +93,9 @@ class StreamPlayAnime : MainAPI() {
     ): Pair<List<SearchResponse>, Boolean> {
         val res = anilistAPICall(this.data.replace("###", "$page"))
         val data =
-            res.data.page?.media?.map { it.toSearchResponse() }
+            res.data?.page?.media?.map { it.toSearchResponse() }
                 ?: throw Exception("Unable to read media data")
-        val hasNextPage = res.data.page.pageInfo.hasNextPage ?: false
+        val hasNextPage = res.data.page.pageInfo?.hasNextPage ?: false
         return data to hasNextPage
     }
 
@@ -136,7 +131,7 @@ class StreamPlayAnime : MainAPI() {
             val res = anilistAPICall(
                 "query (\$search: String = \"$query\") { Page(page: $page, perPage: $mediaLimit) { pageInfo { total perPage currentPage lastPage hasNextPage } media(search: \$search, isAdult: $isAdult, type: ANIME) { id idMal season seasonYear format episodes chapters title { english romaji } coverImage { extraLarge large medium } synonyms nextAiringEpisode { timeUntilAiring episode } } } }"
             )
-            res.data.page?.media?.map { it.toSearchResponse() }?.toNewSearchResponseList()
+            res.data?.page?.media?.map { it.toSearchResponse() }?.toNewSearchResponseList()
         }
         if (results != null) {
             StreamPlayCache.cacheSearchResponse(cacheKey, results)
@@ -146,7 +141,6 @@ class StreamPlayAnime : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (request.name.contains("Personal")) {
-            // Reading and manipulating personal library
             repo.authUser()
                 ?: return newHomePageResponse(
                     "Login required for personal content.",
@@ -162,8 +156,6 @@ class StreamPlayAnime : MainAPI() {
                 }
             return newHomePageResponse(homePageList, false)
         } else {
-            // Other new sections will be generated if toSearchResponseList() is
-            // overridden
             val data = request.toSearchResponseList(page)
             return newHomePageResponse(request.name, data.first, data.second)
         }
@@ -176,37 +168,57 @@ class StreamPlayAnime : MainAPI() {
 
         val response = SingleFlight.executeShared("anilist:load:$id") {
             val data = anilistAPICall(
-                "query (\$id: Int = $id) { Media(id: \$id, type: ANIME) { id idMal title { romaji english } startDate { year } genres description averageScore status bannerImage coverImage { extraLarge large medium } bannerImage episodes format nextAiringEpisode { episode } airingSchedule { nodes { episode } } recommendations { edges { node { id mediaRecommendation { id title { romaji english } coverImage { extraLarge large medium } } } } } } }"
-            ).data.media ?: throw Exception("Unable to fetch media details")
+                "query (\$id: Int = $id) { Media(id: \$id, type: ANIME) { id idMal title { romaji english } startDate { year } genres description averageScore status bannerImage coverImage { extraLarge large medium } episodes format nextAiringEpisode { episode } airingSchedule { nodes { episode } } recommendations { edges { node { id mediaRecommendation { id title { romaji english } coverImage { extraLarge large medium } } } } } } }"
+            ).data?.media ?: throw Exception("Unable to fetch media details")
 
             val anititle = data.getTitle()
-            val aniyear = data.startDate.year
-            val posterurl = data.coverImage.extraLarge
+            val aniyear = data.startDate?.year
+            val posterurl = data.coverImage?.extraLarge ?: data.coverImage?.large ?: data.coverImage?.medium
             val backgroundUrl = data.bannerImage
+            val formatStr = data.format.orEmpty()
+            val isMovie = formatStr.contains("MOVIE", ignoreCase = true)
 
-            val anitype = if (data.format!!.contains("MOVIE", ignoreCase = true)) TvType.AnimeMovie else TvType.TvSeries
+            val anitype = if (isMovie) TvType.AnimeMovie else TvType.TvSeries
             val ids = if (data.idMal != null) {
                 AniIds(data.id, data.idMal)
             } else {
-                tmdbToAnimeId(anititle, aniyear, anitype)
+                val resolved = tmdbToAnimeId(anititle, aniyear, anitype)
+                AniIds(resolved.id ?: data.id, resolved.idMal)
             }
 
-            val jpTitle = data.title.romaji
+            val jpTitle = data.title?.romaji
 
-            val aniZipKey = "anizip_${ids.id}"
+            val aniZipKey = "anizip_${ids.id ?: id}"
             val syncMetaData = StreamPlayCache.getCachedAniZip(aniZipKey) ?: run {
-                val fetched = app.get("https://api.ani.zip/mappings?anilist_id=${ids.id}").toString()
+                val byAni = runCatching {
+                    app.get("https://api.ani.zip/mappings?anilist_id=${ids.id ?: id}").text
+                }.getOrNull().orEmpty()
+                val fetched = if (byAni.isNotBlank() && byAni.contains("\"mappings\"")) {
+                    byAni
+                } else if (ids.idMal != null) {
+                    runCatching {
+                        app.get("https://api.ani.zip/mappings?mal_id=${ids.idMal}").text
+                    }.getOrNull().orEmpty().ifBlank { byAni }
+                } else {
+                    byAni
+                }
                 if (fetched.isNotBlank() && fetched.startsWith("{")) {
                     StreamPlayCache.cacheAniZip(aniZipKey, fetched)
                 }
                 fetched
             }
             val animeMetaData = parseAnimeData(syncMetaData)
-            val tmdbid = animeMetaData?.mappings?.themoviedbId?.toIntOrNull()
             val imdbid = animeMetaData?.mappings?.imdbId
             val kitsuid = animeMetaData?.mappings?.kitsuid
+            val resolvedMalId = ids.idMal ?: animeMetaData?.mappings?.malId
+            val resolvedAniId = ids.id ?: animeMetaData?.mappings?.anilistId ?: id.toIntOrNull()
 
-            val type = if (data.format.contains("Movie", ignoreCase = true)) TvType.Movie else TvType.TvSeries
+            val tmdbid = animeMetaData?.mappings?.themoviedbId?.toIntOrNull()
+                ?: imdbid?.let { resolveTmdbIdFromImdb(it, if (isMovie) null else 1) }
+                ?: resolveTmdbIdByTitle(anititle, aniyear, isMovie)
+                ?: resolveTmdbIdByTitle(jpTitle, aniyear, isMovie)
+
+            val type = if (isMovie) TvType.Movie else TvType.TvSeries
 
             val logoUrl = fetchTmdbLogoUrl(
                 tmdbAPI = "https://api.themoviedb.org/3",
@@ -216,50 +228,62 @@ class StreamPlayAnime : MainAPI() {
                 appLangCode = "en"
             )
 
-            val totalEps = data.totalEpisodes()
+            val aniZipEpCount = animeMetaData?.episodeCount?.takeIf { it > 0 }
+                ?: animeMetaData?.episodes?.keys?.mapNotNull { it.toIntOrNull() }?.maxOrNull()
+                ?: 0
+            val totalEps = data.totalEpisodes().takeIf { it > 0 }
+                ?: aniZipEpCount.takeIf { it > 0 }
+                ?: if (isMovie) 1 else 0
+
             val anidbEidMap: Map<Int, Int> = (1..totalEps).associateWith { getAnidbEid(syncMetaData, it) ?: 0 }
             val epMetaMap: Map<Int, MetaEpisode?> = (1..totalEps).associateWith { animeMetaData?.episodes?.get(it.toString()) }
 
-            val fallbackPoster = animeMetaData?.images?.firstOrNull()?.url ?: ""
+            val fallbackPoster = animeMetaData?.images?.firstOrNull()?.url ?: posterurl.orEmpty()
             val fallbackTitle = animeMetaData?.titles?.get("en")
                 ?: animeMetaData?.titles?.get("ja")
                 ?: animeMetaData?.titles?.get("x-jat")
-                ?: ""
+                ?: anititle
 
-            fun resolveTitle(epData: MetaEpisode?): String {
+            fun resolveTitle(epNum: Int, epData: MetaEpisode?): String {
                 val jsonTitle = epData?.title?.get("en")
                     ?: epData?.title?.get("ja")
                     ?: epData?.title?.get("x-jat")
-                    ?: fallbackTitle
-                return jsonTitle.ifBlank { "Episode ${epData?.episode ?: ""}" }
+                return if (!jsonTitle.isNullOrBlank()) jsonTitle else "Episode ${epData?.episode ?: epNum}"
             }
 
             val anidbEid = anidbEidMap[1] ?: 0
             val href = LinkData(
-                malId = ids.idMal,
-                aniId = ids.id,
+                malId = resolvedMalId,
+                aniId = resolvedAniId,
                 tmdbId = tmdbid,
                 imdbId = imdbid,
-                title = data.getTitle(),
+                title = anititle,
                 jpTitle = jpTitle,
-                year = data.startDate.year,
+                year = aniyear,
                 isAnime = true,
                 anidbEid = anidbEid,
-                episode = 1
+                season = if (isMovie) null else 1,
+                episode = 1,
+                tmdbSeason = if (isMovie) null else (epMetaMap[1]?.seasonNumber?.takeIf { it > 0 } ?: 1),
+                tmdbEpisode = epMetaMap[1]?.episodeNumber?.takeIf { it > 0 } ?: 1
             ).toStringData()
 
             val episodes = (1..totalEps).map { i ->
                 val epData = epMetaMap[i]
+                val tmdbSeason = epData?.seasonNumber?.takeIf { it > 0 } ?: 1
+                val tmdbEpisode = epData?.episodeNumber?.takeIf { it > 0 } ?: i
                 val linkData = LinkData(
-                    malId = ids.idMal,
-                    aniId = ids.id,
+                    malId = resolvedMalId,
+                    aniId = resolvedAniId,
                     tmdbId = tmdbid,
                     imdbId = imdbid,
-                    title = data.getTitle(),
+                    title = anititle,
                     jpTitle = jpTitle,
-                    year = data.startDate.year,
+                    year = aniyear,
                     season = 1,
                     episode = i,
+                    tmdbSeason = tmdbSeason,
+                    tmdbEpisode = tmdbEpisode,
                     isAnime = true,
                     isDub = false,
                     anidbEid = anidbEidMap[i] ?: 0
@@ -268,70 +292,80 @@ class StreamPlayAnime : MainAPI() {
                 newEpisode(linkData) {
                     this.season = 1
                     this.episode = i
-                    this.name = resolveTitle(epData)
+                    this.name = resolveTitle(i, epData)
                     this.posterUrl = epData?.image ?: fallbackPoster
                     this.description = epData?.overview ?: "No summary available"
                     this.score = Score.from10(epData?.rating)
                     this.runTime = epData?.runtime
-                    this.addDate(epData?.airdate)
+                    this.addDate(epData?.airdate ?: epData?.airDate)
                 }
             }
 
             val episodesDub = episodes.mapIndexed { idx, ep ->
                 val i = idx + 1
+                val epData = epMetaMap[i]
+                val tmdbSeason = epData?.seasonNumber?.takeIf { it > 0 } ?: 1
+                val tmdbEpisode = epData?.episodeNumber?.takeIf { it > 0 } ?: i
                 val dubLinkData = LinkData(
-                    malId = ids.idMal,
-                    aniId = ids.id,
+                    malId = resolvedMalId,
+                    aniId = resolvedAniId,
                     tmdbId = tmdbid,
                     imdbId = imdbid,
-                    title = data.getTitle(),
+                    title = anititle,
                     jpTitle = jpTitle,
-                    year = data.startDate.year,
+                    year = aniyear,
                     season = 1,
                     episode = i,
+                    tmdbSeason = tmdbSeason,
+                    tmdbEpisode = tmdbEpisode,
                     isAnime = true,
                     isDub = true,
                     anidbEid = anidbEidMap[i] ?: 0
                 ).toStringData()
-                ep.copy(data = dubLinkData)  // reuse all metadata, only href differs
+                ep.copy(data = dubLinkData)
             }
 
-            if (data.format.contains("Movie", ignoreCase = true)) {
-                newMovieLoadResponse(data.getTitle(), url, TvType.AnimeMovie, href) {
-                    addAniListId(id.toInt())
-                    addMalId(ids.idMal)
+            val isUnreleased = data.status.equals("NOT_YET_RELEASED", ignoreCase = true)
+
+            if (isMovie) {
+                newMovieLoadResponse(anititle, url, TvType.AnimeMovie, href) {
+                    resolvedAniId?.let { addAniListId(it) }
+                    addMalId(resolvedMalId)
                     try { addKitsuId(kitsuid) } catch (_: Throwable) {}
-                    this.year = data.startDate.year
+                    this.comingSoon = isUnreleased
+                    this.year = aniyear
                     this.plot = data.description
                     this.backgroundPosterUrl = backgroundUrl ?: animeMetaData?.images?.firstOrNull { it.coverType == "Fanart" }?.url ?: data.bannerImage
                     this.posterUrl = posterurl ?: data.getCoverImage() ?: animeMetaData?.images
                         ?.firstOrNull { it.coverType.equals("Poster", ignoreCase = true) }?.url
                     try { this.logoUrl = logoUrl } catch (_: Throwable) {}
-                    this.tags = data.genres
+                    this.tags = data.genres.orEmpty()
                     this.score = Score.from100(data.averageScore)
                 }
             } else {
-                newAnimeLoadResponse(data.getTitle(), url, TvType.Anime) {
-                    addAniListId(id.toInt())
-                    addMalId(ids.idMal)
+                newAnimeLoadResponse(anititle, url, TvType.Anime) {
+                    resolvedAniId?.let { addAniListId(it) }
+                    addMalId(resolvedMalId)
                     try { addKitsuId(kitsuid) } catch (_: Throwable) {}
                     addEpisodes(DubStatus.Subbed, episodes)
                     addEpisodes(DubStatus.Dubbed, episodesDub)
+                    this.comingSoon = if (episodes.isNotEmpty()) false else isUnreleased
                     try { this.logoUrl = logoUrl } catch (_: Throwable) {}
-                    this.year = data.startDate.year
+                    this.year = aniyear
                     this.plot = data.description
                     this.backgroundPosterUrl = animeMetaData?.images?.firstOrNull { it.coverType == "Fanart" }?.url ?: data.bannerImage
                     this.posterUrl = data.getCoverImage() ?: animeMetaData?.images
                         ?.firstOrNull { it.coverType.equals("Poster", ignoreCase = true) }?.url
-                    this.tags = data.genres
+                    this.tags = data.genres.orEmpty()
                     this.score = Score.from100(data.averageScore)
                     this.showStatus = getStatus(data.status)
                     this.recommendations = data.recommendations?.edges
                         ?.mapNotNull { edge ->
-                            val recommendation = edge.node.mediaRecommendation ?: return@mapNotNull null
+                            val recommendation = edge.node?.mediaRecommendation ?: return@mapNotNull null
+                            val recId = recommendation.id ?: return@mapNotNull null
                             val title = recommendation.title?.english ?: recommendation.title?.romaji ?: "Unknown"
-                            newAnimeSearchResponse(title, "$mainUrl/anime/${recommendation.id}", TvType.Anime).apply {
-                                this.posterUrl = recommendation.coverImage?.large
+                            newAnimeSearchResponse(title, "$mainUrl/anime/$recId", TvType.Anime).apply {
+                                this.posterUrl = recommendation.coverImage?.large ?: recommendation.coverImage?.extraLarge
                             }
                         }
                 }
@@ -354,6 +388,14 @@ class StreamPlayAnime : MainAPI() {
         val anititle = mediaData.title
         val aniid = mediaData.aniId
         val year = mediaData.year
+        val isMovie = mediaData.season == null
+        val tmdbSeason = if (isMovie) null else (mediaData.tmdbSeason ?: mediaData.season ?: 1)
+        val tmdbEpisode = if (isMovie) null else (mediaData.tmdbEpisode ?: episode ?: 1)
+
+        val effectiveTmdbId = mediaData.tmdbId
+            ?: mediaData.imdbId?.let { resolveTmdbIdFromImdb(it, tmdbSeason) }
+            ?: resolveTmdbIdByTitle(anititle, year, isMovie)
+            ?: resolveTmdbIdByTitle(jpTitle, year, isMovie)
 
         val animeTopRanks = setOf(100, 95, 94, 92, 90)
         val runningTopRanks = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>().apply {
@@ -362,7 +404,8 @@ class StreamPlayAnime : MainAPI() {
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
-            top720GraceMs = 350L,
+            topSourceGraceMs = 2_000L,
+            top720GraceMs = 1_100L,
             activeTopRanks = animeTopRanks,
             isRankInFlight = { rank -> runningTopRanks.contains(rank) }
         )
@@ -371,31 +414,32 @@ class StreamPlayAnime : MainAPI() {
             onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) }
         )
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-        val dubStatus: String? =
-            if (mediaData.season == null) "Movie"
+        val dubStatus: String =
+            if (isMovie) "Movie"
             else if (mediaData.isDub) "DUB"
             else "SUB"
 
         val earlySatisfactionConfig = EarlySatisfactionConfig(
-            minVerifiedLinks = 2,
-            minQualityStreams = 1,
+            minVerifiedLinks = 10,
+            minQualityStreams = 4,
             qualityThreshold = Qualities.P720.value,
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
-            satisfyWithOneLinkIfSubsFound = true,
+            satisfyWithOneLinkIfSubsFound = false,
             requireSubtitles = false,
-            require720p = true,
+            requireDualQualities = false,
+            require720p = false,
             adaptiveTierEscalation = true,
-            softGracePeriodAfterFirstLinkMs = 3500L,
-            maxPipelineTimeoutMs = 18_000L
+            softGracePeriodAfterFirstLinkMs = 0L,
+            maxPipelineTimeoutMs = 18_000L,
+            postSatisfactionGraceMs = 7_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
-        // Assumption: PriorityStreamDispatcher uses top720GraceMs and fhdGraceMs to ensure top sources
-        // emit 720p ahead of 1080p; dispatcher.flush() is called in the finally block after execution completes.
 
         val animeLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
-        val trackedCallback: (ExtractorLink) -> Unit = { link ->
+        fun emitSingleOptimized(link: ExtractorLink) {
             val optimized = StreamLinkOptimizer.optimize(link)
             earlyController.onCandidateLink(optimized)
             when (deduplicator.emitDetailed(optimized)) {
@@ -409,19 +453,25 @@ class StreamPlayAnime : MainAPI() {
                 StreamLinkOptimizer.DeduplicationResult.DROPPED -> {}
             }
         }
+
+        val trackedCallback: (ExtractorLink) -> Unit = { link ->
+            StreamLinkOptimizer.processTopTierDualQualityStream(link, topTierDualGuardedKeys) { single ->
+                emitSingleOptimized(single)
+            }
+        }
         val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
             val rawUrl = sub.url.trim()
             if (rawUrl.startsWith("http", ignoreCase = true)) {
-                // Shield Tier-3: strip tracking particles and refuse ad/tracker hosts.
                 val url = StreamPlayShield.stripTrackingParticles(rawUrl)
                 if (StreamPlayShield.isBlockedUrl(url)) {
                     StreamPlayShield.countEmissionBlocked()
                     Log.d("StreamPlayShield", "🛡 dropped blocked subtitle URL via ${StreamPlayShield.hostOf(url)}")
                 } else {
-                    val key = "${sub.lang.lowercase()}|$url"
+                    val cleanedLang = cleanSubtitleLabel(sub.lang)
+                    val key = "${cleanedLang.lowercase()}|$url"
                     if (emittedSubtitles.add(key)) {
                         @Suppress("DEPRECATION")
-                        val shieldedSubtitle = SubtitleFile(lang = sub.lang, url = url)
+                        val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = url)
                         earlyController.onSubtitleEmitted(shieldedSubtitle)
                         subtitleCallback(shieldedSubtitle)
                         dispatcher.onSubtitleReceived()
@@ -433,15 +483,27 @@ class StreamPlayAnime : MainAPI() {
         val tasks = buildList {
             add(PipelinedTask("vidlink", LatencyTier.TIER_1, priorityBoost = 100f) {
                 try {
-                    if (mediaData.tmdbId != null) {
+                    if (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank()) {
                         invokeVidlink(
-                            mediaData.tmdbId,
-                            if (mediaData.season == null) null else 1,
-                            episode,
-                            trackedSubtitleCallback,
-                            trackedCallback,
-                            mediaData.imdbId
+                            tmdbId = effectiveTmdbId,
+                            season = tmdbSeason,
+                            episode = tmdbEpisode,
+                            subtitleCallback = trackedSubtitleCallback,
+                            callback = trackedCallback,
+                            imdbId = mediaData.imdbId,
+                            isAnime = true
                         )
+                        if (!isMovie && (tmdbSeason != 1 || tmdbEpisode != episode) && episode != null) {
+                            invokeVidlink(
+                                tmdbId = effectiveTmdbId,
+                                season = 1,
+                                episode = episode,
+                                subtitleCallback = trackedSubtitleCallback,
+                                callback = trackedCallback,
+                                imdbId = mediaData.imdbId,
+                                isAnime = true
+                            )
+                        }
                     }
                 } finally {
                     runningTopRanks.remove(100)
@@ -450,11 +512,11 @@ class StreamPlayAnime : MainAPI() {
             })
             add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 95f) {
                 try {
-                    if (mediaData.tmdbId != null) {
+                    if (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank()) {
                         invokeCineby(
-                            tmdbId = mediaData.tmdbId,
-                            season = if (mediaData.season == null) null else 1,
-                            episode = episode,
+                            tmdbId = effectiveTmdbId,
+                            season = tmdbSeason,
+                            episode = tmdbEpisode,
                             subtitleCallback = trackedSubtitleCallback,
                             callback = trackedCallback,
                             imdbId = mediaData.imdbId,
@@ -462,6 +524,19 @@ class StreamPlayAnime : MainAPI() {
                             year = year,
                             isAnime = true
                         )
+                        if (!isMovie && (tmdbSeason != 1 || tmdbEpisode != episode) && episode != null) {
+                            invokeCineby(
+                                tmdbId = effectiveTmdbId,
+                                season = 1,
+                                episode = episode,
+                                subtitleCallback = trackedSubtitleCallback,
+                                callback = trackedCallback,
+                                imdbId = mediaData.imdbId,
+                                title = anititle ?: jpTitle,
+                                year = year,
+                                isAnime = true
+                            )
+                        }
                     }
                 } finally {
                     runningTopRanks.remove(95)
@@ -470,11 +545,11 @@ class StreamPlayAnime : MainAPI() {
             })
             add(PipelinedTask("cinesrc", LatencyTier.TIER_1, priorityBoost = 94f) {
                 try {
-                    if (mediaData.tmdbId != null) {
+                    if (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank()) {
                         invokeCineSrc(
-                            tmdbId = mediaData.tmdbId,
-                            season = if (mediaData.season == null) null else 1,
-                            episode = episode,
+                            tmdbId = effectiveTmdbId,
+                            season = tmdbSeason,
+                            episode = tmdbEpisode,
                             subtitleCallback = trackedSubtitleCallback,
                             callback = trackedCallback,
                             imdbId = mediaData.imdbId,
@@ -482,6 +557,19 @@ class StreamPlayAnime : MainAPI() {
                             year = year,
                             isAnime = true
                         )
+                        if (!isMovie && (tmdbSeason != 1 || tmdbEpisode != episode) && episode != null) {
+                            invokeCineSrc(
+                                tmdbId = effectiveTmdbId,
+                                season = 1,
+                                episode = episode,
+                                subtitleCallback = trackedSubtitleCallback,
+                                callback = trackedCallback,
+                                imdbId = mediaData.imdbId,
+                                title = anititle ?: jpTitle,
+                                year = year,
+                                isAnime = true
+                            )
+                        }
                     }
                 } finally {
                     runningTopRanks.remove(94)
@@ -506,17 +594,16 @@ class StreamPlayAnime : MainAPI() {
             })
         }
 
-        earlyController.onSatisfiedCallback = {
+        try {
+            SpeculativePipeliner.executePipelined(
+                tasks = tasks,
+                config = earlySatisfactionConfig,
+                controller = earlyController
+            )
+        } finally {
             dispatcher.flush()
         }
-
-        SpeculativePipeliner.executePipelined(
-            tasks = tasks,
-            config = earlySatisfactionConfig,
-            controller = earlyController
-        )
-        dispatcher.flush()
-        true
+        animeLinksFound.get() > 0 || emittedSubtitles.isNotEmpty()
     }
 
     fun getStatus(t: String?): ShowStatus {
@@ -527,41 +614,100 @@ class StreamPlayAnime : MainAPI() {
         }
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniTitle(
+        @param:JsonProperty("english") val english: String? = null,
+        @param:JsonProperty("romaji") val romaji: String? = null,
+        @param:JsonProperty("native") val native: String? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniCoverImage(
+        @param:JsonProperty("extraLarge") val extraLarge: String? = null,
+        @param:JsonProperty("large") val large: String? = null,
+        @param:JsonProperty("medium") val medium: String? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniPageInfo(
+        @param:JsonProperty("total") val total: Int? = null,
+        @param:JsonProperty("perPage") val perPage: Int? = null,
+        @param:JsonProperty("currentPage") val currentPage: Int? = null,
+        @param:JsonProperty("lastPage") val lastPage: Int? = null,
+        @param:JsonProperty("hasNextPage") val hasNextPage: Boolean? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniNextAiringEpisode(
+        @param:JsonProperty("timeUntilAiring") val timeUntilAiring: Int? = null,
+        @param:JsonProperty("episode") val episode: Int? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniRecommendedMedia(
+        @param:JsonProperty("id") val id: Int? = null,
+        @param:JsonProperty("title") val title: AniTitle? = null,
+        @param:JsonProperty("coverImage") val coverImage: AniCoverImage? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniRecommendationNode(
+        @param:JsonProperty("id") val id: Int? = null,
+        @param:JsonProperty("mediaRecommendation") val mediaRecommendation: AniRecommendedMedia? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniRecommendationEdge(
+        @param:JsonProperty("node") val node: AniRecommendationNode? = null,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniRecommendationConnection(
+        @param:JsonProperty("edges") val edges: List<AniRecommendationEdge>? = emptyList(),
+        @param:JsonProperty("nodes") val nodes: List<AniRecommendationNode>? = emptyList(),
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class AnilistAPIResponse(
-        @param:JsonProperty("data") val data: AnilistData,
+        @param:JsonProperty("data") val data: AnilistData? = null,
     ) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class AnilistData(
-            @param:JsonProperty("Page") val page: AnilistPage?,
-            @param:JsonProperty("Media") val media: anilistMedia?,
+            @param:JsonProperty("Page") val page: AnilistPage? = null,
+            @param:JsonProperty("Media") val media: anilistMedia? = null,
         ) {
+            @JsonIgnoreProperties(ignoreUnknown = true)
             data class AnilistPage(
-                @param:JsonProperty("pageInfo") val pageInfo: LikePageInfo,
-                @param:JsonProperty("media") val media: List<Media>,
+                @param:JsonProperty("pageInfo") val pageInfo: AniPageInfo? = null,
+                @param:JsonProperty("media") val media: List<Media>? = emptyList(),
             )
         }
 
+        @JsonIgnoreProperties(ignoreUnknown = true)
         data class anilistMedia(
             @param:JsonProperty("id") val id: Int,
             @param:JsonProperty("idMal") val idMal: Int? = null,
-            @param:JsonProperty("startDate") val startDate: StartDate,
-            @param:JsonProperty("episodes") val episodes: Int?,
-            @param:JsonProperty("title") val title: Title,
-            @param:JsonProperty("season") val season: String?,
-            @param:JsonProperty("genres") val genres: List<String>,
-            @param:JsonProperty("averageScore") val averageScore: Int,
-            @param:JsonProperty("status") val status: String,
-            @param:JsonProperty("description") val description: String?,
-            @param:JsonProperty("coverImage") val coverImage: CoverImage,
-            @param:JsonProperty("bannerImage") val bannerImage: String?,
-            @param:JsonProperty("nextAiringEpisode") val nextAiringEpisode: SeasonNextAiringEpisode?,
-            @param:JsonProperty("airingSchedule") val airingSchedule: AiringScheduleNodes?,
-            @param:JsonProperty("recommendations") val recommendations: RecommendationConnection?,
-            @param:JsonProperty("format") val format: String?,
+            @param:JsonProperty("startDate") val startDate: StartDate? = null,
+            @param:JsonProperty("episodes") val episodes: Int? = null,
+            @param:JsonProperty("title") val title: AniTitle? = null,
+            @param:JsonProperty("season") val season: String? = null,
+            @param:JsonProperty("genres") val genres: List<String>? = emptyList(),
+            @param:JsonProperty("averageScore") val averageScore: Int? = null,
+            @param:JsonProperty("status") val status: String? = null,
+            @param:JsonProperty("description") val description: String? = null,
+            @param:JsonProperty("coverImage") val coverImage: AniCoverImage? = null,
+            @param:JsonProperty("bannerImage") val bannerImage: String? = null,
+            @param:JsonProperty("nextAiringEpisode") val nextAiringEpisode: AniNextAiringEpisode? = null,
+            @param:JsonProperty("airingSchedule") val airingSchedule: AiringScheduleNodes? = null,
+            @param:JsonProperty("recommendations") val recommendations: AniRecommendationConnection? = null,
+            @param:JsonProperty("format") val format: String? = null,
         ) {
-            data class StartDate(@param:JsonProperty("year") val year: Int)
+            @JsonIgnoreProperties(ignoreUnknown = true)
+            data class StartDate(@param:JsonProperty("year") val year: Int? = null)
 
+            @JsonIgnoreProperties(ignoreUnknown = true)
             data class AiringScheduleNodes(
-                @param:JsonProperty("nodes") val nodes: List<SeasonNextAiringEpisode>?
+                @param:JsonProperty("nodes") val nodes: List<AniNextAiringEpisode>? = emptyList()
             )
 
             fun totalEpisodes(): Int {
@@ -572,16 +718,19 @@ class StreamPlayAnime : MainAPI() {
             }
 
             fun getTitle(): String {
-                return title.english
-                    ?: title.romaji ?: throw Exception("Unable to calculate total episodes")
+                return title?.english
+                    ?: title?.romaji
+                    ?: title?.native
+                    ?: "Anime $id"
             }
 
             fun getCoverImage(): String? {
-                return coverImage.extraLarge ?: coverImage.large ?: coverImage.medium
+                return coverImage?.extraLarge ?: coverImage?.large ?: coverImage?.medium
             }
         }
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class LinkData(
         @param:JsonProperty("simklId") val simklId: Int? = null,
         @param:JsonProperty("traktId") val traktId: Int? = null,
@@ -591,6 +740,8 @@ class StreamPlayAnime : MainAPI() {
         @param:JsonProperty("type") val type: String? = null,
         @param:JsonProperty("season") val season: Int? = null,
         @param:JsonProperty("episode") val episode: Int? = null,
+        @param:JsonProperty("tmdbSeason") val tmdbSeason: Int? = null,
+        @param:JsonProperty("tmdbEpisode") val tmdbEpisode: Int? = null,
         @param:JsonProperty("aniId") val aniId: Int? = null,
         @param:JsonProperty("malId") val malId: Int? = null,
         @param:JsonProperty("title") val title: String? = null,
@@ -608,21 +759,22 @@ class StreamPlayAnime : MainAPI() {
         @param:JsonProperty("isCartoon") val isCartoon: Boolean = false,
         @param:JsonProperty("isDub") val isDub: Boolean = false,
         @param:JsonProperty("anidbEid") val anidbEid: Int? = null,
-        )
+    )
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class Media(
         @param:JsonProperty("id") val id: Int,
-        @param:JsonProperty("idMal") val idMal: Int?,
-        @param:JsonProperty("season") val season: String?,
-        @param:JsonProperty("seasonYear") val seasonYear: Int,
-        @param:JsonProperty("format") val format: String?,
-        @param:JsonProperty("averageScore") val averageScore: Int,
-        @param:JsonProperty("episodes") val episodes: Int,
-        @param:JsonProperty("title") val title: Title,
-        @param:JsonProperty("description") val description: String?,
-        @param:JsonProperty("coverImage") val coverImage: CoverImage,
-        @param:JsonProperty("synonyms") val synonyms: List<String>,
-        @param:JsonProperty("nextAiringEpisode") val nextAiringEpisode: SeasonNextAiringEpisode?,
+        @param:JsonProperty("idMal") val idMal: Int? = null,
+        @param:JsonProperty("season") val season: String? = null,
+        @param:JsonProperty("seasonYear") val seasonYear: Int? = null,
+        @param:JsonProperty("format") val format: String? = null,
+        @param:JsonProperty("averageScore") val averageScore: Int? = null,
+        @param:JsonProperty("episodes") val episodes: Int? = null,
+        @param:JsonProperty("title") val title: AniTitle? = null,
+        @param:JsonProperty("description") val description: String? = null,
+        @param:JsonProperty("coverImage") val coverImage: AniCoverImage? = null,
+        @param:JsonProperty("synonyms") val synonyms: List<String>? = emptyList(),
+        @param:JsonProperty("nextAiringEpisode") val nextAiringEpisode: AniNextAiringEpisode? = null,
     )
 
     private suspend fun tmdbToAnimeId(title: String?, year: Int?, type: TvType): AniIds {

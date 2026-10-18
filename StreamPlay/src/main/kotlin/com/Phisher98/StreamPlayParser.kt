@@ -238,10 +238,12 @@ data class DomainsParser(
 
 // CinemetaRes
 
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
 data class CinemetaRes(
     val meta: Meta? = null
 ) {
 
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     data class Meta(
         val id: String? = null,
         val type: String? = null,
@@ -252,8 +254,8 @@ data class CinemetaRes(
 
         val slug: String? = null,
 
-        val director: String? = null,
-        val writer: String? = null,
+        val director: Any? = null,
+        val writer: Any? = null,
 
         val description: String? = null,
         val year: String? = null,
@@ -282,40 +284,50 @@ data class CinemetaRes(
         val appExtras: AppExtras? = null,
     ) {
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class BehaviorHints(
             val defaultVideoId: Any? = null,
             val hasScheduledVideos: Boolean? = null
         )
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class Link(
             val name: String? = null,
             val category: String? = null,
             val url: String? = null
         )
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class Trailer(
             val source: String? = null,
             val type: String? = null,
             val name: String? = null
         )
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class TrailerStream(
             val ytId: String? = null,
             val title: String? = null
         )
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class Video(
             val id: String? = null,
             val title: String? = null,
+            val name: String? = null,
             val season: Int? = null,
             val episode: Int? = null,
+            val number: Int? = null,
             val thumbnail: String? = null,
             val overview: String? = null,
+            val description: String? = null,
             val released: String? = null,
+            val firstAired: String? = null,
             val available: Boolean? = null,
             val runtime: String? = null
         )
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class AppExtras(
             val cast: List<Cast>? = null,
             val directors: List<Any?>? = null,
@@ -324,6 +336,7 @@ data class CinemetaRes(
             val certification: String? = null
         )
 
+        @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
         data class Cast(
             val name: String? = null,
             val character: String? = null,

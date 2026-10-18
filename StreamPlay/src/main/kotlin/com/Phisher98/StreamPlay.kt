@@ -622,56 +622,158 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
             if (isAnime) {
                 val imdbId = res.external_ids?.imdb_id.orEmpty()
-                val animeVideos = cineRes?.meta?.videos?.filter { it.season != 0 } ?: emptyList()
+                val animeVideos = cineRes?.meta?.videos?.filter { (it.season ?: 1) != 0 } ?: emptyList()
                 val jpTitle = res.alternative_titles?.results
                     ?.firstOrNull {
                         it.iso_3166_1 == "JP" &&
                                 it.type?.equals("romaji", ignoreCase = true) == true
                     }?.title
                     ?: cineRes?.meta?.name
-                val syncMetaData = SingleFlight.executeShared("anizip:imdb:$imdbId") {
+                val syncMetaData = SingleFlight.executeShared("anizip:${imdbId.ifBlank { "tmdb_${data.id}" }}") {
                     withTimeoutOrNull(4000.milliseconds) {
-                        app.get("https://api.ani.zip/mappings?imdb_id=$imdbId").text
+                        val byImdb = if (imdbId.isNotBlank()) {
+                            runCatching { app.get("https://api.ani.zip/mappings?imdb_id=$imdbId").text }.getOrNull()
+                        } else null
+                        if (!byImdb.isNullOrBlank() && byImdb.contains("\"mappings\"")) {
+                            byImdb
+                        } else if (data.id != null) {
+                            runCatching { app.get("https://api.ani.zip/mappings?themoviedb_id=${data.id}").text }.getOrNull()
+                        } else {
+                            byImdb
+                        }
                     }
                 }
                 val animeMetaData = syncMetaData?.let { parseAnimeData(it) }
                 val kitsuid = animeMetaData?.mappings?.kitsuid
+                val resolvedAniId = animeMetaData?.mappings?.anilistId ?: data.aniId?.toIntOrNull()
+                val resolvedMalId = animeMetaData?.mappings?.malId ?: data.malId
 
-                val subbedList = animeVideos.map { video ->
-                    val videoYear = video.released?.split("-")?.firstOrNull()?.toIntOrNull()
-                        ?: cineRes?.meta?.year?.toIntOrNull() ?: 0
+                val subbedList = if (animeVideos.isNotEmpty()) {
+                    animeVideos.map { video ->
+                        val epNum = video.episode ?: video.number
+                        val epSeason = video.season ?: 1
+                        val epTitle = video.title ?: video.name ?: "Episode ${epNum ?: 1}"
+                        val epReleased = video.released ?: video.firstAired
+                        val epOverview = video.overview ?: video.description
+                        val videoYear = epReleased?.split("-")?.firstOrNull()?.toIntOrNull()
+                            ?: cineRes?.meta?.year?.split("–", "-")?.firstOrNull()?.trim()?.toIntOrNull()
+                            ?: year ?: 0
+                        val anidbEid = epNum?.let { animeMetaData?.episodes?.get(it.toString())?.anidbEid }
 
-                    newEpisode(
-                        LinkData(
-                            id = data.id,
-                            imdbId = imdbId,
-                            tvdbId = res.external_ids?.tvdb_id,
-                            type = data.type,
-                            season = video.season,
-                            episode = video.episode,
-                            title = title,
-                            year = videoYear,
-                            orgTitle = orgTitle,
-                            isAnime = true,
-                            airedYear = year,
-                            epsTitle = video.title,
-                            jpTitle = jpTitle,
-                            date = video.released,
-                            airedDate = res.releaseDate ?: res.firstAirDate,
-                            isAsian = isAsian,
-                            isBollywood = isBollywood,
-                            isCartoon = isCartoon,
-                            alttitle = res.title,
-                            nametitle = res.name,
-                            isDub = false
-                        ).toJson()
-                    ) {
-                        this.name = video.title + if (isUpcoming(video.released)) " • [UPCOMING]" else ""
-                        this.season = video.season
-                        this.episode = video.episode
-                        this.posterUrl = video.thumbnail
-                        this.description = video.overview
-                        addDate(video.released)
+                        newEpisode(
+                            LinkData(
+                                id = data.id,
+                                imdbId = imdbId,
+                                tvdbId = res.external_ids?.tvdb_id,
+                                type = data.type,
+                                season = epSeason,
+                                episode = epNum,
+                                aniId = resolvedAniId?.toString(),
+                                malId = resolvedMalId,
+                                anidbEid = anidbEid,
+                                title = enTitle ?: title,
+                                year = videoYear,
+                                orgTitle = orgTitle,
+                                isAnime = true,
+                                airedYear = year,
+                                epsTitle = epTitle,
+                                jpTitle = jpTitle,
+                                date = epReleased,
+                                airedDate = res.releaseDate ?: res.firstAirDate,
+                                isAsian = isAsian,
+                                isBollywood = isBollywood,
+                                isCartoon = isCartoon,
+                                alttitle = res.title,
+                                nametitle = res.name,
+                                isDub = false
+                            ).toJson()
+                        ) {
+                            this.name = epTitle + if (isUpcoming(epReleased)) " • [UPCOMING]" else ""
+                            this.season = epSeason
+                            this.episode = epNum
+                            this.posterUrl = video.thumbnail
+                            this.description = epOverview
+                            addDate(epReleased)
+                        }
+                    }
+                } else {
+                    val tmdbSeasonEpisodes = episodes.filter { (it.season ?: 1) != 0 }
+                    if (tmdbSeasonEpisodes.isNotEmpty()) {
+                        tmdbSeasonEpisodes.map { ep ->
+                            val parsed = runCatching { parseJson<LinkData>(ep.data) }.getOrNull()
+                            val epNum = ep.episode ?: parsed?.episode
+                            val anidbEid = epNum?.let { animeMetaData?.episodes?.get(it.toString())?.anidbEid }
+                            val enrichedData = (parsed ?: LinkData(
+                                id = data.id,
+                                imdbId = imdbId,
+                                tvdbId = res.external_ids?.tvdb_id,
+                                type = data.type,
+                                season = ep.season ?: 1,
+                                episode = epNum,
+                                title = enTitle ?: title,
+                                year = year,
+                                orgTitle = orgTitle,
+                                isAnime = true,
+                                airedYear = year,
+                                jpTitle = jpTitle,
+                                airedDate = res.releaseDate ?: res.firstAirDate,
+                                alttitle = res.title,
+                                nametitle = res.name
+                            )).copy(
+                                aniId = resolvedAniId?.toString(),
+                                malId = resolvedMalId,
+                                anidbEid = anidbEid,
+                                isAnime = true,
+                                isDub = false
+                            ).toJson()
+                            ep.copy(data = enrichedData)
+                        }
+                    } else {
+                        val metaEps = animeMetaData?.episodes
+                            ?.entries
+                            ?.filter { it.key.all(Char::isDigit) }
+                            ?.sortedBy { it.key.toIntOrNull() ?: 0 }
+                            .orEmpty()
+                        metaEps.map { (epKey, metaEp) ->
+                            val epNum = metaEp.episodeNumber ?: epKey.toIntOrNull() ?: 1
+                            val epSeason = metaEp.seasonNumber?.takeIf { it > 0 } ?: 1
+                            val epTitle = metaEp.title?.get("en") ?: metaEp.title?.get("ja") ?: "Episode $epNum"
+                            newEpisode(
+                                LinkData(
+                                    id = data.id,
+                                    imdbId = imdbId,
+                                    tvdbId = res.external_ids?.tvdb_id,
+                                    type = data.type,
+                                    season = epSeason,
+                                    episode = epNum,
+                                    aniId = resolvedAniId?.toString(),
+                                    malId = resolvedMalId,
+                                    anidbEid = metaEp.anidbEid,
+                                    title = enTitle ?: title,
+                                    year = year,
+                                    orgTitle = orgTitle,
+                                    isAnime = true,
+                                    airedYear = year,
+                                    epsTitle = epTitle,
+                                    jpTitle = jpTitle,
+                                    date = metaEp.airDate,
+                                    airedDate = res.releaseDate ?: res.firstAirDate,
+                                    isAsian = isAsian,
+                                    isBollywood = isBollywood,
+                                    isCartoon = isCartoon,
+                                    alttitle = res.title,
+                                    nametitle = res.name,
+                                    isDub = false
+                                ).toJson()
+                            ) {
+                                this.name = epTitle
+                                this.season = epSeason
+                                this.episode = epNum
+                                this.posterUrl = metaEp.image ?: poster
+                                this.description = metaEp.overview
+                                addDate(metaEp.airDate)
+                            }
+                        }
                     }
                 }
 
@@ -682,6 +784,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 val animeResponse = newAnimeLoadResponse(title, url, TvType.Anime) {
                     addEpisodes(DubStatus.Subbed, subbedList)
                     addEpisodes(DubStatus.Dubbed, dubbedList)
+                    this.comingSoon = if (subbedList.isNotEmpty()) false else comingSoonFlag
                     this.posterUrl = poster
                     this.backgroundPosterUrl = bgPoster
                     try { this.logoUrl = logoUrl } catch(_:Throwable){}
@@ -702,6 +805,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 return animeResponse
             } else {
                 val tvResponse = newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                    this.comingSoon = if (episodes.isNotEmpty()) false else comingSoonFlag
                     this.posterUrl = poster
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
@@ -721,16 +825,37 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 return tvResponse
             }
         } else {
+            val movieImdbId = res.external_ids?.imdb_id ?: res.imdbId
+            val movieAnimeMappings = if (isAnime) {
+                val syncMeta = SingleFlight.executeShared("anizip:movie:${movieImdbId ?: "tmdb_${data.id}"}") {
+                    withTimeoutOrNull(4000.milliseconds) {
+                        val byImdb = if (!movieImdbId.isNullOrBlank()) {
+                            runCatching { app.get("https://api.ani.zip/mappings?imdb_id=$movieImdbId").text }.getOrNull()
+                        } else null
+                        if (!byImdb.isNullOrBlank() && byImdb.contains("\"mappings\"")) {
+                            byImdb
+                        } else if (data.id != null) {
+                            runCatching { app.get("https://api.ani.zip/mappings?themoviedb_id=${data.id}").text }.getOrNull()
+                        } else {
+                            byImdb
+                        }
+                    }
+                }
+                syncMeta?.let { parseAnimeData(it)?.mappings }
+            } else null
+
             val movieResponse = newMovieLoadResponse(
                 title,
                 url,
-                TvType.Movie,
+                if (isAnime) TvType.AnimeMovie else TvType.Movie,
                 LinkData(
                     data.id,
-                    res.external_ids?.imdb_id,
+                    movieImdbId,
                     res.external_ids?.tvdb_id,
                     data.type,
-                    title = enTitle,
+                    aniId = (movieAnimeMappings?.anilistId ?: data.aniId?.toIntOrNull())?.toString(),
+                    malId = movieAnimeMappings?.malId ?: data.malId,
+                    title = enTitle ?: title,
                     year = year,
                     orgTitle = orgTitle,
                     isAnime = isAnime,
@@ -757,7 +882,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 this.actors = actors
                 this.contentRating = cineRes?.meta?.appExtras?.certification
                 addTrailer(trailer)
-                addImdbId(res.external_ids?.imdb_id)
+                addImdbId(movieImdbId)
             }
             StreamPlayCache.cacheLoadResponse(cacheKey, movieResponse)
             return movieResponse
@@ -1065,6 +1190,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val epid: Int? = null,
         val aniId: String? = null,
         val animeId: String? = null,
+        val malId: Int? = null,
+        val anidbEid: Int? = null,
         val title: String? = null,
         val year: Int? = null,
         val orgTitle: String? = null,
