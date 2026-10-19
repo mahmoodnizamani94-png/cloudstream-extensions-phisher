@@ -697,6 +697,30 @@ fun cleanSubtitleLabel(raw: String?): String {
     return if (modifier != null) "$finalLang $modifier" else finalLang
 }
 
+/**
+ * Whether a subtitle label or language tag denotes English.
+ *
+ * The app keeps several English subtitles per episode — one per source — so that at least one is
+ * in sync with the release that was downloaded. That is only possible when the extension actually
+ * emits enough distinct English subtitles, so the completion phase counts them with this predicate:
+ * it accepts `English`, `English [SDH]`, `en-US`, `eng` and similar spellings.
+ */
+fun isEnglishSubtitleLabel(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+
+    val cleaned = cleanSubtitleLabel(raw).lowercase(Locale.ROOT)
+    if (cleaned.isEmpty()) return false
+    if (cleaned.contains("english")) return true
+
+    val code = cleaned.substringBefore(' ')
+        .substringBefore('(')
+        .substringBefore('[')
+        .substringBefore('-')
+        .substringBefore('_')
+        .trim()
+    return code == "en" || code == "eng"
+}
+
 
 fun getAnidbEid(jsonString: String, episodeNumber: Int?): Int? {
     if (episodeNumber == null) return null

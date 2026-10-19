@@ -82,7 +82,14 @@ data class EarlySatisfactionConfig(
  * Controller tracking stream link acquisitions and judging early satisfaction
  */
 class EarlySatisfactionController(
-    val config: EarlySatisfactionConfig = EarlySatisfactionConfig()
+    val config: EarlySatisfactionConfig = EarlySatisfactionConfig(),
+    /**
+     * Extra, phase-specific satisfaction condition evaluated on every state change.
+     *
+     * Used by the subtitle completion phase, whose goal ("enough distinct English subtitle
+     * sources") cannot be expressed with the link/quality counters of [config].
+     */
+    private val extraCondition: (() -> Boolean)? = null,
 ) {
     private val linksFound = AtomicInteger(0)
     private val candidateLinksFound = AtomicInteger(0)
@@ -172,6 +179,13 @@ class EarlySatisfactionController(
 
     fun checkSatisfaction(): Boolean {
         if (satisfied.get()) return true
+
+        if (extraCondition?.invoke() == true) {
+            if (satisfied.compareAndSet(false, true)) {
+                onSatisfiedCallback?.invoke()
+            }
+            return true
+        }
 
         val links = linksFound.get()
         val qualityLinks = qualityLinksFound.get()

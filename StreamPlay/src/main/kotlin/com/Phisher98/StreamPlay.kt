@@ -57,6 +57,30 @@ import kotlin.time.Duration.Companion.milliseconds
 const val TOP_TIER_BOOST_THRESHOLD = 85f
 
 /**
+ * How many distinct English subtitle sources the extension tries to surface per title.
+ *
+ * The host app downloads one English subtitle per source (`DownloadSubtitlePolicy` keeps five per
+ * language) so that at least one is in sync with the release that was actually downloaded. Reaching
+ * that guarantee requires the extension to emit subtitles from this many different sources, which is
+ * what the subtitle completion phase exists for.
+ */
+const val TARGET_ENGLISH_SUBTITLE_SOURCES = 5
+
+/**
+ * Upper bound on how many top-tier providers the subtitle completion phase re-queries.
+ *
+ * Only providers that have not already delivered an English subtitle are eligible, so this caps the
+ * worst case for titles where the remaining sources simply have no captions for the release.
+ */
+internal const val MAX_SUBTITLE_COMPLETION_PROVIDERS = 4
+
+/** Wall-clock budget for the whole subtitle completion phase. */
+internal const val SUBTITLE_COMPLETION_TIMEOUT_MS = 15_000L
+
+/** Per-provider budget inside the subtitle completion phase. */
+internal const val SUBTITLE_COMPLETION_TASK_TIMEOUT_MS = 12_000L
+
+/**
  * The curated v24 registry has no subtitle-only entries: every surviving source ships its
  * own captions (VidLink's native caption tracks, Cineby/CineSrc/VidFast/MeowTV decrypted
  * track lists, MegaPlay and Animex soft-subs), which keeps subtitle timing exactly in sync with the
@@ -997,6 +1021,12 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         )
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+        // Distinct sources that delivered an English subtitle, plus the raw count. The app downloads
+        // one English subtitle per source so that at least one matches the release on disk, which only
+        // works when the extension surfaces enough distinct sources in the first place.
+        val englishSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val englishSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
+
         val earlySatisfactionConfig = EarlySatisfactionConfig(
             minVerifiedLinks = 12,
             minQualityStreams = 6,
@@ -1050,7 +1080,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             return emittedAny
         }
 
-        fun emitSubtitle(subtitle: SubtitleFile): Boolean {
+        fun emitSubtitle(
+            subtitle: SubtitleFile,
+            sourceKey: String = StreamPlayShield.hostOf(subtitle.url)
+        ): Boolean {
             val rawUrl = subtitle.url.trim()
             val url = when {
                 rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true) -> rawUrl
@@ -1070,6 +1103,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
             return if (emittedSubtitles.add(dedupeKey)) {
                 subtitlesFound.incrementAndGet()
+                if (isEnglishSubtitleLabel(cleanedLang)) {
+                    englishSubtitleCount.incrementAndGet()
+                    englishSubtitleSources.add(sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) })
+                }
                 @Suppress("DEPRECATION")
                 val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = shieldedUrl)
                 earlyController.onSubtitleEmitted(cleanedSubtitle)
@@ -1087,7 +1124,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             res.imdbId,
             res.season,
             res.episode,
-            { subtitle -> emitSubtitle(subtitle) },
+            { subtitle -> emitSubtitle(subtitle, "stremio") },
             { link -> emitLink(link) }
         )
 
@@ -1109,7 +1146,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         priorityBoost = 99f
                     ) {
                         StreamPlayExtractor.invokeWYZIESubs(subLookupId, res.season, res.episode) { sub ->
-                            emitSubtitle(sub)
+                            emitSubtitle(sub, "wyziesub")
                         }
                     }
                 )
@@ -1123,7 +1160,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         priorityBoost = 98f
                     ) {
                         StreamPlayExtractor.invokeSubtitleAPI(res.imdbId, res.season, res.episode) { sub ->
-                            emitSubtitle(sub)
+                            emitSubtitle(sub, "subtitles")
                         }
                     }
                 )
@@ -1143,7 +1180,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 try {
                     provider.invoke(
                         res,
-                        { subtitle -> emitSubtitle(subtitle) },
+                        { subtitle -> emitSubtitle(subtitle, provider.id) },
                         { link -> emitLink(link) },
                         authToken,
                         dahmerMoviesAPI
@@ -1201,7 +1238,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     ) {
                         provider.invoke(
                             res,
-                            { subtitle -> emitSubtitle(subtitle) },
+                            { subtitle -> emitSubtitle(subtitle, provider.id) },
                             { link -> emitLink(link) },
                             authToken,
                             dahmerMoviesAPI
@@ -1216,6 +1253,111 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 )
             } else if (primaryLinksFound > 0) {
                 Log.d(TAG, "🎯 Primary sources successfully resolved $primaryLinksFound streams. Strict fallback providers skipped.")
+            }
+
+            // Phase 3: Subtitle completion.
+            //
+            // The app downloads one English subtitle per source so that at least one is in sync with
+            // the release that was downloaded. Early satisfaction, provider ordering and cancellation
+            // can all end the sweep before enough distinct sources have spoken, so the remaining top
+            // tier providers are run once more here - subtitle-first, but with the normal emission
+            // paths, so a provider that also has a link to offer still contributes it.
+            if (englishSubtitleSources.size < TARGET_ENGLISH_SUBTITLE_SOURCES) {
+                // Dedicated subtitle providers are re-runnable from their already-built tasks; the
+                // video providers are re-invoked through the same body the main sweep used.
+                val retryableHarvests = subtitleHarvestTasks
+                    .filter { task -> task.providerId !in englishSubtitleSources }
+                val remainingSlots = (MAX_SUBTITLE_COMPLETION_PROVIDERS - retryableHarvests.size).coerceAtLeast(0)
+                val completionProviders = (prioritizedPrimary + fallbackProviders)
+                    .filter { provider -> provider.kind != ProviderKind.SUBTITLE }
+                    .filter { provider -> provider.id !in englishSubtitleSources }
+                    .filter { provider ->
+                        (FAST_PROVIDER_BOOST[provider.id] ?: 0f) >= TOP_TIER_BOOST_THRESHOLD
+                    }
+                    .distinctBy { provider -> provider.id }
+                    .take(remainingSlots)
+
+                if (retryableHarvests.isNotEmpty() || completionProviders.isNotEmpty()) {
+                    Log.d(
+                        TAG,
+                        "📝 Subtitle completion: ${englishSubtitleSources.size}/$TARGET_ENGLISH_SUBTITLE_SOURCES " +
+                            "English sources; querying ${retryableHarvests.size + completionProviders.size} more " +
+                            "(${(retryableHarvests.map { it.providerId } + completionProviders.map { it.id }).joinToString()})"
+                    )
+
+                    val completionConfig = EarlySatisfactionConfig(
+                        // Link/quality satisfaction is deliberately unreachable: this phase ends when
+                        // enough distinct English subtitle sources have answered, or on timeout.
+                        minVerifiedLinks = Int.MAX_VALUE,
+                        minQualityStreams = Int.MAX_VALUE,
+                        minSubtitles = 1,
+                        requireSubtitles = false,
+                        require720p = false,
+                        requireDualQualities = false,
+                        satisfyWithOneLinkIfSubsFound = false,
+                        tier1DelayMs = 0L,
+                        tier2DelayMs = 150L,
+                        tier3DelayMs = 500L,
+                        adaptiveTierEscalation = false,
+                        maxPipelineTimeoutMs = SUBTITLE_COMPLETION_TIMEOUT_MS,
+                        postSatisfactionGraceMs = 0L
+                    )
+                    val completionController = EarlySatisfactionController(
+                        completionConfig,
+                        extraCondition = { englishSubtitleSources.size >= TARGET_ENGLISH_SUBTITLE_SOURCES }
+                    )
+
+                    val completionTasks = buildList {
+                        // Re-runnable dedicated subtitle providers keep their own timeouts and bodies.
+                        addAll(retryableHarvests)
+                        completionProviders.forEach { provider ->
+                            add(
+                                PipelinedTask(
+                                    providerId = provider.id,
+                                    isVideo = false,
+                                    taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
+                                    priorityBoost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+                                ) {
+                                    try {
+                                        provider.invoke(
+                                            res,
+                                            { subtitle -> emitSubtitle(subtitle, provider.id) },
+                                            { link -> emitLink(link) },
+                                            authToken,
+                                            dahmerMoviesAPI
+                                        )
+                                    } finally {
+                                        // Same telemetry contract as the primary sweep: a completion
+                                        // pass must not leave the provider marked as still running.
+                                        val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+                                        if (boost >= TOP_TIER_BOOST_THRESHOLD) {
+                                            runningTopProviders.remove(provider.id)
+                                            val rank = boost.toInt()
+                                            val hasRemainingWithRank =
+                                                runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank }
+                                            if (!hasRemainingWithRank) {
+                                                dispatcher.markRankCompleted(rank)
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+
+                    SpeculativePipeliner.executePipelined(
+                        tasks = completionTasks,
+                        config = completionConfig,
+                        controller = completionController,
+                        maxConcurrencyOverride = concurrency
+                    )
+
+                    Log.d(
+                        TAG,
+                        "📝 Subtitle completion finished: ${englishSubtitleCount.get()} English subtitles " +
+                            "from ${englishSubtitleSources.size} sources"
+                    )
+                }
             }
         } finally {
             dispatcher.flush()

@@ -451,6 +451,12 @@ class StreamPlayAnime : MainAPI() {
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+        // Distinct anime sources that delivered an English subtitle, plus the raw count. The app
+        // keeps one English subtitle per source so at least one is in sync with the release on disk;
+        // the completion phase below tops this up when the sweep was satisfied too early.
+        val englishSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val englishSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
+
         val dubStatus: String =
             if (isMovie) "Movie"
             else if (mediaData.isDub) "DUB"
@@ -494,7 +500,11 @@ class StreamPlayAnime : MainAPI() {
                 emitSingleOptimized(single)
             }
         }
-        val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
+        /**
+         * Builds the subtitle sink for one source, so the provenance of every emitted track stays
+         * known (a URL alone cannot say which provider surfaced it).
+         */
+        fun subtitleSinkFor(sourceKey: String): (SubtitleFile) -> Unit = { sub ->
             val rawUrl = sub.url.trim()
             if (rawUrl.startsWith("http", ignoreCase = true)) {
                 val url = StreamPlayShield.stripTrackingParticles(rawUrl)
@@ -505,6 +515,10 @@ class StreamPlayAnime : MainAPI() {
                     val cleanedLang = cleanSubtitleLabel(sub.lang)
                     val key = "${cleanedLang.lowercase()}|$url"
                     if (emittedSubtitles.add(key)) {
+                        if (isEnglishSubtitleLabel(cleanedLang)) {
+                            englishSubtitleCount.incrementAndGet()
+                            englishSubtitleSources.add(sourceKey.ifBlank { StreamPlayShield.hostOf(url) })
+                        }
                         @Suppress("DEPRECATION")
                         val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = url)
                         earlyController.onSubtitleEmitted(shieldedSubtitle)
@@ -515,93 +529,117 @@ class StreamPlayAnime : MainAPI() {
             }
         }
 
-        val tasks = buildList {
-            add(PipelinedTask("vidlink", LatencyTier.TIER_1, priorityBoost = 100f) {
-                try {
-                    if (canUseTmdbProviders && (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank())) {
-                        invokeVidlink(
-                            tmdbId = effectiveTmdbId,
-                            season = tmdbSeason,
-                            episode = tmdbEpisode,
-                            subtitleCallback = trackedSubtitleCallback,
-                            callback = trackedCallback,
-                            imdbId = mediaData.imdbId,
-                            isAnime = true
-                        )
-                    }
-                } finally {
-                    runningTopRanks.remove(100)
-                    dispatcher.markRankCompleted(100)
+        /**
+         * One SOTA anime source: the id/rank the pipeliner orders and tracks it by, plus how to
+         * invoke it. Declared once so the main sweep and the subtitle completion pass can never
+         * drift apart.
+         */
+        data class AnimeSource(
+            val id: String,
+            val boost: Float,
+            /** Rank registered with the priority dispatcher, or null for subtitle-only sources. */
+            val topRank: Int? = null,
+            val invoke: suspend (
+                onSubtitle: (SubtitleFile) -> Unit,
+                onLink: (ExtractorLink) -> Unit
+            ) -> Unit
+        )
+
+        val subLookupId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
+        val animeImdbId = mediaData.imdbId
+
+        val videoSources = listOf(
+            AnimeSource("vidlink", 100f, topRank = 100) { onSubtitle, onLink ->
+                if (canUseTmdbProviders && (effectiveTmdbId != null || !animeImdbId.isNullOrBlank())) {
+                    invokeVidlink(
+                        tmdbId = effectiveTmdbId,
+                        season = tmdbSeason,
+                        episode = tmdbEpisode,
+                        subtitleCallback = onSubtitle,
+                        callback = onLink,
+                        imdbId = animeImdbId,
+                        isAnime = true
+                    )
                 }
-            })
-            add(PipelinedTask("cineby", LatencyTier.TIER_1, priorityBoost = 95f) {
-                try {
-                    if (canUseTmdbProviders && (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank())) {
-                        invokeCineby(
-                            tmdbId = effectiveTmdbId,
-                            season = tmdbSeason,
-                            episode = tmdbEpisode,
-                            subtitleCallback = trackedSubtitleCallback,
-                            callback = trackedCallback,
-                            imdbId = mediaData.imdbId,
-                            title = anititle ?: jpTitle,
-                            year = year,
-                            isAnime = true
-                        )
-                    }
-                } finally {
-                    runningTopRanks.remove(95)
-                    dispatcher.markRankCompleted(95)
+            },
+            AnimeSource("cineby", 95f, topRank = 95) { onSubtitle, onLink ->
+                if (canUseTmdbProviders && (effectiveTmdbId != null || !animeImdbId.isNullOrBlank())) {
+                    invokeCineby(
+                        tmdbId = effectiveTmdbId,
+                        season = tmdbSeason,
+                        episode = tmdbEpisode,
+                        subtitleCallback = onSubtitle,
+                        callback = onLink,
+                        imdbId = animeImdbId,
+                        title = anititle ?: jpTitle,
+                        year = year,
+                        isAnime = true
+                    )
                 }
-            })
-            add(PipelinedTask("cinesrc", LatencyTier.TIER_1, priorityBoost = 94f) {
-                try {
-                    if (canUseTmdbProviders && (effectiveTmdbId != null || !mediaData.imdbId.isNullOrBlank())) {
-                        invokeCineSrc(
-                            tmdbId = effectiveTmdbId,
-                            season = tmdbSeason,
-                            episode = tmdbEpisode,
-                            subtitleCallback = trackedSubtitleCallback,
-                            callback = trackedCallback,
-                            imdbId = mediaData.imdbId,
-                            title = anititle ?: jpTitle,
-                            year = year,
-                            isAnime = true
-                        )
-                    }
-                } finally {
-                    runningTopRanks.remove(94)
-                    dispatcher.markRankCompleted(94)
+            },
+            AnimeSource("cinesrc", 94f, topRank = 94) { onSubtitle, onLink ->
+                if (canUseTmdbProviders && (effectiveTmdbId != null || !animeImdbId.isNullOrBlank())) {
+                    invokeCineSrc(
+                        tmdbId = effectiveTmdbId,
+                        season = tmdbSeason,
+                        episode = tmdbEpisode,
+                        subtitleCallback = onSubtitle,
+                        callback = onLink,
+                        imdbId = animeImdbId,
+                        title = anititle ?: jpTitle,
+                        year = year,
+                        isAnime = true
+                    )
                 }
-            })
-            add(PipelinedTask("megaplay", LatencyTier.TIER_1, priorityBoost = 92f) {
-                try {
-                    invokeMegaPlay(malId, aniid, episode, trackedSubtitleCallback, trackedCallback, dubStatus)
-                } finally {
-                    runningTopRanks.remove(92)
-                    dispatcher.markRankCompleted(92)
-                }
-            })
-            add(PipelinedTask("animex", LatencyTier.TIER_1, priorityBoost = 90f) {
-                try {
-                    invokeAnimex(malId, aniid, anititle ?: jpTitle, episode, trackedSubtitleCallback, trackedCallback, dubStatus, jpTitle = jpTitle)
-                } finally {
-                    runningTopRanks.remove(90)
-                    dispatcher.markRankCompleted(90)
-                }
-            })
-            val subLookupId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
-            if (canUseTmdbProviders && !subLookupId.isNullOrBlank()) {
-                add(PipelinedTask("wyziesub", LatencyTier.TIER_1, isVideo = false, taskTimeoutMs = 10_000L, priorityBoost = 99f) {
-                    StreamPlayExtractor.invokeWYZIESubs(subLookupId, tmdbSeason, tmdbEpisode, trackedSubtitleCallback)
-                })
+            },
+            AnimeSource("megaplay", 92f, topRank = 92) { onSubtitle, onLink ->
+                invokeMegaPlay(malId, aniid, episode, onSubtitle, onLink, dubStatus)
+            },
+            AnimeSource("animex", 90f, topRank = 90) { onSubtitle, onLink ->
+                invokeAnimex(
+                    malId,
+                    aniid,
+                    anititle ?: jpTitle,
+                    episode,
+                    onSubtitle,
+                    onLink,
+                    dubStatus,
+                    jpTitle = jpTitle
+                )
             }
-            if (canUseTmdbProviders && !mediaData.imdbId.isNullOrBlank()) {
-                add(PipelinedTask("subtitles", LatencyTier.TIER_1, isVideo = false, taskTimeoutMs = 10_000L, priorityBoost = 98f) {
-                    StreamPlayExtractor.invokeSubtitleAPI(mediaData.imdbId, tmdbSeason, tmdbEpisode, trackedSubtitleCallback)
-                })
+        )
+
+        val subtitleOnlySources = listOfNotNull(
+            if (canUseTmdbProviders && !subLookupId.isNullOrBlank()) {
+                AnimeSource("wyziesub", 99f) { onSubtitle, _ ->
+                    StreamPlayExtractor.invokeWYZIESubs(subLookupId, tmdbSeason, tmdbEpisode, onSubtitle)
+                }
+            } else null,
+            if (canUseTmdbProviders && !animeImdbId.isNullOrBlank()) {
+                AnimeSource("subtitles", 98f) { onSubtitle, _ ->
+                    StreamPlayExtractor.invokeSubtitleAPI(animeImdbId, tmdbSeason, tmdbEpisode, onSubtitle)
+                }
+            } else null
+        )
+
+        fun taskFor(source: AnimeSource) = PipelinedTask(
+            providerId = source.id,
+            initialTier = LatencyTier.TIER_1,
+            isVideo = source.topRank != null,
+            taskTimeoutMs = if (source.topRank != null) null else 10_000L,
+            priorityBoost = source.boost
+        ) {
+            try {
+                source.invoke(subtitleSinkFor(source.id), trackedCallback)
+            } finally {
+                source.topRank?.let { rank ->
+                    runningTopRanks.remove(rank)
+                    dispatcher.markRankCompleted(rank)
+                }
             }
         }
+
+        val tasks = (videoSources + subtitleOnlySources).map { taskFor(it) }
 
         try {
             SpeculativePipeliner.executePipelined(
@@ -609,6 +647,60 @@ class StreamPlayAnime : MainAPI() {
                 config = earlySatisfactionConfig,
                 controller = earlyController
             )
+
+            // Subtitle completion. The app keeps one English subtitle per source so at least one is
+            // in sync with the release that was downloaded, and anime must keep its original audio
+            // with subtitles. When the sweep was satisfied before enough distinct sources spoke, the
+            // remaining ones are asked again — subtitle-first, but with the normal emission paths, so
+            // a source that also has a link to offer still contributes it.
+            if (englishSubtitleSources.size < TARGET_ENGLISH_SUBTITLE_SOURCES) {
+                val completionSources = (videoSources + subtitleOnlySources)
+                    .filter { source -> source.id !in englishSubtitleSources }
+                    .take(MAX_SUBTITLE_COMPLETION_PROVIDERS)
+
+                if (completionSources.isNotEmpty()) {
+                    Log.d(
+                        "StreamPlayAnime",
+                        "📝 Anime subtitle completion: ${englishSubtitleSources.size}/$TARGET_ENGLISH_SUBTITLE_SOURCES " +
+                            "English sources; querying ${completionSources.size} more " +
+                            "(${completionSources.joinToString { it.id }})"
+                    )
+
+                    val completionConfig = EarlySatisfactionConfig(
+                        // Link/quality satisfaction is deliberately unreachable here: the phase ends
+                        // when enough distinct English subtitle sources have answered, or on timeout.
+                        minVerifiedLinks = Int.MAX_VALUE,
+                        minQualityStreams = Int.MAX_VALUE,
+                        minSubtitles = 1,
+                        requireSubtitles = false,
+                        require720p = false,
+                        requireDualQualities = false,
+                        satisfyWithOneLinkIfSubsFound = false,
+                        tier1DelayMs = 0L,
+                        tier2DelayMs = 150L,
+                        tier3DelayMs = 500L,
+                        adaptiveTierEscalation = false,
+                        maxPipelineTimeoutMs = SUBTITLE_COMPLETION_TIMEOUT_MS,
+                        postSatisfactionGraceMs = 0L
+                    )
+                    val completionController = EarlySatisfactionController(
+                        completionConfig,
+                        extraCondition = { englishSubtitleSources.size >= TARGET_ENGLISH_SUBTITLE_SOURCES }
+                    )
+
+                    SpeculativePipeliner.executePipelined(
+                        tasks = completionSources.map { taskFor(it) },
+                        config = completionConfig,
+                        controller = completionController
+                    )
+
+                    Log.d(
+                        "StreamPlayAnime",
+                        "📝 Anime subtitle completion finished: ${englishSubtitleCount.get()} English " +
+                            "subtitles from ${englishSubtitleSources.size} sources"
+                    )
+                }
+            }
         } finally {
             dispatcher.flush()
         }
