@@ -72,13 +72,13 @@ const val TARGET_ENGLISH_SUBTITLE_SOURCES = 5
  * Only providers that have not already delivered an English subtitle are eligible, so this caps the
  * worst case for titles where the remaining sources simply have no captions for the release.
  */
-internal const val MAX_SUBTITLE_COMPLETION_PROVIDERS = 4
+internal const val MAX_SUBTITLE_COMPLETION_PROVIDERS = 12
 
 /** Wall-clock budget for the whole subtitle completion phase. */
-internal const val SUBTITLE_COMPLETION_TIMEOUT_MS = 15_000L
+internal const val SUBTITLE_COMPLETION_TIMEOUT_MS = 24_000L
 
 /** Per-provider budget inside the subtitle completion phase. */
-internal const val SUBTITLE_COMPLETION_TASK_TIMEOUT_MS = 12_000L
+internal const val SUBTITLE_COMPLETION_TASK_TIMEOUT_MS = 16_000L
 
 /**
  * The curated v24 registry has no subtitle-only entries: every surviving source ships its
@@ -1107,8 +1107,15 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     englishSubtitleCount.incrementAndGet()
                     englishSubtitleSources.add(sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) })
                 }
+                val provenance = sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) }
                 @Suppress("DEPRECATION")
-                val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = shieldedUrl)
+                val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = shieldedUrl).apply {
+                    // Record the provider that surfaced this subtitle. Several top-tier providers
+                    // share CDN hosts, so a URL alone cannot tell the app that two sidecars came
+                    // from different sources. The app reads this header for download diversity and
+                    // for the source tag in the sidecar file name.
+                    headers = (subtitle.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
+                }
                 earlyController.onSubtitleEmitted(cleanedSubtitle)
                 subtitleCallback(cleanedSubtitle)
                 dispatcher.onSubtitleReceived()

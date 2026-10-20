@@ -519,8 +519,14 @@ class StreamPlayAnime : MainAPI() {
                             englishSubtitleCount.incrementAndGet()
                             englishSubtitleSources.add(sourceKey.ifBlank { StreamPlayShield.hostOf(url) })
                         }
+                        val provenance = sourceKey.ifBlank { StreamPlayShield.hostOf(url) }
                         @Suppress("DEPRECATION")
-                        val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = url)
+                        val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = url).apply {
+                            // Preserve the provider identity through shared CDN hosts. The app uses
+                            // this for five-source download diversity and sidecar labels.
+                            headers = (sub.headers ?: emptyMap()) +
+                                ("X-StreamPlay-Source" to provenance)
+                        }
                         earlyController.onSubtitleEmitted(shieldedSubtitle)
                         subtitleCallback(shieldedSubtitle)
                         dispatcher.onSubtitleReceived()
