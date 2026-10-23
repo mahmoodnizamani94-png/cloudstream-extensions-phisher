@@ -651,13 +651,16 @@ class StreamPlayAnime : MainAPI() {
                     StreamPlayExtractor.invokeSubtitleAPI(animeImdbId, tmdbSeason, tmdbEpisode, onSubtitle)
                 }
             } else null,
-            if (canUseTmdbProviders && (!animeImdbId.isNullOrBlank() || !(anititle ?: jpTitle).isNullOrBlank())) {
+            if (canUseTmdbProviders &&
+                (!animeImdbId.isNullOrBlank() || animeSubtitleCatTitles.isNotEmpty())
+            ) {
                 AnimeSource("opensubtitles", 97f) { onSubtitle, _ ->
                     StreamPlayExtractor.invokeOpenSubtitlesLegacy(
                         id = animeImdbId,
                         season = tmdbSeason,
                         episode = tmdbEpisode,
-                        title = anititle ?: jpTitle,
+                        title = animeSubtitleCatTitles.firstOrNull() ?: anititle ?: jpTitle,
+                        titles = animeSubtitleCatTitles.drop(1),
                         subtitleCallback = onSubtitle
                     )
                 }
@@ -665,12 +668,12 @@ class StreamPlayAnime : MainAPI() {
             // Addic7ed's own release list covers the TV-style anime that OpenSubtitles files under
             // ambiguous names. It needs a verified TMDB season/episode, so it is skipped when the
             // anime could not be mapped instead of guessing a cour number.
-            if (canUseTmdbProviders && !anititle.isNullOrBlank() &&
+            if (canUseTmdbProviders && animeSubtitleCatTitles.isNotEmpty() &&
                 (tmdbSeason ?: 0) > 0 && (tmdbEpisode ?: 0) > 0
             ) {
                 AnimeSource("addic7ed", 96f) { onSubtitle, _ ->
                     StreamPlayExtractor.invokeAddic7ed(
-                        title = anititle,
+                        title = animeSubtitleCatTitles.first(),
                         season = tmdbSeason,
                         episode = tmdbEpisode,
                         subtitleCallback = onSubtitle
@@ -699,7 +702,10 @@ class StreamPlayAnime : MainAPI() {
             providerId = source.id,
             initialTier = LatencyTier.TIER_1,
             isVideo = source.topRank != null,
-            taskTimeoutMs = if (source.topRank != null) null else 10_000L,
+            // Multi-step subtitle catalogues (Addic7ed, SubtitleCat) cannot finish inside the old
+            // 10s cap when a search is followed by a detail page. Use the same 16s budget as the
+            // non-anime completion phase so anime gets the same fallback coverage.
+            taskTimeoutMs = if (source.topRank != null) null else SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
             priorityBoost = source.boost
         ) {
             try {

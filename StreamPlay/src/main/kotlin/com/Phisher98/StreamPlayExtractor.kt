@@ -86,6 +86,7 @@ object StreamPlayExtractor : StreamPlay() {
     private const val ADDIC7ED_HOST = "https://www.addic7ed.com"
     private const val YIFY_HOST = "https://yifysubtitles.ch"
     private const val SUBTITLECAT_HOST = "https://www.subtitlecat.com"
+    private const val SUBTITLE_LOOKUP_TIMEOUT_MS = 6_000L
     private const val SUBTITLE_BROWSER_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     private val SUBTITLE_BROWSER_HEADERS = mapOf("User-Agent" to SUBTITLE_BROWSER_USER_AGENT)
@@ -1265,11 +1266,16 @@ object StreamPlayExtractor : StreamPlay() {
         if (urls.isEmpty()) return
         try {
             for (url in urls) {
-                val body = cancellableGetText(
-                    url,
-                    headers = mapOf("User-Agent" to OPENSUBTITLES_USER_AGENT),
-                    timeoutSec = 8L
-                ) ?: continue
+                // Hard-cap each catalogue attempt. cancellableGetText internally allows a longer
+                // call timeout, so without this wrapper one stalled IMDb lookup would consume the
+                // whole subtitle task and the title-variant fallbacks would never be tried.
+                val body = withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
+                    cancellableGetText(
+                        url,
+                        headers = mapOf("User-Agent" to OPENSUBTITLES_USER_AGENT),
+                        timeoutSec = 6L
+                    )
+                } ?: continue
                 val results = tryParseJson<Array<OpenSubtitlesLegacySubtitle>>(body) ?: continue
                 val english = results.asSequence()
                     .filter { sub ->
@@ -1287,7 +1293,11 @@ object StreamPlayExtractor : StreamPlay() {
                 if (english.isEmpty()) continue
                 english.forEach { sub ->
                     val subUrl = sub.downloadLink?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return@forEach
-                    subtitleCallback.invoke(newSubtitleFile("English", subUrl))
+                    subtitleCallback.invoke(
+                        newSubtitleFile("English", subUrl) {
+                            headers = mapOf("User-Agent" to OPENSUBTITLES_USER_AGENT)
+                        }
+                    )
                 }
                 return
             }
@@ -1329,8 +1339,9 @@ object StreamPlayExtractor : StreamPlay() {
      * Addic7ed harvest, used for TV series.
      *
      * Addic7ed has its own release list and is usually the fastest place to find a correctly
-     * timed English subtitle for a weekly TV episode. It is intentionally not used for anime:
-     * the catalogue is TV/film oriented and the top-tier anime providers already ship soft subs.
+     * timed English subtitle for a weekly TV episode. TV-style anime is eligible when the caller
+     * has a verified TMDB season/episode; entries without that mapping are skipped rather than
+     * guessed.
      */
     suspend fun invokeAddic7ed(
         title: String? = null,
@@ -1347,7 +1358,7 @@ object StreamPlayExtractor : StreamPlay() {
             val response = app.get(
                 "$ADDIC7ED_HOST/search.php?search=$query&Submit=Search",
                 headers = SUBTITLE_BROWSER_HEADERS,
-                timeout = 8L,
+                timeout = 6L,
             )
             val finalUrl = response.url
             val downloadPage = when {
@@ -1357,7 +1368,7 @@ object StreamPlayExtractor : StreamPlay() {
                     val showDocument = app.get(
                         "$ADDIC7ED_HOST/ajax_loadShow.php?show=$showId&season=$seasonNumber&langs=|1|&hd=0&hi=0",
                         headers = SUBTITLE_BROWSER_HEADERS,
-                        timeout = 8L,
+                        timeout = 6L,
                     ).document
                     showDocument.select("#season tbody tr")
                         .asSequence()
@@ -1392,7 +1403,7 @@ object StreamPlayExtractor : StreamPlay() {
             val document = app.get(
                 englishPage,
                 headers = SUBTITLE_BROWSER_HEADERS,
-                timeout = 8L,
+                timeout = 6L,
             ).document
             document.select(".tabel95 .tabel95 tr:has(.language)")
                 .asSequence()
@@ -1560,11 +1571,15 @@ object StreamPlayExtractor : StreamPlay() {
             for (query in queries) {
                 val searchUrl = "$SUBTITLECAT_HOST/index.php?search=" +
                     URLEncoder.encode(query, "UTF-8")
-                val body = cancellableGetText(
-                    searchUrl,
-                    headers = SUBTITLE_BROWSER_HEADERS,
-                    timeoutSec = 6L
-                ) ?: continue
+                // cancellableGetText's own call timeout is longer than timeoutSec; a hard wrapper
+                // keeps one slow search from consuming the whole subtitle task.
+                val body = withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
+                    cancellableGetText(
+                        searchUrl,
+                        headers = SUBTITLE_BROWSER_HEADERS,
+                        timeoutSec = 6L
+                    )
+                } ?: continue
                 val candidates = selectSubtitleCatCandidates(
                     parseSubtitleCatSearch(body),
                     query = query,
@@ -1574,18 +1589,36 @@ object StreamPlayExtractor : StreamPlay() {
                 )
                 if (candidates.isEmpty()) continue
 
-                val english = candidates.mapNotNull { candidate ->
-                    val detail = cancellableGetText(
-                        candidate.pageUrl,
-                        headers = SUBTITLE_BROWSER_HEADERS,
-                        timeoutSec = 6L
-                    ) ?: return@mapNotNull null
-                    parseSubtitleCatDetail(detail)
-                }.distinct()
+                // Detail pages are independent. Resolve them concurrently so two candidates do not
+                // add two sequential network timeouts to a task that already includes the search.
+                val english = coroutineScope {
+                    candidates.map { candidate ->
+                        async {
+                            try {
+                                val detail = withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
+                                    cancellableGetText(
+                                        candidate.pageUrl,
+                                        headers = SUBTITLE_BROWSER_HEADERS,
+                                        timeoutSec = 6L
+                                    )
+                                }
+                                detail?.let { parseSubtitleCatDetail(it) }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }
+                    }.awaitAll()
+                }.filterNotNull().distinct()
                 if (english.isEmpty()) continue
 
                 english.forEach { url ->
-                    subtitleCallback.invoke(newSubtitleFile("English", url))
+                    subtitleCallback.invoke(
+                        newSubtitleFile("English", url) {
+                            headers = SUBTITLE_BROWSER_HEADERS
+                        }
+                    )
                 }
                 return
             }
@@ -1673,11 +1706,19 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int?,
         year: Int? = null,
     ): List<SubtitleCatCandidate> {
-        val stripped = query
-            .replace(Regex("""(?i)\s+s\d{1,2}\s*e\d{1,4}\s*$"""), "")
-            .replace(Regex("""\s+\d{1,4}\s*$"""), "")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
+        // A query carries the episode suffix sent to SubtitleCat, but the release may spell that
+        // same episode as `2x05`, `Season 2 Episode 5` or a bare `05`. Strip the suffix before title
+        // matching so those alternate forms are accepted. Only episode-bearing media is stripped:
+        // a movie title may legitimately end in a number ("Blade Runner 2049").
+        val stripped = if (episode != null && episode > 0) {
+            query
+                .replace(Regex("""(?i)\s+s\d{1,2}\s*e\d{1,4}\s*$"""), "")
+                .replace(Regex("""\s+\d{1,4}\s*$"""), "")
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+        } else {
+            query.trim()
+        }
         val wanted = normalizeSubtitleReleaseText(stripped)
         if (wanted.isBlank()) return emptyList()
         val wantedTokens = wanted.split(' ').filter { it.length >= 3 }

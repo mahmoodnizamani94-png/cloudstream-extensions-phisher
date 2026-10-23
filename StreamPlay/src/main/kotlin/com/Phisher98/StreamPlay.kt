@@ -1151,7 +1151,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     PipelinedTask(
                         providerId = "wyziesub",
                         isVideo = false,
-                        taskTimeoutMs = 10_000L,
+                        taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
                         priorityBoost = 99f
                     ) {
                         StreamPlayExtractor.invokeWYZIESubs(subLookupId, res.season, res.episode) { sub ->
@@ -1165,7 +1165,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     PipelinedTask(
                         providerId = "subtitles",
                         isVideo = false,
-                        taskTimeoutMs = 10_000L,
+                        taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
                         priorityBoost = 98f
                     ) {
                         StreamPlayExtractor.invokeSubtitleAPI(res.imdbId, res.season, res.episode) { sub ->
@@ -1192,7 +1192,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     PipelinedTask(
                         providerId = "opensubtitles",
                         isVideo = false,
-                        taskTimeoutMs = 10_000L,
+                        taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
                         priorityBoost = 97f
                     ) {
                         StreamPlayExtractor.invokeOpenSubtitlesLegacy(
@@ -1227,7 +1227,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     PipelinedTask(
                         providerId = "subtitlecat",
                         isVideo = false,
-                        taskTimeoutMs = 10_000L,
+                        taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
                         priorityBoost = 96f
                     ) {
                         StreamPlayExtractor.invokeSubtitleCat(
@@ -1252,7 +1252,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     PipelinedTask(
                         providerId = "addic7ed",
                         isVideo = false,
-                        taskTimeoutMs = 10_000L,
+                        taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
                         priorityBoost = 96f
                     ) {
                         StreamPlayExtractor.invokeAddic7ed(
@@ -1272,7 +1272,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     PipelinedTask(
                         providerId = "yifysub",
                         isVideo = false,
-                        taskTimeoutMs = 10_000L,
+                        taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
                         priorityBoost = 96f
                     ) {
                         StreamPlayExtractor.invokeYifySubs(res.imdbId) { sub ->

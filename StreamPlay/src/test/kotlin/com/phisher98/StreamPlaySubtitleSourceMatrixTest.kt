@@ -138,6 +138,34 @@ class StreamPlaySubtitleSourceMatrixTest {
     }
 
     @Test
+    fun `candidate selection accepts alternate episode spellings`() {
+        val candidates = listOf(
+            StreamPlayExtractor.SubtitleCatCandidate(
+                pageUrl = "https://www.subtitlecat.com/subs/2000/Severance.2x05.1080p.html",
+                text = "Severance.2x05.1080p.WEB-DL"
+            ),
+            StreamPlayExtractor.SubtitleCatCandidate(
+                pageUrl = "https://www.subtitlecat.com/subs/2001/Severance.Season.2.Episode.5.html",
+                text = "Severance Season 2 Episode 5 1080p WEB-DL"
+            ),
+            StreamPlayExtractor.SubtitleCatCandidate(
+                pageUrl = "https://www.subtitlecat.com/subs/2002/Other.Show.2x05.html",
+                text = "Other.Show.2x05.1080p.WEB-DL"
+            ),
+        )
+
+        val selected = StreamPlayExtractor.selectSubtitleCatCandidates(
+            candidates = candidates,
+            query = "Severance S02E05",
+            season = 2,
+            episode = 5,
+        )
+
+        assertEquals(2, selected.size)
+        assertTrue(selected.all { it.text.startsWith("Severance") })
+    }
+
+    @Test
     fun `candidate selection accepts anime numbering without accepting another episode`() {
         val candidates = listOf(
             StreamPlayExtractor.SubtitleCatCandidate(
