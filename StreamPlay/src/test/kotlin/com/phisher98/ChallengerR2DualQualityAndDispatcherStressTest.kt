@@ -94,10 +94,10 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         assertFalse(StreamLinkOptimizer.isStreamBetter(minMovieBox720, maxVidLink1080))
 
         // Permute all providers across 720p vs 1080p with randomized or edge-case badge sets.
-        // Ranks: VidLink 100 > Animex 90 > every other (decommissioned) label at 0.
+        // Ranks: VidLink 100 > Animex 87 > every other (decommissioned) label at 0.
         val providers = listOf(
             "VidLink" to 100,
-            "Animex" to 90,
+            "Animex" to 87,
             "RiveStream" to 0,
             "VidNest" to 0,
             "Vidup" to 0,
@@ -163,9 +163,10 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
-        // The v24 registry has seven ranked sources; every other label scores rank 0, so
+        // The v25 registry has nine ranked sources; every other label scores rank 0, so
         // monotonicity is asserted across the full distinct-rank chain:
-        // VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 > Animex 90.
+        // VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 >
+        // AniZone 89 > AnimePahe 88 > Animex 87.
         val providersInOrder = listOf(
             "VidLink" to 100,
             "Cineby" to 95,
@@ -173,7 +174,9 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             "VidFast" to 93,
             "MegaPlay" to 92,
             "MeowTV" to 91,
-            "Animex" to 90
+            "AniZone" to 89,
+            "AnimePahe" to 88,
+            "Animex" to 87
         )
 
         val maxHeaders = mapOf(
@@ -234,9 +237,9 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testPriorityStreamDispatcherReversedArrivalStrictlySorted() = runBlocking {
-        // Feed streams in completely reverse rank order: rank 0 first, then 90, then 100
+        // Feed streams in completely reverse rank order: rank 0 first, then 87, then 100
         val emitted = mutableListOf<ExtractorLink>()
-        val inFlightRanks = mutableSetOf(100, 90)
+        val inFlightRanks = mutableSetOf(100, 87)
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -245,7 +248,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 300L,
             top720GraceMs = 1500L,
-            activeTopRanks = setOf(100, 90),
+            activeTopRanks = setOf(100, 87),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
@@ -259,7 +262,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
         val animex720 = createLink("Animex", "Animex [720p]", "https://animex.one/720.m3u8", Qualities.P720.value)
         val vidlink720 = createLink("VidLink", "VidLink [720p]", "https://vidlink.pro/720.m3u8", Qualities.P720.value)
 
-        // Arrive in reverse order: all rank-0 secondaries, then rank 90, rank 100 last
+        // Arrive in reverse order: all rank-0 secondaries, then rank 87, rank 100 last
         dispatcher.onLinkAccepted(moviebox720)
         dispatcher.onLinkAccepted(autoembed720)
         dispatcher.onLinkAccepted(hexasu720)
@@ -278,9 +281,9 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
         // Mark remaining completed
         inFlightRanks.clear()
-        dispatcher.markRankCompleted(90)
+        dispatcher.markRankCompleted(87)
 
-        // VidLink (100) and Animex (90) outrank everything; the five rank-0 secondaries tie at
+        // VidLink (100) and Animex (87) outrank everything; the five rank-0 secondaries tie at
         // 800.0f, so the stable comparator drains them in arrival order.
         assertEquals("All 7 streams must be emitted", 7, emitted.size)
         assertEquals("1st must be VidLink 720p", vidlink720, emitted[0])
@@ -305,7 +308,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 150L,
             top720GraceMs = 1000L,
-            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 90),
+            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 89, 88, 87),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
@@ -370,7 +373,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
     @Test
     fun testFlushReleasesAllHeldStreamsSafelyInOrder() = runBlocking {
         val emitted = mutableListOf<ExtractorLink>()
-        val inFlightRanks = mutableSetOf(100, 90, 88, 70)
+        val inFlightRanks = mutableSetOf(100, 88, 87, 70)
 
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = { emitted.add(it) },
@@ -379,7 +382,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 1000L,
             topSourceGraceMs = 1000L,
             top720GraceMs = 5000L,
-            activeTopRanks = setOf(100, 90, 88, 80),
+            activeTopRanks = setOf(100, 89, 88, 80),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 

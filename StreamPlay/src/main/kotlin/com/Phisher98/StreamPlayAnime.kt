@@ -39,7 +39,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.nicehttp.RequestBodyTypes
 import com.phisher98.StreamPlay.Companion.anilistAPI
+import com.phisher98.StreamPlayExtractor.invokeAnimePahe
 import com.phisher98.StreamPlayExtractor.invokeAnimex
+import com.phisher98.StreamPlayExtractor.invokeAniZone
 import com.phisher98.StreamPlayExtractor.invokeCineby
 import com.phisher98.StreamPlayExtractor.invokeCineSrc
 import com.phisher98.StreamPlayExtractor.invokeMegaPlay
@@ -448,7 +450,7 @@ class StreamPlayAnime : MainAPI() {
         val tmdbEpisode = if (isMovie) null else verifiedTmdbPair?.second
         val canUseTmdbProviders = isMovie || (tmdbSeason != null && tmdbSeason > 0 && tmdbEpisode != null && tmdbEpisode > 0)
 
-        val animeTopRanks = setOf(100, 95, 94, 92, 90)
+        val animeTopRanks = setOf(100, 95, 94, 92, 89, 88, 87)
         val runningTopRanks = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>().apply {
             addAll(animeTopRanks)
         }
@@ -570,6 +572,15 @@ class StreamPlayAnime : MainAPI() {
         val subLookupId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
         val animeImdbId = mediaData.imdbId
 
+        // Every name the show is released under. AnimePahe and AniZone are searched by title, and
+        // a currently airing or localized show is frequently indexed under a name that is neither
+        // the TMDB title nor the Romaji one.
+        val animeTitleQueries = (listOfNotNull(anititle, jpTitle, mediaData.orgTitle) +
+            mediaData.alternativeTitles.orEmpty())
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+
         val videoSources = listOf(
             AnimeSource("vidlink", 100f, topRank = 100) { onSubtitle, onLink ->
                 if (canUseTmdbProviders && (effectiveTmdbId != null || !animeImdbId.isNullOrBlank())) {
@@ -617,7 +628,34 @@ class StreamPlayAnime : MainAPI() {
             AnimeSource("megaplay", 92f, topRank = 92) { onSubtitle, onLink ->
                 invokeMegaPlay(malId, aniid, episode, onSubtitle, onLink, dubStatus)
             },
-            AnimeSource("animex", 90f, topRank = 90) { onSubtitle, onLink ->
+            // AniZone is the subtitle anchor of the anime chain: its episode pack carries a
+            // 360/720/1080 ladder with demuxed Japanese audio plus real English SRT/ASS tracks, so
+            // both playback and download keep the original audio and a usable subtitle.
+            AnimeSource("anizone", 89f, topRank = 89) { onSubtitle, onLink ->
+                invokeAniZone(
+                    titles = animeTitleQueries,
+                    year = year,
+                    episode = episode,
+                    isMovie = isMovie,
+                    dubtype = dubStatus,
+                    subtitleCallback = onSubtitle,
+                    callback = onLink
+                )
+            },
+            // AnimePahe is the coverage source: currently airing episodes, very old shows and the
+            // long tail the TMDB/AniList-mapped sources never index.
+            AnimeSource("animepahe", 88f, topRank = 88) { onSubtitle, onLink ->
+                invokeAnimePahe(
+                    titles = animeTitleQueries,
+                    year = year,
+                    episode = episode,
+                    isMovie = isMovie,
+                    dubtype = dubStatus,
+                    subtitleCallback = onSubtitle,
+                    callback = onLink
+                )
+            },
+            AnimeSource("animex", 87f, topRank = 87) { onSubtitle, onLink ->
                 invokeAnimex(
                     malId,
                     aniid,
@@ -634,11 +672,7 @@ class StreamPlayAnime : MainAPI() {
         // Anime is indexed by its English, Romaji and native names depending on the catalogue, and
         // a Japanese-only query often returns nothing even when an English sidecar exists. The
         // fallback sources below search every known variant instead of one.
-        val animeSubtitleCatTitles = (listOfNotNull(anititle, jpTitle, mediaData.orgTitle) +
-            mediaData.alternativeTitles.orEmpty())
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinctBy { it.lowercase() }
+        val animeSubtitleCatTitles = animeTitleQueries
 
         val subtitleOnlySources = listOfNotNull(
             if (canUseTmdbProviders && !subLookupId.isNullOrBlank()) {

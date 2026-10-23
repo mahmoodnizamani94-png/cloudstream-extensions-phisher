@@ -327,8 +327,16 @@ object StreamPlayShield {
         "krussdomi.com",
         "echovideo.to",
         "aniwatchtv.site",
+        "anizone.to",
+        "xin-cdn.xyz",
+        "vid-cdn.xyz",
+        "animepahe.pw",
+        "animepahe.com",
         "hakunaymatata.com",
         "kwik.cx",
+        "kwik.si",
+        "uwucdn.top",
+        "owocdn.top",
         "vix-content.net"
     )
 

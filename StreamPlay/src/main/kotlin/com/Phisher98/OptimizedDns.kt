@@ -315,7 +315,7 @@ open class OptimizedDns(
             "raw.githubusercontent.com",
             "megacloud.tv",
             "rabbitstream.net",
-            // v24 SOTA streaming tier: every provider API + its live verified CDNs,
+            // v25 SOTA streaming tier: every provider API + its live verified CDNs,
             // warmed so the first play attempt never pays a cold DNS roundtrip.
             "vidlink.pro",
             "api.wecollege.net",
@@ -344,7 +344,15 @@ open class OptimizedDns(
             "hls.krussdomi.com",
             "subst.krussdomi.com",
             "hlsxst2.echovideo.to",
+            "anizone.to",
+            "suzaku.xin-cdn.xyz",
+            "seiryuu.vid-cdn.xyz",
+            "animepahe.pw",
+            "animepahe.com",
             "kwik.cx",
+            "kwik.si",
+            "uwucdn.top",
+            "owocdn.top",
             "bcdn.hakunaymatata.com"
         )
 

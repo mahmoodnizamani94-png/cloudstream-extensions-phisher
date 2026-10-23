@@ -35,7 +35,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
     // =========================================================================
 
     @Test
-    fun testCleanInstallNullDisabledProvidersActivatesExactlySevenCuratedSources() {
+    fun testCleanInstallNullDisabledProvidersActivatesExactlyNineCuratedSources() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // Fresh install: no keys at all
         assertFalse(mockPrefs.contains(PREFS_TOP_TIER_INITIALIZED))
@@ -44,10 +44,13 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 7 curated sources", 7, activeProviders.size)
+        assertEquals("Clean install must activate exactly 9 curated sources", 9, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
 
-        val expectedCurated = setOf("vidlink", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv", "animex")
+        val expectedCurated = setOf(
+            "vidlink", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv",
+            "anizone", "animepahe", "animex"
+        )
         assertEquals(expectedCurated, activeProviders)
 
         // Nothing may be disabled on a clean install, and no decommissioned id may appear.
@@ -62,7 +65,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
     }
 
     @Test
-    fun testCleanInstallEmptyDisabledProvidersActivatesExactlySevenCuratedSources() {
+    fun testCleanInstallEmptyDisabledProvidersActivatesExactlyNineCuratedSources() {
         val mockPrefs = ProviderTelemetryAndCircuitBreakerTest.MockSharedPreferences()
         // Stale or empty set stored without the initialized flag
         mockPrefs.edit().putStringSet("disabled_providers", emptySet()).apply()
@@ -70,7 +73,7 @@ class ChallengerR2SettingsAndSafetyStressTest {
         val disabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install with empty set must activate exactly 7 curated sources", 7, activeProviders.size)
+        assertEquals("Clean install with empty set must activate exactly 9 curated sources", 9, activeProviders.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, activeProviders)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
     }

@@ -81,14 +81,18 @@ internal const val SUBTITLE_COMPLETION_TIMEOUT_MS = 24_000L
 internal const val SUBTITLE_COMPLETION_TASK_TIMEOUT_MS = 16_000L
 
 /**
- * The curated v24 registry has no subtitle-only entries: every surviving source ships its
+ * The curated v25 registry has no subtitle-only entries: every surviving source ships its
  * own captions (VidLink's native caption tracks, Cineby/CineSrc/VidFast/MeowTV decrypted
- * track lists, MegaPlay and Animex soft-subs), which keeps subtitle timing exactly in sync with the
- * stream that was chosen. VidLink, Cineby, and CineSrc are deliberately absent from both gates:
- * they are universal primaries and are always applicable across Movies, TV Series, and Anime.
+ * track lists, MegaPlay/Animex soft-subs, AniZone's English SRT/ASS sidecars), which keeps
+ * subtitle timing exactly in sync with the stream that was chosen. AnimePahe has no sidecars but
+ * is the catalogue of record for airing/rare shows, so the host's subtitle harvester covers it.
+ * VidLink, Cineby, and CineSrc are deliberately absent from both gates: they are universal
+ * primaries and are always applicable across Movies, TV Series, and Anime.
  */
 internal val ANIME_ONLY_PROVIDERS = setOf(
     "megaplay",
+    "anizone",
+    "animepahe",
     "animex"
 )
 

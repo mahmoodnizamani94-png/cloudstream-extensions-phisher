@@ -29,24 +29,24 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 
 /**
- * Acceptance suite for the curated v24 SOTA StreamPlay source registry.
+ * Acceptance suite for the curated v25 SOTA StreamPlay source registry.
  *
  * It pins down, as executable contracts:
- *  1. exactly which sources may surface in the UI (VidLink, Cineby, CineSrc, VidFast, VidSrcSU,
- *     MegaPlay, MeowTV, Animex) and their strict launch hierarchy,
+ *  1. exactly which sources may surface in the UI (VidLink, Cineby, CineSrc, VidFast, MegaPlay,
+ *     MeowTV, AniZone, AnimePahe, Animex) and their strict launch hierarchy,
  *  2. the ranking of those sources and of the CDN hosts they serve from, plus VidRock's and
  *     VidSrc's complete decommissioning,
  *  3. the settings migration that removes every decommissioned provider (including VidRock and
- *     VidSrc) from an existing install while enabling the v24 SOTA sources,
+ *     VidSrc) from an existing install while enabling the v25 SOTA sources,
  *  4. the bounded ordering windows of [StreamLinkOptimizer.PriorityStreamDispatcher],
  *  5. known-answer vectors for the offline VidLink token encryptor,
  *  6. protocol parsers for Cineby, CineSrc (CSP4 PoW + Nebula/Wave/Surge), MegaPlay, Animex,
- *     and HLS Master Variant + Size Estimation,
+ *     AniZone and AnimePahe (dedicated v25 suite), and HLS Master Variant + Size Estimation,
  *  7. the exception gates that keep the Movie/TV, Anime, and Universal segments of the registry
  *     properly partitioned, and
  *  8. the stream-only download-exclusion contract (`DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast")`).
  */
-class StreamPlayCuratedRegistryV24Test {
+class StreamPlayCuratedRegistryV25Test {
 
     private val curatedIds = setOf(
         "vidlink",
@@ -55,6 +55,8 @@ class StreamPlayCuratedRegistryV24Test {
         "vidfast",
         "megaplay",
         "meowtv",
+        "anizone",
+        "animepahe",
         "animex"
     )
 
@@ -66,7 +68,28 @@ class StreamPlayCuratedRegistryV24Test {
         "vidfast" to 93f,
         "megaplay" to 92f,
         "meowtv" to 91f,
-        "animex" to 90f
+        "anizone" to 89f,
+        "animepahe" to 88f,
+        "animex" to 87f
+    )
+
+    /**
+     * The honest cold-start tier of every curated source.
+     *
+     * AniZone is one search page plus one episode page over plain HTTP, so it starts with the fast
+     * group. AnimePahe is search -> release -> play -> Kwik and may have to answer a Cloudflare
+     * challenge first, so it is honestly classified slower instead of pretending to be instant.
+     */
+    private val tierByProvider = mapOf(
+        "vidlink" to LatencyTier.TIER_1,
+        "cineby" to LatencyTier.TIER_1,
+        "cinesrc" to LatencyTier.TIER_1,
+        "vidfast" to LatencyTier.TIER_1,
+        "megaplay" to LatencyTier.TIER_1,
+        "meowtv" to LatencyTier.TIER_1,
+        "anizone" to LatencyTier.TIER_1,
+        "animepahe" to LatencyTier.TIER_2,
+        "animex" to LatencyTier.TIER_1
     )
 
     @Before
@@ -122,6 +145,8 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals("VidFast", byId.getValue("vidfast").name)
         assertEquals("MegaPlay", byId.getValue("megaplay").name)
         assertEquals("MeowTV", byId.getValue("meowtv").name)
+        assertEquals("AniZone", byId.getValue("anizone").name)
+        assertEquals("AnimePahe", byId.getValue("animepahe").name)
         assertEquals("Animex", byId.getValue("animex").name)
         providers.forEach { assertEquals(ProviderKind.VIDEO, it.kind) }
     }
@@ -148,13 +173,13 @@ class StreamPlayCuratedRegistryV24Test {
             "vidsrc", "Vidsrc", "VidSrc", "vidsrc.pm",
             "vidsrcsu", "Vidsrcsu", "VidSrcSU", "vidsrc.su", "themoviedb.vidsrc.su", "theemoviedb.hexa.su", "dragonballzfans",
             "rivestream", "videasy", "superstream", "vaplayer", "vidcore", "vidnest",
-            "vidup", "hexasu", "autoembed", "videm", "animegg", "animepahe", "AnimePahe"
+            "vidup", "hexasu", "autoembed", "videm", "animegg"
         ).forEach {
             assertFalse("$it must not be registered", providerIds.contains(it))
             assertTrue("$it must be listed in REMOVED_PROVIDER_IDS", REMOVED_PROVIDER_IDS.contains(it))
         }
 
-        // The v24 additions are live members of the curated set.
+        // The v25 additions are live members of the curated set.
         curatedIds.forEach { id ->
             assertTrue("$id must be registered", providerIds.contains(id))
             assertFalse("$id must not be listed as removed", REMOVED_PROVIDER_IDS.contains(id))
@@ -171,11 +196,11 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals("Boosts must be strictly descending", boosts.sortedDescending(), boosts)
         assertEquals("Every curated provider must have a unique boost", boosts.size, boosts.toSet().size)
 
-        // Every curated provider must be tier-1 so the pipeliner starts them together.
+        // Every curated provider must be classified at its honest cold-start tier.
         curatedIds.forEach { id ->
             assertEquals(
-                "$id must be classified as a tier-1 source",
-                LatencyTier.TIER_1,
+                "$id must be classified at its declared cold-start tier",
+                tierByProvider.getValue(id),
                 SpeculativePipeliner.classifyProvider(id)
             )
         }
@@ -189,7 +214,9 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals(93, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
         assertEquals(92, rankOf("MegaPlay", "MegaPlay [Sub] [Original]", "https://fetch.nexabloom.top/e.m3u8"))
         assertEquals(91, rankOf("MeowTV", "MeowTV [1080p]", "https://cdn.example/m.m3u8"))
-        assertEquals(90, rankOf("Animex", "Animex [Sub] [Original]", "https://cdn.example/x.m3u8"))
+        assertEquals(89, rankOf("AniZone", "AniZone [Sub] [Original]", "https://cdn.example/z.m3u8"))
+        assertEquals(88, rankOf("AnimePahe", "AnimePahe [Sub] [Original]", "https://cdn.example/p.m3u8"))
+        assertEquals(87, rankOf("Animex", "Animex [Sub] [Original]", "https://cdn.example/x.m3u8"))
 
         // Both VidSrc and VidSrcSU are decommissioned and score 0.
         assertEquals(0, rankOf("VidSrcSU", "VidSrcSU HLS", "https://cdn.example/su.m3u8"))
@@ -214,10 +241,17 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/thumb.jpg"))
         assertEquals(91, rankOf("Unknown", "stream", "https://cdn.vidjoy.org/hls/master.m3u8"))
         assertEquals(91, rankOf("Unknown", "stream", "https://i-arch-400.krico443jez.com/x.m3u8"))
-        assertEquals(90, rankOf("Unknown", "stream", "https://animex.one/embed/x"))
-        assertEquals(90, rankOf("Unknown", "stream", "https://aniwatchtv.site/e/abc.m3u8"))
-        assertEquals(90, rankOf("Unknown", "stream", "https://hls.krussdomi.com/manifest/master.m3u8"))
-        assertEquals(90, rankOf("Unknown", "stream", "https://hlsxst2.echovideo.to/manifest/master.m3u8"))
+        assertEquals(89, rankOf("Unknown", "stream", "https://anizone.to/anime/eu8bdgty/1"))
+        assertEquals(89, rankOf("Unknown", "stream", "https://suzaku.xin-cdn.xyz/abc/master.m3u8"))
+        assertEquals(89, rankOf("Unknown", "stream", "https://seiryuu.vid-cdn.xyz/abc/master.m3u8"))
+        assertEquals(88, rankOf("Unknown", "stream", "https://animepahe.pw/play/abc/def"))
+        assertEquals(88, rankOf("Unknown", "stream", "https://vault-01.uwucdn.top/stream/abc/uwu.m3u8"))
+        assertEquals(88, rankOf("Unknown", "stream", "https://vault-12.owocdn.top/stream/abc/uwu.m3u8"))
+        assertEquals(88, rankOf("Unknown", "stream", "https://kwik.si/e/abc"))
+        assertEquals(87, rankOf("Unknown", "stream", "https://animex.one/embed/x"))
+        assertEquals(87, rankOf("Unknown", "stream", "https://aniwatchtv.site/e/abc.m3u8"))
+        assertEquals(87, rankOf("Unknown", "stream", "https://hls.krussdomi.com/manifest/master.m3u8"))
+        assertEquals(87, rankOf("Unknown", "stream", "https://hlsxst2.echovideo.to/manifest/master.m3u8"))
 
         // Ranking must survive CDN rewrites that lose the original source label.
         assertEquals(100, rankOf("Unknown", "stream", "https://bcdnxw.hakunaymatata.com/bt/a.mp4"))
@@ -234,7 +268,7 @@ class StreamPlayCuratedRegistryV24Test {
         // Decommissioned sources must score zero rather than inheriting a legacy rank.
         listOf(
             "VidRock", "VidSrc", "VidSrcSU", "RiveStream", "VidEasy", "Vidflix", "VixSrc", "Vidup", "CineJoy", "YFlix",
-            "HexaSU", "MovieBox", "VidEm", "AnimePahe"
+            "HexaSU", "MovieBox", "VidEm"
         ).forEach { label ->
             assertEquals(
                 "$label must not inherit a rank after decommissioning",
@@ -249,7 +283,7 @@ class StreamPlayCuratedRegistryV24Test {
     }
 
     // =========================================================================
-    // 2. SETTINGS MIGRATION (v24)
+    // 2. SETTINGS MIGRATION (v25)
     // =========================================================================
 
     @Test
@@ -530,9 +564,11 @@ class StreamPlayCuratedRegistryV24Test {
         assertTrue(StreamLinkOptimizer.isTopTierProvider("vidlink"))
         assertTrue(StreamLinkOptimizer.isTopTierProvider("cineby"))
         assertTrue(StreamLinkOptimizer.isTopTierProvider("megaplay"))
+        assertTrue(StreamLinkOptimizer.isTopTierProvider("anizone"))
+        assertTrue(StreamLinkOptimizer.isTopTierProvider("animepahe"))
         assertTrue(StreamLinkOptimizer.isTopTierProvider("animex"))
         assertFalse("VidRock was decommissioned and must not report as top tier", StreamLinkOptimizer.isTopTierProvider("vidrock"))
-        assertFalse("AnimePahe was decommissioned and must not report as top tier", StreamLinkOptimizer.isTopTierProvider("animepahe"))
+        assertFalse("VidSrc was decommissioned and must not report as top tier", StreamLinkOptimizer.isTopTierProvider("vidsrc"))
         assertEquals(0, rankOf("UHDMovies", "UHDMovies [Download]", "https://x.example/dl"))
     }
 
@@ -578,7 +614,7 @@ class StreamPlayCuratedRegistryV24Test {
     }
 
     @Test
-    fun testPlaybackOrderingIsStrictlyRankDominatedAcrossTheV24Registry() {
+    fun testPlaybackOrderingIsStrictlyRankDominatedAcrossTheV25Registry() {
         boostByProvider.keys.toList().let { hierarchy ->
             for (i in 0 until hierarchy.size - 1) {
                 val higher = createLink(
@@ -883,7 +919,7 @@ class StreamPlayCuratedRegistryV24Test {
         }
         assertFalse("Decommissioned vidsrcsu must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains("vidsrcsu"))
         // Dedicated Anime SOTA sources must only run on anime titles.
-        listOf("megaplay", "animex").forEach { id ->
+        listOf("megaplay", "anizone", "animepahe", "animex").forEach { id ->
             assertTrue("$id must be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
             assertFalse("$id must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains(id))
         }
@@ -916,7 +952,9 @@ class StreamPlayCuratedRegistryV24Test {
         assertEquals(0, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
         assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/i/master.m3u8"))
-        assertEquals(90, rankOf("Unknown", "stream", "https://hls.krussdomi.com/e/master.m3u8"))
+        assertEquals(89, rankOf("Unknown", "stream", "https://suzaku.xin-cdn.xyz/e/master.m3u8"))
+        assertEquals(88, rankOf("Unknown", "stream", "https://animepahe.pw/e/master.m3u8"))
+        assertEquals(87, rankOf("Unknown", "stream", "https://hls.krussdomi.com/e/master.m3u8"))
     }
 
     @Test
@@ -939,7 +977,8 @@ class StreamPlayCuratedRegistryV24Test {
                 "meowtv.ru", "api.meowtv.ru", "img1.hscow.com", "img1.fcxmb.com",
                 "cdn.vidjoy.org", "cdn2.vidjoy.org", "i-arch-400.krico443jez.com",
                 "graphql.animex.one", "pp.animex.one", "hls.krussdomi.com", "subst.krussdomi.com", "hlsxst2.echovideo.to",
-                "kwik.cx"
+                "anizone.to", "suzaku.xin-cdn.xyz", "seiryuu.vid-cdn.xyz", "animepahe.pw", "animepahe.com",
+                "kwik.cx", "kwik.si", "uwucdn.top", "owocdn.top"
             ).forEach { domain ->
                 assertTrue("$domain must be in TOP_PREDICTIVE_DOMAINS", domains.contains(domain))
             }
@@ -956,8 +995,8 @@ class StreamPlayCuratedRegistryV24Test {
                 }
             )
             assertTrue(
-                "Decommissioned AnimePahe domains must not be warmed",
-                domains.none { it.contains("animepahe") }
+                "AniZone and AnimePahe must be warmed: they are the anime subtitle/coverage sources",
+                domains.contains("anizone.to") && domains.contains("animepahe.pw")
             )
         }
     }

@@ -524,6 +524,15 @@ object StreamLinkOptimizer {
             lowerUrl.contains("nexabloom.top") ||
             lowerUrl.contains("broforgotsave.online") ||
             referer?.contains("megaplay.buzz", ignoreCase = true) == true
+        // AniZone serves every episode from a rotating soft-sub CDN (`*.xin-cdn.xyz`,
+        // `*.vid-cdn.xyz`). The packs are hotlink-protected by an Origin/Referer check, so the
+        // canonical page origin has to be attached to both playback and download requests.
+        val isAniZone = source?.contains("anizone", ignoreCase = true) == true ||
+            name?.contains("anizone", ignoreCase = true) == true ||
+            lowerUrl.contains("anizone.to") ||
+            lowerUrl.contains("xin-cdn.xyz") ||
+            lowerUrl.contains("vid-cdn.xyz") ||
+            referer?.contains("anizone.to", ignoreCase = true) == true
         val isAnimegg = source?.contains("animegg", ignoreCase = true) == true ||
             name?.contains("animegg", ignoreCase = true) == true ||
             lowerUrl.contains("animegg.org") ||
@@ -537,7 +546,10 @@ object StreamLinkOptimizer {
             name?.contains("animepahe", ignoreCase = true) == true ||
             lowerUrl.contains("animepahe") ||
             referer?.contains("animepahe", ignoreCase = true) == true ||
-            lowerUrl.contains("kwik.cx")
+            lowerUrl.contains("kwik.cx") ||
+            lowerUrl.contains("kwik.si") ||
+            lowerUrl.contains("uwucdn.top") ||
+            lowerUrl.contains("owocdn.top")
         val isYFlix = source?.contains("yflix", ignoreCase = true) == true ||
             name?.contains("yflix", ignoreCase = true) == true ||
             source?.contains("moviesflix", ignoreCase = true) == true ||
@@ -686,12 +698,21 @@ object StreamLinkOptimizer {
                 headers["Accept-Ranges"] = "bytes"
             }
             isAnimepahe -> {
-                val animeRef = when {
-                    lowerUrl.contains("kwik.cx") -> "https://kwik.cx/"
+                val supplied = referer?.takeIf { it.contains("kwik", ignoreCase = true) }
+                val animeRef = supplied ?: when {
+                    lowerUrl.contains("kwik.si") -> "https://kwik.si/"
+                    lowerUrl.contains("kwik.cx") || lowerUrl.contains("uwucdn.top") || lowerUrl.contains("owocdn.top") -> "https://kwik.cx/"
                     else -> "https://animepahe.pw/"
                 }
                 headers[HEADER_REFERER] = animeRef
                 headers[HEADER_ORIGIN] = animeRef.removeSuffix("/")
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isAniZone -> {
+                headers[HEADER_REFERER] = "https://anizone.to/"
+                headers[HEADER_ORIGIN] = "https://anizone.to"
                 headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -1007,6 +1028,15 @@ object StreamLinkOptimizer {
             lowerUrl.contains("nexabloom.top") ||
             lowerUrl.contains("broforgotsave.online") ||
             referer?.contains("megaplay.buzz", ignoreCase = true) == true
+        // AniZone serves every episode from a rotating soft-sub CDN (`*.xin-cdn.xyz`,
+        // `*.vid-cdn.xyz`). The packs are hotlink-protected by an Origin/Referer check, so the
+        // canonical page origin has to be attached to both playback and download requests.
+        val isAniZone = source?.contains("anizone", ignoreCase = true) == true ||
+            name?.contains("anizone", ignoreCase = true) == true ||
+            lowerUrl.contains("anizone.to") ||
+            lowerUrl.contains("xin-cdn.xyz") ||
+            lowerUrl.contains("vid-cdn.xyz") ||
+            referer?.contains("anizone.to", ignoreCase = true) == true
         val isAnimegg = source?.contains("animegg", ignoreCase = true) == true ||
             name?.contains("animegg", ignoreCase = true) == true ||
             lowerUrl.contains("animegg.org") ||
@@ -1020,7 +1050,10 @@ object StreamLinkOptimizer {
             name?.contains("animepahe", ignoreCase = true) == true ||
             lowerUrl.contains("animepahe") ||
             referer?.contains("animepahe", ignoreCase = true) == true ||
-            lowerUrl.contains("kwik.cx")
+            lowerUrl.contains("kwik.cx") ||
+            lowerUrl.contains("kwik.si") ||
+            lowerUrl.contains("uwucdn.top") ||
+            lowerUrl.contains("owocdn.top")
         val isYFlix = source?.contains("yflix", ignoreCase = true) == true ||
             name?.contains("yflix", ignoreCase = true) == true ||
             source?.contains("moviesflix", ignoreCase = true) == true ||
@@ -1112,8 +1145,13 @@ object StreamLinkOptimizer {
             }
             isVidNest || lowerUrl.contains("vidnest.fun") || lowerUrl.contains("vidnest") -> "https://vidnest.fun/"
             isAnimepahe -> {
-                if (lowerUrl.contains("kwik.cx")) "https://kwik.cx/" else "https://animepahe.pw/"
+                referer?.takeIf { it.contains("kwik", ignoreCase = true) } ?: when {
+                    lowerUrl.contains("kwik.si") -> "https://kwik.si/"
+                    lowerUrl.contains("kwik.cx") || lowerUrl.contains("uwucdn.top") || lowerUrl.contains("owocdn.top") -> "https://kwik.cx/"
+                    else -> "https://animepahe.pw/"
+                }
             }
+            isAniZone -> "https://anizone.to/"
             STREAMTAPE_HOST_REGEX.containsMatchIn(lowerUrl) -> "https://streamtape.com/"
             DOOD_HOST_REGEX.containsMatchIn(lowerUrl) -> {
                 val host = getHostUrl(url) ?: "https://dood.re"
@@ -1696,7 +1734,8 @@ object StreamLinkOptimizer {
 
     /**
      * Checks if a stream link belongs to one of the curated top-tier primary sources
-     * (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 > Animex 90).
+     * (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 >
+     * AniZone 89 > AnimePahe 88 > Animex 87).
      */
     fun isTopTierSource(link: ExtractorLink): Boolean = getSourcePriorityRank(link) >= 85
 
@@ -1711,6 +1750,8 @@ object StreamLinkOptimizer {
             p.contains("vidfast") ||
             p.contains("megaplay") ||
             p.contains("meowtv") ||
+            p.contains("anizone") ||
+            p.contains("animepahe") ||
             p.contains("animex")
     }
 
@@ -1722,7 +1763,7 @@ object StreamLinkOptimizer {
     /**
      * Executes the Universal Top-Tier Stream Guard on any stream link:
      * Validates top-tier streams (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
-     * MegaPlay 92 > MeowTV 91 > Animex 90) and forwards them cleanly to
+     * MegaPlay 92 > MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87) and forwards them cleanly to
      * emitAction without creating artificial or duplicated companion links.
      *
      * @param link The incoming stream link.
@@ -2039,7 +2080,7 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Definitive source priority ranking for the curated v24 SOTA registry:
+     * Definitive source priority ranking for the curated v25 SOTA registry:
      *
      *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)      -> 100
      *   2. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 95
@@ -2047,7 +2088,15 @@ object StreamLinkOptimizer {
      *   4. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 93
      *   5. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
      *   6. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
-     *   7. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 90
+     *   7. AniZone   (anizone.to, jin-/vid-cdn HLS ladder + real English SRT/ASS sidecars) -> 89
+     *   8. AnimePahe (animepahe.pw, Cloudflare-gated Kwik HLS, deepest airing/rare catalog) -> 88
+     *   9. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 87
+     *
+     * The anime-only sources are ordered by how reliably they carry English subtitles and the
+     * original Japanese audio: AniZone ships both as first-class artefacts of the episode pack,
+     * AnimePahe has the widest catalogue but no sidecars, and Animex is the fallback of last resort.
+     * That ordering is what makes an anime download walk subtitles-first instead of
+     * resolution-first.
      *
      * VidRock (`vidrock`), VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs`, `netoda.tech`,
      * `mov2day.xyz`, `vidora`), and VidSrcSU (`vidsrcsu`, `vidsrc.su`, `themoviedb.vidsrc.su`,
@@ -2081,9 +2130,17 @@ object StreamLinkOptimizer {
             s.contains("meowtv") || n.contains("meowtv") ||
                 u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
                 u.contains("krico443jez.com") -> 91
+            s.contains("anizone") || n.contains("anizone") ||
+                u.contains("anizone.to") || u.contains("xin-cdn.xyz") ||
+                u.contains("vid-cdn.xyz") -> 89
+            s.contains("animepahe") || n.contains("animepahe") ||
+                u.contains("animepahe.pw") || u.contains("animepahe.com") ||
+                u.contains("kwik.cx") || u.contains("kwik.si") ||
+                r.contains("kwik.cx") || r.contains("kwik.si") ||
+                u.contains("uwucdn.top") || u.contains("owocdn.top") -> 88
             s.contains("animex") || n.contains("animex") ||
                 u.contains("animex.one") || u.contains("aniwatchtv.site") ||
-                u.contains("krussdomi.com") || u.contains("echovideo.to") -> 90
+                u.contains("krussdomi.com") || u.contains("echovideo.to") -> 87
             else -> 0
         }
     }
@@ -2183,7 +2240,7 @@ object StreamLinkOptimizer {
         }
 
         val baseScore = if (isTopTier) {
-            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; Cineby(95) -> 950,000+; Animex(90) -> 900,000+.
+            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; Cineby(95) -> 950,000+; Animex(87) -> 870,000+.
             (sourceRank * 10_000f) + qualityTerm
         } else {
             // Secondary / fallback sources stay strictly below every top-tier stream.
@@ -2342,8 +2399,8 @@ object StreamLinkOptimizer {
      * State-Of-The-Art Priority-Ordered Stream Dispatcher for CloudStream.
      *
      * Guarantees that the highest-ranked source is always the #1 result (VidLink 100 >
-     * Cineby 96 > VidSrc 95 > VidFast 94 > VidSrcSU 93 > MegaPlay 92 > MeowTV 91 > Animex 90), and only
-     * then orders that source's own variants by the
+     * Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 > AniZone 89 >
+     * AnimePahe 88 > Animex 87), and only then orders that source's own variants by the
      * quality hierarchy (720p > 1080p > 480p > above-1080p).
      *
      * Every hold in this dispatcher is *bounded*: it is an ordering window that exists to
@@ -3001,21 +3058,21 @@ object StreamLinkOptimizer {
             /**
              * The v22-era top-tier ranks, kept only for the standalone fallback path of
              * [hasHigherPendingTop720Rank] (no [activeTopRanks] and no [isRankInFlight]):
-             * in that mode the dispatcher knows nothing about which v24 registry sources
+             * in that mode the dispatcher knows nothing about which v25 registry sources
              * are live, so it waits only for these historic ranks plus any rank it has
              * actually observed in the current session. Every production caller passes
-             * [activeTopRanks]/[isRankInFlight], where the full v24 [TOP_TIER_RANKS] set
+             * [activeTopRanks]/[isRankInFlight], where the full v25 [TOP_TIER_RANKS] set
              * is used against the live provider picture instead.
              */
             private val LEGACY_TOP_TIER_RANKS = listOf(100, 94, 90, 85)
 
             /**
-             * The complete set of top-tier ranks in the curated v24 registry. Kept as an
+             * The complete set of top-tier ranks in the curated v25 registry. Kept as an
              * explicit list (rather than derived from the string-keyed boost map) so the
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.
              */
-            private val TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 90)
+            private val TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 89, 88, 87)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

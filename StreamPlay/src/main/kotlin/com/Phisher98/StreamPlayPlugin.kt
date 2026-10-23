@@ -65,9 +65,9 @@ class StreamPlayPlugin: Plugin() {
             Log.d("StreamPlay", "⚙️ Set recommended concurrency: $recommended")
         }
 
-        // Bootstrap the curated v24 registry defaults (VidLink, Cineby, CineSrc, VidFast,
-        // MegaPlay, MeowTV, Animex) and scrub every decommissioned provider id from
-        // an upgrading install's preferences.
+        // Bootstrap the curated v25 registry defaults (VidLink, Cineby, CineSrc, VidFast,
+        // MegaPlay, MeowTV, AniZone, AnimePahe, Animex) and scrub every decommissioned provider
+        // id from an upgrading install's preferences.
         getOrInitializeDisabledProviders(sharedPref)
 
         val mainApis = listOf(

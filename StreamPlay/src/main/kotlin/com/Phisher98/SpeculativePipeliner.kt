@@ -248,12 +248,14 @@ class EarlySatisfactionController(
 }
 
 /**
- * Authoritative cold-start priority boost for the curated v24 SOTA registry.
+ * Authoritative cold-start priority boost for the curated v25 SOTA registry.
  *
  * The hierarchy is deliberately flat and small: every entry is a source that has been
  * verified live with a plain HTTP probe, and the ordering is the order a well-behaved
  * player should surface them in. Anything not listed here scores 0 and is treated as a
- * non-preferred fallback.
+ * non-preferred fallback. The anime tail (AniZone 89 > AnimePahe 88 > Animex 87) is ordered
+ * subtitles-first: AniZone ships real English sidecars, AnimePahe has the widest catalogue,
+ * and Animex is the fallback of last resort.
  */
 internal val FAST_PROVIDER_BOOST = mapOf(
     "vidlink" to 100f,
@@ -273,8 +275,14 @@ internal val FAST_PROVIDER_BOOST = mapOf(
     "meowtv" to 91f,
     "Meowtv" to 91f,
     "MeowTV" to 91f,
-    "animex" to 90f,
-    "Animex" to 90f
+    "anizone" to 89f,
+    "Anizone" to 89f,
+    "AniZone" to 89f,
+    "animepahe" to 88f,
+    "Animepahe" to 88f,
+    "AnimePahe" to 88f,
+    "animex" to 87f,
+    "Animex" to 87f
 )
 
 /**
@@ -284,7 +292,7 @@ object SpeculativePipeliner {
     private const val TAG = "SpeculativePipeliner"
 
     /**
-     * Cold-start latency expectation for the curated v24 registry. Every surviving source
+     * Cold-start latency expectation for the curated v25 registry. Every surviving source
      * is a single-round-trip JSON API, so they all live in TIER_1; the intent is that the
      * pipeline starts them together instead of serialising them.
      */
@@ -311,6 +319,15 @@ object SpeculativePipeliner {
         "meowtv" to LatencyTier.TIER_1,
         "Meowtv" to LatencyTier.TIER_1,
         "MeowTV" to LatencyTier.TIER_1,
+        // AniZone is one search page plus one episode page, both plain HTTP.
+        "anizone" to LatencyTier.TIER_1,
+        "Anizone" to LatencyTier.TIER_1,
+        "AniZone" to LatencyTier.TIER_1,
+        // AnimePahe is search -> release -> play -> Kwik, and the first request may have to
+        // answer a Cloudflare challenge, so it is honestly slower on a cold start.
+        "animepahe" to LatencyTier.TIER_2,
+        "Animepahe" to LatencyTier.TIER_2,
+        "AnimePahe" to LatencyTier.TIER_2,
         "animex" to LatencyTier.TIER_1,
         "Animex" to LatencyTier.TIER_1
     )

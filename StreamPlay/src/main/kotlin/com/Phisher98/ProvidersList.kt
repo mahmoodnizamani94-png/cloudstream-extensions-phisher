@@ -5,7 +5,9 @@ import android.util.Log
 import androidx.core.content.edit
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.phisher98.StreamPlayExtractor.invokeAnimePahe
 import com.phisher98.StreamPlayExtractor.invokeAnimex
+import com.phisher98.StreamPlayExtractor.invokeAniZone
 import com.phisher98.StreamPlayExtractor.invokeCineby
 import com.phisher98.StreamPlayExtractor.invokeCineSrc
 import com.phisher98.StreamPlayExtractor.invokeMegaPlay
@@ -41,6 +43,20 @@ private fun getDubStatus(res: StreamPlay.LinkData): String {
         res.isDub -> "DUB"
         else -> "SUB"
     }
+}
+
+/**
+ * Every name a title is known by, for the sources that can only be queried by name.
+ *
+ * AnimePahe and AniZone index a show under its English, Romaji, native or synonym release title,
+ * and neither exposes an AniList/MAL id lookup. Searching only `title` is why a localized show
+ * used to produce no result at all.
+ */
+private fun StreamPlay.LinkData.animeSourceTitles(): List<String> {
+    return listOfNotNull(title, jpTitle, orgTitle, alttitle, nametitle)
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
 }
 
 private val animeIdResolveMutex = Mutex()
@@ -125,10 +141,12 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
 }
 
 /**
- * ===================== StreamPlay SOTA Provider Registry (v24) =====================
+ * ===================== StreamPlay SOTA Provider Registry (v25) =====================
  *
- * Seven sources, every one of them verified end-to-end against live playback with plain
- * HTTP (no browser, no JS execution, no Cloudflare interstitial).
+ * Nine sources, every one of them verified live at the protocol/origin level with plain HTTP
+ * (no browser and no interactive Cloudflare interstitial). AnimePahe's origin is Cloudflare-gated;
+ * its challenge is answered by the app's anti-bot interceptor, exactly like its standalone
+ * provider, and the `.com` -> `.pw` redirect was verified on 2026-10-23.
  *
  *   1. VidLink   - vidlink.pro       | Universal (Movie/TV/Anime) | Rank 100 (#1, mandatory)
  *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 95  (#2, multi-server + offline mvm1)
@@ -136,7 +154,17 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
  *   4. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 93  (#4, enc-vidfast handshake)
  *   5. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#5, MAL/AniList + dec-megaplay)
  *   6. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#6, single-use ticket + dec-meowtv)
- *   7. Animex    - animex.one        | Anime                      | Rank 90  (#7, GraphQL + concurrent multi-provider fan-out)
+ *   7. AniZone   - anizone.to        | Anime                      | Rank 89  (#7, soft-sub HLS ladder + English SRT/ASS sidecars)
+ *   8. AnimePahe - animepahe.pw      | Anime                      | Rank 88  (#8, Cloudflare-gated Kwik HLS, deepest airing/rare catalogue)
+ *   9. Animex    - animex.one        | Anime                      | Rank 87  (#9, GraphQL + concurrent multi-provider fan-out)
+ *
+ * The two anime additions exist for the cases the older anime sources fail: currently airing
+ * episodes, very old or low-popularity titles, and above all subtitles. AniZone ships real
+ * English SRT/ASS tracks beside a 360/720/1080 HLS ladder with demuxed Japanese audio, so the
+ * original audio and the subtitles survive a download; AnimePahe is the deepest catalogue and
+ * the fastest to carry a new episode, and its play page is queried directly rather than through
+ * a search index. Animex is deliberately last: it is the source that most often answers with a
+ * stream but no usable English track, so it is the final fallback instead of the first choice.
  *
  * VidRock (`vidrock`, `vidrock.net`, `galacticvoyagers.xyz`, `moonfirekeeper.lol`),
  * VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs.cc`, `netoda.tech`, `mov2day.xyz`), and
@@ -197,6 +225,32 @@ private val providers by lazy {
                 invokeMeowTV(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
+        Provider("anizone", "AniZone") { res, subtitleCallback, callback, _, _ ->
+            if (res.isAnime) {
+                invokeAniZone(
+                    titles = res.animeSourceTitles(),
+                    year = res.year ?: res.airedYear,
+                    episode = res.episode,
+                    isMovie = res.isMovie == true,
+                    dubtype = getDubStatus(res),
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+            }
+        },
+        Provider("animepahe", "AnimePahe") { res, subtitleCallback, callback, _, _ ->
+            if (res.isAnime) {
+                invokeAnimePahe(
+                    titles = res.animeSourceTitles(),
+                    year = res.year ?: res.airedYear,
+                    episode = res.episode,
+                    isMovie = res.isMovie == true,
+                    dubtype = getDubStatus(res),
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+            }
+        },
         Provider("animex", "Animex") { res, subtitleCallback, callback, _, _ ->
             if (res.isAnime) {
                 val ids = getAnimeIds(res)
@@ -216,10 +270,15 @@ private val providers by lazy {
 }
 
 /**
- * The curated v24 SOTA set. Order defines the authoritative source hierarchy:
+ * The curated v25 SOTA set. Order defines the authoritative source hierarchy:
  * VidLink (100), Cineby (95), and CineSrc (94) are universal primaries (Movie, TV, Anime);
  * VidFast (93) > MeowTV (91) serve Movie/TV;
- * MegaPlay (92) > Animex (90) serve Anime alongside VidLink (100), Cineby (95), and CineSrc (94).
+ * MegaPlay (92) > AniZone (89) > AnimePahe (88) > Animex (87) serve Anime alongside
+ * VidLink (100), Cineby (95), and CineSrc (94).
+ *
+ * The anime chain is the download guarantee: AniZone carries real English sidecars, AnimePahe is
+ * the catalogue of record for airing and rare shows, and Animex closes the chain as the source
+ * most likely to lack a usable English track.
  */
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
@@ -228,6 +287,8 @@ val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidfast",
     "megaplay",
     "meowtv",
+    "anizone",
+    "animepahe",
     "animex"
 )
 
@@ -265,11 +326,10 @@ val REMOVED_PROVIDER_IDS = setOf(
     "vidzeeapi", "2Embed", "2embed", "uhdmovies", "multimovies", "4khdhub", "hdhub4u",
     "hdmovie2", "topmovies", "moviesmod", "bollyflix", "vegamovies", "Rogmovies",
     "nepu", "moviesdrive", "hianime", "animetosho", "ReAnime", "Animex", "kickass",
-    "anichi", "anikage", "anineko", "tokyoinsider", "anizone", "watchsomuch", "ninetv",
+    "anichi", "anikage", "anineko", "tokyoinsider", "watchsomuch", "ninetv",
     "allmovieland", "zshow", "kisskh", "dahmermovies", "CinemaCity", "Hindmoviez",
     "Movies4u", "M4uhd", "MappleTV", "WyZIESUB", "SubtitleAPI", "CineVood", "Filmyfiy",
-    "DooFlix", "Xpass", "Dudefilms", "Zinkmovies", "Filmyfiy", "OpenSubs",
-    "animepahe", "Animepahe", "AnimePahe"
+    "DooFlix", "Xpass", "Dudefilms", "Zinkmovies", "Filmyfiy", "OpenSubs"
 )
 
 fun getDefaultDisabledProviderIds(): Set<String> =
@@ -277,13 +337,17 @@ fun getDefaultDisabledProviderIds(): Set<String> =
 
 fun buildProviders(): List<Provider> = providers
 
-const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v24_initialized"
+const val PREFS_TOP_TIER_INITIALIZED = "streamplay_top_tier_v25_initialized"
 
 /**
- * Provider settings bootstrap + migration to the curated v24 SOTA registry.
+ * Provider settings bootstrap + migration to the curated v25 SOTA registry.
  *
  * Clean installs: enable exactly [DEFAULT_TOP_TIER_PROVIDERS], disable nothing else.
  * VidLink is the pinnacle #1 provider and cannot be disabled.
+ *
+ * The v25 key is deliberately new: AniZone and AnimePahe are the subtitle/coverage answer for
+ * anime, and users upgrading from v24 must receive them enabled even if their persisted disabled
+ * set was written by the previous migration.
  */
 fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String> {
     if (sharedPref == null) return getDefaultDisabledProviderIds().filterNot { it.equals("vidlink", ignoreCase = true) }.toSet()
@@ -318,7 +382,8 @@ fun getOrInitializeDisabledProviders(sharedPref: SharedPreferences?): Set<String
     }
     Log.d(
         "StreamPlay",
-        "🎯 Migrated to curated SOTA registry v24: VidLink guaranteed active, " +
+        "🎯 Migrated to curated SOTA registry v25: VidLink guaranteed active, " +
+            "AniZone + AnimePahe enabled for anime, " +
             "scrubbed ${REMOVED_PROVIDER_IDS.size} decommissioned provider identifiers"
     )
     return finalDisabled

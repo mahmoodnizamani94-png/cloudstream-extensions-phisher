@@ -49,6 +49,17 @@ otherwise, and queries both `SXXEXX` and the bare `- XX` form.
 episode number, so anime that could not be mapped to TMDB no longer ends up with zero subtitle
 sources (the previous anime fallbacks were all TMDB-gated).
 
+### Provider-sidecar anime sources (v25)
+
+| Provider | Rank | Sidecars | Behaviour |
+|---|---|---|---|
+| `anizone` | 89 | Yes | `vidstackPlayer(JSON.parse('...'))` lists English `.srt`/`.ass` tracks beside the `*.xin-cdn.xyz` / `*.vid-cdn.xyz` HLS master. Only non-forced, non-SDH English tracks are emitted, with `cleanSubtitleLabel` names. Verified live 2026-10-23: `https://anizone.to/anime/eu8bdgty/1` returns `1_en.srt`, `0_en.ass` (forced) and `2_en.srt` (SDH), so the forced/SDH pair is filtered. |
+| `animepahe` | 88 | No | The `#resolutionMenu` buttons expose `data-resolution` and `data-audio` (`jpn`/`eng`) and the Kwik packer exposes a single HLS manifest; subtitles are part of the encode. It is kept for airing/rare-series coverage, so the catalogue fallback above fills the English gap. Origin verified 2026-10-23: `animepahe.com` answers 301 -> `https://animepahe.pw/`; the `.pw` API is Cloudflare-gated and is answered by the app's `CloudflareKiller`, exactly like the old standalone provider. Current Kwik hosts are `kwik.si`/`kwik.cx` and the resolved CDN is `*.uwucdn.top` / `*.owocdn.top`. |
+
+AniZone's marker is registered in the host `DownloadSubtitlePolicy` as `anizone` (priority 89,
+hosts `anizone`, `xin-cdn`, `vid-cdn`), so its sidecars count as a distinct English source and are
+named accordingly. AnimePahe emits no sidecar and therefore has no subtitle marker.
+
 ## 3. SubtitleCat contract
 
 * Search: `https://www.subtitlecat.com/index.php?search=<title + episode>`.

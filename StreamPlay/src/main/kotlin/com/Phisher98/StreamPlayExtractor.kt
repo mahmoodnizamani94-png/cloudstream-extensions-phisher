@@ -262,9 +262,10 @@ object StreamPlayExtractor : StreamPlay() {
 
     /**
      * SOTA Emission for Top-Tier Sources (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
-     * MegaPlay 92 > MeowTV 91 > Animex 90). Emits only genuine, manifest-verified variants:
-     * 720p is prioritized #1 and 1080p #2 by STREAM_PRIORITY_COMPARATOR, followed by the
-     * remaining qualities (480p, 4K, ...); no synthetic companions are ever fabricated.
+     * MegaPlay 92 > MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87). Emits only genuine,
+     * manifest-verified variants: 720p is prioritized #1 and 1080p #2 by STREAM_PRIORITY_COMPARATOR,
+     * followed by the remaining qualities (480p, 4K, ...); no synthetic companions are ever
+     * fabricated.
      *
      * - If generatedLinks is provided from generateM3u8: every parsed variant is tagged with
      *   sota_dual_quality and dispatched sorted strictly by STREAM_PRIORITY_COMPARATOR.
@@ -1214,6 +1215,771 @@ object StreamPlayExtractor : StreamPlay() {
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeMegaPlay failed: ${e.message}")
+        }
+    }
+
+    // ==================== AnimePahe SOTA Anime Extractor (animepahe.pw) ====================
+
+    /**
+     * Live AnimePahe origin.
+     *
+     * `animepahe.com` answers with a permanent 301 to `animepahe.pw` (verified 2026-10-23), so
+     * `.pw` is the only host worth requesting. The redirecting origin stays in
+     * [ANIMEPAHE_HOSTS] so a future domain move degrades to one extra hop instead of a dead
+     * provider. `animepahe.si` is deliberately not used: it currently serves a parked page.
+     *
+     * The site is behind a Cloudflare anti-bot gate, so every request goes through
+     * [cloudflareKiller], which the app answers with its anti-bot interceptor (fresh cookies,
+     * single-flight challenge solving). No JS execution or scraping browser is needed here.
+     */
+    private const val ANIMEPAHE_HOST = "https://animepahe.pw"
+    internal val ANIMEPAHE_HOSTS = listOf("https://animepahe.pw", "https://animepahe.com")
+
+    /**
+     * How many title spellings a new anime source searches before giving up.
+     *
+     * Anime catalogues index a show under its English, Romaji or native name, and AnimePahe's and
+     * AniZone's search APIs are one-shot (no id lookup), so the variants must be tried. Three keeps
+     * the worst case inside the per-source pipeline budget.
+     */
+    private const val MAX_ANIME_SOURCE_TITLE_QUERIES = 3
+
+    private val ANIMEPAHE_HEADERS = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "*/*",
+        "Accept-Language" to "en-US,en;q=0.9"
+    )
+
+    /** One entry of `GET /api?m=search&l=8&q={title}`. */
+    internal data class AnimePaheSearchHit(
+        val session: String,
+        val title: String,
+        val year: Int?,
+        val mediaType: String?,
+        val episodes: Int?,
+    )
+
+    /** One page of `GET /api?m=release&id={session}&sort=episode_asc&page={n}`. */
+    internal data class AnimePaheReleasePage(
+        val sessions: Map<Int, String>,
+        val perPage: Int,
+        val lastPage: Int,
+    )
+
+    /**
+     * One playable entry of `#resolutionMenu` on `/play/{anime}/{episode}`.
+     *
+     * `audio` is the provider's own declaration (`jpn`/`eng`), never inferred from the quality
+     * label, because AnimePahe lists both audio cuts with the same resolutions.
+     */
+    internal data class AnimePahePlaySource(
+        val url: String,
+        val quality: Int,
+        val audio: String,
+        val fansub: String?,
+    ) {
+        val isDub: Boolean
+            get() = audio.contains("eng", ignoreCase = true) ||
+                audio.contains("english", ignoreCase = true) ||
+                audio.contains("dub", ignoreCase = true)
+        val isOriginalAudio: Boolean
+            get() = audio.isBlank() ||
+                audio.contains("jpn", ignoreCase = true) ||
+                audio.contains("jp", ignoreCase = true) ||
+                audio.contains("japanese", ignoreCase = true) ||
+                audio.contains("original", ignoreCase = true)
+    }
+
+    private val ANIMEPAHE_KWIK_STREAM_REGEX = Regex(
+        """(?:source|file|src)\s*[:=]\s*['"]([^'"]*?m3u8[^'"]*)['"]""",
+        RegexOption.IGNORE_CASE
+    )
+
+    internal fun animePaheParseSearch(rawJson: String): List<AnimePaheSearchHit> {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+        val data = root.optJSONArray("data") ?: return emptyList()
+        val hits = ArrayList<AnimePaheSearchHit>(data.length())
+        for (i in 0 until data.length()) {
+            val obj = data.optJSONObject(i) ?: continue
+            val session = obj.optString("session").trim()
+            val title = obj.optString("title").trim()
+            if (session.isBlank() || title.isBlank()) continue
+            hits.add(
+                AnimePaheSearchHit(
+                    session = session,
+                    title = title,
+                    year = obj.optInt("year", 0).takeIf { it > 0 },
+                    mediaType = obj.optString("type").takeIf { it.isNotBlank() },
+                    episodes = obj.optInt("episodes", 0).takeIf { it > 0 }
+                )
+            )
+        }
+        return hits
+    }
+
+    internal fun animePaheParseReleasePage(rawJson: String): AnimePaheReleasePage? {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
+        val data = root.optJSONArray("data") ?: return null
+        val sessions = HashMap<Int, String>(data.length())
+        for (i in 0 until data.length()) {
+            val obj = data.optJSONObject(i) ?: continue
+            val number = obj.optInt("episode", -1)
+            val session = obj.optString("session").trim()
+            if (number > 0 && session.isNotBlank()) sessions[number] = session
+        }
+        return AnimePaheReleasePage(
+            sessions = sessions,
+            perPage = root.optInt("per_page", 0),
+            lastPage = root.optInt("last_page", 1)
+        )
+    }
+
+    /**
+     * Parses the `#resolutionMenu` buttons of an AnimePahe play page.
+     *
+     * The quality is the provider's own `data-resolution` height (falling back to the `1080p`
+     * fragment of the button label). Nothing is inferred from a stream URL, and an entry without
+     * either declaration stays [Qualities.Unknown].
+     */
+    internal fun animePaheParsePlaySources(html: String): List<AnimePahePlaySource> {
+        if (html.isBlank()) return emptyList()
+        val document = Jsoup.parse(html)
+        val buttons = document.select("#resolutionMenu [data-src]")
+            .ifEmpty { document.select("button[data-src]") }
+        val sources = mutableListOf<AnimePahePlaySource>()
+        for (button in buttons) {
+            val href = button.attr("data-src").trim()
+            if (!href.startsWith("http", ignoreCase = true)) continue
+            val label = button.text().trim()
+            val declaredHeight = button.attr("data-resolution").trim().toIntOrNull()
+                ?: Regex("""(\d{3,4})p""", RegexOption.IGNORE_CASE)
+                    .find(label)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val quality = animeDeclaredQuality(declaredHeight)
+                ?: StreamLinkOptimizer.extractQualityFromText(label)
+            val audio = button.attr("data-audio").trim().lowercase(Locale.ROOT).ifBlank {
+                if (label.contains("eng", ignoreCase = true)) "eng" else "jpn"
+            }
+            sources.add(
+                AnimePahePlaySource(
+                    url = href,
+                    quality = quality,
+                    audio = audio,
+                    fansub = button.attr("data-fansub").trim().takeIf { it.isNotBlank() }
+                )
+            )
+        }
+        return sources.distinctBy { "${it.url}|${it.audio}" }
+    }
+
+    /**
+     * Resolves a Kwik embed page (`kwik.cx/e/{id}`) to its HLS manifest.
+     *
+     * Kwik ships the real manifest inside a Dean Edwards packed script (`source='...m3u8'`), so
+     * the packed payload is unpacked first; an already-unpacked document is used as a fallback in
+     * case the site stops packing.
+     */
+    internal fun animePaheParseKwikStream(html: String): String? {
+        if (html.isBlank()) return null
+        val packed = Jsoup.parse(html)
+            .select("script")
+            .firstOrNull { it.data().contains("function(p,a,c,k,e") }
+            ?.data()
+        val unpacked = packed?.let { runCatching { getAndUnpack(it) }.getOrNull() }
+        for (candidate in listOfNotNull(unpacked, html)) {
+            val match = ANIMEPAHE_KWIK_STREAM_REGEX.find(candidate) ?: continue
+            val url = match.groupValues.getOrNull(1)
+                ?.replace("\\/", "/")
+                ?.trim()
+            if (!url.isNullOrBlank() && url.startsWith("http", ignoreCase = true)) return url
+        }
+        return null
+    }
+
+    internal fun animePaheTypeMatches(mediaType: String?, isMovie: Boolean): Boolean {
+        val type = mediaType?.lowercase(Locale.ROOT).orEmpty()
+        return if (isMovie) {
+            type.contains("movie")
+        } else {
+            !type.contains("movie")
+        }
+    }
+
+    /**
+     * Deterministic AnimePahe result selection: exact/normalized title first, then the show whose
+     * release year matches. The provider returns its own relevance ordering, which is not stable
+     * between requests, so the pick cannot depend on response order.
+     */
+    internal fun pickAnimePaheHit(
+        hits: List<AnimePaheSearchHit>,
+        titles: List<String>,
+        year: Int?,
+        isMovie: Boolean,
+    ): AnimePaheSearchHit? {
+        if (hits.isEmpty() || titles.isEmpty()) return null
+        val typed = hits.filter { animePaheTypeMatches(it.mediaType, isMovie) }
+        // A media-type miss is an honest miss: episode 1 of a movie (or of a series when a movie
+        // was requested) is worse than no result. Blank types are accepted by the predicate.
+        if (typed.isEmpty()) return null
+        return typed.mapNotNull { hit ->
+            val base = titles.maxOfOrNull { animeTitleMatchScore(it, hit.title) } ?: 0
+            if (base < ANIME_TITLE_MATCH_FLOOR) null else hit to (base * 1000 + animeYearBonus(year, hit.year))
+        }.maxByOrNull { it.second }?.first
+    }
+
+    // ==================== AniZone SOTA Anime Extractor (anizone.to) ====================
+
+    /**
+     * AniZone is a soft-sub anime catalogue: every episode page declares an HLS master with
+     * demuxed original-language audio plus real `.srt`/`.ass` sidecars (English, non-SDH
+     * available). That is exactly what a download needs to keep its original audio and subtitles.
+     */
+    private const val ANIZONE_HOST = "https://anizone.to"
+
+    private val ANIZONE_HEADERS = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Referer" to "$ANIZONE_HOST/"
+    )
+
+    internal data class AniZoneSearchHit(
+        val slug: String,
+        val url: String,
+        val title: String,
+        val aliases: List<String>,
+        val year: Int?,
+        val mediaType: String?,
+        val episodes: Int?,
+    )
+
+    internal data class AniZoneSubtitleTrack(
+        val label: String,
+        val language: String?,
+        val format: String?,
+        val forced: Boolean,
+        val url: String,
+    )
+
+    internal data class AniZonePlayer(
+        val streamUrl: String,
+        val subtitles: List<AniZoneSubtitleTrack>,
+    )
+
+    private val ANIZONE_ITEMS_REGEX = Regex(
+        """items:\s*JSON\.parse\('((?:\\.|[^'\\])*)'\)""",
+        setOf(RegexOption.DOT_MATCHES_ALL)
+    )
+    private val ANIZONE_PLAYER_REGEX = Regex(
+        """vidstackPlayer\(\s*JSON\.parse\('((?:\\.|[^'\\])*)'\)""",
+        setOf(RegexOption.DOT_MATCHES_ALL)
+    )
+
+    /**
+     * Decodes a JS single-quoted string literal body (what sits between `JSON.parse('` and `')`).
+     *
+     * AniZone HTML-escapes every quote as `\u0022`, so the payload is not valid JSON until the JS
+     * string escapes are resolved. Escapes are consumed exactly once, which keeps Windows path
+     * separators and already-decoded quotes intact.
+     */
+    internal fun aniZoneDecodeJsString(raw: String): String {
+        if (raw.isEmpty()) return raw
+        val out = StringBuilder(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (ch != '\\' || i + 1 >= raw.length) {
+                out.append(ch)
+                i++
+                continue
+            }
+            when (val escape = raw[i + 1]) {
+                'u' -> {
+                    val hex = raw.substring(i + 2, minOf(i + 6, raw.length))
+                    val code = if (hex.length == 4) hex.toIntOrNull(16) else null
+                    if (code != null) {
+                        out.append(code.toChar())
+                        i += 6
+                    } else {
+                        out.append(ch)
+                        i++
+                    }
+                }
+                '/', '\\', '\'', '"' -> {
+                    out.append(escape)
+                    i += 2
+                }
+                'n' -> { out.append('\n'); i += 2 }
+                'r' -> { out.append('\r'); i += 2 }
+                't' -> { out.append('\t'); i += 2 }
+                'b' -> { out.append('\b'); i += 2 }
+                'f' -> { out.append('\u000C'); i += 2 }
+                else -> {
+                    out.append(escape)
+                    i += 2
+                }
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * Parses the `items: JSON.parse('...')` catalogue payload of `GET /anime?search=...`.
+     *
+     * Each item carries `slug`/`url`, `main_title`, a localized `title_list` and `start_year`, so
+     * a match is decided on every name AniZone knows plus the year, never on response order.
+     */
+    internal fun aniZoneParseSearchItems(html: String): List<AniZoneSearchHit> {
+        if (html.isBlank()) return emptyList()
+        val document = Jsoup.parse(html)
+        for (element in document.select("[x-data]")) {
+            val attribute = element.attr("x-data")
+            if (!attribute.contains("JSON.parse(")) continue
+            val raw = ANIZONE_ITEMS_REGEX.find(attribute)?.groupValues?.getOrNull(1) ?: continue
+            val array = runCatching { JSONArray(aniZoneDecodeJsString(raw)) }.getOrNull() ?: continue
+            val hits = ArrayList<AniZoneSearchHit>(array.length())
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                val slug = obj.optString("slug").trim()
+                val url = obj.optString("url").trim()
+                val title = obj.optString("main_title").trim()
+                if (title.isBlank()) continue
+                if (slug.isBlank() && url.isBlank()) continue
+                val aliases = mutableListOf<String>()
+                obj.optJSONObject("title_list")?.let { titleList ->
+                    for (key in titleList.keys()) {
+                        val alias = titleList.optString(key).trim()
+                        if (alias.isNotBlank()) aliases.add(alias)
+                    }
+                }
+                hits.add(
+                    AniZoneSearchHit(
+                        slug = slug,
+                        url = url.ifBlank { "$ANIZONE_HOST/anime/$slug" },
+                        title = title,
+                        aliases = aliases.distinctBy { it.lowercase(Locale.ROOT) },
+                        year = obj.optInt("start_year", 0).takeIf { it > 0 },
+                        mediaType = obj.optString("type").takeIf { it.isNotBlank() },
+                        episodes = obj.optInt("episode_count", 0).takeIf { it > 0 }
+                    )
+                )
+            }
+            if (hits.isNotEmpty()) return hits
+        }
+        return emptyList()
+    }
+
+    internal fun aniZoneParsePlayer(html: String): AniZonePlayer? {
+        if (html.isBlank()) return null
+        val raw = ANIZONE_PLAYER_REGEX.find(html)?.groupValues?.getOrNull(1) ?: return null
+        val payload = runCatching { JSONObject(aniZoneDecodeJsString(raw)) }.getOrNull() ?: return null
+        val streamUrl = payload.optString("src").trim()
+        if (!streamUrl.startsWith("http", ignoreCase = true)) return null
+        val subtitles = mutableListOf<AniZoneSubtitleTrack>()
+        payload.optJSONArray("subtitles")?.let { tracks ->
+            for (i in 0 until tracks.length()) {
+                val track = tracks.optJSONObject(i) ?: continue
+                val file = track.optString("file").trim()
+                if (!file.startsWith("http", ignoreCase = true)) continue
+                subtitles.add(
+                    AniZoneSubtitleTrack(
+                        label = track.optString("title")
+                            .ifBlank { track.optString("language") }
+                            .trim(),
+                        language = track.optString("language").trim().takeIf { it.isNotBlank() },
+                        format = track.optString("format").trim().takeIf { it.isNotBlank() },
+                        forced = track.optString("forced").equals("yes", ignoreCase = true),
+                        url = file
+                    )
+                )
+            }
+        }
+        return AniZonePlayer(streamUrl = streamUrl, subtitles = subtitles)
+    }
+
+    /**
+     * English, non-forced, non-SDH track selector.
+     *
+     * Forced tracks cover on-screen text only and SDH adds sound descriptions, so neither is a
+     * usable English subtitle for a full episode. The host would drop them later anyway; filtering
+     * here keeps the emitted source count honest.
+     */
+    internal fun aniZoneIsEnglishSubtitle(track: AniZoneSubtitleTrack): Boolean {
+        if (track.forced) return false
+        val label = track.label.lowercase(Locale.ROOT)
+        if (label.contains("sdh") || label.contains("hearing") || label.contains("forced")) return false
+        if (track.language?.equals("en", ignoreCase = true) == true) return true
+        return isEnglishSubtitleLabel(track.label)
+    }
+
+    internal fun aniZoneTypeMatches(mediaType: String?, isMovie: Boolean): Boolean {
+        val type = mediaType?.lowercase(Locale.ROOT).orEmpty()
+        if (type.isBlank()) return true
+        return if (isMovie) {
+            type.contains("movie")
+        } else {
+            !type.contains("movie")
+        }
+    }
+
+    internal fun pickAniZoneHit(
+        hits: List<AniZoneSearchHit>,
+        titles: List<String>,
+        year: Int?,
+        isMovie: Boolean,
+    ): AniZoneSearchHit? {
+        if (hits.isEmpty() || titles.isEmpty()) return null
+        val typed = hits.filter { aniZoneTypeMatches(it.mediaType, isMovie) }
+        if (typed.isEmpty()) return null
+        return typed.mapNotNull { hit ->
+            val base = titles.maxOfOrNull { title ->
+                (listOf(hit.title) + hit.aliases).maxOfOrNull { animeTitleMatchScore(title, it) } ?: 0
+            } ?: 0
+            if (base < ANIME_TITLE_MATCH_FLOOR) null else hit to (base * 1000 + animeYearBonus(year, hit.year))
+        }.maxByOrNull { it.second }?.first
+    }
+
+    // -------------------- Shared anime title matching --------------------
+
+    /** Minimum normalized title score below which a search hit is a different show. */
+    internal const val ANIME_TITLE_MATCH_FLOOR = 60
+
+    private val ANIME_TITLE_NOISE_REGEX = Regex(
+        """\b(?:season\s*\d+|part\s*\d+|cour\s*\d+|\d+(?:st|nd|rd|th)\s*season)\b""",
+        RegexOption.IGNORE_CASE
+    )
+    private val ANIME_TITLE_STRIP_REGEX = Regex("""[^\p{L}\p{N}\s]""")
+    private val ANIME_TITLE_SPACES_REGEX = Regex("""\s+""")
+
+    internal fun animeNormalizeTitle(raw: String?): String {
+        return raw.orEmpty()
+            .lowercase(Locale.ROOT)
+            .replace(ANIME_TITLE_NOISE_REGEX, " ")
+            .replace(ANIME_TITLE_STRIP_REGEX, " ")
+            .replace(ANIME_TITLE_SPACES_REGEX, " ")
+            .trim()
+    }
+
+    /**
+     * Normalized title similarity: 100 exact, 82 one title being a prefix of the other (a sequel),
+     * 70 substring, then a bounded significant-token overlap. Two unrelated titles never clear
+     * [ANIME_TITLE_MATCH_FLOOR] on tokens alone.
+     */
+    internal fun animeTitleMatchScore(query: String?, candidate: String?): Int {
+        val q = animeNormalizeTitle(query)
+        val c = animeNormalizeTitle(candidate)
+        if (q.isBlank() || c.isBlank()) return 0
+        if (q == c) return 100
+        if (c.startsWith("$q ") || q.startsWith("$c ")) return 82
+        if (c.contains(q) || q.contains(c)) return 70
+        val queryTokens = q.split(' ').filter { it.length > 2 }.toSet()
+        if (queryTokens.isEmpty()) return 0
+        val candidateTokens = c.split(' ').filter { it.length > 2 }.toSet()
+        val overlap = queryTokens.count { it in candidateTokens }
+        return (overlap * 60) / queryTokens.size
+    }
+
+    /** Year agreement bonus: exact year wins, a one-year gap is still plausible for split cours. */
+    internal fun animeYearBonus(expected: Int?, actual: Int?): Int {
+        if (expected == null || actual == null) return 0
+        val gap = kotlin.math.abs(expected - actual)
+        return when {
+            gap == 0 -> 20
+            gap == 1 -> 8
+            else -> 0
+        }
+    }
+
+    /** Maps a provider-declared pixel height to an honest quality tier without inventing one. */
+    internal fun animeDeclaredQuality(height: Int?): Int? {
+        if (height == null || height < 144 || height > 4320) return null
+        return when (height) {
+            2160 -> Qualities.P2160.value
+            1440 -> Qualities.P1440.value
+            1080 -> Qualities.P1080.value
+            720 -> Qualities.P720.value
+            480 -> Qualities.P480.value
+            360 -> Qualities.P360.value
+            else -> height
+        }
+    }
+
+    private suspend fun animePaheGetText(url: String, referer: String, timeoutSec: Long = 6L): String? {
+        return withTimeoutOrNull(timeoutSec * 1000L) {
+            runCatching {
+                app.get(
+                    url,
+                    headers = ANIMEPAHE_HEADERS,
+                    referer = referer,
+                    interceptor = cloudflareKiller
+                ).text.takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+    }
+
+    private suspend fun resolveAnimePaheEpisodeSession(animeSession: String, episode: Int): String? {
+        suspend fun releasePage(page: Int): AnimePaheReleasePage? {
+            val raw = animePaheGetText(
+                "$ANIMEPAHE_HOST/api?m=release&id=$animeSession&sort=episode_asc&page=$page",
+                referer = "$ANIMEPAHE_HOST/anime/$animeSession"
+            ) ?: return null
+            return animePaheParseReleasePage(raw)
+        }
+
+        val first = releasePage(1) ?: return null
+        first.sessions[episode]?.let { return it }
+        val perPage = first.perPage.takeIf { it > 0 } ?: return null
+        val targetPage = ((episode - 1) / perPage) + 1
+        if (targetPage <= 1 || targetPage > maxOf(first.lastPage, 1)) return null
+        return releasePage(targetPage)?.sessions?.get(episode)
+    }
+
+    /**
+     * Emits one AnimePahe stream with the provider's own resolution declaration.
+     *
+     * Kwik serves a single-variant playlist, so a parsed master is used when present (distinct
+     * variants only) and the declared height is used otherwise. No resolution is synthesized.
+     */
+    private suspend fun emitAnimePaheStream(
+        source: AnimePahePlaySource,
+        streamUrl: String,
+        isDub: Boolean,
+        embedReferer: String,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val tag = if (isDub) "[Dub]" else "[Sub] [Original]"
+        val baseName = "AnimePahe $tag"
+        // The manifest is served by the embed provider that answered for this button (Kwik and
+        // its `uwucdn.top` CDN today), so the referer/origin must be that provider's origin, not a
+        // hardcoded host that a future domain move would invalidate.
+        val kwikReferer = embedReferer
+        val kwikOrigin = kwikReferer.removeSuffix("/")
+        val streamHeaders = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to kwikReferer,
+            "Origin" to kwikOrigin,
+            "Accept" to "*/*"
+        )
+        val manifest = withTimeoutOrNull(4_000L) {
+            cancellableGetText(streamUrl, headers = streamHeaders, timeoutSec = 4L)
+        }
+        val variants = manifest?.let { parseHlsMasterVariants(streamUrl, it) }.orEmpty()
+        if (variants.isNotEmpty()) {
+            val generated = variants.map { variant ->
+                val sizeTag = variant.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                newExtractorLink(
+                    source = "AnimePahe",
+                    name = "$baseName [${vidsrcQualityTag(variant.quality)}]$sizeTag",
+                    url = variant.url,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = kwikReferer
+                    this.quality = variant.quality
+                    this.headers = streamHeaders
+                }
+            }
+            emitTopTierDualQualityStreamLinks(
+                source = "AnimePahe",
+                baseName = baseName,
+                url = streamUrl,
+                referer = kwikReferer,
+                headers = streamHeaders,
+                streamType = ExtractorLinkType.M3U8,
+                generatedLinks = generated,
+                callback = callback
+            )
+            return
+        }
+        val declared = source.quality.takeIf { it > 0 && it != Qualities.Unknown.value }
+        val name = if (declared != null) {
+            "$baseName [${vidsrcQualityTag(declared)}]"
+        } else {
+            "$baseName [Auto]"
+        }
+        emitTopTierDualQualityStreamLinks(
+            source = "AnimePahe",
+            baseName = name,
+            url = streamUrl,
+            referer = kwikReferer,
+            headers = streamHeaders,
+            streamType = ExtractorLinkType.M3U8,
+            generatedLinks = listOf(
+                newExtractorLink(
+                    source = "AnimePahe",
+                    name = name,
+                    url = streamUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = kwikReferer
+                    this.quality = declared ?: Qualities.Unknown.value
+                    this.headers = streamHeaders
+                }
+            ),
+            callback = callback
+        )
+    }
+
+    /**
+     * SOTA Anime extractor for AnimePahe (`animepahe.pw`, Rank 88).
+     *
+     * Protocol (origin redirect verified 2026-10-23; payload contract verified against the live
+     * site's public API shape, with the Cloudflare gate answered by the app's anti-bot
+     * interceptor):
+     *   1. GET `/api?m=search&l=8&q={title}` and pick the hit by normalized title + year + type
+     *   2. GET `/api?m=release&id={animeSession}&sort=episode_asc&page={n}` for the episode session
+     *   3. GET `/play/{animeSession}/{episodeSession}` and read `#resolutionMenu [data-src]`
+     *      (`data-resolution`, `data-audio` = `jpn`/`eng`, `data-fansub`)
+     *   4. GET the Kwik embed (`kwik.si`/`kwik.cx`), unpack its packed script and read
+     *      `source='...m3u8'` (the manifest is served from `*.uwucdn.top` / `*.owocdn.top`)
+     *
+     * AnimePahe ships no external subtitle sidecars (subtitles are part of the encode), so this
+     * source never emits a fabricated track: the host's subtitle harvester covers that gap.
+     */
+    suspend fun invokeAnimePahe(
+        titles: List<String>,
+        year: Int?,
+        episode: Int?,
+        isMovie: Boolean,
+        dubtype: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val queries = titles
+            .mapNotNull { it.trim().takeIf(String::isNotBlank) }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(MAX_ANIME_SOURCE_TITLE_QUERIES)
+        if (queries.isEmpty()) return
+        val wantDub = dubtype.equals("DUB", ignoreCase = true)
+        val episodeNumber = if (isMovie) 1 else (episode ?: return)
+        try {
+            withTimeoutOrNull(30_000L) {
+                var hit: AnimePaheSearchHit? = null
+                for (query in queries) {
+                    val raw = animePaheGetText(
+                        "$ANIMEPAHE_HOST/api?m=search&l=8&q=${URLEncoder.encode(query, "UTF-8")}",
+                        referer = "$ANIMEPAHE_HOST/"
+                    ) ?: continue
+                    hit = pickAnimePaheHit(animePaheParseSearch(raw), titles, year, isMovie)
+                    if (hit != null) break
+                }
+                val resolved = hit ?: run {
+                    Log.d("StreamPlay", "AnimePahe: no catalogue match for ${titles.firstOrNull()}")
+                    return@withTimeoutOrNull
+                }
+
+                val episodeSession = resolveAnimePaheEpisodeSession(resolved.session, episodeNumber)
+                if (episodeSession == null) {
+                    Log.d("StreamPlay", "AnimePahe: episode $episodeNumber missing for ${resolved.title}")
+                    return@withTimeoutOrNull
+                }
+                val playPath = "/play/${resolved.session}/$episodeSession"
+                val playHtml = animePaheGetText(
+                    "$ANIMEPAHE_HOST$playPath",
+                    referer = "$ANIMEPAHE_HOST/anime/${resolved.session}"
+                ) ?: return@withTimeoutOrNull
+                val sources = animePaheParsePlaySources(playHtml)
+                    .filter { if (wantDub) it.isDub else it.isOriginalAudio }
+                if (sources.isEmpty()) return@withTimeoutOrNull
+
+                for (source in sources) {
+                    val embedHtml = animePaheGetText(source.url, referer = "$ANIMEPAHE_HOST$playPath")
+                        ?: continue
+                    val streamUrl = animePaheParseKwikStream(embedHtml) ?: continue
+                    val embedReferer = runCatching {
+                        URI(source.url).let { uri -> "${uri.scheme}://${uri.host}/" }
+                    }.getOrNull()?.takeIf { it.startsWith("http", ignoreCase = true) }
+                        ?: "https://kwik.cx/"
+                    emitAnimePaheStream(source, streamUrl, wantDub, embedReferer, callback)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeAnimePahe failed: ${e.message}")
+        }
+    }
+
+    /**
+     * SOTA Anime extractor for AniZone (`anizone.to`, Rank 89).
+     *
+     * Protocol (verified live 2026-10-23 with plain HTTP):
+     *   1. GET `/anime?search={title}`; the catalogue is embedded as `items: JSON.parse('...')`
+     *   2. Pick the entry by every known title variant plus the year and media type
+     *   3. GET `/anime/{slug}/{episode}` and read `vidstackPlayer(JSON.parse('...'))`
+     *   4. Emit the HLS master (demuxed audio preserved by `emitVerifiedStream`) and every
+     *      English, non-forced, non-SDH `.srt`/`.ass` sidecar
+     *
+     * AniZone is subtitle-first: the sidecars come from the same CDN pack as the video, so they are
+     * frame-accurate for the release being streamed or downloaded. It is sub-only, so a dub request
+     * emits nothing instead of pretending the original audio is a dub.
+     */
+    suspend fun invokeAniZone(
+        titles: List<String>,
+        year: Int?,
+        episode: Int?,
+        isMovie: Boolean,
+        dubtype: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        if (dubtype.equals("DUB", ignoreCase = true)) return
+        val queries = titles
+            .mapNotNull { it.trim().takeIf(String::isNotBlank) }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(MAX_ANIME_SOURCE_TITLE_QUERIES)
+        if (queries.isEmpty()) return
+        val episodeNumber = if (isMovie) 1 else (episode ?: return)
+        try {
+            withTimeoutOrNull(24_000L) {
+                var hit: AniZoneSearchHit? = null
+                for (query in queries) {
+                    val html = withTimeoutOrNull(7_000L) {
+                        cancellableGetText(
+                            "$ANIZONE_HOST/anime?search=${URLEncoder.encode(query, "UTF-8")}",
+                            headers = ANIZONE_HEADERS,
+                            timeoutSec = 6L
+                        )
+                    } ?: continue
+                    hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
+                    if (hit != null) break
+                }
+                val resolved = hit ?: run {
+                    Log.d("StreamPlay", "AniZone: no catalogue match for ${titles.firstOrNull()}")
+                    return@withTimeoutOrNull
+                }
+
+                val baseUrl = resolved.url.trim()
+                    .replaceFirst("http://", "https://")
+                    .substringBefore('?')
+                    .trimEnd('/')
+                    .takeIf { it.startsWith("http", ignoreCase = true) }
+                    ?: "$ANIZONE_HOST/anime/${resolved.slug}"
+                val pageUrl = "$baseUrl/$episodeNumber"
+                val pageHtml = withTimeoutOrNull(7_000L) {
+                    cancellableGetText(pageUrl, headers = ANIZONE_HEADERS, timeoutSec = 6L)
+                } ?: return@withTimeoutOrNull
+                val player = aniZoneParsePlayer(pageHtml) ?: run {
+                    Log.d("StreamPlay", "AniZone: no player payload for $pageUrl")
+                    return@withTimeoutOrNull
+                }
+
+                val emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                player.subtitles.filter(::aniZoneIsEnglishSubtitle).forEach { track ->
+                    if (emittedTracks.add(track.url)) {
+                        subtitleCallback(newSubtitleFile(cleanSubtitleLabel(track.label), track.url))
+                    }
+                }
+
+                emitVerifiedStream(
+                    source = "AniZone",
+                    baseName = "AniZone [Sub] [Original]",
+                    url = player.streamUrl,
+                    referer = "$ANIZONE_HOST/",
+                    headers = ANIZONE_HEADERS,
+                    callback = callback
+                )
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeAniZone failed: ${e.message}")
         }
     }
 
