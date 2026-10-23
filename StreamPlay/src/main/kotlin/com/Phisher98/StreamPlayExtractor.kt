@@ -25,7 +25,6 @@ import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.httpsify
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.Requests
@@ -83,6 +82,14 @@ val session: Session by lazy { Session(app.baseClient) }
 
 
 object StreamPlayExtractor : StreamPlay() {
+
+    private const val ADDIC7ED_HOST = "https://www.addic7ed.com"
+    private const val YIFY_HOST = "https://yifysubtitles.ch"
+    private const val SUBTITLECAT_HOST = "https://www.subtitlecat.com"
+    private const val SUBTITLE_BROWSER_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    private val SUBTITLE_BROWSER_HEADERS = mapOf("User-Agent" to SUBTITLE_BROWSER_USER_AGENT)
+    private val cinemetaImdbCache = ConcurrentHashMap<String, String>()
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
     val encDecApiSemaphore = Semaphore(4)
@@ -812,23 +819,45 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    internal fun animexQualityOf(raw: String?): Int {
+    internal fun animexQualityOf(raw: String?): Int = providerLabelQuality(raw)
+
+    private val QUALITY_DIMENSION_REGEX = Regex("""(?i)(\d{3,4})\s*[x×]\s*(\d{3,4})""")
+    private val QUALITY_KNOWN_HEIGHT_REGEX =
+        Regex("""(?i)(?<![\d])(2160|1440|1080|720|576|540|480|360|240|144)\s*p?(?![\d])""")
+
+    /**
+     * Resolves a provider quality label without inventing a resolution.
+     *
+     * Exact pixel dimensions are read from their **height** (`1280x720` is 720p, never 1280p),
+     * known numeric heights are normalized, and only the unambiguous acronyms `FHD`/`QHD`/`2K`/
+     * `4K`/`UHD` are accepted. Marketing grades such as `HD`, `SD` and `high` stay Unknown so the
+     * host measures the media instead of inheriting an inflated label.
+     */
+    internal fun providerLabelQuality(raw: String?): Int {
         val label = raw?.trim().orEmpty()
-        if (label.isBlank() || label.equals("auto", ignoreCase = true) || label.equals("default", ignoreCase = true)) {
+        if (label.isBlank() || label.equals("auto", true) || label.equals("hls", true) || label.equals("default", true)) {
             return Qualities.Unknown.value
         }
-        Regex("""(\d{3,4})\s*p?""", RegexOption.IGNORE_CASE).find(label)?.groupValues?.get(1)?.toIntOrNull()?.let { q ->
-            return when (q) {
+        QUALITY_DIMENSION_REGEX.find(label)?.groupValues?.getOrNull(2)?.toIntOrNull()?.let { height ->
+            if (height in 144..2160) return height
+        }
+        QUALITY_KNOWN_HEIGHT_REGEX.find(label)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { height ->
+            return when (height) {
                 2160 -> Qualities.P2160.value
                 1440 -> Qualities.P1440.value
                 1080 -> Qualities.P1080.value
                 720 -> Qualities.P720.value
                 480 -> Qualities.P480.value
                 360 -> Qualities.P360.value
-                else -> q
+                else -> height
             }
         }
-        return Qualities.Unknown.value
+        return when {
+            label.equals("4k", true) || label.equals("uhd", true) -> Qualities.P2160.value
+            label.equals("2k", true) || label.equals("qhd", true) -> Qualities.P1440.value
+            label.equals("fhd", true) -> Qualities.P1080.value
+            else -> Qualities.Unknown.value
+        }
     }
 
     private suspend fun animexFetchSource(
@@ -1216,6 +1245,191 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    /**
+     * Independent English subtitle harvest from the OpenSubtitles legacy REST catalogue.
+     *
+     * This is not a mirror of the Stremio v3 addon: each index misses releases the other still
+     * serves, and a missing English sidecar makes an otherwise perfect download unwatchable. The
+     * IMDb path is exact; when no id is available the title search keeps the source usable, which
+     * matters for anime/MAL-only entries. Results are gzip payloads and are inflated host-side.
+     */
+    suspend fun invokeOpenSubtitlesLegacy(
+        id: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        title: String? = null,
+        titles: List<String> = emptyList(),
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        val urls = buildOpenSubtitlesLegacyUrls(id, season, episode, listOfNotNull(title) + titles)
+        if (urls.isEmpty()) return
+        try {
+            for (url in urls) {
+                val body = cancellableGetText(
+                    url,
+                    headers = mapOf("User-Agent" to OPENSUBTITLES_USER_AGENT),
+                    timeoutSec = 8L
+                ) ?: continue
+                val results = tryParseJson<Array<OpenSubtitlesLegacySubtitle>>(body) ?: continue
+                val english = results.asSequence()
+                    .filter { sub ->
+                        sub.languageId.equals("eng", ignoreCase = true) ||
+                            sub.languageName.equals("English", ignoreCase = true)
+                    }
+                    .filter { !it.downloadLink.isNullOrBlank() }
+                    .filterNot { it.hearingImpaired == "1" || it.bad == "1" }
+                    .sortedWith(
+                        compareByDescending<OpenSubtitlesLegacySubtitle> { it.rating?.toDoubleOrNull() ?: 0.0 }
+                            .thenByDescending { it.downloads?.toLongOrNull() ?: 0L }
+                    )
+                    .take(5)
+                    .toList()
+                if (english.isEmpty()) continue
+                english.forEach { sub ->
+                    val subUrl = sub.downloadLink?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return@forEach
+                    subtitleCallback.invoke(newSubtitleFile("English", subUrl))
+                }
+                return
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+        }
+    }
+
+    internal fun buildOpenSubtitlesLegacyUrls(
+        id: String?,
+        season: Int?,
+        episode: Int?,
+        titles: List<String>,
+    ): List<String> {
+        val cleanId = id?.trim()?.lowercase()?.takeIf { it.matches(Regex("""tt\d{5,10}""")) }
+        val queries = titles
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .take(4)
+            .toList()
+        return buildList {
+            if (cleanId != null) {
+                if (season != null && season > 0) {
+                    add("$OPENSUBTITLES_REST/search/imdbid-${cleanId.removePrefix("tt")}/season-$season/episode-${episode ?: 1}/sublanguageid-eng")
+                } else {
+                    add("$OPENSUBTITLES_REST/search/imdbid-${cleanId.removePrefix("tt")}/sublanguageid-eng")
+                }
+            }
+            queries.forEach { query ->
+                val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+                add("$OPENSUBTITLES_REST/search/query-$encoded/sublanguageid-eng")
+            }
+        }
+    }
+
+    /**
+     * Addic7ed harvest, used for TV series.
+     *
+     * Addic7ed has its own release list and is usually the fastest place to find a correctly
+     * timed English subtitle for a weekly TV episode. It is intentionally not used for anime:
+     * the catalogue is TV/film oriented and the top-tier anime providers already ship soft subs.
+     */
+    suspend fun invokeAddic7ed(
+        title: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return
+        val seasonNumber = season?.takeIf { it > 0 } ?: return
+        val episodeNumber = episode?.takeIf { it > 0 } ?: return
+        try {
+            val query = URLEncoder.encode("$cleanTitle $seasonNumber $episodeNumber", "UTF-8")
+                .replace("+", "%20")
+            val response = app.get(
+                "$ADDIC7ED_HOST/search.php?search=$query&Submit=Search",
+                headers = SUBTITLE_BROWSER_HEADERS,
+                timeout = 8L,
+            )
+            val finalUrl = response.url
+            val downloadPage = when {
+                finalUrl.contains("/movie/") || finalUrl.contains("/serie/") -> finalUrl
+                finalUrl.contains("/show/") -> {
+                    val showId = finalUrl.substringAfterLast("/")
+                    val showDocument = app.get(
+                        "$ADDIC7ED_HOST/ajax_loadShow.php?show=$showId&season=$seasonNumber&langs=|1|&hd=0&hi=0",
+                        headers = SUBTITLE_BROWSER_HEADERS,
+                        timeout = 8L,
+                    ).document
+                    showDocument.select("#season tbody tr")
+                        .asSequence()
+                        .filter { row ->
+                            row.select("td:eq(1)").text().toIntOrNull() == episodeNumber
+                        }
+                        .mapNotNull { row ->
+                            row.selectFirst("a[href*=original/], a[href*=updated/]")
+                                ?.attr("href")
+                                ?.let(::addic7edAbsoluteUrl)
+                        }
+                        .distinct()
+                        .take(5)
+                        .forEach { link -> emitAddic7ed(link, subtitleCallback) }
+                    return
+                }
+                else -> response.document.select("table.tabel a")
+                    .asSequence()
+                    .map { it.attr("href") }
+                    .firstOrNull { href ->
+                        val normalized = href.trim()
+                        normalized.contains("/serie/") || normalized.startsWith("serie/")
+                    }
+                    ?.let(::addic7edAbsoluteUrl)
+            } ?: return
+
+            val englishPage = if (downloadPage.contains("/serie/")) {
+                downloadPage.substringBeforeLast("/") + "/1"
+            } else {
+                downloadPage
+            }
+            val document = app.get(
+                englishPage,
+                headers = SUBTITLE_BROWSER_HEADERS,
+                timeout = 8L,
+            ).document
+            document.select(".tabel95 .tabel95 tr:has(.language)")
+                .asSequence()
+                .filter { row -> row.text().contains("English", ignoreCase = true) }
+                .filterNot { row ->
+                    row.parent()?.select("tr:last-child [title=\"Hearing Impaired\"]")?.isNotEmpty() == true
+                }
+                .mapNotNull { row ->
+                    row.selectFirst("a[href*=original/], a[href*=updated/]")
+                        ?.attr("href")
+                        ?.let(::addic7edAbsoluteUrl)
+                }
+                .distinct()
+                .take(5)
+                .forEach { link -> emitAddic7ed(link, subtitleCallback) }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+        }
+    }
+
+    private fun addic7edAbsoluteUrl(href: String): String {
+        val value = href.trim()
+        return when {
+            value.startsWith("http") -> value
+            value.startsWith("/") -> "$ADDIC7ED_HOST$value"
+            else -> "$ADDIC7ED_HOST/$value"
+        }
+    }
+
+    private suspend fun emitAddic7ed(url: String, subtitleCallback: (SubtitleFile) -> Unit) {
+        subtitleCallback.invoke(
+            newSubtitleFile("English", url) {
+                headers = mapOf("Referer" to "$ADDIC7ED_HOST/")
+            }
+        )
+    }
+
     suspend fun invokeWYZIESubs(
         id: String? = null,
         season: Int? = null,
@@ -1245,11 +1459,381 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    /**
+     * YIFY Subtitles harvest, used for movies.
+     *
+     * YIFY publishes a different set of releases than OpenSubtitles and its IMDb-keyed pages are
+     * stable HTML. Every English row already contains the page slug, and the zip download is
+     * `/subtitle/{slug}.zip`; no detail-page round trip is needed. YIFY rejects the zip without a
+     * referer, so the referer is attached to the emitted [SubtitleFile].
+     */
+    suspend fun invokeYifySubs(
+        imdbId: String? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        val cleanId = imdbId?.trim()?.lowercase()?.takeIf { it.matches(Regex("""tt\d{5,10}""")) } ?: return
+        try {
+            val body = cancellableGetText(
+                "$YIFY_HOST/movie-imdb/$cleanId",
+                headers = SUBTITLE_BROWSER_HEADERS,
+                timeoutSec = 8L,
+            ) ?: return
+            parseYifySubtitleRows(body).forEach { candidate ->
+                subtitleCallback.invoke(
+                    newSubtitleFile("English", candidate.url) {
+                        headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+        }
+    }
 
+    internal data class YifySubtitle(val url: String, val referer: String)
 
+    internal fun buildYifyZipUrl(pageUrl: String): String? {
+        val value = pageUrl.trim()
+        if (value.isBlank()) return null
+        val absolute = when {
+            value.startsWith("http") -> value
+            value.startsWith("/") -> "$YIFY_HOST$value"
+            else -> "$YIFY_HOST/$value"
+        }
+        if (!absolute.contains("/subtitles/")) return null
+        return absolute.replaceFirst("/subtitles/", "/subtitle/") + ".zip"
+    }
+
+    internal fun parseYifySubtitleRows(body: String): List<YifySubtitle> {
+        val document = Jsoup.parse(body)
+        return document.select("tr:has(.sub-lang)")
+            .asSequence()
+            .filter { row ->
+                row.selectFirst(".sub-lang")?.text()?.trim().equals("English", ignoreCase = true)
+            }
+            .filterNot { row -> row.selectFirst(".hi-subtitle") != null }
+            .mapNotNull { row ->
+                val href = row.selectFirst("a[href^=/subtitles/]")
+                    ?.attr("href")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val referer = when {
+                    href.startsWith("http") -> href
+                    href.startsWith("/") -> "$YIFY_HOST$href"
+                    else -> "$YIFY_HOST/$href"
+                }
+                val url = buildYifyZipUrl(referer) ?: return@mapNotNull null
+                YifySubtitle(url = url, referer = referer)
+            }
+            .distinctBy { it.url }
+            .take(3)
+            .toList()
+    }
+
+    /**
+     * SubtitleCat harvest.
+     *
+     * SubtitleCat is the fallback that still answers when every id-keyed catalogue misses a release:
+     * it is searched by release text, so an episode-numbering mismatch (a provider exposing season
+     * 2 episode 5 while the file is named `S02E05`, or an anime numbered as a bare `- 05`) is not a
+     * dead end. Its English files are stable `.srt` links, unlike the short-lived signed URLs some
+     * mirrors hand out.
+     *
+     * The search page only links to detail pages, and each detail page publishes a separate id per
+     * language, so the English link cannot be guessed - the top candidates are resolved before an
+     * English-only [SubtitleFile] is emitted. Anything that is not an exact title+episode match is
+     * discarded, because a plausible subtitle for a different show is worse than none.
+     */
+    suspend fun invokeSubtitleCat(
+        titles: List<String>,
+        season: Int? = null,
+        episode: Int? = null,
+        year: Int? = null,
+        isMovie: Boolean = false,
+        isAnime: Boolean = false,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        val queries = buildSubtitleCatQueries(titles, season, episode, isMovie, isAnime)
+        if (queries.isEmpty()) return
+        try {
+            for (query in queries) {
+                val searchUrl = "$SUBTITLECAT_HOST/index.php?search=" +
+                    URLEncoder.encode(query, "UTF-8")
+                val body = cancellableGetText(
+                    searchUrl,
+                    headers = SUBTITLE_BROWSER_HEADERS,
+                    timeoutSec = 6L
+                ) ?: continue
+                val candidates = selectSubtitleCatCandidates(
+                    parseSubtitleCatSearch(body),
+                    query = query,
+                    season = season,
+                    episode = episode,
+                    year = year
+                )
+                if (candidates.isEmpty()) continue
+
+                val english = candidates.mapNotNull { candidate ->
+                    val detail = cancellableGetText(
+                        candidate.pageUrl,
+                        headers = SUBTITLE_BROWSER_HEADERS,
+                        timeoutSec = 6L
+                    ) ?: return@mapNotNull null
+                    parseSubtitleCatDetail(detail)
+                }.distinct()
+                if (english.isEmpty()) continue
+
+                english.forEach { url ->
+                    subtitleCallback.invoke(newSubtitleFile("English", url))
+                }
+                return
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+        }
+    }
+
+    internal data class SubtitleCatCandidate(val pageUrl: String, val text: String)
+
+    /**
+     * Builds the episode-aware queries for SubtitleCat.
+     *
+     * TV releases are searched as `SXXEXX`, while anime is commonly numbered as a bare `- XX`. The
+     * season form goes first because it is unambiguous; the bare form is only used where a season is
+     * missing or the media is anime. At most two title variants are searched so the fallback stays
+     * inside the caller's time budget.
+     */
+    internal fun buildSubtitleCatQueries(
+        titles: List<String>,
+        season: Int?,
+        episode: Int?,
+        isMovie: Boolean,
+        isAnime: Boolean,
+    ): List<String> {
+        val cleanTitles = titles.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .take(2)
+            .toList()
+        val safeSeason = season?.takeIf { it > 0 }
+        val safeEpisode = episode?.takeIf { it > 0 }
+        val queries = mutableListOf<String>()
+        for (title in cleanTitles) {
+            if (isMovie || safeEpisode == null) {
+                queries.add(title)
+                continue
+            }
+            if (safeSeason != null) {
+                queries.add("$title S%02dE%02d".format(safeSeason, safeEpisode))
+            }
+            if (isAnime || safeSeason == null) {
+                queries.add("$title %02d".format(safeEpisode))
+            }
+        }
+        return queries.distinctBy { it.lowercase() }.take(2)
+    }
+
+    internal fun parseSubtitleCatSearch(body: String): List<SubtitleCatCandidate> {
+        val document = Jsoup.parse(body)
+        return document.select("a[href]")
+            .asSequence()
+            .mapNotNull { anchor ->
+                val href = anchor.attr("href").trim().takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                if (!href.substringBefore('?').endsWith(".html", ignoreCase = true)) return@mapNotNull null
+                val pageUrl = when {
+                    href.startsWith("http://", ignoreCase = true) ||
+                        href.startsWith("https://", ignoreCase = true) -> href
+                    href.contains("/subs/") -> "$SUBTITLECAT_HOST/${href.removePrefix("/")}"
+                    href.startsWith("subs/") -> "$SUBTITLECAT_HOST/$href"
+                    else -> return@mapNotNull null
+                }
+                val text = anchor.text().trim().ifBlank { anchor.attr("title").trim() }
+                if (text.isBlank()) return@mapNotNull null
+                SubtitleCatCandidate(pageUrl = pageUrl, text = text)
+            }
+            .distinctBy { it.pageUrl }
+            .toList()
+    }
+
+    /**
+     * Keeps only search hits whose release text matches the requested title and episode.
+     *
+     * SubtitleCat ranks by bag-of-words relevance, so a query for `Severance S02E05` returns every
+     * unrelated show that also has an `S02E05` release. Both a title match and an episode match are
+     * required; hearing-impaired releases are dropped because the fallback contract is
+     * English-only, non-SDH.
+     */
+    internal fun selectSubtitleCatCandidates(
+        candidates: List<SubtitleCatCandidate>,
+        query: String,
+        season: Int?,
+        episode: Int?,
+        year: Int? = null,
+    ): List<SubtitleCatCandidate> {
+        val stripped = query
+            .replace(Regex("""(?i)\s+s\d{1,2}\s*e\d{1,4}\s*$"""), "")
+            .replace(Regex("""\s+\d{1,4}\s*$"""), "")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        val wanted = normalizeSubtitleReleaseText(stripped)
+        if (wanted.isBlank()) return emptyList()
+        val wantedTokens = wanted.split(' ').filter { it.length >= 3 }
+        // Movie titles are also ordinary phrases ("the matrix"), and without an episode number there
+        // is nothing else to disambiguate them. The release year is therefore required when the
+        // caller knows one; episode media keeps the softer rule because TV releases often omit the
+        // show's year entirely.
+        val requireYear = year != null && season == null && episode == null
+
+        return candidates.asSequence()
+            .mapNotNull { candidate ->
+                val haystackText = "${candidate.text} ${candidate.pageUrl.substringAfterLast('/')}"
+                val haystack = normalizeSubtitleReleaseText(haystackText)
+                val haystackTokens = haystack.split(' ')
+                val titleMatches = when {
+                    haystack.contains(wanted) -> true
+                    wanted.contains(' ') ->
+                        wantedTokens.isNotEmpty() && wantedTokens.all { token -> haystackTokens.contains(token) }
+                    else -> haystackTokens.contains(wanted)
+                }
+                if (!titleMatches) return@mapNotNull null
+                if (!subtitleCatEpisodeMatches(haystack, season, episode)) return@mapNotNull null
+                if (Regex("""(?i)(?:^|[^a-z0-9])(?:hi|sdh|cc)(?:$|[^a-z0-9])""").containsMatchIn(haystackText)) {
+                    return@mapNotNull null
+                }
+                val candidateYear = subtitleCatYearOf(haystack)
+                if (requireYear && candidateYear == null) return@mapNotNull null
+                if (year != null && candidateYear != null && kotlin.math.abs(year - candidateYear) > 1) {
+                    return@mapNotNull null
+                }
+                candidate
+            }
+            .distinctBy { it.pageUrl }
+            .take(2)
+            .toList()
+    }
+
+    internal fun subtitleCatEpisodeMatches(text: String, season: Int?, episode: Int?): Boolean {
+        if (episode == null || episode <= 0) return true
+        if (season != null && season > 0) {
+            // Zero-padded seasons ("S02E05") are the common release form, so leading zeros
+            // are consumed before the number.
+            val seasonRegex = Regex(
+                """(?i)(?:^|[^a-z0-9])(?:s|season[\s._-]*)0*${season}[\s._-]*(?:e|ep|episode[\s._-]*)0*${episode}(?!\d)"""
+            )
+            val crossRegex = Regex("""(?i)(?:^|[^0-9])0*${season}x0*${episode}(?!\d)""")
+            if (seasonRegex.containsMatchIn(text) || crossRegex.containsMatchIn(text)) return true
+        }
+        return Regex("""(?i)(?:^|[^0-9a-z])(?:e|ep|episode[\s._-]*)?0*${episode}(?![0-9])""")
+            .containsMatchIn(text)
+    }
+
+    internal fun parseSubtitleCatDetail(body: String): String? {
+        val document = Jsoup.parse(body)
+        val href = document.select("a[href]")
+            .asSequence()
+            .map { it.attr("href").trim() }
+            .firstOrNull { value ->
+                val path = value.substringBefore('?').lowercase()
+                path.endsWith("-en.srt") || path.endsWith("-eng.srt")
+            }
+            ?: return null
+        val absolute = when {
+            href.startsWith("http://", ignoreCase = true) || href.startsWith("https://", ignoreCase = true) -> href
+            else -> "$SUBTITLECAT_HOST/${href.removePrefix("/")}"
+        }
+        // Some English links contain literal spaces; emit a valid URL instead of relying on the
+        // consumer to repair it.
+        return absolute.replace(" ", "%20")
+    }
+
+    internal fun normalizeSubtitleReleaseText(value: String): String =
+        value.lowercase().replace(Regex("""[^a-z0-9]+"""), " ").trim()
+
+    /**
+     * Finds a release year without mistaking a video dimension for one.
+     *
+     * Release names are full of four digit video numbers (`1920`, `1080`, `265`) and matching one as
+     * a year would reject a correct release. Resolution values are skipped so the first real year
+     * wins.
+     */
+    internal fun subtitleCatYearOf(text: String): Int? {
+        val videoNumbers = setOf(360, 384, 480, 540, 576, 720, 1080, 1440, 1920, 2160, 2560, 3840)
+        return Regex("""(?<!\d)(19|20)\d{2}(?!\d)""")
+            .findAll(text)
+            .map { it.value.toInt() }
+            .firstOrNull { it !in videoNumbers }
+    }
 
     private val imdbToTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private val titleToTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * Resolves an IMDb id through Cinemeta for media whose provider payload has none.
+     *
+     * Anime entries are the main beneficiary: AniList gives an AniList/MAL id but not always an
+     * IMDb id, so the Stremio and YIFY catalogues were previously skipped entirely. The resolver
+     * requires a real normalized title match (plus year/type preference), never the first search
+     * hit, because subtitles for the wrong film are worse than no subtitles.
+     */
+    suspend fun resolveImdbIdByTitle(
+        title: String?,
+        year: Int? = null,
+        isMovie: Boolean = false,
+    ): String? {
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val cacheKey = "${cleanTitle.lowercase()}|${year ?: 0}|$isMovie"
+        cinemetaImdbCache[cacheKey]?.let { return it }
+        val expectedType = if (isMovie) "movie" else "series"
+        return try {
+            val encoded = URLEncoder.encode(cleanTitle, "UTF-8")
+            val body = cancellableGetText(
+                "https://v3-cinemeta.strem.io/catalog/$expectedType/top/search=$encoded.json",
+                headers = SUBTITLE_BROWSER_HEADERS,
+                timeoutSec = 6L,
+            ) ?: return null
+            val metas = runCatching { JSONObject(body).optJSONArray("metas") }.getOrNull()
+                ?: return null
+            val wanted = normalizeTitleForMatch(cleanTitle)
+            if (wanted.isBlank()) return null
+            var bestId: String? = null
+            var bestScore = Int.MAX_VALUE
+            for (index in 0 until metas.length()) {
+                val meta = metas.optJSONObject(index) ?: continue
+                val name = normalizeTitleForMatch(meta.optString("name"))
+                if (name.isBlank()) continue
+                val exact = name == wanted
+                val contains = wanted.length >= 3 && (name.contains(wanted) || wanted.contains(name))
+                if (!exact && !contains) continue
+                val id = meta.optString("imdb_id").takeIf { it.startsWith("tt") }
+                    ?: meta.optString("id").takeIf { it.startsWith("tt") }
+                    ?: continue
+                val metaYear = meta.optString("year").toIntOrNull()
+                    ?: Regex("""\d{4}""").find(meta.optString("releaseInfo"))?.value?.toIntOrNull()
+                val yearPenalty = when {
+                    year == null || metaYear == null -> 0
+                    year == metaYear -> 0
+                    kotlin.math.abs(year - metaYear) == 1 -> 1
+                    else -> 100
+                }
+                val typePenalty = if (meta.optString("type").isBlank() || meta.optString("type") == expectedType) 0 else 10
+                val score = (if (exact) 0 else 1) + yearPenalty + typePenalty
+                if (score < bestScore) {
+                    bestScore = score
+                    bestId = id
+                }
+            }
+            bestId?.also { cinemetaImdbCache[cacheKey] = it }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            null
+        }
+    }
+
+    private fun normalizeTitleForMatch(value: String): String =
+        value.lowercase(Locale.ROOT).replace(Regex("""[^a-z0-9]+"""), " ").trim()
 
     suspend fun resolveTmdbIdByTitle(title: String?, year: Int? = null, isMovie: Boolean = false): Int? {
         val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return null
@@ -1942,7 +2526,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 720 -> Qualities.P720.value
                                 480 -> Qualities.P480.value
                                 360 -> Qualities.P360.value
-                                else -> StreamLinkOptimizer.extractQualityFromText(it).takeIf { q -> q > Qualities.Unknown.value } ?: getQualityFromName(it)
+                                else -> StreamLinkOptimizer.extractQualityFromText(it).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
                             }
                         } ?: Qualities.Unknown.value
                         val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
@@ -2287,7 +2871,8 @@ object StreamPlayExtractor : StreamPlay() {
     internal data class CineSrcStreamEntry(
         val url: String,
         val quality: Int,
-        val estimatedSizeMb: Int?
+        /** Real payload size reported by the source, in whole MiB; null when the source is silent. */
+        val sizeMb: Int?
     )
 
     internal data class CineSrcDecryptedPayload(
@@ -2295,11 +2880,59 @@ object StreamPlayExtractor : StreamPlay() {
         val subtitles: List<Pair<String, String>>
     )
 
+    // Size fields the CineSrc / CineJoy payload may report per stream entry. Only these exact
+    // payload fields are trusted; a resolution label alone never yields a size.
+    private val CINESRC_SIZE_BYTE_KEYS = arrayOf(
+        "sizeBytes", "size_bytes", "fileSizeBytes", "file_size_bytes", "filesizeBytes", "bytes"
+    )
+    private val CINESRC_SIZE_LABEL_KEYS = arrayOf(
+        "size", "filesize", "fileSize", "file_size", "sizeText", "size_text"
+    )
+
+    /**
+     * Extracts the real payload size (MiB) from a CineSrc stream entry.
+     *
+     * Sources either report an exact byte count (`sizeBytes`, `bytes`, ...) or a human label
+     * (`"612 MB"`). When neither exists the result is null - the previous hardcoded per-quality
+     * table (410/760/240 MB) fabricated sizes and made the download ranker compare fiction.
+     */
+    internal fun cinesrcPayloadSizeMb(entry: JSONObject): Int? {
+        for (key in CINESRC_SIZE_BYTE_KEYS) {
+            val raw = entry.opt(key) ?: continue
+            val bytes = when (raw) {
+                is Number -> raw.toLong()
+                is String -> raw.trim().toLongOrNull()
+                    ?: StreamLinkOptimizer.parseSizeBytes(raw)
+                else -> null
+            } ?: continue
+            if (bytes > 0L) return bytesToMiB(bytes)
+        }
+        for (key in CINESRC_SIZE_LABEL_KEYS) {
+            val raw = entry.opt(key) ?: continue
+            val bytes = when (raw) {
+                is Number -> {
+                    val value = raw.toDouble()
+                    // A bare number below 100k is a MiB figure; anything larger is an exact byte count.
+                    if (value >= 100_000.0) value.toLong() else (value * 1024.0 * 1024.0).toLong()
+                }
+                is String -> StreamLinkOptimizer.parseSizeBytes(raw)
+                    ?: raw.trim().toLongOrNull()?.let { value ->
+                        if (value >= 100_000L) value else value * 1024L * 1024L
+                    }
+                else -> null
+            } ?: continue
+            if (bytes > 0L) return bytesToMiB(bytes)
+        }
+        return null
+    }
+
+    private fun bytesToMiB(bytes: Long): Int =
+        ((bytes + 524_288L) / (1024L * 1024L)).toInt().coerceAtLeast(1)
+
     /**
      * Parses a decrypted `dec-cinesrc` response envelope into verified stream entries and captions.
-     * Discrete resolution VOD playlists (`720p`, `1080p`, `480p`, `2160p`) receive deterministic
-     * bitrate-equivalent size estimates so `DownloadSelectionPolicy` can compare sizes when
-     * selecting the lowest-file-size 720p (#1) or 1080p (#2) candidate.
+     * Per-entry sizes are taken only from real payload metadata, so the download ranker never
+     * compares invented per-resolution estimates.
      */
     internal fun cinesrcParseDecryptedResult(rawJson: String): CineSrcDecryptedPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
@@ -2320,15 +2953,13 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     val srcLabel = obj.optString("source").ifBlank { obj.optString("quality") }
                     val qual = cinebyQualityOf(srcLabel)
-                    val estMb = when (qual) {
-                        Qualities.P720.value -> 410
-                        Qualities.P1080.value -> 760
-                        Qualities.P480.value -> 240
-                        Qualities.P360.value -> 150
-                        Qualities.P2160.value -> 1650
-                        else -> null
-                    }
-                    entries.add(CineSrcStreamEntry(url = resolvedUrl, quality = qual, estimatedSizeMb = estMb))
+                    entries.add(
+                        CineSrcStreamEntry(
+                            url = resolvedUrl,
+                            quality = qual,
+                            sizeMb = cinesrcPayloadSizeMb(obj)
+                        )
+                    )
                 }
             }
             is String -> {
@@ -2336,7 +2967,7 @@ object StreamPlayExtractor : StreamPlay() {
                 if (rawU.isNotBlank()) {
                     val resolvedUrl = if (rawU.startsWith("/")) "$CINESRC_HOST$rawU" else rawU
                     if (resolvedUrl.startsWith("http", true)) {
-                        entries.add(CineSrcStreamEntry(url = resolvedUrl, quality = Qualities.Unknown.value, estimatedSizeMb = null))
+                        entries.add(CineSrcStreamEntry(url = resolvedUrl, quality = Qualities.Unknown.value, sizeMb = null))
                     }
                 }
             }
@@ -2677,7 +3308,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 if (discreteEntries.isNotEmpty()) {
                                     val generated = discreteEntries.map { entry ->
                                         val qTag = vidsrcQualityTag(entry.quality)
-                                        val sizeTag = entry.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                                        val sizeTag = entry.sizeMb?.let { " [$it MB]" }.orEmpty()
                                         newExtractorLink(
                                             "CineSrc",
                                             "$baseName [$qTag]$sizeTag",
@@ -2879,31 +3510,7 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    internal fun cinebyQualityOf(raw: String?): Int {
-        val label = raw?.trim().orEmpty()
-        if (label.isBlank() || label.equals("auto", true) || label.equals("hls", true) || label.equals("default", true)) {
-            return Qualities.Unknown.value
-        }
-        Regex("""(\d{3,4})\s*p?""", RegexOption.IGNORE_CASE).find(label)?.groupValues?.get(1)?.toIntOrNull()?.let { q ->
-            return when (q) {
-                2160 -> Qualities.P2160.value
-                1440 -> Qualities.P1440.value
-                1080 -> Qualities.P1080.value
-                720 -> Qualities.P720.value
-                480 -> Qualities.P480.value
-                360 -> Qualities.P360.value
-                else -> q
-            }
-        }
-        return when {
-            label.equals("4k", true) || label.equals("uhd", true) -> Qualities.P2160.value
-            label.equals("2k", true) || label.equals("qhd", true) -> Qualities.P1440.value
-            label.equals("fhd", true) || label.equals("high", true) -> Qualities.P1080.value
-            label.equals("hd", true) -> Qualities.P720.value
-            label.equals("sd", true) -> Qualities.P480.value
-            else -> Qualities.Unknown.value
-        }
-    }
+    internal fun cinebyQualityOf(raw: String?): Int = providerLabelQuality(raw)
 
     /**
      * SOTA Universal Extractor for Cineby (`api.wecollege.net`, Rank 95).

@@ -168,7 +168,7 @@ class StreamPlayAnime : MainAPI() {
 
         val response = SingleFlight.executeShared("anilist:load:$id") {
             val data = anilistAPICall(
-                "query (\$id: Int = $id) { Media(id: \$id, type: ANIME) { id idMal title { romaji english } startDate { year } genres description averageScore status bannerImage coverImage { extraLarge large medium } episodes format nextAiringEpisode { episode } airingSchedule { nodes { episode } } recommendations { edges { node { id mediaRecommendation { id title { romaji english } coverImage { extraLarge large medium } } } } } } }"
+                "query (\$id: Int = $id) { Media(id: \$id, type: ANIME) { id idMal title { romaji english native } synonyms startDate { year } genres description averageScore status bannerImage coverImage { extraLarge large medium } episodes format nextAiringEpisode { episode } airingSchedule { nodes { episode } } recommendations { edges { node { id mediaRecommendation { id title { romaji english } coverImage { extraLarge large medium } } } } } } }"
             ).data?.media ?: throw Exception("Unable to fetch media details")
 
             val anititle = data.getTitle()
@@ -187,6 +187,19 @@ class StreamPlayAnime : MainAPI() {
             }
 
             val jpTitle = data.title?.romaji
+            // Subtitle catalogues index anime under different names. Keep every name AniList
+            // knows (English, Romaji, native, synonyms) so the subtitle harvester can try the
+            // English release title first and still fall back to a localized query.
+            val subtitleTitles = listOfNotNull(
+                anititle,
+                data.title?.english,
+                jpTitle,
+                data.title?.native,
+            ) + data.synonyms.orEmpty()
+            val cleanSubtitleTitles = subtitleTitles
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase() }
 
             val aniZipKey = "anizip_${ids.id ?: id}"
             val syncMetaData = StreamPlayCache.getCachedAniZip(aniZipKey) ?: run {
@@ -273,6 +286,7 @@ class StreamPlayAnime : MainAPI() {
                 imdbId = imdbid,
                 title = anititle,
                 jpTitle = jpTitle,
+                alternativeTitles = cleanSubtitleTitles,
                 year = aniyear,
                 isAnime = true,
                 anidbEid = anidbEid,
@@ -294,6 +308,7 @@ class StreamPlayAnime : MainAPI() {
                     imdbId = imdbid,
                     title = anititle,
                     jpTitle = jpTitle,
+                    alternativeTitles = cleanSubtitleTitles,
                     year = aniyear,
                     season = 1,
                     episode = i,
@@ -328,6 +343,7 @@ class StreamPlayAnime : MainAPI() {
                     imdbId = imdbid,
                     title = anititle,
                     jpTitle = jpTitle,
+                    alternativeTitles = cleanSubtitleTitles,
                     year = aniyear,
                     season = 1,
                     episode = i,
@@ -615,6 +631,15 @@ class StreamPlayAnime : MainAPI() {
             }
         )
 
+        // Anime is indexed by its English, Romaji and native names depending on the catalogue, and
+        // a Japanese-only query often returns nothing even when an English sidecar exists. The
+        // fallback sources below search every known variant instead of one.
+        val animeSubtitleCatTitles = (listOfNotNull(anititle, jpTitle, mediaData.orgTitle) +
+            mediaData.alternativeTitles.orEmpty())
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+
         val subtitleOnlySources = listOfNotNull(
             if (canUseTmdbProviders && !subLookupId.isNullOrBlank()) {
                 AnimeSource("wyziesub", 99f) { onSubtitle, _ ->
@@ -624,6 +649,48 @@ class StreamPlayAnime : MainAPI() {
             if (canUseTmdbProviders && !animeImdbId.isNullOrBlank()) {
                 AnimeSource("subtitles", 98f) { onSubtitle, _ ->
                     StreamPlayExtractor.invokeSubtitleAPI(animeImdbId, tmdbSeason, tmdbEpisode, onSubtitle)
+                }
+            } else null,
+            if (canUseTmdbProviders && (!animeImdbId.isNullOrBlank() || !(anititle ?: jpTitle).isNullOrBlank())) {
+                AnimeSource("opensubtitles", 97f) { onSubtitle, _ ->
+                    StreamPlayExtractor.invokeOpenSubtitlesLegacy(
+                        id = animeImdbId,
+                        season = tmdbSeason,
+                        episode = tmdbEpisode,
+                        title = anititle ?: jpTitle,
+                        subtitleCallback = onSubtitle
+                    )
+                }
+            } else null,
+            // Addic7ed's own release list covers the TV-style anime that OpenSubtitles files under
+            // ambiguous names. It needs a verified TMDB season/episode, so it is skipped when the
+            // anime could not be mapped instead of guessing a cour number.
+            if (canUseTmdbProviders && !anititle.isNullOrBlank() &&
+                (tmdbSeason ?: 0) > 0 && (tmdbEpisode ?: 0) > 0
+            ) {
+                AnimeSource("addic7ed", 96f) { onSubtitle, _ ->
+                    StreamPlayExtractor.invokeAddic7ed(
+                        title = anititle,
+                        season = tmdbSeason,
+                        episode = tmdbEpisode,
+                        subtitleCallback = onSubtitle
+                    )
+                }
+            } else null,
+            // SubtitleCat needs no id at all, so it stays available for MAL/AniList-only entries.
+            // The verified season form is preferred, and the bare absolute form covers the anime
+            // releases that are numbered without a season.
+            if (animeSubtitleCatTitles.isNotEmpty()) {
+                AnimeSource("subtitlecat", 95f) { onSubtitle, _ ->
+                    StreamPlayExtractor.invokeSubtitleCat(
+                        titles = animeSubtitleCatTitles,
+                        season = tmdbSeason?.takeIf { it > 0 },
+                        episode = tmdbEpisode ?: episode,
+                        year = year,
+                        isMovie = isMovie,
+                        isAnime = true,
+                        subtitleCallback = onSubtitle
+                    )
                 }
             } else null
         )
@@ -808,6 +875,7 @@ class StreamPlayAnime : MainAPI() {
             @param:JsonProperty("airingSchedule") val airingSchedule: AiringScheduleNodes? = null,
             @param:JsonProperty("recommendations") val recommendations: AniRecommendationConnection? = null,
             @param:JsonProperty("format") val format: String? = null,
+            @param:JsonProperty("synonyms") val synonyms: List<String>? = emptyList(),
         ) {
             @JsonIgnoreProperties(ignoreUnknown = true)
             data class StartDate(@param:JsonProperty("year") val year: Int? = null)
@@ -866,6 +934,14 @@ class StreamPlayAnime : MainAPI() {
         @param:JsonProperty("isCartoon") val isCartoon: Boolean = false,
         @param:JsonProperty("isDub") val isDub: Boolean = false,
         @param:JsonProperty("anidbEid") val anidbEid: Int? = null,
+        /**
+         * Every other name AniList knows for the show (English, Romaji, native, synonyms).
+         *
+         * Subtitle catalogues index anime by release title, and the released name is frequently
+         * neither the provider title nor the Romaji one. The host reads this key when it builds a
+         * fallback subtitle request, so the query is not limited to a single localized name.
+         */
+        @param:JsonProperty("alternativeTitles") val alternativeTitles: List<String>? = emptyList(),
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)

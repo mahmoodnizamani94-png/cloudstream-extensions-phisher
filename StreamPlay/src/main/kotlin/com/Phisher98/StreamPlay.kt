@@ -303,6 +303,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val dahmerMoviesAPI = "https://a.111477.xyz"
         const val animepaheAPI = "https://animepahe.pw"
         const val SubtitlesAPI = "https://opensubtitles-v3.strem.io"
+        const val OPENSUBTITLES_REST = "https://rest.opensubtitles.org"
+        const val OPENSUBTITLES_USER_AGENT = "TemporaryUserAgent"
         const val WyZIESUBAPI = "https://sub.wyzie.ru"
         const val WYZIESubsAPI = "https://sub.wyzie.ru"
         const val KickassAPI = "https://kaa.lt"
@@ -1168,6 +1170,113 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     ) {
                         StreamPlayExtractor.invokeSubtitleAPI(res.imdbId, res.season, res.episode) { sub ->
                             emitSubtitle(sub, "subtitles")
+                        }
+                    }
+                )
+            }
+            // OpenSubtitles can be reached by IMDb id, but when the metadata only has a localized
+            // title the query still works. Send every known name (primary, original, Japanese and
+            // alternative) so anime and non-English releases do not fail on one query.
+            val openSubtitlesTitles = listOfNotNull(
+                res.title,
+                res.nametitle,
+                res.orgTitle,
+                res.alttitle,
+                res.jpTitle
+            )
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase() }
+            if (!res.imdbId.isNullOrBlank() || openSubtitlesTitles.isNotEmpty()) {
+                add(
+                    PipelinedTask(
+                        providerId = "opensubtitles",
+                        isVideo = false,
+                        taskTimeoutMs = 10_000L,
+                        priorityBoost = 97f
+                    ) {
+                        StreamPlayExtractor.invokeOpenSubtitlesLegacy(
+                            id = res.imdbId,
+                            season = res.season,
+                            episode = res.episode,
+                            title = openSubtitlesTitles.firstOrNull(),
+                            titles = openSubtitlesTitles.drop(1)
+                        ) { sub ->
+                            emitSubtitle(sub, "opensubtitles")
+                        }
+                    }
+                )
+            }
+            // SubtitleCat is the release-text fallback: it is the only catalogue here that can be
+            // asked by title plus episode without any id, so it still answers when an id-keyed
+            // lookup misses a release or the show is numbered differently. It runs for
+            // every media type, and every returned candidate has to match title+episode before its
+            // stable English .srt link is emitted.
+            val subtitleCatTitles = listOfNotNull(
+                res.title,
+                res.nametitle,
+                res.orgTitle,
+                res.alttitle,
+                res.jpTitle
+            )
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase() }
+            if (subtitleCatTitles.isNotEmpty()) {
+                add(
+                    PipelinedTask(
+                        providerId = "subtitlecat",
+                        isVideo = false,
+                        taskTimeoutMs = 10_000L,
+                        priorityBoost = 96f
+                    ) {
+                        StreamPlayExtractor.invokeSubtitleCat(
+                            titles = subtitleCatTitles,
+                            season = res.season,
+                            episode = res.episode,
+                            year = res.year,
+                            isMovie = res.isMovie == true,
+                            isAnime = res.isAnime
+                        ) { sub ->
+                            emitSubtitle(sub, "subtitlecat")
+                        }
+                    }
+                )
+            }
+            // Addic7ed is a TV-first catalogue with its own release list. It runs in the extension
+            // as well as the host fallback so direct playback gets a correctly timed English sidecar
+            // without waiting for the download-healing pass.
+            val addic7edTitle = res.title ?: res.nametitle ?: res.orgTitle
+            if (!addic7edTitle.isNullOrBlank() && (res.season ?: 0) > 0 && (res.episode ?: 0) > 0) {
+                add(
+                    PipelinedTask(
+                        providerId = "addic7ed",
+                        isVideo = false,
+                        taskTimeoutMs = 10_000L,
+                        priorityBoost = 96f
+                    ) {
+                        StreamPlayExtractor.invokeAddic7ed(
+                            title = addic7edTitle,
+                            season = res.season,
+                            episode = res.episode
+                        ) { sub ->
+                            emitSubtitle(sub, "addic7ed")
+                        }
+                    }
+                )
+            }
+            // YIFY is movie-only; it is a genuinely separate catalogue from OpenSubtitles and its
+            // IMDb-keyed pages cover mainstream films that the other indexes sometimes miss.
+            if (res.isMovie == true && !res.imdbId.isNullOrBlank()) {
+                add(
+                    PipelinedTask(
+                        providerId = "yifysub",
+                        isVideo = false,
+                        taskTimeoutMs = 10_000L,
+                        priorityBoost = 96f
+                    ) {
+                        StreamPlayExtractor.invokeYifySubs(res.imdbId) { sub ->
+                            emitSubtitle(sub, "yify")
                         }
                     }
                 )

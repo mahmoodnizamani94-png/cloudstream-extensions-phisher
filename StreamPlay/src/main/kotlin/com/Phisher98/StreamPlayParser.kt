@@ -93,6 +93,35 @@ data class WYZIESubtitle(
     val language: String? = null,
 )
 
+/**
+ * OpenSubtitles legacy REST result (`https://rest.opensubtitles.org/search/...`).
+ *
+ * `SubDownloadLink` always points at a gzip payload, even though the visible file name is `.srt`;
+ * the host inflates it before format detection.
+ */
+data class OpenSubtitlesLegacySubtitle(
+    @JsonProperty("SubDownloadLink")
+    val downloadLink: String? = null,
+    @JsonProperty("SubFileName")
+    val fileName: String? = null,
+    @JsonProperty("MovieReleaseName")
+    val releaseName: String? = null,
+    @JsonProperty("SubLanguageID")
+    val languageId: String? = null,
+    @JsonProperty("LanguageName")
+    val languageName: String? = null,
+    @JsonProperty("SubHearingImpaired")
+    val hearingImpaired: String? = null,
+    @JsonProperty("SubBad")
+    val bad: String? = null,
+    @JsonProperty("SubRating")
+    val rating: String? = null,
+    @JsonProperty("SubDownloadsCnt")
+    val downloads: String? = null,
+    @JsonProperty("SubEncoding")
+    val encoding: String? = null,
+)
+
 //anime animepahe parser
 
 data class animepahe(

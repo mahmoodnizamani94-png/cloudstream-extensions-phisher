@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.phisher98.StreamPlayExtractor.animexParseSourceJson
+import com.phisher98.StreamPlayExtractor.animexQualityOf
 import com.phisher98.StreamPlayExtractor.cinebyDecryptMvm1
 import com.phisher98.StreamPlayExtractor.cinebyMix32
 import com.phisher98.StreamPlayExtractor.cinebyParseDecryptedResult
@@ -125,11 +126,29 @@ class StreamPlayV24SourceProtocolTest {
         assertEquals(Qualities.P1080.value, cinebyQualityOf("1080p"))
         assertEquals(Qualities.P1080.value, cinebyQualityOf("FHD"))
         assertEquals(Qualities.P720.value, cinebyQualityOf("720p"))
-        assertEquals(Qualities.P720.value, cinebyQualityOf("HD"))
         assertEquals(Qualities.P480.value, cinebyQualityOf("480p"))
         assertEquals(Qualities.P360.value, cinebyQualityOf("360p"))
+        // Exact dimensions are read from the height, not the width.
+        assertEquals(Qualities.P720.value, cinebyQualityOf("1280x720"))
+        assertEquals(Qualities.P1080.value, cinebyQualityOf("1920x1080"))
+        assertEquals(Qualities.P2160.value, cinebyQualityOf("3840x2160"))
+        // Marketing grades cannot prove a height; the host measures the stream instead.
+        assertEquals(Qualities.Unknown.value, cinebyQualityOf("HD"))
+        assertEquals(Qualities.Unknown.value, cinebyQualityOf("SD"))
+        assertEquals(Qualities.Unknown.value, cinebyQualityOf("high"))
         assertEquals(Qualities.Unknown.value, cinebyQualityOf("auto"))
         assertEquals(Qualities.Unknown.value, cinebyQualityOf(null))
+    }
+
+    @Test
+    fun testAnimexQualityLabelUsesTheSameHonestContract() {
+        assertEquals(Qualities.P1080.value, animexQualityOf("1080p"))
+        assertEquals(Qualities.P720.value, animexQualityOf("720p"))
+        assertEquals(Qualities.P1080.value, animexQualityOf("FHD"))
+        assertEquals(Qualities.P2160.value, animexQualityOf("4K"))
+        assertEquals(Qualities.P720.value, animexQualityOf("1280x720"))
+        assertEquals(Qualities.Unknown.value, animexQualityOf("HD"))
+        assertEquals(Qualities.Unknown.value, animexQualityOf("default"))
     }
 
     @Test

@@ -248,6 +248,29 @@ class StreamLinkOptimizerTest {
         assertEquals(Qualities.P1080.value, opt.quality)
     }
 
+    @Test
+    fun testBareHdAndSdLabelsAreNotTreatedAsResolutions() {
+        assertEquals(Qualities.Unknown.value, StreamLinkOptimizer.extractQualityFromText("Server HD"))
+        assertEquals(Qualities.Unknown.value, StreamLinkOptimizer.extractQualityFromText("Server SD"))
+        assertEquals(Qualities.Unknown.value, StreamLinkOptimizer.extractQualityFromText("Server High"))
+        // Explicit spellings remain authoritative.
+        assertEquals(Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("Server FHD"))
+        assertEquals(Qualities.P2160.value, StreamLinkOptimizer.extractQualityFromText("Server 4K"))
+    }
+
+    @Test
+    fun testBitrateNeverBecomesAResolutionLabel() {
+        // ~1.6 Mbps is inside the old "720p" bitrate band, but bitrate cannot prove a height.
+        val link = createLink(
+            name = "Server 1",
+            url = "https://cdn.com/master.m3u8",
+            quality = Qualities.Unknown.value
+        )
+        val opt = StreamLinkOptimizer.optimize(link, durationSec = 3600.0, sizeBytes = 700_000_000L)
+        assertEquals(Qualities.Unknown.value, opt.quality)
+        assertFalse("Fabricated 720p badge must not be rendered", opt.name.contains("[720p]"))
+    }
+
     // ==================== 5. Audio Normalization Tests ====================
 
     @Test

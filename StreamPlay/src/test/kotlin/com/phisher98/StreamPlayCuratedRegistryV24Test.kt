@@ -762,9 +762,24 @@ class StreamPlayCuratedRegistryV24Test {
         val entry720 = waveParsed.entries.first { it.url.contains("720p") }
         val entry1080 = waveParsed.entries.first { it.url.contains("1080p") }
         assertEquals(Qualities.P720.value, entry720.quality)
-        assertEquals(410, entry720.estimatedSizeMb)
         assertEquals(Qualities.P1080.value, entry1080.quality)
-        assertEquals(760, entry1080.estimatedSizeMb)
+        // No size metadata in this payload: sizes must stay null instead of being fabricated per quality.
+        assertNull(entry720.sizeMb)
+        assertNull(entry1080.sizeMb)
+
+        // Real payload metadata is preserved (both byte counts and human labels).
+        val sizedPayload = """{
+            "result": {
+                "url": [
+                    {"url": "https://ice.bright67.online/Deadpool/720p/playlist.jpg", "source": "720p", "size": "612 MB"},
+                    {"url": "https://ice.bright67.online/Deadpool/1080p/playlist.jpg", "source": "1080p", "sizeBytes": 1572864000}
+                ]
+            }
+        }"""
+        val sizedParsed = StreamPlayExtractor.cinesrcParseDecryptedResult(sizedPayload)
+        assertNotNull(sizedParsed)
+        assertEquals(612, sizedParsed!!.entries.first { it.url.contains("720p") }.sizeMb)
+        assertEquals(1500, sizedParsed.entries.first { it.url.contains("1080p") }.sizeMb)
 
         // Nebula master manifest string format (`url` string)
         val nebulaPayload = """{"result": {"url": "https://nebula.bright67.online/hls2/01/00105/abc/playlist.jpg"}}"""

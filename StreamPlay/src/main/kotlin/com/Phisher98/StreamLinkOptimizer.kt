@@ -24,7 +24,8 @@ import kotlinx.coroutines.launch
  *    StreamTape `&stream=1`, DoodStream unescaping).
  * 3. Container & manifest auto-detection (M3U8 HLS, DASH MPD, direct MP4/MKV byte-streams,
  *    Azure/AWS media patterns, MIME hints).
- * 4. Bitrate calculation `(sizeBytes * 8) / (durationSec * 1000)` and quality inference.
+ * 4. Bitrate calculation `(sizeBytes * 8) / (durationSec * 1000)` as a display/ranking hint only;
+ *    resolutions are never inferred from bitrate (see the honesty contract in `optimize`).
  * 5. Audio track normalization badges (`[Atmos]`, `[TrueHD]`, `[DTS-HD]`, `[DTS]`, `[5.1]`,
  *    `[7.1]`, `[Dual Audio]`, `[Multi Audio]`, `[AAC]`, `[MP3]`).
  * 6. Multi-CDN mirror deduplication via canonical stream key generation stripping 32+ transient
@@ -172,9 +173,13 @@ object StreamLinkOptimizer {
     private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|3840[xX]2160|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|2560[xX]1440|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
     private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX]1080|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
-    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(720P?|1280[xX]720|HD)(?:[^a-zA-Z0-9]|$)""")
-    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(480P?|854[xX]480|SD)(?:[^a-zA-Z0-9]|$)""")
-    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(360P?|640[xX]360)(?:[^a-zA-Z0-9]|$)""")
+    // Bare "HD"/"SD" are deliberately absent: they are marketing grades, not resolutions, and
+    // mapping them to 720p/480p is exactly how a 360p file ends up labelled as 720p. Only an
+    // explicit numeric height (handled by QUALITY_EXPLICIT_REGEX) or an exact pixel dimension
+    // proves a resolution, and FHD/QHD/4K are kept because those acronyms have a single meaning.
+    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX]720)(?:[^a-zA-Z0-9]|$)""")
+    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(854[xX]480)(?:[^a-zA-Z0-9]|$)""")
+    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX]360)(?:[^a-zA-Z0-9]|$)""")
     private val EXPLICIT_QUALITY_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:quality|res|resolution|height|q)=([0-9]{3,4})[pP]?(?:&|$)""")
     private val EMBEDDED_MEDIA_URL_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:file|url|path|src)=([^&]+)""")
 
@@ -244,7 +249,7 @@ object StreamLinkOptimizer {
     fun optimize(link: ExtractorLink): ExtractorLink = optimize(link, durationSec = null, sizeBytes = null)
 
     /**
-     * Overloaded optimize supporting duration and size for bitrate estimation and quality inference.
+     * Overloaded optimize supporting duration and size for the bitrate display hint.
      */
     fun optimize(
         link: ExtractorLink,
@@ -327,11 +332,16 @@ object StreamLinkOptimizer {
         }
 
         // 4. Quality resolution
+        //
+        // Honesty contract: a resolution label must be proven by an explicit numeric height in the
+        // source name/URL, or declared by the extractor itself. Bitrate is never converted into a
+        // quality label - a 1.5 Mbps stream can be low-bitrate 1080p or high-bitrate 480p, and the
+        // old inference here was a primary source of fake 720p links. Bitrate stays a ranking and
+        // display hint only; the host measures the real resolution before downloading.
         val extractedQuality = extractQualityFromText(link.name, optimizedUrl)
         val resolvedQuality = when {
             link.quality > 0 && link.quality != Qualities.Unknown.value -> link.quality
             extractedQuality > 0 && extractedQuality != Qualities.Unknown.value -> extractedQuality
-            estimatedBitrate != null -> inferQualityFromBitrate(estimatedBitrate)
             else -> Qualities.Unknown.value
         }
 
@@ -1505,19 +1515,6 @@ object StreamLinkOptimizer {
         if (SD_REGEX.containsMatchIn(text)) return Qualities.P480.value
         if (P360_REGEX.containsMatchIn(text)) return Qualities.P360.value
         return Qualities.Unknown.value
-    }
-
-    /**
-     * Infers quality integer from estimated bitrate kbps when explicit resolution is absent.
-     */
-    fun inferQualityFromBitrate(bitrateKbps: Long): Int {
-        return when {
-            bitrateKbps >= 15_000L -> Qualities.P2160.value
-            bitrateKbps >= 3_500L -> Qualities.P1080.value
-            bitrateKbps >= 1_500L -> Qualities.P720.value
-            bitrateKbps >= 700L -> Qualities.P480.value
-            else -> Qualities.P360.value
-        }
     }
 
     // ==================== Audio Track Normalization ====================
