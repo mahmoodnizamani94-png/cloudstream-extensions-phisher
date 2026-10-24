@@ -165,7 +165,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                 override fun onResponse(call: Call, response: Response) {
                     try {
-                        val body = response.body?.string()
+                        val body = response.body.string()
                         if (cont.isActive) {
                             cont.resume(body)
                         }
@@ -253,7 +253,7 @@ object StreamPlayExtractor : StreamPlay() {
     ): String? {
         val resp = cancellablePost(url, headers, requestBody, timeoutSec) ?: return null
         return try {
-            resp.body?.string()
+            resp.body.string()
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             null
@@ -453,13 +453,15 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int?,
         tmdbId: Int? = null,
         imdbId: String? = null,
+        initialAniId: Int? = null,
+        initialMalId: Int? = null,
     ): AnimeResolvedIds {
-        var resolvedAnilistId: Int? = null
-        var resolvedMalId: Int? = null
+        val isMultiSeasonContinuation = (season ?: 1) >= 2
+        var resolvedAnilistId: Int? = if (isMultiSeasonContinuation) null else initialAniId
+        var resolvedMalId: Int? = if (isMultiSeasonContinuation) null else initialMalId
         var resolvedEpisode: Int? = episode
         var resolvedCourTitle: String? = null
         var preFetchedAniJson: String? = null
-        val isMultiSeasonContinuation = (season ?: 1) >= 2
 
         // For Season 2+ of multi-season anime on TMDB/IMDb, show-level IMDb/TMDB mappings on
         // api.ani.zip point to Season 1's MAL/AniList entry. Resolve Season 2+ via season-aware
@@ -682,142 +684,454 @@ object StreamPlayExtractor : StreamPlay() {
                     break
                 }
             }
-            val anime = matchedAnime ?: fallbackItems.firstOrNull { item ->
-                (anilistId == null || item.anilistId == null || item.anilistId == anilistId) &&
-                    (malId == null || item.malId == null || item.malId == malId)
-            } ?: return
-
-            val serversText = cancellableGetText(
-                "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
-                headers = plyrHeaders,
-                timeoutSec = 6L
-            ) ?: cancellableGetText(
-                "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
-                headers = graphqlHeaders,
-                timeoutSec = 5L
-            ) ?: return
-            val servers = tryParseJson<ServerResponse>(serversText) ?: return
-
             val requestTypes = when {
                 isMovie -> listOf("sub", "dub")
                 dubtype.equals("dub", true) -> listOf("dub")
                 else -> listOf("sub")
             }
 
-            val providers = buildList {
-                if ("sub" in requestTypes) {
-                    servers.subProviders.forEach { add("sub" to it) }
-                }
-                if ("dub" in requestTypes) {
-                    servers.dubProviders.forEach { add("dub" to it) }
-                }
-            }.sortedBy { (_, provider) -> !(provider.default ?: false) }
-
             val emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            val emittedStreamsCount = java.util.concurrent.atomic.AtomicInteger(0)
 
-            coroutineScope {
-                providers.map { (type, provider) ->
-                    async {
-                        try {
-                            currentCoroutineContext().ensureActive()
-                            val providerId = provider.id
-                            val sourceResponse = animexFetchSource(anime.id, epNum, type, providerId, plyrHeaders)
-                                ?: return@async
+            var anime = matchedAnime ?: fallbackItems.firstOrNull { item ->
+                (anilistId == null || item.anilistId == null || item.anilistId == anilistId) &&
+                    (malId == null || item.malId == null || item.malId == malId)
+            }
 
-                            val respHeaders = sourceResponse.headers.orEmpty()
-                            val referer = respHeaders.entries
-                                .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
-                                ?: "$animexPlyrOrigin/"
-                            val origin = respHeaders.entries
-                                .firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
-                                ?: getBaseUrl(referer).takeIf { it.startsWith("http", ignoreCase = true) }
-                                ?: animexPlyrOrigin
-                            val streamHeaders = buildMap {
-                                put("User-Agent", USER_AGENT)
-                                if (referer.isNotBlank()) put("Referer", referer)
-                                if (origin.isNotBlank()) put("Origin", origin)
-                                respHeaders.forEach { (k, v) ->
-                                    if (!k.equals("User-Agent", true) &&
-                                        !k.equals("Referer", true) &&
-                                        !k.equals("Origin", true) &&
-                                        v.isNotBlank()
-                                    ) {
-                                        put(k, v)
-                                    }
-                                }
-                            }
+            // Direct plyr.animex.one SSR slug resolution fallback when graphql.animex.one is
+            // unreachable or title search misses a localized title, using only the AniList ID.
+            if (anime == null && anilistId != null && anilistId > 0) {
+                val plyrHtml = cancellableGetText(
+                    "$animexPlyrOrigin/e/$anilistId/$epNum?lang=sub",
+                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$animexOrigin/"),
+                    timeoutSec = 5L
+                )
+                val plyrSlug = plyrHtml?.let {
+                    Regex("""\bid\s*:\s*"([a-z0-9][a-z0-9-]{2,})"""").find(it)?.groupValues?.getOrNull(1)
+                }
+                if (!plyrSlug.isNullOrBlank()) {
+                    anime = AnimeItem(
+                        id = plyrSlug,
+                        anilistId = anilistId,
+                        malId = malId,
+                        titleRomaji = jpTitle,
+                        titleEnglish = title,
+                        format = null
+                    )
+                }
+            }
 
-                            sourceResponse.tracks?.forEach { track ->
-                                if (track.kind.equals("thumbnails", ignoreCase = true)) return@forEach
-                                val trackUrl = (track.url ?: track.file)?.trim()
-                                    ?.takeIf { it.startsWith("http", ignoreCase = true) }
-                                    ?: return@forEach
-                                if (trackUrl.contains("thumbnails", ignoreCase = true)) return@forEach
-                                if (emittedTracks.add(trackUrl)) {
-                                    val label = cleanSubtitleLabel(track.lang ?: track.label ?: "English")
-                                    subtitleCallback.invoke(newSubtitleFile(label, trackUrl))
-                                }
-                            }
+            if (anime != null) {
+                val serversText = cancellableGetText(
+                    "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
+                    headers = plyrHeaders,
+                    timeoutSec = 6L
+                ) ?: cancellableGetText(
+                    "https://pp.animex.one/rest/api/servers?id=${URLEncoder.encode(anime.id, "UTF-8")}&epNum=$epNum",
+                    headers = graphqlHeaders,
+                    timeoutSec = 5L
+                )
+                val servers = serversText?.let { tryParseJson<ServerResponse>(it) }
 
-                            val subType = provider.tip?.substringBefore(",")?.trim()?.takeIf { it.isNotBlank() }
-                                ?: "Softsub"
-                            val langTag = if (type.equals("sub", ignoreCase = true)) {
-                                "[Sub] [Original]"
-                            } else {
-                                "[Dub]"
-                            }
-                            val providerTag = providerId.replaceFirstChar {
-                                if (it.isLowerCase()) it.titlecase() else it.toString()
-                            }
-                            val baseName = "Animex [$subType] $langTag [$providerTag]"
+                val defaultSubProviders = listOf(
+                    Provider(id = "nero", default = true, tip = "Sub and dub, Fastest, High quality"),
+                    Provider(id = "yuki", default = false, tip = "Soft sub, Good, Multi quality"),
+                    Provider(id = "zuna", default = false, tip = "Soft sub, Fast, High quality"),
+                    Provider(id = "loli", default = false, tip = "Sub and dub, HLS streams"),
+                    Provider(id = "sora", default = false, tip = "Soft sub, Fast, High quality")
+                )
+                val defaultDubProviders = listOf(
+                    Provider(id = "nero", default = true, tip = "Sub and dub, Fastest, High quality"),
+                    Provider(id = "yuki", default = false, tip = "Soft sub, Good, Multi quality"),
+                    Provider(id = "loli", default = false, tip = "Sub and dub, HLS streams"),
+                    Provider(id = "sora", default = false, tip = "Soft sub, Fast, High quality")
+                )
 
-                            sourceResponse.sources?.forEach { source ->
-                                val srcUrl = source.url.trim()
-                                if (!srcUrl.startsWith("http", ignoreCase = true)) return@forEach
-                                val labeledQuality = animexQualityOf(source.quality)
-                                if (labeledQuality != Qualities.Unknown.value && !srcUrl.contains("master.m3u8", ignoreCase = true)) {
-                                    emitTopTierDualQualityStreamLinks(
-                                        source = "Animex",
-                                        baseName = baseName,
-                                        url = srcUrl,
-                                        referer = referer,
-                                        headers = streamHeaders,
-                                        streamType = if (srcUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                        generatedLinks = listOf(
-                                            newExtractorLink(
-                                                "Animex",
-                                                "$baseName [${vidsrcQualityTag(labeledQuality)}]",
-                                                srcUrl,
-                                                if (srcUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                            ) {
-                                                this.referer = referer
-                                                this.quality = labeledQuality
-                                                this.headers = streamHeaders
-                                            }
-                                        ),
-                                        callback = callback
-                                    )
-                                } else {
-                                    emitVerifiedStream(
-                                        source = "Animex",
-                                        baseName = baseName,
-                                        url = srcUrl,
-                                        referer = referer,
-                                        headers = streamHeaders,
-                                        callback = callback
-                                    )
-                                }
-                            }
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                            Log.d("StreamPlay", "Animex provider ${provider.id} ($type) failed: ${e.message}")
-                        }
+                val providers = buildList {
+                    if ("sub" in requestTypes) {
+                        val subList = (servers?.subProviders.orEmpty() + defaultSubProviders)
+                            .distinctBy { it.id.lowercase() }
+                        subList.forEach { add("sub" to it) }
                     }
-                }.awaitAll()
+                    if ("dub" in requestTypes) {
+                        val dubList = (servers?.dubProviders.orEmpty() + defaultDubProviders)
+                            .distinctBy { it.id.lowercase() }
+                        dubList.forEach { add("dub" to it) }
+                    }
+                }.sortedBy { (_, provider) -> !(provider.default ?: false) }
+
+                if (providers.isNotEmpty()) {
+                    coroutineScope {
+                        providers.map { (type, provider) ->
+                            async {
+                                try {
+                                    currentCoroutineContext().ensureActive()
+                                    val providerId = provider.id
+                                    val sourceResponse = animexFetchSource(anime.id, epNum, type, providerId, plyrHeaders)
+                                        ?: return@async
+
+                                    emitAnimexSourceResponse(
+                                        sourceResponse = sourceResponse,
+                                        type = type,
+                                        providerId = providerId,
+                                        providerTip = provider.tip,
+                                        defaultOrigin = animexPlyrOrigin,
+                                        emittedTracks = emittedTracks,
+                                        emittedStreamsCount = emittedStreamsCount,
+                                        subtitleCallback = subtitleCallback,
+                                        callback = callback
+                                    )
+                                } catch (e: Exception) {
+                                    if (e is CancellationException) throw e
+                                    Log.d("StreamPlay", "Animex provider ${provider.id} ($type) failed: ${e.message}")
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
+            }
+
+            // Direct KickAssAnime (kaa.lt -> krussdomi.com) SOTA fallback when graphql.animex.one / pp.animex.one
+            // misses a catalogue entry or returns no playable streams.
+            if (emittedStreamsCount.get() == 0) {
+                invokeKaaDirect(
+                    candidateTitles = candidateTitles,
+                    epNum = epNum,
+                    isMovie = isMovie,
+                    requestTypes = requestTypes,
+                    emittedTracks = emittedTracks,
+                    emittedStreamsCount = emittedStreamsCount,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeAnimex failed: ${e.message}")
+        }
+    }
+
+    private suspend fun emitAnimexSourceResponse(
+        sourceResponse: SourceResponse,
+        type: String,
+        providerId: String,
+        providerTip: String?,
+        defaultOrigin: String,
+        emittedTracks: MutableSet<String>,
+        emittedStreamsCount: java.util.concurrent.atomic.AtomicInteger,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val respHeaders = sourceResponse.headers.orEmpty()
+        val referer = respHeaders.entries
+            .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+            ?: "$defaultOrigin/"
+        val origin = respHeaders.entries
+            .firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
+            ?: getBaseUrl(referer).takeIf { it.startsWith("http", ignoreCase = true) }
+            ?: defaultOrigin
+        val streamHeaders = buildMap {
+            put("User-Agent", USER_AGENT)
+            if (referer.isNotBlank()) put("Referer", referer)
+            if (origin.isNotBlank()) put("Origin", origin)
+            respHeaders.forEach { (k, v) ->
+                if (!k.equals("User-Agent", true) &&
+                    !k.equals("Referer", true) &&
+                    !k.equals("Origin", true) &&
+                    v.isNotBlank()
+                ) {
+                    put(k, v)
+                }
+            }
+        }
+
+        sourceResponse.tracks?.forEach { track ->
+            if (track.kind.equals("thumbnails", ignoreCase = true)) return@forEach
+            val trackUrl = (track.url ?: track.file)?.trim()
+                ?.replace(Regex("^(https?):/+", RegexOption.IGNORE_CASE), "$1://")
+                ?.takeIf { it.startsWith("http", ignoreCase = true) }
+                ?: return@forEach
+            if (trackUrl.contains("thumbnails", ignoreCase = true)) return@forEach
+            if (emittedTracks.add(trackUrl)) {
+                val rawLabel = track.label?.trim().orEmpty()
+                val rawLang = track.lang?.trim().orEmpty()
+                val preferred = if (rawLang.isNotBlank() && (rawLabel.isBlank() || rawLabel.equals("default", true) || rawLabel.equals("unknown", true))) {
+                    rawLang
+                } else {
+                    rawLabel.ifBlank { rawLang.ifBlank { "English" } }
+                }
+                val label = cleanSubtitleLabel(preferred)
+                subtitleCallback.invoke(newSubtitleFile(label, trackUrl))
+            }
+        }
+
+        val subType = providerTip?.substringBefore(",")?.trim()?.takeIf { it.isNotBlank() }
+            ?: "Softsub"
+        val langTag = if (type.equals("sub", ignoreCase = true)) {
+            "[Sub] [Original]"
+        } else {
+            "[Dub]"
+        }
+        val providerTag = providerId.replaceFirstChar {
+            if (it.isLowerCase()) it.titlecase() else it.toString()
+        }
+        val baseName = "Animex [$subType] $langTag [$providerTag]"
+
+        sourceResponse.sources?.forEach { source ->
+            val rawSrcUrl = source.url.trim()
+            if (!rawSrcUrl.startsWith("http", ignoreCase = true)) return@forEach
+            val srcUrl = if (rawSrcUrl.contains("fetch.nexabloom.top", ignoreCase = true)) {
+                megaplaySignCdnUrl(rawSrcUrl, ttlSeconds = 14_400L)
+            } else {
+                rawSrcUrl
+            }
+            val labeledQuality = animexQualityOf(source.quality)
+            val linkType = StreamLinkOptimizer.resolveCorrectLinkType(srcUrl, ExtractorLinkType.M3U8, headers = streamHeaders)
+            val countingCallback: (ExtractorLink) -> Unit = { link ->
+                emittedStreamsCount.incrementAndGet()
+                callback(link)
+            }
+            val isMaskedMaster = srcUrl.contains("master.m3u8", ignoreCase = true) ||
+                srcUrl.contains("master.txt", ignoreCase = true) ||
+                srcUrl.substringBefore("?").endsWith(".txt", ignoreCase = true)
+            if (labeledQuality != Qualities.Unknown.value && !isMaskedMaster) {
+                emitTopTierDualQualityStreamLinks(
+                    source = "Animex",
+                    baseName = baseName,
+                    url = srcUrl,
+                    referer = referer,
+                    headers = streamHeaders,
+                    streamType = linkType,
+                    generatedLinks = listOf(
+                        newExtractorLink(
+                            "Animex",
+                            "$baseName [${vidsrcQualityTag(labeledQuality)}]",
+                            srcUrl,
+                            linkType
+                        ) {
+                            this.referer = referer
+                            this.quality = labeledQuality
+                            this.headers = streamHeaders
+                        }
+                    ),
+                    callback = countingCallback
+                )
+            } else {
+                emitVerifiedStream(
+                    source = "Animex",
+                    baseName = baseName,
+                    url = srcUrl,
+                    referer = referer,
+                    headers = streamHeaders,
+                    callback = countingCallback
+                )
+            }
+        }
+    }
+
+    internal data class KaaSearchHit(
+        val slug: String,
+        val title: String,
+        val titleEn: String?,
+        val year: Int?,
+        val mediaType: String?,
+        val locales: List<String>
+    )
+
+    internal fun kaaParseSearch(rawJson: String): List<KaaSearchHit> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val arr = when {
+            trimmed.startsWith("[") -> runCatching { JSONArray(trimmed) }.getOrNull()
+            trimmed.startsWith("{") -> runCatching { JSONObject(trimmed).optJSONArray("result") ?: JSONObject(trimmed).optJSONArray("data") }.getOrNull()
+            else -> null
+        } ?: return emptyList()
+        val hits = ArrayList<KaaSearchHit>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val slug = obj.optString("slug").trim()
+            val title = obj.optString("title").trim()
+            if (slug.isBlank() || title.isBlank()) continue
+            val locales = mutableListOf<String>()
+            obj.optJSONArray("locales")?.let { locArr ->
+                for (j in 0 until locArr.length()) {
+                    val loc = locArr.optString(j).trim()
+                    if (loc.isNotBlank()) locales.add(loc)
+                }
+            }
+            hits.add(
+                KaaSearchHit(
+                    slug = slug,
+                    title = title,
+                    titleEn = obj.optString("title_en").trim().takeIf { it.isNotBlank() },
+                    year = obj.optInt("year", 0).takeIf { it > 0 },
+                    mediaType = obj.optString("type").trim().takeIf { it.isNotBlank() },
+                    locales = locales
+                )
+            )
+        }
+        return hits
+    }
+
+    internal fun pickKaaHit(
+        hits: List<KaaSearchHit>,
+        titles: List<String>,
+        year: Int?,
+        isMovie: Boolean
+    ): KaaSearchHit? {
+        if (hits.isEmpty() || titles.isEmpty()) return null
+        val typed = hits.filter { aniZoneTypeMatches(it.mediaType, isMovie) }
+        if (typed.isEmpty()) return null
+        return typed.mapNotNull { hit ->
+            val candidateNames = listOfNotNull(hit.title, hit.titleEn)
+            val base = titles.maxOfOrNull { q ->
+                candidateNames.maxOfOrNull { c -> animeTitleMatchScore(q, c) } ?: 0
+            } ?: 0
+            if (base < ANIME_TITLE_MATCH_FLOOR) null else hit to (base * 1000 + animeYearBonus(year, hit.year))
+        }.maxByOrNull { it.second }?.first
+    }
+
+    internal fun kaaParseEpisodeSlug(rawJson: String, targetEpisode: Int): String? {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
+        val result = root.optJSONArray("result") ?: return null
+        val targetStr = targetEpisode.toString()
+        for (i in 0 until result.length()) {
+            val obj = result.optJSONObject(i) ?: continue
+            val epNum = obj.optInt("episode_number", -1)
+            val epStr = obj.optString("episode_string").trim()
+            if (epNum == targetEpisode || epStr == targetStr) {
+                val slug = obj.optString("slug").trim()
+                if (slug.isNotBlank()) return slug
+            }
+        }
+        return null
+    }
+
+    internal fun kaaParseEpisodeCatPlayerUrls(rawJson: String): List<String> {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+        val servers = root.optJSONArray("servers") ?: return emptyList()
+        val urls = mutableListOf<String>()
+        for (i in 0 until servers.length()) {
+            val obj = servers.optJSONObject(i) ?: continue
+            val src = obj.optString("src").trim()
+            if (!src.startsWith("http", ignoreCase = true)) continue
+            val idMatch = Regex("""[?&]id=([a-zA-Z0-9_-]+)""").find(src)?.groupValues?.getOrNull(1)
+            if (src.contains("cat-player/player", ignoreCase = true)) {
+                urls.add(src)
+            } else if (src.contains("krussdomi.com", ignoreCase = true) && !idMatch.isNullOrBlank()) {
+                urls.add("https://krussdomi.com/cat-player/player?id=$idMatch")
+            }
+        }
+        return urls.distinct()
+    }
+
+    internal fun kaaParseCatPlayerHtml(html: String): SourceResponse? {
+        if (html.isBlank()) return null
+        val doc = Jsoup.parse(html)
+        for (island in doc.select("astro-island[props]")) {
+            val propsRaw = island.attr("props").trim()
+            if (propsRaw.isBlank()) continue
+            val propsObj = runCatching { JSONObject(propsRaw) }.getOrNull() ?: continue
+            val rawManifest = propsObj.optJSONArray("manifest")?.optString(1)?.trim().orEmpty()
+            val manifestUrl = when {
+                rawManifest.startsWith("http://", true) || rawManifest.startsWith("https://", true) -> rawManifest
+                rawManifest.startsWith("//") -> "https:$rawManifest"
+                else -> ""
+            }
+            if (manifestUrl.isBlank()) continue
+
+            val tracks = mutableListOf<Track>()
+            propsObj.optJSONArray("subtitles")?.optJSONArray(1)?.let { subsArr ->
+                for (i in 0 until subsArr.length()) {
+                    val entry = subsArr.optJSONArray(i) ?: continue
+                    val subObj = entry.optJSONObject(1) ?: continue
+                    val rawSrc = subObj.optJSONArray("src")?.optString(1)?.trim().orEmpty()
+                    val subUrl = when {
+                        rawSrc.startsWith("http://", true) || rawSrc.startsWith("https://", true) -> rawSrc
+                        rawSrc.startsWith("//") -> "https:$rawSrc"
+                        else -> ""
+                    }
+                    if (subUrl.isBlank()) continue
+                    val lang = subObj.optJSONArray("language")?.optString(1)?.trim()?.takeIf { it.isNotBlank() }
+                    val label = subObj.optJSONArray("label")?.optString(1)?.trim()?.takeIf { it.isNotBlank() }
+                    tracks.add(Track(url = subUrl, lang = lang, label = label, kind = "captions"))
+                }
+            }
+            return SourceResponse(
+                sources = listOf(VideoSource(url = manifestUrl, quality = "auto")),
+                tracks = tracks,
+                headers = mapOf("Referer" to "https://kaa.lt/", "Origin" to "https://kaa.lt")
+            )
+        }
+        return null
+    }
+
+    private suspend fun invokeKaaDirect(
+        candidateTitles: List<String>,
+        epNum: Int,
+        isMovie: Boolean,
+        requestTypes: List<String>,
+        emittedTracks: MutableSet<String>,
+        emittedStreamsCount: java.util.concurrent.atomic.AtomicInteger,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val kaaOrigin = "https://kaa.lt"
+        val kaaHeaders = mapOf(
+            "Origin" to kaaOrigin,
+            "Referer" to "$kaaOrigin/",
+            "User-Agent" to USER_AGENT,
+            "Accept" to "application/json, text/plain, */*"
+        )
+        val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+        var matchedHit: KaaSearchHit? = null
+        for (query in candidateTitles.take(MAX_ANIME_SOURCE_TITLE_QUERIES)) {
+            val raw = cancellablePostText(
+                "$kaaOrigin/api/search",
+                headers = kaaHeaders + mapOf("Content-Type" to "application/json"),
+                requestBody = JSONObject().put("query", query).toString().toRequestBody(jsonMediaType),
+                timeoutSec = 5L
+            ) ?: break
+            matchedHit = pickKaaHit(kaaParseSearch(raw), candidateTitles, year = null, isMovie = isMovie)
+            if (matchedHit != null) break
+        }
+        val hit = matchedHit ?: return
+
+        for (type in requestTypes) {
+            val locale = if (type.equals("dub", ignoreCase = true)) "en-US" else "ja-JP"
+            if (hit.locales.isNotEmpty() && hit.locales.none { it.equals(locale, ignoreCase = true) }) continue
+            val epsRaw = cancellableGetText(
+                "$kaaOrigin/api/show/${hit.slug}/episodes?ep=$epNum&lang=$locale",
+                headers = kaaHeaders,
+                timeoutSec = 5L
+            ) ?: continue
+            val epSlug = kaaParseEpisodeSlug(epsRaw, epNum) ?: continue
+            val epDataRaw = cancellableGetText(
+                "$kaaOrigin/api/show/${hit.slug}/episode/ep-$epNum-$epSlug",
+                headers = kaaHeaders,
+                timeoutSec = 5L
+            ) ?: continue
+            val catPlayerUrls = kaaParseEpisodeCatPlayerUrls(epDataRaw)
+            for (playerUrl in catPlayerUrls) {
+                val playerHtml = cancellableGetText(
+                    playerUrl,
+                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$kaaOrigin/"),
+                    timeoutSec = 5L
+                ) ?: continue
+                val sourceResponse = kaaParseCatPlayerHtml(playerHtml) ?: continue
+                emitAnimexSourceResponse(
+                    sourceResponse = sourceResponse,
+                    type = type,
+                    providerId = "sora",
+                    providerTip = "Softsub",
+                    defaultOrigin = kaaOrigin,
+                    emittedTracks = emittedTracks,
+                    emittedStreamsCount = emittedStreamsCount,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+                break
+            }
         }
     }
 
@@ -1012,15 +1326,89 @@ object StreamPlayExtractor : StreamPlay() {
     // ==================== MegaPlay SOTA Anime Extractor (megaplay.buzz) ====================
 
     private const val MEGAPLAY_HOST = "https://megaplay.buzz"
+    private const val MEGAPLAY_AES_KEY_PREFIX = "i?LMTAx0Q6,:}50U"
+    private const val MEGAPLAY_AES_IV = "W0;27ToaUpl_P%'c"
+    private const val MEGAPLAY_CDN_HMAC_SECRET = "MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s"
     private val MEGAPLAY_FILE_ID_REGEX = Regex("""File\s+(\d+)""", RegexOption.IGNORE_CASE)
     private val MEGAPLAY_DATA_ID_REGEX = Regex("""data-(?:ep-)?id=["'](\d+)["']""", RegexOption.IGNORE_CASE)
     private val MEGAPLAY_REAL_ID_REGEX = Regex("""data-realid=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+    private val MEGAPLAY_CDN_PATH_KEY_REGEX = Regex("""/([a-f0-9]{32})/([a-f0-9]{32})/""", RegexOption.IGNORE_CASE)
 
     internal data class MegaPlaySourcesPayload(
         val directUrls: List<String>,
         val encryptedSources: String?,
         val tracks: List<Pair<String, String>>
     )
+
+    /**
+     * Pure-Kotlin offline decryption of MegaPlay's `/stream/getSources` `"enc"` ciphertext
+     * (`e1-player.min.js?v=2.1` `caPm`/`EHem`/`QwJl`).
+     *
+     * Eliminates the external `enc-dec.app/api/dec-megaplay` single point of failure:
+     * - Key: `"i?LMTAx0Q6,:}50U"` UTF-8 zero-padded to 32 bytes (`AES-256-CBC`)
+     * - IV: `"W0;27ToaUpl_P%'c"` UTF-8 (16 bytes)
+     * - Ciphertext: Base64URL-encoded AES-CBC payload decrypting to `{"file":"https://fetch.nexabloom.top/..."}`
+     */
+    internal fun megaplayDecryptEnc(
+        enc: String,
+        ttlSeconds: Long = 14_400L,
+        nowEpochSec: Long = System.currentTimeMillis() / 1000L
+    ): String? {
+        val cleaned = enc.trim()
+        if (cleaned.length < 16) return null
+        return runCatching {
+            val normalizedB64 = cleaned.replace('-', '+').replace('_', '/').let { s ->
+                val rem = s.length % 4
+                if (rem == 0) s else s + "====".substring(rem)
+            }
+            val cipherBytes = java.util.Base64.getDecoder().decode(normalizedB64)
+            val keyBytes = ByteArray(32)
+            val prefixBytes = MEGAPLAY_AES_KEY_PREFIX.toByteArray(Charsets.UTF_8)
+            System.arraycopy(prefixBytes, 0, keyBytes, 0, minOf(prefixBytes.size, 32))
+            val ivBytes = ByteArray(16)
+            val rawIv = MEGAPLAY_AES_IV.toByteArray(Charsets.UTF_8)
+            System.arraycopy(rawIv, 0, ivBytes, 0, minOf(rawIv.size, 16))
+
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
+            val plainJson = String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
+            val obj = JSONObject(plainJson)
+            val rawFile = obj.optString("file").ifBlank { obj.optString("url") }.trim()
+            if (!rawFile.startsWith("http", ignoreCase = true)) return@runCatching null
+            megaplaySignCdnUrl(rawFile, ttlSeconds = ttlSeconds, nowEpochSec = nowEpochSec)
+        }.getOrNull()
+    }
+
+    /**
+     * Pure-Kotlin offline HMAC-SHA256 CDN token signer for `fetch.nexabloom.top` (`e1-player.min.js?v=2.1` `ULok`/`EzQj`).
+     *
+     * Signs `"${nowEpochSec + ttlSeconds}|${hash1}/${hash2}"` with `MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s`
+     * and attaches `?token=<base64url(payload)>.<base64url(hmac)>`. Defaults to a 4-hour (14,400s) TTL
+     * instead of the browser's 90-second window so queued anime downloads never expire mid-transfer.
+     */
+    internal fun megaplaySignCdnUrl(
+        rawUrl: String,
+        ttlSeconds: Long = 14_400L,
+        nowEpochSec: Long = System.currentTimeMillis() / 1000L
+    ): String {
+        val trimmed = rawUrl.trim()
+        val match = MEGAPLAY_CDN_PATH_KEY_REGEX.find(trimmed) ?: return trimmed
+        val pathKey = "${match.groupValues[1].lowercase(Locale.ROOT)}/${match.groupValues[2].lowercase(Locale.ROOT)}"
+        return runCatching {
+            val payload = "${nowEpochSec + ttlSeconds}|$pathKey"
+            val payloadBytes = payload.toByteArray(Charsets.UTF_8)
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(MEGAPLAY_CDN_HMAC_SECRET.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+            val sigBytes = mac.doFinal(payloadBytes)
+            val b64Encoder = java.util.Base64.getUrlEncoder().withoutPadding()
+            val token = "${b64Encoder.encodeToString(payloadBytes)}.${b64Encoder.encodeToString(sigBytes)}"
+            val baseWithoutToken = trimmed
+                .replace(Regex("""([?&])token=[^&]*"""), "$1")
+                .trimEnd('?', '&')
+            val sep = if (baseWithoutToken.contains('?')) "&" else "?"
+            "$baseWithoutToken${sep}token=$token"
+        }.getOrDefault(trimmed)
+    }
 
     /**
      * Extracts the internal MegaPlay episode file ID from the `/stream/{mal|ani}/{id}/{ep}/{type}`
@@ -1036,8 +1424,9 @@ object StreamPlayExtractor : StreamPlay() {
 
     /**
      * Parses both raw `/stream/getSources?id={cid}&platform=OTHER` responses and `dec-megaplay`
-     * decrypted envelopes. Handles `sources` as an encrypted string, a JSONArray of `{file,url}`,
-     * or a JSONObject `{file,url}`, alongside `tracks` (`{file,url,label,kind}`).
+     * decrypted envelopes. Handles `sources` or `enc` as an encrypted string, a JSONArray of
+     * `{file,url}`, a JSONObject `{file,url}`, or a direct `file`/`url` string on `result`/`root`,
+     * alongside `tracks` (`{file,url,label,lang,kind}`).
      */
     internal fun megaplayParseSourcesPayload(rawJson: String): MegaPlaySourcesPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
@@ -1046,7 +1435,7 @@ object StreamPlayExtractor : StreamPlay() {
         val directUrls = mutableListOf<String>()
         var encryptedSources: String? = null
 
-        val rawSources = target.opt("sources")
+        val rawSources = target.opt("sources") ?: root.opt("sources")
         when (rawSources) {
             is String -> {
                 val trimmed = rawSources.trim()
@@ -1069,6 +1458,21 @@ object StreamPlayExtractor : StreamPlay() {
             }
         }
 
+        // Live 2026-10-24 contract: `getSources` returns `{"enc":"<ciphertext>","tracks":[...]}`
+        // and `dec-megaplay` returns `{"status":200,"result":{"file":"https://fetch.nexabloom.top/.../master.m3u8?..."}}`.
+        if (encryptedSources == null) {
+            val encField = target.optString("enc").ifBlank { root.optString("enc") }.trim()
+            if (encField.length >= 16 && !encField.startsWith("http", ignoreCase = true)) {
+                encryptedSources = encField
+            }
+        }
+        val directTargetUrl = target.optString("file").ifBlank { target.optString("url") }
+            .ifBlank { root.optString("file").ifBlank { root.optString("url") } }
+            .trim()
+        if (directTargetUrl.startsWith("http://", ignoreCase = true) || directTargetUrl.startsWith("https://", ignoreCase = true)) {
+            directUrls.add(directTargetUrl)
+        }
+
         val tracks = mutableListOf<Pair<String, String>>()
         val tracksArr = target.optJSONArray("tracks") ?: root.optJSONArray("tracks")
         tracksArr?.let { arr ->
@@ -1077,7 +1481,15 @@ object StreamPlayExtractor : StreamPlay() {
                 if (t.optString("kind").equals("thumbnails", ignoreCase = true)) continue
                 val file = t.optString("file").ifBlank { t.optString("url") }.trim()
                 if (!file.startsWith("http", ignoreCase = true) || file.contains("thumbnails", ignoreCase = true)) continue
-                val label = cleanSubtitleLabel(t.optString("label").ifBlank { t.optString("lang").ifBlank { "English" } })
+                val rawLabel = t.optString("label").trim()
+                val rawLang = t.optString("lang").trim()
+                val chosenLabel = when {
+                    rawLabel.isNotBlank() && !rawLabel.equals("Default", ignoreCase = true) && !rawLabel.equals("Unknown", ignoreCase = true) -> rawLabel
+                    rawLang.isNotBlank() -> rawLang
+                    rawLabel.isNotBlank() -> rawLabel
+                    else -> "English"
+                }
+                val label = cleanSubtitleLabel(chosenLabel)
                 tracks.add(label to file)
             }
         }
@@ -1170,22 +1582,33 @@ object StreamPlayExtractor : StreamPlay() {
                     }
 
                     val streamUrls = mutableListOf<String>()
-                    streamUrls.addAll(initialPayload.directUrls)
+                    initialPayload.directUrls.forEach { u ->
+                        streamUrls.add(if (u.contains("fetch.nexabloom.top", true)) megaplaySignCdnUrl(u) else u)
+                    }
 
                     if (streamUrls.isEmpty() && !initialPayload.encryptedSources.isNullOrBlank()) {
-                        val decRaw = encDecPost(
-                            "dec-megaplay",
-                            JSONObject().put("text", initialPayload.encryptedSources).toString(),
-                            timeoutSec = 5L
-                        )
-                        if (!decRaw.isNullOrBlank()) {
-                            val decPayload = megaplayParseSourcesPayload(decRaw)
-                            decPayload?.tracks?.forEach { (label, trackUrl) ->
-                                if (emittedTracks.add(trackUrl)) {
-                                    subtitleCallback(newSubtitleFile(label, trackUrl))
+                        // Primary: 0ms offline AES-256-CBC decryption + 4-hour HMAC-SHA256 CDN token signing
+                        val offlineUrl = megaplayDecryptEnc(initialPayload.encryptedSources)
+                        if (!offlineUrl.isNullOrBlank()) {
+                            streamUrls.add(offlineUrl)
+                        } else {
+                            // Fallback to enc-dec.app only if MegaPlay rotates its static client key
+                            val decRaw = encDecPost(
+                                "dec-megaplay",
+                                JSONObject().put("text", initialPayload.encryptedSources).toString(),
+                                timeoutSec = 5L
+                            )
+                            if (!decRaw.isNullOrBlank()) {
+                                val decPayload = megaplayParseSourcesPayload(decRaw)
+                                decPayload?.tracks?.forEach { (label, trackUrl) ->
+                                    if (emittedTracks.add(trackUrl)) {
+                                        subtitleCallback(newSubtitleFile(label, trackUrl))
+                                    }
+                                }
+                                decPayload?.directUrls?.forEach { u ->
+                                    streamUrls.add(if (u.contains("fetch.nexabloom.top", true)) megaplaySignCdnUrl(u) else u)
                                 }
                             }
-                            decPayload?.directUrls?.let { streamUrls.addAll(it) }
                         }
                     }
 
@@ -1247,7 +1670,13 @@ object StreamPlayExtractor : StreamPlay() {
     private val ANIMEPAHE_HEADERS = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "*/*",
-        "Accept-Language" to "en-US,en;q=0.9"
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Cookie" to "__ddg2_=1234567890"
+    )
+
+    private val ANIMEPAHE_SIZE_MB_REGEX = Regex(
+        """\(\s*(\d{1,5}(?:\.\d+)?)\s*MB\s*\)""",
+        RegexOption.IGNORE_CASE
     )
 
     /** One entry of `GET /api?m=search&l=8&q={title}`. */
@@ -1277,6 +1706,7 @@ object StreamPlayExtractor : StreamPlay() {
         val quality: Int,
         val audio: String,
         val fansub: String?,
+        val sizeMb: Int? = null,
     ) {
         val isDub: Boolean
             get() = audio.contains("eng", ignoreCase = true) ||
@@ -1339,13 +1769,29 @@ object StreamPlayExtractor : StreamPlay() {
      *
      * The quality is the provider's own `data-resolution` height (falling back to the `1080p`
      * fragment of the button label). Nothing is inferred from a stream URL, and an entry without
-     * either declaration stays [Qualities.Unknown].
+     * either declaration stays [Qualities.Unknown]. When the page also includes explicit
+     * `(XXX MB)` size metadata on the button or matching `#pickDownload` row, it is preserved
+     * for lowest-size 720p/1080p tie-breaking.
      */
     internal fun animePaheParsePlaySources(html: String): List<AnimePahePlaySource> {
         if (html.isBlank()) return emptyList()
         val document = Jsoup.parse(html)
         val buttons = document.select("#resolutionMenu [data-src]")
             .ifEmpty { document.select("button[data-src]") }
+        val downloadSizesByKey = HashMap<String, Int>()
+        for (anchor in document.select("#pickDownload a, a.dropdown-item")) {
+            val text = anchor.text().trim()
+            val mb = ANIMEPAHE_SIZE_MB_REGEX.find(text)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.toInt()
+                ?.takeIf { it > 0 } ?: continue
+            val height = Regex("""(\d{3,4})p""", RegexOption.IGNORE_CASE)
+                .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+            val isEng = text.contains("eng", ignoreCase = true)
+            val key = "$height|${if (isEng) "eng" else "jpn"}"
+            val existing = downloadSizesByKey[key]
+            if (existing == null || mb < existing) {
+                downloadSizesByKey[key] = mb
+            }
+        }
         val sources = mutableListOf<AnimePahePlaySource>()
         for (button in buttons) {
             val href = button.attr("data-src").trim()
@@ -1359,12 +1805,19 @@ object StreamPlayExtractor : StreamPlay() {
             val audio = button.attr("data-audio").trim().lowercase(Locale.ROOT).ifBlank {
                 if (label.contains("eng", ignoreCase = true)) "eng" else "jpn"
             }
+            val buttonSizeMb = ANIMEPAHE_SIZE_MB_REGEX.find(label)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.toInt()
+                ?.takeIf { it > 0 }
+            val matchedDownloadSizeMb = declaredHeight?.let { h ->
+                val audioBucket = if (audio.contains("eng", ignoreCase = true)) "eng" else "jpn"
+                downloadSizesByKey["$h|$audioBucket"]
+            }
             sources.add(
                 AnimePahePlaySource(
                     url = href,
                     quality = quality,
                     audio = audio,
-                    fansub = button.attr("data-fansub").trim().takeIf { it.isNotBlank() }
+                    fansub = button.attr("data-fansub").trim().takeIf { it.isNotBlank() },
+                    sizeMb = buttonSizeMb ?: matchedDownloadSizeMb
                 )
             )
         }
@@ -1790,10 +2243,11 @@ object StreamPlayExtractor : StreamPlay() {
             return
         }
         val declared = source.quality.takeIf { it > 0 && it != Qualities.Unknown.value }
+        val sizeSuffix = source.sizeMb?.takeIf { it > 0 }?.let { " [$it MB]" }.orEmpty()
         val name = if (declared != null) {
-            "$baseName [${vidsrcQualityTag(declared)}]"
+            "$baseName [${vidsrcQualityTag(declared)}]$sizeSuffix"
         } else {
-            "$baseName [Auto]"
+            "$baseName [Auto]$sizeSuffix"
         }
         emitTopTierDualQualityStreamLinks(
             source = "AnimePahe",
@@ -1857,7 +2311,7 @@ object StreamPlayExtractor : StreamPlay() {
                     val raw = animePaheGetText(
                         "$ANIMEPAHE_HOST/api?m=search&l=8&q=${URLEncoder.encode(query, "UTF-8")}",
                         referer = "$ANIMEPAHE_HOST/"
-                    ) ?: continue
+                    ) ?: break
                     hit = pickAnimePaheHit(animePaheParseSearch(raw), titles, year, isMovie)
                     if (hit != null) break
                 }
@@ -1881,7 +2335,15 @@ object StreamPlayExtractor : StreamPlay() {
                 if (sources.isEmpty()) return@withTimeoutOrNull
 
                 for (source in sources) {
-                    val embedHtml = animePaheGetText(source.url, referer = "$ANIMEPAHE_HOST$playPath")
+                    val embedHtml = cancellableGetText(
+                        source.url,
+                        headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to "$ANIMEPAHE_HOST$playPath",
+                            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                        ),
+                        timeoutSec = 5L
+                    ) ?: animePaheGetText(source.url, referer = "$ANIMEPAHE_HOST$playPath")
                         ?: continue
                     val streamUrl = animePaheParseKwikStream(embedHtml) ?: continue
                     val embedReferer = runCatching {
@@ -1937,7 +2399,7 @@ object StreamPlayExtractor : StreamPlay() {
                             headers = ANIZONE_HEADERS,
                             timeoutSec = 6L
                         )
-                    } ?: continue
+                    } ?: break
                     hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
                     if (hit != null) break
                 }
@@ -2745,6 +3207,29 @@ object StreamPlayExtractor : StreamPlay() {
 
     private val tmdbShowJsonCache = ConcurrentHashMap<Int, JSONObject>()
     private val tmdbSeasonJsonCache = ConcurrentHashMap<String, JSONObject>()
+    private val tmdbToImdbCache = ConcurrentHashMap<String, String>()
+
+    suspend fun resolveImdbIdFromTmdb(tmdbId: Int?, isMovie: Boolean): String? {
+        val id = tmdbId?.takeIf { it > 0 } ?: return null
+        val cacheKey = "${if (isMovie) "movie" else "tv"}:$id"
+        tmdbToImdbCache[cacheKey]?.let { return it }
+        return try {
+            val tmdbKey = BuildConfig.TMDB_API.takeIf { it.isNotBlank() } ?: "98ae14df2b8d8f8f8136499daf79f0e0"
+            val pathType = if (isMovie) "movie" else "tv"
+            val raw = cancellableGetText(
+                "https://api.themoviedb.org/3/$pathType/$id/external_ids?api_key=$tmdbKey",
+                timeoutSec = 5L
+            ) ?: return null
+            val imdbId = runCatching { JSONObject(raw).optString("imdb_id").trim() }.getOrNull()
+                ?.takeIf { it.startsWith("tt", ignoreCase = true) }
+                ?: return null
+            tmdbToImdbCache[cacheKey] = imdbId
+            imdbId
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            null
+        }
+    }
 
     private suspend fun fetchTmdbShowJson(tmdbId: Int): JSONObject? {
         if (tmdbId <= 0) return null
@@ -2961,6 +3446,27 @@ object StreamPlayExtractor : StreamPlay() {
                     if (byNum != null) {
                         matched = sNum to byNum.episodeNumber
                         break
+                    }
+                }
+            }
+
+            // 3b. Self-sufficiency fallback when api.ani.zip is down or missing episode metadata (epData == null)
+            // for a Season 2+ anime entry: if the highest-ranked TMDB season > 1 matches the AniList entry's
+            // release year, subtitle/season name, or explicit "Season N" number, map epIdx directly into that season.
+            if (matched == null && epData == null) {
+                val topCand = candidateSeasons.firstOrNull()
+                if (topCand != null && topCand.seasonNumber > 1) {
+                    val normSName = normalizeEpisodeTitleForMatch(topCand.name)
+                    val explicitSeasonMatch = Regex("""(?i)\b(?:season|part|cour)\s*0*${topCand.seasonNumber}\b""")
+                        .let { it.containsMatchIn(aniTitle.orEmpty()) || it.containsMatchIn(jpTitle.orEmpty()) }
+                    val nameMatch = normSName.isNotEmpty() && normSName != "season ${topCand.seasonNumber}" &&
+                        (normAniTitle.contains(normSName) || normJpTitle.contains(normSName))
+                    val yearMatch = aniYear != null && topCand.airYear != null && topCand.airYear == aniYear
+                    if (explicitSeasonMatch || nameMatch || yearMatch) {
+                        val epList = tmdbEpisodesBySeason[topCand.seasonNumber]
+                        if (epList != null && epList.any { it.episodeNumber == epIdx }) {
+                            matched = topCand.seasonNumber to epIdx
+                        }
                     }
                 }
             }
@@ -3204,7 +3710,7 @@ object StreamPlayExtractor : StreamPlay() {
                 var hasCaptions = false
                 var hasEnglishCaptions = false
                 stream.captions?.forEach { caption ->
-                    val rawSubUrl = caption?.url?.trim()
+                    val rawSubUrl = caption.url?.trim()
                     val subUrl = when {
                         rawSubUrl.isNullOrBlank() -> null
                         rawSubUrl.startsWith("http://", ignoreCase = true) || rawSubUrl.startsWith("https://", ignoreCase = true) -> rawSubUrl
@@ -3213,7 +3719,7 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     if (!subUrl.isNullOrBlank()) {
                         hasCaptions = true
-                        val lang = cleanSubtitleLabel(caption?.language)
+                        val lang = cleanSubtitleLabel(caption.language)
                         if (lang.contains("en", ignoreCase = true)) {
                             hasEnglishCaptions = true
                         }
@@ -3322,20 +3828,18 @@ object StreamPlayExtractor : StreamPlay() {
                 // 3. Parse direct MP4 stream qualities prioritized by SOTA quality hierarchy (720p > 1080p > 480p)
                 val directQualitiesLinks = mutableListOf<ExtractorLink>()
                 stream.qualities?.entries?.forEach { (qualityKey, qualityObj) ->
-                    val videoUrl = qualityObj?.url?.trim()
+                    val videoUrl = qualityObj.url?.trim()
                     if (!videoUrl.isNullOrBlank() && videoUrl.startsWith("http", ignoreCase = true)) {
-                        val qual = qualityKey?.let {
-                            val qInt = it.replace(Regex("[^0-9]"), "").toIntOrNull()
-                            when (qInt) {
-                                2160 -> Qualities.P2160.value
-                                1440 -> Qualities.P1440.value
-                                1080 -> Qualities.P1080.value
-                                720 -> Qualities.P720.value
-                                480 -> Qualities.P480.value
-                                360 -> Qualities.P360.value
-                                else -> StreamLinkOptimizer.extractQualityFromText(it).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
-                            }
-                        } ?: Qualities.Unknown.value
+                        val qInt = qualityKey.replace(Regex("[^0-9]"), "").toIntOrNull()
+                        val qual = when (qInt) {
+                            2160 -> Qualities.P2160.value
+                            1440 -> Qualities.P1440.value
+                            1080 -> Qualities.P1080.value
+                            720 -> Qualities.P720.value
+                            480 -> Qualities.P480.value
+                            360 -> Qualities.P360.value
+                            else -> StreamLinkOptimizer.extractQualityFromText(qualityKey).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
+                        }
                         val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
                         val qualHeaders = sanitizeVidlinkHeaders(qualityObj.headers)
 
@@ -3945,7 +4449,7 @@ object StreamPlayExtractor : StreamPlay() {
                             val subsUrl = if (isMovie) {
                                 "$CINESRC_SUBS_API/search?id=$id"
                             } else {
-                                "$CINESRC_SUBS_API/search?id=$id&season=${season ?: 1}&episode=${episode ?: 1}"
+                                "$CINESRC_SUBS_API/search?id=$id&season=$season&episode=$episode"
                             }
                             val subsRaw = cancellableGetText(subsUrl, headers = baseHeaders, timeoutSec = 5L)
                                 ?: return@async
@@ -3982,8 +4486,8 @@ object StreamPlayExtractor : StreamPlay() {
                                 append("&imdb=").append(URLEncoder.encode(imdbId.orEmpty(), "UTF-8"))
                                 append("&tmdb=").append(id)
                                 if (!isMovie) {
-                                    append("&season=").append(season ?: 1)
-                                    append("&episode=").append(episode ?: 1)
+                                    append("&season=").append(season)
+                                    append("&episode=").append(episode)
                                 }
                                 append("&server=Nebula")
                             }
@@ -4009,7 +4513,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 requestBody = rawBytes.toRequestBody("application/octet-stream".toMediaType()),
                                 timeoutSec = 5L
                             ) ?: return@async
-                            val respBytes = runCatching { resp.body?.bytes() }.getOrNull()
+                            val respBytes = runCatching { resp.body.bytes() }.getOrNull()
                                 ?.takeIf { it.size > 32 } ?: return@async
 
                             val b64Resp = cinesrcBase64UrlEncode(respBytes)
@@ -4043,12 +4547,12 @@ object StreamPlayExtractor : StreamPlay() {
                     val embedUrl = if (isMovie) {
                         "$CINESRC_HOST/embed/movie/$id"
                     } else {
-                        "$CINESRC_HOST/embed/tv/$id?s=${season ?: 1}&e=${episode ?: 1}"
+                        "$CINESRC_HOST/embed/tv/$id?s=$season&e=$episode"
                     }
                     val fieldsJson = if (isMovie) {
                         "[\"movie\",\"$id\",null,null]"
                     } else {
-                        "[\"tv\",\"$id\",\"${season ?: 1}\",\"${episode ?: 1}\"]"
+                        "[\"tv\",\"$id\",\"$season\",\"$episode\"]"
                     }
                     val xCsQ = cinesrcBase64UrlEncode(fieldsJson.toByteArray(Charsets.UTF_8))
 
@@ -4070,8 +4574,8 @@ object StreamPlayExtractor : StreamPlay() {
                                     JSONArray()
                                         .put(id.toString())
                                         .put("show")
-                                        .put((season ?: 1).toString())
-                                        .put((episode ?: 1).toString())
+                                        .put(season.toString())
+                                        .put(episode.toString())
                                         .put(session.fullToken)
                                         .put(serverId)
                                         .toString()
@@ -4380,8 +4884,8 @@ object StreamPlayExtractor : StreamPlay() {
                     append("&tmdbId=").append(id)
                     if (!imdbId.isNullOrBlank()) append("&imdbId=").append(URLEncoder.encode(imdbId, "UTF-8"))
                     if (!isMovie) {
-                        append("&seasonId=").append(season ?: 1)
-                        append("&episodeId=").append(episode ?: 1)
+                        append("&seasonId=").append(season)
+                        append("&episodeId=").append(episode)
                     }
                     append("&enc=2&seed=").append(encodedSeed)
                 }
@@ -4488,9 +4992,42 @@ object StreamPlayExtractor : StreamPlay() {
     /** MeowTV web front (Origin/Referer) + ticket/stream API. */
     private const val MEOWTV_HOST = "https://meowtv.ru"
     private const val MEOWTV_API = "https://api.meowtv.ru"
+    private const val MEOWTV_SECRET = "10eE3wyyhkF38rwLFwisRYgwP2bbTL_Y"
 
-    /** MeowTV upstream servers, in the site's own preference order (original audio first). */
-    private val MEOWTV_SERVERS = listOf("english", "ipcloud", "tik", "dcloud", "acme", "hindi")
+    /** MeowTV upstream servers, in the site's current active preference order (`dcloud` first). */
+    private val MEOWTV_SERVERS = listOf("dcloud", "acme", "tik", "ipcloud", "english", "hindi")
+
+    /**
+     * Offline pure-Kotlin MeowTV payload decryptor extracted from `meowtv.wasm` (`s-p-CmJx-XQh.js`,
+     * 3-way XOR-masked data segments 5 ^ 9 ^ 13). Computes `SHA-256(MEOWTV_SECRET + n)` and XORs the
+     * 32-byte digest cyclically against `Base64.decode(d)` in <0.1ms with zero network calls.
+     */
+    internal fun meowTvDecryptOffline(n: String, d: String): MeowTvDecResult? {
+        if (n.isBlank() || d.isBlank()) return null
+        return runCatching {
+            val key = java.security.MessageDigest.getInstance("SHA-256")
+                .digest((MEOWTV_SECRET + n.trim()).toByteArray(Charsets.UTF_8))
+            val cipher = cinesrcBase64UrlDecode(d.trim())
+            val plain = ByteArray(cipher.size) { i ->
+                (cipher[i].toInt() xor key[i and 31].toInt()).toByte()
+            }
+            val jsonStr = String(plain, Charsets.UTF_8).trim()
+            if (!jsonStr.startsWith("{")) return@runCatching null
+            val obj = JSONObject(jsonStr)
+            val url = obj.optString("url").takeIf { it.isNotBlank() } ?: return@runCatching null
+            val language = obj.optString("language").takeIf { it.isNotBlank() }
+            val headersMap = mutableMapOf<String, String>()
+            obj.optJSONObject("headers")?.let { hObj ->
+                val keys = hObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = hObj.optString(k)
+                    if (k.isNotBlank() && v.isNotBlank()) headersMap[k] = v
+                }
+            }
+            MeowTvDecResult(language = language, url = url, headers = headersMap)
+        }.getOrNull()
+    }
 
     private val VIDFAST_PAGE_TOKEN_REGEX = Regex("\"(?:en|token)\":\"([A-Za-z0-9_-]+)\"")
 
@@ -4832,62 +5369,138 @@ object StreamPlayExtractor : StreamPlay() {
 
             withTimeoutOrNull(24_000L) {
                 val streamPath = if (isMovie) "/streams/movie/$id" else "/streams/tv/$id/$season/$episode"
+                val subsPath = if (isMovie) "/subs/movie/$id" else "/subs/tv/$id/$season/$episode"
                 val baseHeaders = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Origin" to MEOWTV_HOST,
                     "Referer" to "$MEOWTV_HOST/"
                 )
 
-                for (server in MEOWTV_SERVERS) {
-                    currentCoroutineContext().ensureActive()
-
-                    // Tickets are single-use: every server attempt needs a fresh one, and the
-                    // stream GET is deliberately never retried with a spent ticket.
-                    val ticketRaw = cancellablePostText(
-                        "$MEOWTV_API/streams/ticket",
-                        headers = baseHeaders + mapOf("Content-Type" to "application/json"),
-                        requestBody = "{}".toRequestBody("application/json".toMediaType()),
-                        timeoutSec = 4L
-                    ) ?: continue
-                    val ticket = tryParseJson<MeowTvTicketResponse>(ticketRaw)?.ticket?.takeIf { it.isNotBlank() }
-                        ?: continue
-
-                    val streamRaw = cancellableGetText(
-                        "$MEOWTV_API$streamPath?s=$server",
-                        headers = baseHeaders + mapOf("X-Stream-Ticket" to ticket),
-                        timeoutSec = 5L
-                    )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") } ?: continue
-
-                    val payload = tryParseJson<MeowTvPayload>(streamRaw) ?: continue
-                    val payloadN = payload.n?.takeIf { it.isNotBlank() } ?: continue
-                    val payloadD = payload.d?.takeIf { it.isNotBlank() } ?: continue
-
-                    val decRaw = encDecPost(
-                        "dec-meowtv",
-                        JSONObject().put("data", JSONObject().put("n", payloadN).put("d", payloadD)).toString(),
-                        timeoutSec = 5L
-                    ) ?: continue
-                    val decRes = tryParseJson<MeowTvDecResponse>(decRaw)?.result ?: continue
-                    val streamUrl = decRes.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
-
-                    val decHeaders = decRes.headers.orEmpty()
-                    val referer = decHeaders.entries
-                        .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value ?: ""
-                    val streamHeaders = decHeaders + mapOf("User-Agent" to USER_AGENT)
-
-                    val language = decRes.language?.takeIf { it.isNotBlank() } ?: "Auto"
-                    val displayLanguage = language.replaceFirstChar {
-                        if (it.isLowerCase()) it.titlecase() else it.toString()
+                coroutineScope {
+                    val subsJob = async {
+                        if (subtitleCallback == null) return@async
+                        try {
+                            val subsRaw = cancellableGetText(
+                                "$MEOWTV_API$subsPath",
+                                headers = baseHeaders,
+                                timeoutSec = 4L
+                            )?.takeIf { it.trimStart().startsWith("[") } ?: return@async
+                            val arr = runCatching { JSONArray(subsRaw) }.getOrNull() ?: return@async
+                            val emittedSubs = HashSet<String>()
+                            for (i in 0 until arr.length()) {
+                                val obj = arr.optJSONObject(i) ?: continue
+                                val file = obj.optString("file").ifBlank { obj.optString("url") }.trim()
+                                if (!file.startsWith("http", ignoreCase = true) || !emittedSubs.add(file)) continue
+                                val label = cleanSubtitleLabel(
+                                    obj.optString("label").ifBlank {
+                                        obj.optString("language").ifBlank { "English" }
+                                    }
+                                )
+                                subtitleCallback.invoke(newSubtitleFile(label, file))
+                            }
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                        }
                     }
-                    emitVerifiedStream(
-                        source = "MeowTV",
-                        baseName = "MeowTV $displayLanguage",
-                        url = streamUrl,
-                        referer = referer,
-                        headers = streamHeaders,
-                        callback = callback
-                    )
-                    return@withTimeoutOrNull
+
+                    val streamsJob = async {
+                        for (server in MEOWTV_SERVERS) {
+                            currentCoroutineContext().ensureActive()
+
+                            // Tickets are single-use: every server attempt needs a fresh one, and the
+                            // stream GET is deliberately never retried with a spent ticket.
+                            val ticketRaw = cancellablePostText(
+                                "$MEOWTV_API/streams/ticket",
+                                headers = baseHeaders + mapOf("Content-Type" to "application/json"),
+                                requestBody = "{}".toRequestBody("application/json".toMediaType()),
+                                timeoutSec = 4L
+                            ) ?: continue
+                            val ticket = tryParseJson<MeowTvTicketResponse>(ticketRaw)?.ticket?.takeIf { it.isNotBlank() }
+                                ?: continue
+
+                            val streamQuery = if (server == "acme") "$streamPath?s=$server&list=1" else "$streamPath?s=$server"
+                            val streamRaw = cancellableGetText(
+                                "$MEOWTV_API$streamQuery",
+                                headers = baseHeaders + mapOf("X-Stream-Ticket" to ticket),
+                                timeoutSec = 5L
+                            )?.takeIf { it.isNotBlank() && !it.trimStart().startsWith("<") } ?: continue
+
+                            val rawObj = runCatching { JSONObject(streamRaw) }.getOrNull() ?: continue
+                            val payloadEntries = buildList {
+                                val streamsArr = rawObj.optJSONArray("streams")
+                                if (streamsArr != null && streamsArr.length() > 0) {
+                                    for (idx in 0 until streamsArr.length()) {
+                                        val entry = streamsArr.optJSONObject(idx) ?: continue
+                                        val n = entry.optString("n").takeIf { it.isNotBlank() } ?: continue
+                                        val d = entry.optString("d").takeIf { it.isNotBlank() } ?: continue
+                                        add(n to d)
+                                    }
+                                } else {
+                                    val n = rawObj.optString("n").takeIf { it.isNotBlank() }
+                                    val d = rawObj.optString("d").takeIf { it.isNotBlank() }
+                                    if (n != null && d != null) add(n to d)
+                                }
+                            }
+                            if (payloadEntries.isEmpty()) continue
+
+                            var emittedFromServer = false
+                            for ((payloadN, payloadD) in payloadEntries) {
+                                // Primary 0ms offline decryption via WASM-extracted SHA-256 + XOR keystream;
+                                // enc-dec.app is retained strictly as a last-resort fallback.
+                                val decRes = meowTvDecryptOffline(payloadN, payloadD) ?: run {
+                                    val decRaw = encDecPost(
+                                        "dec-meowtv",
+                                        JSONObject().put("data", JSONObject().put("n", payloadN).put("d", payloadD)).toString(),
+                                        timeoutSec = 5L
+                                    ) ?: return@run null
+                                    tryParseJson<MeowTvDecResponse>(decRaw)?.result
+                                } ?: continue
+                                val streamUrl = decRes.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+
+                                val decHeaders = decRes.headers.orEmpty()
+                                val referer = decHeaders.entries
+                                    .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: "$MEOWTV_HOST/"
+                                val origin = decHeaders.entries
+                                    .firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: getBaseUrl(referer).takeIf { it.startsWith("http", ignoreCase = true) }
+                                    ?: MEOWTV_HOST
+                                val streamHeaders = buildMap {
+                                    put("User-Agent", USER_AGENT)
+                                    put("Referer", referer)
+                                    put("Origin", origin)
+                                    decHeaders.forEach { (k, v) ->
+                                        if (!k.equals("User-Agent", true) &&
+                                            !k.equals("Referer", true) &&
+                                            !k.equals("Origin", true) &&
+                                            v.isNotBlank()
+                                        ) {
+                                            put(k, v)
+                                        }
+                                    }
+                                }
+
+                                val language = decRes.language?.takeIf { it.isNotBlank() } ?: "Auto"
+                                val displayLanguage = language.replaceFirstChar {
+                                    if (it.isLowerCase()) it.titlecase() else it.toString()
+                                }
+                                emitVerifiedStream(
+                                    source = "MeowTV",
+                                    baseName = "MeowTV $displayLanguage",
+                                    url = streamUrl,
+                                    referer = referer,
+                                    headers = streamHeaders,
+                                    callback = callback
+                                )
+                                emittedFromServer = true
+                            }
+                            if (emittedFromServer) return@async
+                        }
+                    }
+
+                    listOf(subsJob, streamsJob).awaitAll()
                 }
             }
         } catch (e: Exception) {

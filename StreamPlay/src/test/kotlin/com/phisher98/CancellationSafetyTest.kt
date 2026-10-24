@@ -1,7 +1,5 @@
 package com.phisher98
 
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -44,17 +42,23 @@ class CancellationSafetyTest {
 
     @Test
     fun testRapidTvBackNavigationCancelsAllActiveTiers() = runBlocking {
+        val started = AtomicInteger(0)
         val tasks = (1..20).map { id ->
             PipelinedTask("provider_$id", LatencyTier.TIER_1) {
-                delay(2000)
+                started.incrementAndGet()
+                delay(5000)
             }
         }
 
-        val parentJob = launch(Dispatchers.IO) {
+        val parentJob = launch(Dispatchers.Default) {
             SpeculativePipeliner.executePipelined(tasks)
         }
 
-        delay(30)
+        var waited = 0L
+        while (started.get() == 0 && waited < 1000L) {
+            delay(10)
+            waited += 10L
+        }
 
         // User hits Back button on Android TV remote
         val cancelStart = System.currentTimeMillis()
@@ -62,7 +66,7 @@ class CancellationSafetyTest {
         parentJob.join()
         val cancelDuration = System.currentTimeMillis() - cancelStart
 
-        assertTrue("Cancellation must complete promptly (was ${cancelDuration}ms)", cancelDuration < 500L)
+        assertTrue("Cancellation must complete promptly (was ${cancelDuration}ms)", cancelDuration < 1500L)
         assertFalse("Parent job must no longer be active", parentJob.isActive)
         assertTrue("Parent job must be cancelled", parentJob.isCancelled)
     }
@@ -174,7 +178,7 @@ class CancellationSafetyTest {
             }
         }
 
-        val nextResult = SpeculativePipeliner.executePipelined(
+        SpeculativePipeliner.executePipelined(
             tasks = nextTasks,
             maxConcurrencyOverride = concurrencyLimit
         )

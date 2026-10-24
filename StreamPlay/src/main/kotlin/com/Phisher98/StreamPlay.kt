@@ -678,8 +678,22 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 }
                 val animeMetaData = syncMetaData?.let { parseAnimeData(it) }
                 val kitsuid = animeMetaData?.mappings?.kitsuid
-                val resolvedAniId = animeMetaData?.mappings?.anilistId ?: data.aniId?.toIntOrNull()
-                val resolvedMalId = animeMetaData?.mappings?.malId ?: data.malId
+                var resolvedAniId = animeMetaData?.mappings?.anilistId ?: data.aniId?.toIntOrNull()
+                var resolvedMalId = animeMetaData?.mappings?.malId ?: data.malId
+                if (resolvedAniId == null && resolvedMalId == null) {
+                    val primaryAired = res.firstAirDate ?: res.releaseDate
+                    val fallbackIds = listOfNotNull(enTitle, title, orgTitle, jpTitle)
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                        .firstNotNullOfOrNull { candidate ->
+                            runCatching {
+                                convertTmdbToAnimeId(candidate, primaryAired, primaryAired, TvType.Anime)
+                            }.getOrNull()?.takeIf { it.id != null || it.idMal != null }
+                        }
+                    resolvedAniId = fallbackIds?.id
+                    resolvedMalId = fallbackIds?.idMal
+                }
 
                 val tmdbSeasonEpisodes = episodes.filter { (it.season ?: 1) != 0 }.map { ep ->
                     val parsed = runCatching { parseJson<LinkData>(ep.data) }.getOrNull()
@@ -888,6 +902,22 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 }
                 syncMeta?.let { parseAnimeData(it)?.mappings }
             } else null
+            var movieAniId = movieAnimeMappings?.anilistId ?: data.aniId?.toIntOrNull()
+            var movieMalId = movieAnimeMappings?.malId ?: data.malId
+            if (isAnime && movieAniId == null && movieMalId == null) {
+                val primaryAired = res.releaseDate ?: res.firstAirDate
+                val fallbackIds = listOfNotNull(enTitle, title, orgTitle)
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+                    .firstNotNullOfOrNull { candidate ->
+                        runCatching {
+                            convertTmdbToAnimeId(candidate, primaryAired, primaryAired, TvType.AnimeMovie)
+                        }.getOrNull()?.takeIf { it.id != null || it.idMal != null }
+                    }
+                movieAniId = fallbackIds?.id
+                movieMalId = fallbackIds?.idMal
+            }
 
             val movieResponse = newMovieLoadResponse(
                 title,
@@ -898,8 +928,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     movieImdbId,
                     res.external_ids?.tvdb_id,
                     data.type,
-                    aniId = (movieAnimeMappings?.anilistId ?: data.aniId?.toIntOrNull())?.toString(),
-                    malId = movieAnimeMappings?.malId ?: data.malId,
+                    aniId = movieAniId?.toString(),
+                    malId = movieMalId,
                     title = enTitle ?: title,
                     year = year,
                     orgTitle = orgTitle,

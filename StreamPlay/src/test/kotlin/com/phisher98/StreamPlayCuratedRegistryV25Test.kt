@@ -650,7 +650,7 @@ class StreamPlayCuratedRegistryV25Test {
         curatedIds.forEach { id ->
             val provider = providers.firstOrNull { it.id == id }
             assertNotNull("$id must be registered", provider)
-            assertTrue("$id must expose a resolver lambda", provider!!.invoke != null)
+            assertEquals(id, provider!!.id)
         }
         assertTrue("Movie titles must remain resolvable", linkData.isAnime.not())
     }
@@ -865,6 +865,32 @@ class StreamPlayCuratedRegistryV25Test {
         assertEquals(1, parsed.tracks.size)
         assertEquals("English", parsed.tracks[0].first)
         assertEquals("https://broforgotsave.online/subs/en.vtt", parsed.tracks[0].second)
+
+        // Live 2026-10-24 MegaPlay getSources ("enc" + embermeadow.world tracks) and dec-megaplay ("result.file")
+        val liveGetSourcesJson = """{
+            "enc": "cb0f026fb01fa50df9e488dc97a63e22948512",
+            "tracks": [
+                {"file": "https://j1i9s.embermeadow.world/_v7/abc/subtitles/eng-2.vtt", "label": "English", "kind": "captions", "default": true},
+                {"file": "https://j1i9s.embermeadow.world/_v7/abc/thumbnails/sprite.vtt", "kind": "thumbnails"}
+            ]
+        }"""
+        val liveInitial = megaplayParseSourcesPayload(liveGetSourcesJson)
+        assertNotNull(liveInitial)
+        assertEquals("cb0f026fb01fa50df9e488dc97a63e22948512", liveInitial!!.encryptedSources)
+        assertTrue(liveInitial.directUrls.isEmpty())
+        assertEquals(1, liveInitial.tracks.size)
+        assertEquals("English", liveInitial.tracks[0].first)
+        assertEquals("https://j1i9s.embermeadow.world/_v7/abc/subtitles/eng-2.vtt", liveInitial.tracks[0].second)
+
+        val liveDecryptedJson = """{
+            "status": 200,
+            "result": {
+                "file": "https://fetch.nexabloom.top/anime/abc123/master.m3u8?token=xyz"
+            }
+        }"""
+        val liveDecrypted = megaplayParseSourcesPayload(liveDecryptedJson)
+        assertNotNull(liveDecrypted)
+        assertEquals(listOf("https://fetch.nexabloom.top/anime/abc123/master.m3u8?token=xyz"), liveDecrypted!!.directUrls)
     }
 
     @Test

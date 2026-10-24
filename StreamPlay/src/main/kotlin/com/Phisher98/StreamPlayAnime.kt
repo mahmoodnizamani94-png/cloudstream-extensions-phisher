@@ -223,15 +223,17 @@ class StreamPlayAnime : MainAPI() {
                 fetched
             }
             val animeMetaData = parseAnimeData(syncMetaData)
-            val imdbid = animeMetaData?.mappings?.imdbId
+            val rawImdbId = animeMetaData?.mappings?.imdbId?.trim()?.takeIf { it.isNotBlank() }
             val kitsuid = animeMetaData?.mappings?.kitsuid
             val resolvedMalId = ids.idMal ?: animeMetaData?.mappings?.malId
             val resolvedAniId = ids.id ?: animeMetaData?.mappings?.anilistId ?: id.toIntOrNull()
 
             val tmdbid = animeMetaData?.mappings?.themoviedbId?.toIntOrNull()
-                ?: imdbid?.let { resolveTmdbIdFromImdb(it, if (isMovie) null else 1) }
+                ?: rawImdbId?.let { resolveTmdbIdFromImdb(it, if (isMovie) null else 1) }
                 ?: resolveTmdbIdByTitle(anititle, aniyear, isMovie)
                 ?: resolveTmdbIdByTitle(jpTitle, aniyear, isMovie)
+
+            val imdbid = rawImdbId ?: tmdbid?.let { StreamPlayExtractor.resolveImdbIdFromTmdb(it, isMovie) }
 
             val type = if (isMovie) TvType.Movie else TvType.TvSeries
 
@@ -569,8 +571,9 @@ class StreamPlayAnime : MainAPI() {
             ) -> Unit
         )
 
-        val subLookupId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
-        val animeImdbId = mediaData.imdbId
+        val animeImdbId = mediaData.imdbId?.trim()?.takeIf { it.isNotBlank() }
+            ?: effectiveTmdbId?.let { StreamPlayExtractor.resolveImdbIdFromTmdb(it, isMovie) }
+        val subLookupId = animeImdbId ?: effectiveTmdbId?.toString()
 
         // Every name the show is released under. AnimePahe and AniZone are searched by title, and
         // a currently airing or localized show is frequently indexed under a name that is neither

@@ -100,19 +100,28 @@ suspend fun convertTmdbToAnimeId(
 
     val year = sDate?.firstOrNull()?.toIntOrNull()
     val airedYear = sAiredDate?.firstOrNull()?.toIntOrNull()
-    val season = getSeason(sDate?.get(1)?.toIntOrNull())
-    val airedSeason = getSeason(sAiredDate?.get(1)?.toIntOrNull())
+    val season = getSeason(sDate?.getOrNull(1)?.toIntOrNull())
+    val airedSeason = getSeason(sAiredDate?.getOrNull(1)?.toIntOrNull())
 
     return if (type == TvType.AnimeMovie) {
-        tmdbToAnimeId(title, airedYear, "", type)
+        val byAired = tmdbToAnimeId(title, airedYear ?: year, "", type)
+        if (byAired.id == null && byAired.idMal == null && (airedYear != null || year != null)) {
+            tmdbToAnimeId(title, null, "", type)
+        } else {
+            byAired
+        }
     } else {
         val ids = tmdbToAnimeId(title, year, season, type)
-        if (ids.id == null && ids.idMal == null) tmdbToAnimeId(
-            title,
-            airedYear,
-            airedSeason,
-            type
-        ) else ids
+        val afterAired = if (ids.id == null && ids.idMal == null && airedYear != null && airedYear != year) {
+            tmdbToAnimeId(title, airedYear, airedSeason, type)
+        } else {
+            ids
+        }
+        if (afterAired.id == null && afterAired.idMal == null && (year != null || airedYear != null)) {
+            tmdbToAnimeId(title, null, null, type)
+        } else {
+            afterAired
+        }
     }
 }
 
@@ -454,7 +463,7 @@ val languageMap: Map<String, Set<String>> = mapOf(
     "Dutch"       to setOf("nl", "nld", "dut"),
     "English"     to setOf("en", "eng"),
     "Estonian"    to setOf("et", "est"),
-    "Filipino"    to setOf("tl", "tgl"),
+    "Filipino"    to setOf("tl", "tgl", "fil"),
     "Finnish"     to setOf("fi", "fin"),
     "French"      to setOf("fr", "fra", "fre"),
     "Galician"    to setOf("gl", "glg"),

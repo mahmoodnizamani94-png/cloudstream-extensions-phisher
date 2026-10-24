@@ -523,6 +523,7 @@ object StreamLinkOptimizer {
             lowerUrl.contains("megaplay.buzz") ||
             lowerUrl.contains("nexabloom.top") ||
             lowerUrl.contains("broforgotsave.online") ||
+            lowerUrl.contains("embermeadow.world") ||
             referer?.contains("megaplay.buzz", ignoreCase = true) == true
         // AniZone serves every episode from a rotating soft-sub CDN (`*.xin-cdn.xyz`,
         // `*.vid-cdn.xyz`). The packs are hotlink-protected by an Origin/Referer check, so the
@@ -1027,6 +1028,7 @@ object StreamLinkOptimizer {
             lowerUrl.contains("megaplay.buzz") ||
             lowerUrl.contains("nexabloom.top") ||
             lowerUrl.contains("broforgotsave.online") ||
+            lowerUrl.contains("embermeadow.world") ||
             referer?.contains("megaplay.buzz", ignoreCase = true) == true
         // AniZone serves every episode from a rotating soft-sub CDN (`*.xin-cdn.xyz`,
         // `*.vid-cdn.xyz`). The packs are hotlink-protected by an Origin/Referer check, so the
@@ -1331,7 +1333,10 @@ object StreamLinkOptimizer {
 
         // Priority 3d: Masked/Text playlists (/master.txt, /playlist.txt, /playlist.jpg)
         if (TEXT_PLAYLIST_REGEX.containsMatchIn(cleanPath)) {
-            if (cleanPath.contains("/hls/") || cleanPath.contains("/m3u8/") || cleanPath.endsWith("/playlist.jpg") || cleanPath.contains("bright67.online")) return ExtractorLinkType.M3U8
+            if (cleanPath.contains("/hls/") || cleanPath.contains("/m3u8/") ||
+                cleanPath.endsWith("/playlist.jpg") || cleanPath.endsWith("/master.txt") ||
+                cleanPath.endsWith("/playlist.txt") || cleanPath.contains("bright67.online")
+            ) return ExtractorLinkType.M3U8
             if (cleanPath.contains("/dash/") || cleanPath.contains("/mpd/")) return ExtractorLinkType.DASH
         }
 
@@ -2126,10 +2131,10 @@ object StreamLinkOptimizer {
                 u.contains("vidfast.vc") || u.contains("zenoak") -> 93
             s.contains("megaplay") || n.contains("megaplay") ||
                 u.contains("megaplay.buzz") || u.contains("nexabloom.top") ||
-                u.contains("broforgotsave.online") -> 92
+                u.contains("broforgotsave.online") || u.contains("embermeadow.world") -> 92
             s.contains("meowtv") || n.contains("meowtv") ||
                 u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
-                u.contains("krico443jez.com") -> 91
+                u.contains("krico443jez.com") || u.contains("fastcloud.live") -> 91
             s.contains("anizone") || n.contains("anizone") ||
                 u.contains("anizone.to") || u.contains("xin-cdn.xyz") ||
                 u.contains("vid-cdn.xyz") -> 89
@@ -2140,7 +2145,10 @@ object StreamLinkOptimizer {
                 u.contains("uwucdn.top") || u.contains("owocdn.top") -> 88
             s.contains("animex") || n.contains("animex") ||
                 u.contains("animex.one") || u.contains("aniwatchtv.site") ||
-                u.contains("krussdomi.com") || u.contains("echovideo.to") -> 87
+                u.contains("krussdomi.com") || u.contains("echovideo.to") ||
+                u.contains("echovideo.ru") || u.contains("kaa.lt") ||
+                u.contains("megavid.se") || u.contains("dramahot.top") ||
+                u.contains("zokoanime.video") || u.contains("dpopdrop89.store") -> 87
             else -> 0
         }
     }

@@ -335,4 +335,155 @@ class StreamPlayV25AnimeSourcesTest {
         assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English - Hearing Impaired")))
         assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("Japanese", language = "ja")))
     }
+
+    @Test
+    fun `animepahe play page parses explicit MB sizes from pickDownload menu`() {
+        val html = """
+            <html><body>
+              <div id="resolutionMenu">
+                <button data-src="https://kwik.cx/e/sub720" data-resolution="720" data-audio="jpn" data-fansub="SubsPlease">SubsPlease · 720p</button>
+                <button data-src="https://kwik.cx/e/sub1080" data-resolution="1080" data-audio="jpn" data-fansub="SubsPlease">SubsPlease · 1080p</button>
+              </div>
+              <div id="pickDownload">
+                <a href="https://pahe.win/dl720" class="dropdown-item">SubsPlease · 720p (64 MB)</a>
+                <a href="https://pahe.win/dl1080" class="dropdown-item">SubsPlease · 1080p (138 MB)</a>
+              </div>
+            </body></html>
+        """.trimIndent()
+
+        val sources = StreamPlayExtractor.animePaheParsePlaySources(html)
+        assertEquals(2, sources.size)
+        assertEquals(64, sources.first { it.quality == Qualities.P720.value }.sizeMb)
+        assertEquals(138, sources.first { it.quality == Qualities.P1080.value }.sizeMb)
+    }
+
+    @Test
+    fun `kaa direct fallback parses search episodes and cat-player props with English subtitles`() {
+        val searchJson = """[
+            {"slug":"frieren-beyond-journeys-end-f638","title":"Sousou no Frieren","title_en":"Frieren: Beyond Journey's End","year":2023,"type":"TV"}
+        ]"""
+        val hits = StreamPlayExtractor.kaaParseSearch(searchJson)
+        assertEquals(1, hits.size)
+        val picked = StreamPlayExtractor.pickKaaHit(hits, listOf("Frieren: Beyond Journey's End"), 2023, isMovie = false)
+        assertNotNull(picked)
+        assertEquals("frieren-beyond-journeys-end-f638", picked!!.slug)
+
+        val episodesJson = """{
+            "pages": [{"number": 1}],
+            "result": [
+                {"episode_number": 1, "slug": "90bf29"},
+                {"episode_number": 2, "slug": "a12bc3"}
+            ]
+        }"""
+        assertEquals("90bf29", StreamPlayExtractor.kaaParseEpisodeSlug(episodesJson, 1))
+
+        val episodeDetailJson = """{
+            "servers": [
+                {"name": "VidStreaming", "shortName": "Vid", "src": "https://krussdomi.com/vidstreaming/player.php?id=6516fd5ad9835969ff592f7b&ln=ja-JP"}
+            ]
+        }"""
+        val subUrls = StreamPlayExtractor.kaaParseEpisodeCatPlayerUrls(episodeDetailJson)
+        assertEquals(listOf("https://krussdomi.com/cat-player/player?id=6516fd5ad9835969ff592f7b"), subUrls)
+
+        val catHtml = """
+            <html><body>
+            <astro-island props='{&quot;manifest&quot;:[0,&quot;//hls.krussdomi.com/manifest/6516fd5ad9835969ff592f7b/master.m3u8&quot;],&quot;subtitles&quot;:[1,[[0,{&quot;language&quot;:[0,&quot;en&quot;],&quot;label&quot;:[0,&quot;English&quot;],&quot;src&quot;:[0,&quot;//subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/en.vtt&quot;]}],[0,{&quot;language&quot;:[0,&quot;es&quot;],&quot;label&quot;:[0,&quot;Spanish&quot;],&quot;src&quot;:[0,&quot;//subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/es.vtt&quot;]}]]]}'></astro-island>
+            </body></html>
+        """.trimIndent()
+        val parsed = StreamPlayExtractor.kaaParseCatPlayerHtml(catHtml)
+        assertNotNull(parsed)
+        assertEquals("https://hls.krussdomi.com/manifest/6516fd5ad9835969ff592f7b/master.m3u8", parsed!!.sources?.firstOrNull()?.url)
+        assertEquals(2, parsed.tracks?.size)
+        val enTrack = parsed.tracks!!.first { it.lang == "en" }
+        assertEquals("English", enTrack.label)
+        assertEquals("https://subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/en.vtt", enTrack.url)
+
+        assertEquals("Filipino", getLanguage("fil"))
+    }
+
+    @Test
+    fun `megaplay offline AES-CBC decryption and HMAC-SHA256 CDN token signing work without enc-dec app`() {
+        val rawUrl = "https://fetch.nexabloom.top/anime/bb6d2babd7797d94d8f4a8600bc9b44e/b7d51fb7e838ee9b60dcdb34b953bc07/master.m3u8"
+        val plainJson = """{"file":"$rawUrl"}"""
+
+        val keyBytes = ByteArray(32)
+        val prefix = "i?LMTAx0Q6,:}50U".toByteArray(Charsets.UTF_8)
+        System.arraycopy(prefix, 0, keyBytes, 0, prefix.size)
+        val ivBytes = "W0;27ToaUpl_P%'c".toByteArray(Charsets.UTF_8)
+
+        val cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(
+            javax.crypto.Cipher.ENCRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(keyBytes, "AES"),
+            javax.crypto.spec.IvParameterSpec(ivBytes)
+        )
+        val enc = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(cipher.doFinal(plainJson.toByteArray(Charsets.UTF_8)))
+
+        val decryptedSigned = StreamPlayExtractor.megaplayDecryptEnc(
+            enc = enc,
+            ttlSeconds = 14_400L,
+            nowEpochSec = 1_700_000_000L
+        )
+        assertNotNull(decryptedSigned)
+        assertTrue(decryptedSigned!!.startsWith("$rawUrl?token="))
+
+        val tokenPart = decryptedSigned.substringAfter("?token=")
+        val segments = tokenPart.split(".")
+        assertEquals(2, segments.size)
+        val decodedPayload = String(java.util.Base64.getUrlDecoder().decode(segments[0]), Charsets.UTF_8)
+        assertEquals(
+            "1700014400|bb6d2babd7797d94d8f4a8600bc9b44e/b7d51fb7e838ee9b60dcdb34b953bc07",
+            decodedPayload
+        )
+    }
+
+    @Test
+    fun `meowtv offline WASM keystream decrypts live api meowtv ru payload without enc-dec app`() {
+        val n = "600b0f7173992381de71bfcf1b4e1e2c"
+        val expectedPlain = """{"language":"Auto","url":"https://cdn2.fastcloud.live/movie/550/data/en/ae96bd4699e081987444c6df26a87cb7/1080/bigtits.m3u8","headers":{}}"""
+        val key = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(("10eE3wyyhkF38rwLFwisRYgwP2bbTL_Y" + n).toByteArray(Charsets.UTF_8))
+        val plainBytes = expectedPlain.toByteArray(Charsets.UTF_8)
+        val cipherBytes = ByteArray(plainBytes.size) { i ->
+            (plainBytes[i].toInt() xor key[i and 31].toInt()).toByte()
+        }
+        val d = java.util.Base64.getEncoder().encodeToString(cipherBytes)
+
+        val res = StreamPlayExtractor.meowTvDecryptOffline(n, d)
+        assertNotNull(res)
+        assertEquals("Auto", res!!.language)
+        assertEquals(
+            "https://cdn2.fastcloud.live/movie/550/data/en/ae96bd4699e081987444c6df26a87cb7/1080/bigtits.m3u8",
+            res.url
+        )
+        assertNull(StreamPlayExtractor.meowTvDecryptOffline("", d))
+        assertNull(StreamPlayExtractor.meowTvDecryptOffline(n, "not-valid-cipher"))
+    }
+
+    @Test
+    fun `animeSourceTitles prepends resolved cour title and season-qualified names for Season 2+`() {
+        val s2Link = StreamPlay.LinkData(
+            id = 95479,
+            title = "Jujutsu Kaisen",
+            jpTitle = "Jujutsu Kaisen",
+            season = 2,
+            episode = 3,
+            isAnime = true
+        )
+        val candidates = s2Link.animeSourceTitles(resolvedSeasonTitle = "Jujutsu Kaisen 2nd Season")
+        assertEquals("Jujutsu Kaisen 2nd Season", candidates[0])
+        assertEquals("Jujutsu Kaisen Season 2", candidates[1])
+        assertEquals("Jujutsu Kaisen", candidates[2])
+
+        val s1Link = StreamPlay.LinkData(
+            id = 95479,
+            title = "Jujutsu Kaisen",
+            jpTitle = "Sorcery Fight",
+            season = 1,
+            episode = 3,
+            isAnime = true
+        )
+        assertEquals(listOf("Jujutsu Kaisen", "Sorcery Fight"), s1Link.animeSourceTitles())
+    }
 }

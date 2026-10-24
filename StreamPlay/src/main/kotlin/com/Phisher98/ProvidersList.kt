@@ -50,12 +50,35 @@ private fun getDubStatus(res: StreamPlay.LinkData): String {
  *
  * AnimePahe and AniZone index a show under its English, Romaji, native or synonym release title,
  * and neither exposes an AniList/MAL id lookup. Searching only `title` is why a localized show
- * used to produce no result at all.
+ * used to produce no result at all. For Season 2+ or multi-cour continuations inside `StreamPlay`,
+ * the resolved cour/season title (`resolvedSeasonTitle`) and season-qualified title variants are
+ * placed first so Season 2+ never collides with Season 1 in name-keyed catalogues.
  */
-private fun StreamPlay.LinkData.animeSourceTitles(): List<String> {
-    return listOfNotNull(title, jpTitle, orgTitle, alttitle, nametitle)
+internal fun StreamPlay.LinkData.animeSourceTitles(
+    resolvedSeasonTitle: String? = null
+): List<String> {
+    val seasonNum = season ?: 1
+    val baseTitles = listOfNotNull(title, jpTitle, orgTitle, alttitle, nametitle)
         .map { it.trim() }
         .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+    val seasonQualified = if (seasonNum >= 2) {
+        baseTitles.flatMap { base ->
+            if (Regex("""(?i)\b(?:season|part|cour)\s*\d+\b|\b\d+(?:st|nd|rd|th)\s+season\b""").containsMatchIn(base)) {
+                listOf(base)
+            } else {
+                val ordinal = when (seasonNum) {
+                    2 -> "2nd Season"
+                    3 -> "3rd Season"
+                    else -> "${seasonNum}th Season"
+                }
+                listOf("$base Season $seasonNum", "$base $ordinal")
+            }
+        }
+    } else {
+        emptyList()
+    }
+    return (listOfNotNull(resolvedSeasonTitle?.trim()?.takeIf { it.isNotBlank() }) + seasonQualified + baseTitles)
         .distinctBy { it.lowercase() }
 }
 
@@ -80,7 +103,8 @@ private fun StreamPlayCache.AnimeIdMapping.toResolvedAnimeIds(): StreamPlayExtra
 private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.AnimeResolvedIds {
     val directAniId = res.aniId?.toIntOrNull()
     val directMalId = res.malId
-    if (directAniId != null || directMalId != null) {
+    val mayNeedCourWalk = (res.season ?: 1) >= 2 || (res.episode ?: 1) > 12
+    if ((directAniId != null || directMalId != null) && !mayNeedCourWalk) {
         return StreamPlayExtractor.AnimeResolvedIds(
             malId = directMalId,
             anilistId = directAniId,
@@ -115,7 +139,9 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
             season = res.season,
             episode = res.episode,
             tmdbId = res.id,
-            imdbId = res.imdbId
+            imdbId = res.imdbId,
+            initialAniId = directAniId,
+            initialMalId = directMalId
         )
     }
 
@@ -152,11 +178,11 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
  *   2. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 95  (#2, multi-server + offline mvm1)
  *   3. CineSrc   - cinesrc.st        | Universal (Movie/TV/Anime) | Rank 94  (#3, CSP4 PoW + Nebula/Wave/Surge + subs)
  *   4. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 93  (#4, enc-vidfast handshake)
- *   5. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#5, MAL/AniList + dec-megaplay)
- *   6. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#6, single-use ticket + dec-meowtv)
+ *   5. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#5, MAL/AniList + offline AES-CBC/HMAC)
+ *   6. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#6, single-use ticket + offline SHA-256 XOR)
  *   7. AniZone   - anizone.to        | Anime                      | Rank 89  (#7, soft-sub HLS ladder + English SRT/ASS sidecars)
  *   8. AnimePahe - animepahe.pw      | Anime                      | Rank 88  (#8, Cloudflare-gated Kwik HLS, deepest airing/rare catalogue)
- *   9. Animex    - animex.one        | Anime                      | Rank 87  (#9, GraphQL + concurrent multi-provider fan-out)
+ *   9. Animex    - animex.one        | Anime                      | Rank 87  (#9, GraphQL + SSR + kaa.lt multi-provider fan-out)
  *
  * The two anime additions exist for the cases the older anime sources fail: currently airing
  * episodes, very old or low-popularity titles, and above all subtitles. AniZone ships real
@@ -227,10 +253,11 @@ private val providers by lazy {
         },
         Provider("anizone", "AniZone") { res, subtitleCallback, callback, _, _ ->
             if (res.isAnime) {
+                val ids = if ((res.season ?: 1) >= 2 || (res.episode ?: 1) > 12) getAnimeIds(res) else null
                 invokeAniZone(
-                    titles = res.animeSourceTitles(),
+                    titles = res.animeSourceTitles(ids?.zoroTitle),
                     year = res.year ?: res.airedYear,
-                    episode = res.episode,
+                    episode = ids?.resolvedEpisode ?: res.episode,
                     isMovie = res.isMovie == true,
                     dubtype = getDubStatus(res),
                     subtitleCallback = subtitleCallback,
@@ -240,10 +267,11 @@ private val providers by lazy {
         },
         Provider("animepahe", "AnimePahe") { res, subtitleCallback, callback, _, _ ->
             if (res.isAnime) {
+                val ids = if ((res.season ?: 1) >= 2 || (res.episode ?: 1) > 12) getAnimeIds(res) else null
                 invokeAnimePahe(
-                    titles = res.animeSourceTitles(),
+                    titles = res.animeSourceTitles(ids?.zoroTitle),
                     year = res.year ?: res.airedYear,
-                    episode = res.episode,
+                    episode = ids?.resolvedEpisode ?: res.episode,
                     isMovie = res.isMovie == true,
                     dubtype = getDubStatus(res),
                     subtitleCallback = subtitleCallback,
