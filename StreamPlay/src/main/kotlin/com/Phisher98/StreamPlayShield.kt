@@ -304,6 +304,10 @@ object StreamPlayShield {
      */
     internal val VETTED_SOURCE_DOMAINS: Set<String> = setOf(
         "vidlink.pro",
+        "vidrift.net",
+        "reelvault.click",
+        "bigbang.cymru",
+        "deton444eik.com",
         "wecollege.net",
         "videasy.to",
         "paleoak.top",

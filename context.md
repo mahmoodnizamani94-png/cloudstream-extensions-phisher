@@ -49,6 +49,12 @@ otherwise, and queries both `SXXEXX` and the bare `- XX` form.
 episode number, so anime that could not be mapped to TMDB no longer ends up with zero subtitle
 sources (the previous anime fallbacks were all TMDB-gated).
 
+### Provider-sidecar Movie/TV & Anime sources (v25)
+
+| Provider | Rank | Sidecars | Behaviour |
+|---|---|---|---|
+| `vidrift` | 98 | Yes | `embed.vidrift.net/embed/{movie\|tv}/{tmdbId}` SSR `embed-meta` (`bigbangSubtitles` + `/api/orion/s0/subtitles.json` `.vtt` tracks) alongside `Orion`, `BigBang`, `Vexon`, `Evion`, `Titan`, `Atlas`, `Vela`, and `Lyra` HLS streams. Tagged `X-StreamPlay-Source: vidrift` (host marker priority 98). |
+
 ### Provider-sidecar anime sources (v25)
 
 | Provider | Rank | Sidecars | Behaviour |

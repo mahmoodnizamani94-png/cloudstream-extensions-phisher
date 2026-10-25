@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 class StreamPlayProviderDefaultsTest {
 
     private val v25TopTier = setOf(
-        "vidlink", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv",
+        "vidlink", "vidrift", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv",
         "anizone", "animepahe", "animex"
     )
 
@@ -32,8 +32,8 @@ class StreamPlayProviderDefaultsTest {
     @Test
     fun testDefaultTopTierProvidersContainsExactlyTheNineCuratedSources() {
         assertEquals(
-            "Top tier default providers must contain exactly 9 sources",
-            9,
+            "Top tier default providers must contain exactly 10 sources",
+            10,
             DEFAULT_TOP_TIER_PROVIDERS.size
         )
         assertEquals("Top tier default providers must match expected IDs", v25TopTier, DEFAULT_TOP_TIER_PROVIDERS)
@@ -62,7 +62,7 @@ class StreamPlayProviderDefaultsTest {
         assertEquals("No source should be disabled by default", expectedDisabledCount, disabledIds.size)
 
         val activeProviders = allProviders.filterNot { disabledIds.contains(it.id) }
-        assertEquals("All curated sources should be active by default", 9, activeProviders.size)
+        assertEquals("All curated sources should be active by default", 10, activeProviders.size)
         assertEquals(
             "Active provider IDs must match DEFAULT_TOP_TIER_PROVIDERS",
             DEFAULT_TOP_TIER_PROVIDERS,
@@ -77,6 +77,7 @@ class StreamPlayProviderDefaultsTest {
         // is honestly classified one tier slower instead of pretending to be instant.
         val expectedTier = mapOf(
             "vidlink" to LatencyTier.TIER_1,
+            "vidrift" to LatencyTier.TIER_1,
             "cineby" to LatencyTier.TIER_1,
             "cinesrc" to LatencyTier.TIER_1,
             "vidfast" to LatencyTier.TIER_1,
@@ -101,7 +102,7 @@ class StreamPlayProviderDefaultsTest {
         val initialDisabled = getOrInitializeDisabledProviders(mockPrefs)
         val activeProviders = buildProviders().map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 9 curated sources", 9, activeProviders.size)
+        assertEquals("Clean install must activate exactly 10 curated sources", 10, activeProviders.size)
         assertEquals(v25TopTier, activeProviders)
         v25TopTier.forEach { id ->
             assertFalse("$id must NOT be in disabled set", initialDisabled.contains(id))

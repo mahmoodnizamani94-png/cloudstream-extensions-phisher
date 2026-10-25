@@ -318,6 +318,12 @@ open class OptimizedDns(
             // v25 SOTA streaming tier: every provider API + its live verified CDNs,
             // warmed so the first play attempt never pays a cold DNS roundtrip.
             "vidlink.pro",
+            "vidrift.net",
+            "embed.vidrift.net",
+            "edge.reelvault.click",
+            "media.reelvault.click",
+            "bigbang.cymru",
+            "i-arch-400.deton444eik.com",
             "api.wecollege.net",
             "player.videasy.to",
             "sun.paleoak.top",

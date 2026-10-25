@@ -166,7 +166,7 @@ object StreamLinkOptimizer {
     private val TORRENT_EXT_REGEX = Regex("""\.torrent$""", RegexOption.IGNORE_CASE)
     private val AZURE_HLS_REGEX = Regex("""/manifest\(format=m3u8""", RegexOption.IGNORE_CASE)
     private val AZURE_DASH_REGEX = Regex("""/manifest\(format=mpd""", RegexOption.IGNORE_CASE)
-    private val TEXT_PLAYLIST_REGEX = Regex("""/(?:master|playlist|index|list)\.(?:txt|jpg|png)$""", RegexOption.IGNORE_CASE)
+    private val TEXT_PLAYLIST_REGEX = Regex("""/(?:master|playlist|index|list)\.(?:txt|jpg|png)$|\.m3u8\.(?:png|jpg|txt)$""", RegexOption.IGNORE_CASE)
 
     // Quality Tag Regexes
     private val QUALITY_EXPLICIT_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(2160|1440|1080|720|576|540|480|360)\s*[pP]?(?:[^a-zA-Z0-9]|$)""")
@@ -512,6 +512,13 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.buzz") ||
             referer?.contains("videm.xyz", ignoreCase = true) == true ||
             referer?.contains("vidsrc.buzz", ignoreCase = true) == true
+        val isVidRift = source?.contains("vidrift", ignoreCase = true) == true ||
+            name?.contains("vidrift", ignoreCase = true) == true ||
+            lowerUrl.contains("vidrift.net") ||
+            lowerUrl.contains("reelvault.click") ||
+            lowerUrl.contains("bigbang.cymru") ||
+            lowerUrl.contains("deton444eik.com") ||
+            referer?.contains("vidrift.net", ignoreCase = true) == true
         val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
             name?.contains("cineby", ignoreCase = true) == true ||
             lowerUrl.contains("wecollege.net") ||
@@ -634,6 +641,21 @@ object StreamLinkOptimizer {
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isVidRift -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                val eff = if (supplied != null && supplied.contains("vidrift.net", ignoreCase = true)) {
+                    supplied
+                } else {
+                    "https://embed.vidrift.net/"
+                }
+                headers[HEADER_REFERER] = eff
+                headers[HEADER_ORIGIN] = "https://embed.vidrift.net"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
             }
@@ -1017,6 +1039,13 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.buzz") ||
             referer?.contains("videm.xyz", ignoreCase = true) == true ||
             referer?.contains("vidsrc.buzz", ignoreCase = true) == true
+        val isVidRift = source?.contains("vidrift", ignoreCase = true) == true ||
+            name?.contains("vidrift", ignoreCase = true) == true ||
+            lowerUrl.contains("vidrift.net") ||
+            lowerUrl.contains("reelvault.click") ||
+            lowerUrl.contains("bigbang.cymru") ||
+            lowerUrl.contains("deton444eik.com") ||
+            referer?.contains("vidrift.net", ignoreCase = true) == true
         val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
             name?.contains("cineby", ignoreCase = true) == true ||
             lowerUrl.contains("wecollege.net") ||
@@ -1123,6 +1152,16 @@ object StreamLinkOptimizer {
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
             isVidlink -> ""
+            isVidRift -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                if (supplied != null && supplied.contains("vidrift.net", ignoreCase = true)) {
+                    supplied
+                } else {
+                    "https://embed.vidrift.net/"
+                }
+            }
             isCineby -> "https://player.videasy.to/"
             isMegaPlay -> "https://megaplay.buzz/"
             isVixSrc || lowerUrl.contains("vixsrc.to") -> "https://vixsrc.to/"
@@ -1331,11 +1370,12 @@ object StreamLinkOptimizer {
             return ExtractorLinkType.DASH
         }
 
-        // Priority 3d: Masked/Text playlists (/master.txt, /playlist.txt, /playlist.jpg)
+        // Priority 3d: Masked/Text playlists (/master.txt, /playlist.txt, /playlist.jpg, *.m3u8.png)
         if (TEXT_PLAYLIST_REGEX.containsMatchIn(cleanPath)) {
             if (cleanPath.contains("/hls/") || cleanPath.contains("/m3u8/") ||
                 cleanPath.endsWith("/playlist.jpg") || cleanPath.endsWith("/master.txt") ||
-                cleanPath.endsWith("/playlist.txt") || cleanPath.contains("bright67.online")
+                cleanPath.endsWith("/playlist.txt") || cleanPath.contains("bright67.online") ||
+                cleanPath.contains(".m3u8.")
             ) return ExtractorLinkType.M3U8
             if (cleanPath.contains("/dash/") || cleanPath.contains("/mpd/")) return ExtractorLinkType.DASH
         }
@@ -1750,6 +1790,7 @@ object StreamLinkOptimizer {
     fun isTopTierProvider(providerId: String): Boolean {
         val p = providerId.lowercase(Locale.ROOT)
         return p.contains("vidlink") ||
+            p.contains("vidrift") ||
             p.contains("cineby") ||
             p.contains("cinesrc") ||
             p.contains("vidfast") ||
@@ -2121,6 +2162,10 @@ object StreamLinkOptimizer {
                 u.contains("vidlink.pro") || u.contains("hakunaymatata")) &&
                 !u.contains("mov2day") && !u.contains("/proxy?") && !u.contains("hd4u.") &&
                 !s.contains("vidsrc") -> 100
+            s.contains("vidrift") || n.contains("vidrift") ||
+                u.contains("vidrift.net") || u.contains("reelvault.click") ||
+                u.contains("bigbang.cymru") || u.contains("deton444eik.com") ||
+                r.contains("vidrift.net") -> 98
             s.contains("cineby") || n.contains("cineby") ||
                 u.contains("wecollege.net") || u.contains("paleoak.top") ||
                 u.contains("majorplay.net") || u.contains("falseparadise.workers.dev") ||
@@ -3080,7 +3125,7 @@ object StreamLinkOptimizer {
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.
              */
-            private val TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 89, 88, 87)
+            private val TOP_TIER_RANKS = listOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87)
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {

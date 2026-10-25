@@ -97,6 +97,7 @@ internal val ANIME_ONLY_PROVIDERS = setOf(
 )
 
 internal val NON_ANIME_PROVIDERS = setOf(
+    "vidrift",
     "vidfast",
     "meowtv"
 )

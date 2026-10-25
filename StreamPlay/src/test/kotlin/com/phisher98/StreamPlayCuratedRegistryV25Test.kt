@@ -50,6 +50,7 @@ class StreamPlayCuratedRegistryV25Test {
 
     private val curatedIds = setOf(
         "vidlink",
+        "vidrift",
         "cineby",
         "cinesrc",
         "vidfast",
@@ -63,6 +64,7 @@ class StreamPlayCuratedRegistryV25Test {
     /** Authoritative launch hierarchy: strictly descending boost per provider id. */
     private val boostByProvider = linkedMapOf(
         "vidlink" to 100f,
+        "vidrift" to 98f,
         "cineby" to 95f,
         "cinesrc" to 94f,
         "vidfast" to 93f,
@@ -82,6 +84,7 @@ class StreamPlayCuratedRegistryV25Test {
      */
     private val tierByProvider = mapOf(
         "vidlink" to LatencyTier.TIER_1,
+        "vidrift" to LatencyTier.TIER_1,
         "cineby" to LatencyTier.TIER_1,
         "cinesrc" to LatencyTier.TIER_1,
         "vidfast" to LatencyTier.TIER_1,
@@ -140,6 +143,7 @@ class StreamPlayCuratedRegistryV25Test {
 
         val byId = providers.associateBy { it.id }
         assertEquals("VidLink", byId.getValue("vidlink").name)
+        assertEquals("VidRift", byId.getValue("vidrift").name)
         assertEquals("Cineby", byId.getValue("cineby").name)
         assertEquals("CineSrc", byId.getValue("cinesrc").name)
         assertEquals("VidFast", byId.getValue("vidfast").name)
@@ -209,6 +213,11 @@ class StreamPlayCuratedRegistryV25Test {
     @Test
     fun testSourcePriorityRankCoversLabelsAndCdnHosts() {
         assertEquals(100, rankOf("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4"))
+        assertEquals(98, rankOf("VidRift", "VidRift Titan [720p]", "https://img1.hscow.com/v4/720/index_287.m3u8"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://edge.reelvault.click/proxy?u=abc"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://media.reelvault.click/vexon/media/index.m3u8"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://bigbang.cymru/media/master.m3u8.png"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://i-arch-400.deton444eik.com/stream2/index.m3u8"))
         assertEquals(95, rankOf("Cineby", "Cineby Tampa [1080p]", "https://sun.paleoak.top/x.m3u8"))
         assertEquals(94, rankOf("CineSrc", "CineSrc Nebula [720p]", "https://nebula.bright67.online/hls2/master.txt"))
         assertEquals(93, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
@@ -939,7 +948,7 @@ class StreamPlayCuratedRegistryV25Test {
     @Test
     fun testSegmentGatesForMovieTvAndAnime() {
         // Movie/TV-only sources must never race an anime title.
-        listOf("vidfast", "meowtv").forEach { id ->
+        listOf("vidrift", "vidfast", "meowtv").forEach { id ->
             assertTrue("$id must be a NON_ANIME provider", NON_ANIME_PROVIDERS.contains(id))
             assertFalse("$id must not be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
         }
@@ -996,6 +1005,7 @@ class StreamPlayCuratedRegistryV25Test {
         OptimizedDns.TOP_PREDICTIVE_DOMAINS.let { domains ->
             listOf(
                 "vidlink.pro", "bcdn.hakunaymatata.com",
+                "vidrift.net", "embed.vidrift.net", "edge.reelvault.click", "media.reelvault.click", "bigbang.cymru",
                 "api.wecollege.net", "player.videasy.to", "sun.paleoak.top", "e2e.majorplay.net",
                 "cinesrc.st", "nebula.bright67.online", "ice.bright67.online", "subs.bright67.online", "api.wing.st",
                 "vidfast.vc", "moon.zenoak.top",

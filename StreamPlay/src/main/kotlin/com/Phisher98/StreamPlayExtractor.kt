@@ -4016,14 +4016,37 @@ object StreamPlayExtractor : StreamPlay() {
                     if (effHlsRef.isNotBlank()) hlsHeaders["Referer"] = effHlsRef
 
                     val generatedLinks = withTimeoutOrNull(15000L) {
-                        runCatching {
-                            generateM3u8(
-                                "Vidlink",
-                                cleanM3u8Url,
-                                referer = effHlsRef,
-                                headers = hlsHeaders
-                            )
-                        }.getOrNull()
+                        val manifestText = cancellableGetText(cleanM3u8Url, headers = hlsHeaders, timeoutSec = 8L)
+                        val parsedVariants = if (!manifestText.isNullOrBlank()) {
+                            parseHlsMasterVariants(cleanM3u8Url, manifestText)
+                        } else {
+                            emptyList()
+                        }
+                        if (parsedVariants.isNotEmpty()) {
+                            parsedVariants.map { v ->
+                                val qTag = vidsrcQualityTag(v.quality)
+                                val sizeTag = v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                                newExtractorLink(
+                                    source = "Vidlink",
+                                    name = "$hlsBaseName [$qTag]$sizeTag",
+                                    url = v.url,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = effHlsRef
+                                    this.quality = v.quality
+                                    this.headers = hlsHeaders
+                                }
+                            }
+                        } else {
+                            runCatching {
+                                generateM3u8(
+                                    "Vidlink",
+                                    cleanM3u8Url,
+                                    referer = effHlsRef,
+                                    headers = hlsHeaders
+                                )
+                            }.getOrNull()
+                        }
                     }
 
                     val mappedGenerated = generatedLinks?.map { genLink ->
@@ -5318,10 +5341,43 @@ object StreamPlayExtractor : StreamPlay() {
         val estimatedSizeMb: Int?
     )
 
-    private val HLS_RESOLUTION_REGEX = Regex("""RESOLUTION=\s*\d+\s*x\s*(\d+)""", RegexOption.IGNORE_CASE)
+    private val HLS_RESOLUTION_REGEX = Regex("""RESOLUTION=\s*(\d+)\s*x\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_AVG_BW_REGEX = Regex("""AVERAGE-BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_BW_REGEX = Regex("""(?:^|[:,])\s*BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_DEMUXED_AUDIO_REGEX = Regex("""#EXT-X-MEDIA:[^\r\n]*TYPE=AUDIO[^\r\n]*URI="[^"]+"""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Maps HLS `#EXT-X-STREAM-INF` `RESOLUTION={width}x{height}` dimensions to canonical quality
+     * tiers (`2160`, `1440`, `1080`, `720`, `480`, `360`), accurately handling 2.39:1 / 2.20:1 /
+     * 1.85:1 cinema widescreen encodes (`1280x534` -> `720p`, `1920x800` -> `1080p`,
+     * `854x356` -> `480p`, `640x268` -> `360p`).
+     */
+    internal fun normalizeHlsResolutionToQuality(width: Int?, height: Int?, uriLine: String): Int {
+        val w = width ?: 0
+        val h = height ?: 0
+        if (w <= 0 && h <= 0) return StreamLinkOptimizer.extractQualityFromText(uriLine)
+        if (w <= 0 || h <= 0) return snapHlsTier(if (w > 0) w else h)
+        val shortDim = minOf(w, h)
+        val longDim = maxOf(w, h)
+        return when {
+            shortDim >= 2000 || longDim >= 3600 -> Qualities.P2160.value
+            shortDim >= 1350 || longDim >= 2400 -> Qualities.P1440.value
+            shortDim in 950..1200 || longDim in 1800..2100 -> Qualities.P1080.value
+            shortDim in 650..750 || longDim in 1200..1350 -> Qualities.P720.value
+            shortDim in 430..550 || longDim in 800..950 -> Qualities.P480.value
+            shortDim in 320..420 || longDim in 550..750 -> Qualities.P360.value
+            shortDim in 200..319 || longDim in 380..549 -> Qualities.P240.value
+            shortDim in 100..199 || longDim in 200..379 -> Qualities.P144.value
+            else -> snapHlsTier(shortDim)
+        }
+    }
+
+    /** Nearest canonical tier, mirroring `VideoQualityLadder.snapToTier` in the host app. */
+    private fun snapHlsTier(px: Int): Int {
+        if (px <= 0) return Qualities.Unknown.value
+        val ladder = intArrayOf(2160, 1440, 1080, 720, 480, 360, 240, 144)
+        return ladder.minByOrNull { kotlin.math.abs(it - px) } ?: Qualities.Unknown.value
+    }
 
     /**
      * Parses an HLS master manifest into verified resolution variants while:
@@ -5332,6 +5388,8 @@ object StreamPlayExtractor : StreamPlay() {
      * 2. Computing deterministic bitrate-proportional file size estimates (`[XXX MB]`) from
      *    `AVERAGE-BANDWIDTH` / `BANDWIDTH` so `DownloadSelectionPolicy` can compare HLS bitrates
      *    and select the lowest-file-size 720p and lowest-file-size 1080p stream.
+     * 3. Normalizing cinema widescreen dimensions (`1280x534` -> `720p`, `1920x800` -> `1080p`)
+     *    via [normalizeHlsResolutionToQuality].
      */
     internal fun parseHlsMasterVariants(
         masterUrl: String,
@@ -5347,7 +5405,9 @@ object StreamPlayExtractor : StreamPlay() {
         while (i < lines.size) {
             val line = lines[i].trim()
             if (line.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true)) {
-                val height = HLS_RESOLUTION_REGEX.find(line)?.groupValues?.get(1)?.toIntOrNull()
+                val resMatch = HLS_RESOLUTION_REGEX.find(line)
+                val width = resMatch?.groupValues?.get(1)?.toIntOrNull()
+                val height = resMatch?.groupValues?.get(2)?.toIntOrNull()
                 val avgBw = HLS_AVG_BW_REGEX.find(line)?.groupValues?.get(1)?.toLongOrNull()
                 val maxBw = HLS_BW_REGEX.find(line)?.groupValues?.get(1)?.toLongOrNull()
                 val bw = avgBw ?: maxBw
@@ -5363,16 +5423,7 @@ object StreamPlayExtractor : StreamPlay() {
                     j++
                 }
                 if (uriLine != null) {
-                    val quality = when (height) {
-                        2160 -> Qualities.P2160.value
-                        1440 -> Qualities.P1440.value
-                        1080 -> Qualities.P1080.value
-                        720 -> Qualities.P720.value
-                        480 -> Qualities.P480.value
-                        360 -> Qualities.P360.value
-                        null -> StreamLinkOptimizer.extractQualityFromText(uriLine)
-                        else -> height
-                    }
+                    val quality = normalizeHlsResolutionToQuality(width, height, uriLine)
                     val resolvedUrl = if (hasDemuxedAudio) {
                         val tag = if (quality > 0 && quality != Qualities.Unknown.value) "${quality}p" else "auto_${variants.size}"
                         "$baseUrl#vid=$tag"
@@ -5413,9 +5464,11 @@ object StreamPlayExtractor : StreamPlay() {
         url: String,
         referer: String,
         headers: Map<String, String> = emptyMap(),
+        declaredQuality: Int = Qualities.Unknown.value,
         callback: (ExtractorLink) -> Unit
     ) {
-        val isDirectVideo = url.contains(".mp4", ignoreCase = true) || url.contains(".mkv", ignoreCase = true)
+        val cleanFilename = url.substringBefore('#').substringBefore('?').substringAfterLast('/')
+        val isDirectVideo = Regex("""\.(?:mp4|mkv)$""", RegexOption.IGNORE_CASE).containsMatchIn(cleanFilename)
         val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
         val generated = if (!isDirectVideo) {
             withTimeoutOrNull(8000L) {
@@ -5446,7 +5499,24 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
                 } else {
-                    runCatching { generateM3u8(baseName, url, referer, headers = headers) }.getOrNull()
+                    val declared = declaredQuality.takeIf { it > 0 && it != Qualities.Unknown.value }
+                    if (declared != null) {
+                        val qTag = vidsrcQualityTag(declared)
+                        listOf(
+                            newExtractorLink(
+                                source = source,
+                                name = "$baseName [$qTag]",
+                                url = url,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = referer
+                                this.quality = declared
+                                this.headers = headers
+                            }
+                        )
+                    } else {
+                        runCatching { generateM3u8(baseName, url, referer, headers = headers) }.getOrNull()
+                    }
                 }
             }
         } else null
@@ -5765,5 +5835,496 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit
     ) {
         invokeMeowTV(tmdbId, season, episode, subtitleCallback = null, callback = callback)
+    }
+    // ==================== VidRift SOTA Movie/TV Multi-Lane Extractor (embed.vidrift.net, Rank 98) ====================
+
+    private const val VIDRIFT_HOST = "https://embed.vidrift.net"
+    private const val VIDRIFT_PARENT_REFERER = "https://vidrift.net/"
+    private val VIDRIFT_API_LANES = listOf("titan", "atlas", "vela", "lyra")
+    private val VIDRIFT_EMBED_META_SCRIPT_ID_REGEX = Regex("""<script[^>]*\bid=["']embed-meta["'][^>]*>([\s\S]*?)</script>""", RegexOption.IGNORE_CASE)
+    private val VIDRIFT_EMBED_META_REGEX = Regex("""embedMeta\s*=\s*(\{[\s\S]*?\})\s*;?\s*</script>""", RegexOption.IGNORE_CASE)
+
+    internal data class VidRiftOrionStream(
+        val url: String,
+        val name: String,
+        val subtitleListUrl: String?,
+        val warmManifest: String?
+    )
+
+    internal data class VidRiftEmbedMeta(
+        val playbackToken: String?,
+        val orionStreams: List<VidRiftOrionStream>,
+        val bigbangUrl: String?,
+        val bigbangSubtitles: List<Pair<String, String>>,
+        val vexonUrl: String?,
+        val evionUrl: String?,
+        val selfhostUrl: String?
+    )
+
+    internal data class VidRiftResolvedStream(
+        val url: String,
+        val name: String,
+        val quality: Int,
+        val isDirectSingleQuality: Boolean,
+        val referer: String
+    )
+
+    /**
+     * Extracts and parses the inline `embedMeta = {...};</script>` JSON object from a VidRift
+     * `/embed/movie/{id}` or `/embed/tv/{id}/{season}/{episode}` HTML document.
+     */
+    internal fun parseVidRiftEmbedMeta(html: String): VidRiftEmbedMeta? {
+        if (html.isBlank()) return null
+        val jsonStr = (
+            VIDRIFT_EMBED_META_SCRIPT_ID_REGEX.find(html)?.groupValues?.get(1)?.trim()
+                ?: VIDRIFT_EMBED_META_REGEX.find(html)?.groupValues?.get(1)?.trim()
+        )?.takeIf { it.startsWith("{") } ?: return null
+        return runCatching {
+            val root = JSONObject(jsonStr)
+            val token = root.optString("playbackToken").trim().takeIf { it.isNotBlank() && it != "null" }
+
+            val warmMap = mutableMapOf<String, String>()
+            root.optJSONObject("warmManifests")?.let { wm ->
+                val keys = wm.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = wm.optString(k).trim()
+                    if (k.isNotBlank() && v.contains("#EXTM3U", ignoreCase = true)) {
+                        warmMap[k] = v
+                    }
+                }
+            }
+
+            val orionList = mutableListOf<VidRiftOrionStream>()
+            root.optJSONArray("orionStreams")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val rawUrl = obj.optString("url").trim().takeIf { it.isNotBlank() && it != "null" } ?: continue
+                    val resolvedUrl = if (rawUrl.startsWith("http", ignoreCase = true)) {
+                        rawUrl
+                    } else if (rawUrl.startsWith("/")) {
+                        "$VIDRIFT_HOST$rawUrl"
+                    } else {
+                        "$VIDRIFT_HOST/$rawUrl"
+                    }
+                    val name = obj.optString("name").trim().ifBlank { "Orion" }
+                    val rawSubListUrl = obj.optString("subtitleListUrl").trim().takeIf { it.isNotBlank() && it != "null" }
+                    val resolvedSubListUrl = rawSubListUrl?.let {
+                        if (it.startsWith("http", ignoreCase = true)) it
+                        else if (it.startsWith("/")) "$VIDRIFT_HOST$it"
+                        else "$VIDRIFT_HOST/$it"
+                    }
+                    val warm = warmMap[rawUrl] ?: warmMap[resolvedUrl]
+                    orionList.add(
+                        VidRiftOrionStream(
+                            url = resolvedUrl,
+                            name = name,
+                            subtitleListUrl = resolvedSubListUrl,
+                            warmManifest = warm
+                        )
+                    )
+                }
+            }
+
+            val bigbangUrl = root.optString("bigbangUrl").trim()
+                .takeIf { it.startsWith("http", ignoreCase = true) }
+
+            val bigbangSubs = mutableListOf<Pair<String, String>>()
+            root.optJSONArray("bigbangSubtitles")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val subUrl = obj.optString("url").trim().takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+                    val rawLabel = obj.optString("label").substringBefore("·").trim().ifBlank {
+                        obj.optString("lang").trim().ifBlank { "English" }
+                    }
+                    bigbangSubs.add(cleanSubtitleLabel(rawLabel) to subUrl)
+                }
+            }
+
+            val vexonUrl = root.optString("vexonUrl").trim()
+                .takeIf { it.startsWith("http", ignoreCase = true) }
+            val evionUrl = root.optString("evionUrl").trim()
+                .takeIf { it.startsWith("http", ignoreCase = true) }
+            val selfhostUrl = root.optString("selfhostUrl").trim()
+                .takeIf { it.startsWith("http", ignoreCase = true) }
+
+            VidRiftEmbedMeta(
+                playbackToken = token,
+                orionStreams = orionList,
+                bigbangUrl = bigbangUrl,
+                bigbangSubtitles = bigbangSubs,
+                vexonUrl = vexonUrl,
+                evionUrl = evionUrl,
+                selfhostUrl = selfhostUrl
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Parses a VidRift `/api/source/{movie|tv}/...` JSON response (`titan`, `atlas`, `vela`, `lyra`)
+     * into verified stream descriptors.
+     *
+     * `titan` delivers direct viewer-direct 720p muxed H.264/AAC MPEG-TS HLS playlists (`maxRes: 720`,
+     * `direct: true`, `/720/index_*.m3u8`), while `atlas`, `vela`, and `lyra` deliver adaptive
+     * multi-variant (`720p` + `1080p`) HLS master manifests.
+     */
+    internal fun parseVidRiftSourceResponse(
+        lane: String,
+        rawJson: String,
+        embedReferer: String = "$VIDRIFT_HOST/"
+    ): List<VidRiftResolvedStream> {
+        if (rawJson.isBlank() || !rawJson.trimStart().startsWith("{")) return emptyList()
+        return runCatching {
+            val root = JSONObject(rawJson)
+            if (!root.optBoolean("success", false)) return@runCatching emptyList()
+            val maxRes = root.optInt("maxRes", 0)
+            val streamsArr = root.optJSONArray("streams") ?: return@runCatching emptyList()
+            val displayLane = lane.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+            val out = mutableListOf<VidRiftResolvedStream>()
+
+            for (i in 0 until streamsArr.length()) {
+                val obj = streamsArr.optJSONObject(i) ?: continue
+                val proxyUrl = obj.optString("proxyUrl").trim().takeIf { it.startsWith("http", ignoreCase = true) }
+                val rawUrl = obj.optString("url").trim().takeIf { it.startsWith("http", ignoreCase = true) }
+                val streamUrl = proxyUrl ?: rawUrl ?: continue
+
+                val providerLabel = obj.optString("provider").trim().ifBlank { displayLane }
+                val trackName = obj.optString("name").trim()
+                val fullLabel = if (trackName.isNotBlank() && !trackName.equals(providerLabel, ignoreCase = true)) {
+                    "VidRift $providerLabel ($trackName)"
+                } else {
+                    "VidRift $providerLabel"
+                }
+
+                val isDirect = obj.optBoolean("direct", false)
+                val pathOnly = runCatching { URI(streamUrl).path.orEmpty() }
+                    .getOrDefault(streamUrl.substringBefore('?'))
+                val pathQuality = StreamLinkOptimizer.extractQualityFromText(pathOnly)
+                val resolvedQuality = when {
+                    pathQuality > 0 && pathQuality != Qualities.Unknown.value -> pathQuality
+                    isDirect && maxRes == 720 -> Qualities.P720.value
+                    isDirect && maxRes == 1080 -> Qualities.P1080.value
+                    else -> Qualities.Unknown.value
+                }
+                val isSingleQualityLeaf = isDirect && resolvedQuality != Qualities.Unknown.value
+
+                val referer = obj.optJSONObject("headers")?.optString("Referer")?.trim()
+                    ?.takeIf { it.startsWith("http", ignoreCase = true) }
+                    ?: embedReferer
+
+                out.add(
+                    VidRiftResolvedStream(
+                        url = streamUrl,
+                        name = fullLabel,
+                        quality = resolvedQuality,
+                        isDirectSingleQuality = isSingleQualityLeaf,
+                        referer = referer
+                    )
+                )
+            }
+            out
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Parses a VidRift `/api/orion/.../subtitles.json` payload into `(LanguageLabel, AbsoluteVttUrl)` pairs.
+     */
+    internal fun parseVidRiftOrionSubtitles(rawJson: String): List<Pair<String, String>> {
+        if (rawJson.isBlank() || !rawJson.trimStart().startsWith("{")) return emptyList()
+        return runCatching {
+            val root = JSONObject(rawJson)
+            val tracks = root.optJSONArray("tracks") ?: return@runCatching emptyList()
+            val out = mutableListOf<Pair<String, String>>()
+            for (i in 0 until tracks.length()) {
+                val t = tracks.optJSONObject(i) ?: continue
+                val rawUrl = t.optString("url").trim().takeIf { it.isNotBlank() && it != "null" } ?: continue
+                val resolvedUrl = if (rawUrl.startsWith("http", ignoreCase = true)) {
+                    rawUrl
+                } else if (rawUrl.startsWith("/")) {
+                    "$VIDRIFT_HOST$rawUrl"
+                } else {
+                    "$VIDRIFT_HOST/$rawUrl"
+                }
+                val label = cleanSubtitleLabel(
+                    t.optString("label").substringBefore("·").trim().ifBlank {
+                        t.optString("lang").trim().ifBlank { "English" }
+                    }
+                )
+                out.add(label to resolvedUrl)
+            }
+            out
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * SOTA Movie & TV Series Extractor for VidRift (`embed.vidrift.net`, Rank 98).
+     *
+     * Concurrently resolves:
+     * 1. `Titan` (`/api/source/...&provider=titan`) — viewer-direct 720p muxed H.264+AAC HLS streams.
+     * 2. `Atlas` (`/api/source/...&provider=atlas`) — adaptive 720p + 1080p muxed H.264+AAC HLS master.
+     * 3. `Orion` (`embedMeta.orionStreams` + pre-warmed inline `warmManifests`) — 1080p/720p/480p HLS.
+     * 4. `BigBang` & `Vexon` (`embedMeta.bigbangUrl`, `embedMeta.vexonUrl`) — 1080p/720p/480p HLS masters.
+     * 5. `Vela` & `Lyra` (`/api/source/...&provider=vela|lyra`) — adaptive 720p/1080p HLS masters.
+     * 6. Multi-language WebVTT subtitles from `bigbangSubtitles` and `/api/orion/.../subtitles.json`.
+     */
+    suspend fun invokeVidRift(
+        tmdbId: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: (ExtractorLink) -> Unit,
+        imdbId: String? = null
+    ) {
+        try {
+            var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
+            if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
+                effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
+            }
+            val id = effectiveTmdbId ?: return
+            val isMovie = season == null || (season == 0 && episode == null)
+            if (!isMovie && episode == null) return
+
+            withTimeoutOrNull(22_000L) {
+                val embedPath = if (isMovie) "/embed/movie/$id" else "/embed/tv/$id/$season/$episode"
+                val embedUrl = "$VIDRIFT_HOST$embedPath"
+                val pageHeaders = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to VIDRIFT_PARENT_REFERER,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+                val html = cancellableGetText(embedUrl, headers = pageHeaders, timeoutSec = 5L)
+                    ?: return@withTimeoutOrNull
+                val meta = parseVidRiftEmbedMeta(html) ?: return@withTimeoutOrNull
+
+                val streamHeaders = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to embedUrl,
+                    "Origin" to VIDRIFT_HOST,
+                    "Accept" to "*/*"
+                )
+                val emittedSubs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                fun emitSub(lang: String, url: String) {
+                    if (subtitleCallback == null || !emittedSubs.add(url)) return
+                    @Suppress("DEPRECATION")
+                    val sub = SubtitleFile(lang = cleanSubtitleLabel(lang), url = url).apply {
+                        headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to embedUrl,
+                            "Origin" to VIDRIFT_HOST,
+                            "X-StreamPlay-Source" to "vidrift"
+                        )
+                    }
+                    subtitleCallback.invoke(sub)
+                }
+
+                // Emit immediate inline BigBang subtitles
+                meta.bigbangSubtitles.forEach { (lang, subUrl) ->
+                    emitSub(lang, subUrl)
+                }
+
+                coroutineScope {
+                    // 1. Orion subtitle track list harvest
+                    val orionSubsJob = async {
+                        if (subtitleCallback == null) return@async
+                        val subListUrl = meta.orionStreams.firstNotNullOfOrNull { it.subtitleListUrl } ?: return@async
+                        try {
+                            val subJson = cancellableGetText(subListUrl, headers = streamHeaders, timeoutSec = 4L)
+                                ?: return@async
+                            parseVidRiftOrionSubtitles(subJson).forEach { (lang, subUrl) ->
+                                emitSub(lang, subUrl)
+                            }
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                        }
+                    }
+
+                    // 2. Inline embedMeta warm / direct master streams (Orion, BigBang, Vexon, Evion, Selfhost)
+                    val inlineJobs = buildList {
+                        for (orion in meta.orionStreams) {
+                            add(
+                                async {
+                                    try {
+                                        val cleanLabel = orion.name.replace("·", "-").trim()
+                                        val baseName = if (cleanLabel.startsWith("VidRift", ignoreCase = true)) {
+                                            cleanLabel
+                                        } else {
+                                            "VidRift $cleanLabel"
+                                        }
+                                        val warmText = orion.warmManifest
+                                        if (!warmText.isNullOrBlank()) {
+                                            val parsed = parseHlsMasterVariants(orion.url, warmText)
+                                            if (parsed.isNotEmpty()) {
+                                                val generated = parsed.map { v ->
+                                                    val qTag = vidsrcQualityTag(v.quality)
+                                                    val sizeTag = v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                                                    newExtractorLink(
+                                                        source = "VidRift",
+                                                        name = "$baseName [$qTag]$sizeTag",
+                                                        url = v.url,
+                                                        type = ExtractorLinkType.M3U8
+                                                    ) {
+                                                        this.referer = embedUrl
+                                                        this.quality = v.quality
+                                                        this.headers = streamHeaders
+                                                    }
+                                                }
+                                                emitTopTierDualQualityStreamLinks(
+                                                    source = "VidRift",
+                                                    baseName = baseName,
+                                                    url = orion.url,
+                                                    referer = embedUrl,
+                                                    headers = streamHeaders,
+                                                    streamType = ExtractorLinkType.M3U8,
+                                                    generatedLinks = generated,
+                                                    callback = callback
+                                                )
+                                                return@async
+                                            }
+                                        }
+                                        emitVerifiedStream(
+                                            source = "VidRift",
+                                            baseName = baseName,
+                                            url = orion.url,
+                                            referer = embedUrl,
+                                            headers = streamHeaders,
+                                            callback = callback
+                                        )
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                    }
+                                }
+                            )
+                        }
+                        meta.bigbangUrl?.let { bbUrl ->
+                            add(
+                                async {
+                                    try {
+                                        emitVerifiedStream(
+                                            source = "VidRift",
+                                            baseName = "VidRift BigBang",
+                                            url = bbUrl,
+                                            referer = embedUrl,
+                                            headers = streamHeaders,
+                                            callback = callback
+                                        )
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                    }
+                                }
+                            )
+                        }
+                        meta.vexonUrl?.let { vxUrl ->
+                            add(
+                                async {
+                                    try {
+                                        emitVerifiedStream(
+                                            source = "VidRift",
+                                            baseName = "VidRift Vexon",
+                                            url = vxUrl,
+                                            referer = embedUrl,
+                                            headers = streamHeaders,
+                                            callback = callback
+                                        )
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                    }
+                                }
+                            )
+                        }
+                        meta.evionUrl?.let { evUrl ->
+                            add(
+                                async {
+                                    try {
+                                        emitVerifiedStream(
+                                            source = "VidRift",
+                                            baseName = "VidRift Evion",
+                                            url = evUrl,
+                                            referer = embedUrl,
+                                            headers = streamHeaders,
+                                            callback = callback
+                                        )
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                    }
+                                }
+                            )
+                        }
+                        meta.selfhostUrl?.let { shUrl ->
+                            add(
+                                async {
+                                    try {
+                                        emitVerifiedStream(
+                                            source = "VidRift",
+                                            baseName = "VidRift Direct",
+                                            url = shUrl,
+                                            referer = embedUrl,
+                                            headers = streamHeaders,
+                                            callback = callback
+                                        )
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                    }
+                                }
+                            )
+                        }
+                    }
+
+                    // 3. Concurrent /api/source lane resolution (Titan 720p direct, Atlas 720p+1080p muxed, Vela, Lyra)
+                    val apiJobs = if (!meta.playbackToken.isNullOrBlank()) {
+                        val encodedToken = URLEncoder.encode(meta.playbackToken, "UTF-8")
+                        val sourceBasePath = if (isMovie) {
+                            "/api/source/movie/$id"
+                        } else {
+                            "/api/source/tv/$id/$season/$episode"
+                        }
+                        VIDRIFT_API_LANES.map { lane ->
+                            async {
+                                try {
+                                    currentCoroutineContext().ensureActive()
+                                    val apiUrl = "$VIDRIFT_HOST$sourceBasePath?token=$encodedToken&provider=$lane&parent=vidrift.net&nofallback=1"
+                                    val rawJson = cancellableGetText(apiUrl, headers = streamHeaders, timeoutSec = 6L)
+                                        ?: return@async
+                                    val resolvedStreams = parseVidRiftSourceResponse(lane, rawJson, embedUrl)
+                                    for (stream in resolvedStreams) {
+                                        val effHeaders = if (stream.referer != embedUrl) {
+                                            streamHeaders + ("Referer" to stream.referer)
+                                        } else {
+                                            streamHeaders
+                                        }
+                                        emitVerifiedStream(
+                                            source = "VidRift",
+                                            baseName = stream.name,
+                                            url = stream.url,
+                                            referer = stream.referer,
+                                            headers = effHeaders,
+                                            declaredQuality = stream.quality,
+                                            callback = callback
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    if (e is CancellationException) throw e
+                                }
+                            }
+                        }
+                    } else {
+                        emptyList()
+                    }
+
+                    (listOf(orionSubsJob) + inlineJobs + apiJobs).awaitAll()
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeVidRift failed: ${e.message}")
+        }
+    }
+
+    suspend fun invokeVidRift(
+        tmdbId: Int?,
+        season: Int?,
+        episode: Int?,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        invokeVidRift(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 }

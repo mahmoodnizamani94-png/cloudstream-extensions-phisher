@@ -1913,7 +1913,7 @@ class DualQualityAndSotaHierarchyTest {
 
         val active = buildProviders().map { it.id }.filterNot { disabled.contains(it) }.toSet()
 
-        assertEquals("Clean install must activate exactly 9 curated sources", 9, active.size)
+        assertEquals("Clean install must activate exactly 10 curated sources", 10, active.size)
         assertEquals(DEFAULT_TOP_TIER_PROVIDERS, active)
         assertTrue("vidlink must be active", active.contains("vidlink"))
         assertTrue("cineby must be active", active.contains("cineby"))

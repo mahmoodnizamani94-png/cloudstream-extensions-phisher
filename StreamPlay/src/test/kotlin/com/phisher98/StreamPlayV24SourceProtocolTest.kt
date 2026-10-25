@@ -14,7 +14,11 @@ import com.phisher98.StreamPlayExtractor.cinebyRotl32
 import com.phisher98.StreamPlayExtractor.cinesrcBase64UrlEncode
 import com.phisher98.StreamPlayExtractor.megaplayExtractFileId
 import com.phisher98.StreamPlayExtractor.megaplayParseSourcesPayload
+import com.phisher98.StreamPlayExtractor.normalizeHlsResolutionToQuality
 import com.phisher98.StreamPlayExtractor.parseHlsMasterVariants
+import com.phisher98.StreamPlayExtractor.parseVidRiftEmbedMeta
+import com.phisher98.StreamPlayExtractor.parseVidRiftOrionSubtitles
+import com.phisher98.StreamPlayExtractor.parseVidRiftSourceResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -299,9 +303,9 @@ class StreamPlayV24SourceProtocolTest {
         }"""
         val parsed = mapper.readValue(cinemetaJson, CinemetaRes::class.java)
         assertNotNull(parsed.meta)
-        assertEquals("Dragon Ball Super", parsed.meta!!.name)
+        assertEquals("Dragon Ball Super", parsed.meta?.name)
         assertEquals(1, parsed.meta!!.videos?.size)
-        assertEquals(1, parsed.meta!!.videos?.first()?.episode)
+        assertEquals(1, parsed.meta.videos?.first()?.episode)
     }
 
     @Test
@@ -368,5 +372,116 @@ class StreamPlayV24SourceProtocolTest {
         assertFalse(StreamLinkOptimizer.isTopTierSource(vidrockLink))
         assertFalse(StreamLinkOptimizer.isTopTierProvider("vidrock"))
         assertTrue(REMOVED_PROVIDER_IDS.contains("vidrock"))
+    }
+
+    // ==================== 7. VidRift Protocol & Cinema Widescreen HLS Normalization ====================
+
+    @Test
+    fun testHlsMasterVariantNormalizesCinemaWidescreenTo720And1080() {
+        val widescreenMaster = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=640x268
+            360/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=950000,RESOLUTION=854x356
+            480/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=1800000,AVERAGE-BANDWIDTH=1500000,RESOLUTION=1280x534
+            720/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=4200000,AVERAGE-BANDWIDTH=3600000,RESOLUTION=1920x800
+            1080/index.m3u8
+        """.trimIndent()
+
+        val variants = parseHlsMasterVariants(
+            masterUrl = "https://edge.reelvault.click/proxy?u=abc",
+            manifestText = widescreenMaster
+        )
+        assertEquals(4, variants.size)
+        assertEquals(Qualities.P360.value, variants[0].quality)
+        assertEquals(Qualities.P480.value, variants[1].quality)
+        assertEquals(Qualities.P720.value, variants[2].quality)
+        assertEquals(Qualities.P1080.value, variants[3].quality)
+
+        // Canonical host-ladder parity for intermediate & QHD frames
+        assertEquals(Qualities.P1440.value, normalizeHlsResolutionToQuality(3200, 1800, "1440/index.m3u8"))
+        assertEquals(Qualities.P1440.value, normalizeHlsResolutionToQuality(2880, 1620, "1440/index.m3u8"))
+        assertEquals(Qualities.P480.value, normalizeHlsResolutionToQuality(960, 540, "540/index.m3u8"))
+        assertEquals(Qualities.P1080.value, normalizeHlsResolutionToQuality(1600, 900, "900/index.m3u8"))
+    }
+
+    @Test
+    fun testVidRiftEmbedMetaAndMultiLaneSourceParsing() {
+        val embedHtml = """
+            <!doctype html><html><body>
+            <script>
+            const embedMeta = {
+                "type": "movie",
+                "tmdbId": "872585",
+                "playbackToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test_sig",
+                "orionStreams": [
+                    {
+                        "index": 0,
+                        "url": "/api/orion/s0/master.m3u8?exp=1774500000&sig=abc",
+                        "name": "Orion · Original",
+                        "subtitleListUrl": "/api/orion/s0/subtitles.json?exp=1774500000&sig=abc"
+                    }
+                ],
+                "warmManifests": {
+                    "/api/orion/s0/master.m3u8?exp=1774500000&sig=abc": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=1280x720\nhttps://embed.vidrift.net/api/orion/s0/720/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3200000,RESOLUTION=1920x1080\nhttps://embed.vidrift.net/api/orion/s0/1080/index.m3u8"
+                },
+                "bigbangUrl": "https://bigbang.cymru/media/872585/master.m3u8.png?sig=1",
+                "bigbangSubtitles": [
+                    {"code": "en", "lang": "en", "label": "English · BigBang", "url": "https://bigbang.cymru/subs/872585/en.vtt.png"}
+                ],
+                "vexonUrl": "https://media.reelvault.click/vexon/media/872585/index.m3u8"
+            };
+            </script></body></html>
+        """.trimIndent()
+
+        val meta = parseVidRiftEmbedMeta(embedHtml)
+        assertNotNull(meta)
+        assertEquals("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test_sig", meta!!.playbackToken)
+        assertEquals(1, meta.orionStreams.size)
+        assertEquals("https://embed.vidrift.net/api/orion/s0/master.m3u8?exp=1774500000&sig=abc", meta.orionStreams[0].url)
+        assertNotNull(meta.orionStreams[0].warmManifest)
+        assertEquals("https://bigbang.cymru/media/872585/master.m3u8.png?sig=1", meta.bigbangUrl)
+        assertEquals(1, meta.bigbangSubtitles.size)
+        assertEquals("English" to "https://bigbang.cymru/subs/872585/en.vtt.png", meta.bigbangSubtitles[0])
+        assertEquals("https://media.reelvault.click/vexon/media/872585/index.m3u8", meta.vexonUrl)
+
+        val titanJson = """{
+            "success": true,
+            "maxRes": 720,
+            "streams": [
+                {"url": "https://img1.hscow.com/v4/eb/720/index_287.m3u8?sig=1", "name": "English", "type": "hls", "direct": true},
+                {"url": "https://img1.fcxmb.com/v4/eb/720/index_266.m3u8?sig=2", "name": "Multi-audio", "type": "hls", "direct": true}
+            ]
+        }"""
+        val titanStreams = parseVidRiftSourceResponse("titan", titanJson, "https://embed.vidrift.net/embed/movie/872585")
+        assertEquals(2, titanStreams.size)
+        assertEquals(Qualities.P720.value, titanStreams[0].quality)
+        assertTrue(titanStreams[0].isDirectSingleQuality)
+        assertEquals("VidRift Titan (English)", titanStreams[0].name)
+
+        val atlasJson = """{
+            "success": true,
+            "maxRes": 1080,
+            "streams": [
+                {"proxyUrl": "https://edge.reelvault.click/proxy?u=abc", "provider": "Atlas", "type": "hls"}
+            ]
+        }"""
+        val atlasStreams = parseVidRiftSourceResponse("atlas", atlasJson, "https://embed.vidrift.net/embed/movie/872585")
+        assertEquals(1, atlasStreams.size)
+        assertEquals(Qualities.Unknown.value, atlasStreams[0].quality)
+        assertFalse(atlasStreams[0].isDirectSingleQuality)
+        assertEquals("VidRift Atlas", atlasStreams[0].name)
+
+        val orionSubsJson = """{
+            "tracks": [
+                {"code": "eng", "label": "English · Orion", "lang": "en", "url": "/api/orion/s0/sub-0.vtt?sig=xyz"}
+            ]
+        }"""
+        val orionSubs = parseVidRiftOrionSubtitles(orionSubsJson)
+        assertEquals(1, orionSubs.size)
+        assertEquals("English" to "https://embed.vidrift.net/api/orion/s0/sub-0.vtt?sig=xyz", orionSubs[0])
     }
 }

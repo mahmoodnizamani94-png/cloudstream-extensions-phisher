@@ -11,12 +11,13 @@ This document defines the non-negotiable architectural invariants and priorities
 3. **Fallback Ladder**:
    - `720p (lowest size)` > `1080p (lowest size)` > `480p` > `360p` > `2160p`.
 
-## 2. Curated v25 State-of-the-Art (SOTA) Source Registry (9 Sources)
-All streams and downloads for Movies, TV Series, and Anime **must** come exclusively from the vetted SOTA registry (`TOP_TIER_RANKS = listOf(100, 95, 94, 93, 92, 91, 89, 88, 87)` in `StreamLinkOptimizer`):
+## 2. Curated v25 State-of-the-Art (SOTA) Source Registry (10 Sources)
+All streams and downloads for Movies, TV Series, and Anime **must** come exclusively from the vetted SOTA registry (`TOP_TIER_RANKS = listOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87)` in `StreamLinkOptimizer`):
 
 | Rank | ID | Display Name | Scope | Downloadable | Protocol & CDN Infrastructure |
 |---|---|---|---|---|---|
 | **100** | `vidlink` | **VidLink** | Universal (Movie, TV, Anime) | Yes | Offline `XSalsa20-Poly1305` (`VidLinkCrypto.encryptToken`) -> `vidlink.pro/api/b/{movie\|tv}/{token}` -> direct multi-resolution MP4 & HLS with native byte sizes and subtitles |
+| **98** | `vidrift` | **VidRift** | Movie, TV | Yes | `embed.vidrift.net/embed/{movie\|tv}/{tmdbId}` SSR `embed-meta` (`Orion` + inline `warmManifests` + `BigBang` + `Vexon` + `Evion`) + parallel `/api/source` fan-out (`titan`, `atlas`, `vela`, `lyra`) -> `hscow.com` / `fcxmb.com` / `reelvault.click` / `bigbang.cymru` multi-resolution HLS + `.vtt` subtitles |
 | **95** | `cineby` | **Cineby** | Universal (Movie, TV, Anime) | Yes | `api.wecollege.net/seed` + multi-server (`tampa`, `dallas`, `oakland`, `seattle`, `vegas`, `portland`) -> offline `cinebyDecryptMvm1` (`dec-videasy` fallback) -> `sun.paleoak.top` / `e2e.majorplay.net` HLS + multi-language subtitles |
 | **94** | `cinesrc` | **CineSrc** | Universal (Movie, TV, Anime) | Yes | `cinesrc.st` CSP4 + SHA-256 PoW (`wave`, `nebula`, `surge`) + `api.wing.st` (`enc-cinejoy`/`dec-cinejoy`) -> `ice.bright67.online` / `nebula.bright67.online` multi-variant HLS + `subs.bright67.online` multi-language subtitles |
 | **93** | `vidfast` | **VidFast** | Movie, TV | Stream-only (`DOWNLOAD_EXCLUDED_PROVIDER_IDS`) | `vidfast.vc` page token -> `enc-vidfast` stage 1/2 -> `dec-vidfast` -> `moon.zenoak.top` HLS ladder |
