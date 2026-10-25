@@ -14,8 +14,7 @@ import org.junit.Test
  * These tests are deliberately network-free: they pin the exact payload shapes the extractors
  * consume (AnimePahe's JSON API + `#resolutionMenu` + Kwik packer, AniZone's Livewire
  * `items: JSON.parse('...')` catalogue and `vidstackPlayer(JSON.parse('...'))` episode payload).
- * The live endpoints are probed separately; a parser regression must fail here first.
- */
+ * The live endpoints are probed separately; a parser regression must fail here first.\n */
 class StreamPlayV25AnimeSourcesTest {
 
     // =========================================================================================
@@ -319,21 +318,37 @@ class StreamPlayV25AnimeSourcesTest {
 
     @Test
     fun `anizone subtitle selection is English-only non-forced and non-SDH`() {
-        fun track(title: String, language: String? = "en", forced: Boolean = false) =
+        fun track(title: String, language: String? = "en", forced: Boolean = false, isDefault: Boolean = false) =
             StreamPlayExtractor.AniZoneSubtitleTrack(
                 label = title,
                 language = language,
                 format = "srt",
                 forced = forced,
-                url = "https://suzaku.xin-cdn.xyz/subtitles/$title.srt"
+                url = "https://suzaku.xin-cdn.xyz/subtitles/$title.srt",
+                isDefault = isDefault
             )
 
         assertTrue(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English")))
         assertTrue(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English (US)")))
+        assertTrue(
+            "Default full-dialogue English tracks mistakenly flagged forced=yes (like Frieren S01E01 3_en.ass) must be accepted",
+            StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English (US)", forced = true, isDefault = true))
+        )
+        assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English - Forced", forced = true, isDefault = true)))
         assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English - Forced", forced = true)))
         assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English - SDH")))
+        assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English (US) (CC)")))
         assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("English - Hearing Impaired")))
         assertFalse(StreamPlayExtractor.aniZoneIsEnglishSubtitle(track("Japanese", language = "ja")))
+
+        assertEquals(
+            "English",
+            StreamPlayExtractor.aniZoneNormalizeEnglishLabel(track("Full Subtitles [Kaizoku]", "en"))
+        )
+        assertEquals(
+            "English (US)",
+            StreamPlayExtractor.aniZoneNormalizeEnglishLabel(track("English (US)", "en"))
+        )
     }
 
     @Test
@@ -387,7 +402,7 @@ class StreamPlayV25AnimeSourcesTest {
 
         val catHtml = """
             <html><body>
-            <astro-island props='{&quot;manifest&quot;:[0,&quot;//hls.krussdomi.com/manifest/6516fd5ad9835969ff592f7b/master.m3u8&quot;],&quot;subtitles&quot;:[1,[[0,{&quot;language&quot;:[0,&quot;en&quot;],&quot;label&quot;:[0,&quot;English&quot;],&quot;src&quot;:[0,&quot;//subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/en.vtt&quot;]}],[0,{&quot;language&quot;:[0,&quot;es&quot;],&quot;label&quot;:[0,&quot;Spanish&quot;],&quot;src&quot;:[0,&quot;//subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/es.vtt&quot;]}]]]}'></astro-island>
+            <astro-island props='{&quot;manifest&quot;:[0,&quot;//hls.krussdomi.com/manifest/6516fd5ad9835969ff592f7b/master.m3u8&quot;],&quot;subtitles&quot;:[1,[[0,{&quot;language&quot;:[0,&quot;en&quot;],&quot;name&quot;:[0,&quot;English&quot;],&quot;src&quot;:[0,&quot;//subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/en.vtt&quot;]}],[0,{&quot;language&quot;:[0,&quot;es&quot;],&quot;label&quot;:[0,&quot;Spanish&quot;],&quot;src&quot;:[0,&quot;//subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/es.vtt&quot;]}]]]}'></astro-island>
             </body></html>
         """.trimIndent()
         val parsed = StreamPlayExtractor.kaaParseCatPlayerHtml(catHtml)
@@ -399,6 +414,61 @@ class StreamPlayV25AnimeSourcesTest {
         assertEquals("https://subst.krussdomi.com/subtitle/6516fd5ad9835969ff592f7b/en.vtt", enTrack.url)
 
         assertEquals("Filipino", getLanguage("fil"))
+    }
+
+    @Test
+    fun `animex plyr slug extraction skips provider names and maps subtitle provenance accurately`() {
+        val plyrHtml = """
+            <script>
+            self.__next_f.push([1,"{\"initialProvider\":\"nero\",\"episodeId\":\"dan-da-dan-khp5m-episode-1\",\"animeSlug\":\"dan-da-dan-khp5m\"}"])
+            </script>
+        """.trimIndent()
+        assertEquals("dan-da-dan-khp5m", StreamPlayExtractor.animexExtractPlyrSlug(plyrHtml))
+
+        assertEquals("zokoanime", StreamPlayExtractor.animexSubtitleProvenance("zuna"))
+        assertEquals("kickassanime", StreamPlayExtractor.animexSubtitleProvenance("sora"))
+        assertEquals("kickassanime", StreamPlayExtractor.animexSubtitleProvenance("kaa"))
+        assertEquals("animex", StreamPlayExtractor.animexSubtitleProvenance("yuki"))
+        assertEquals("animex", StreamPlayExtractor.animexSubtitleProvenance("loli"))
+    }
+
+    @Test
+    fun `opensubtitles legacy episode filter rejects wrong episodes and builds episode-scoped URLs`() {
+        val urls = StreamPlayExtractor.buildOpenSubtitlesLegacyUrls(
+            id = "tt21209876",
+            season = 1,
+            episode = 3,
+            titles = listOf("Frieren: Beyond Journey's End")
+        )
+        assertTrue(urls.first().contains("/imdbid-21209876/season-1/episode-3/sublanguageid-eng"))
+        assertTrue(urls[1].contains("/episode-3/query-Frieren%3A%20Beyond%20Journey%27s%20End/season-1/sublanguageid-eng"))
+
+        val ep1Sub = OpenSubtitlesLegacySubtitle(
+            downloadLink = "https://dl.opensubtitles.org/en/download/src-api/vrf-1/file/111.gz",
+            languageName = "English",
+            seriesSeason = "1",
+            seriesEpisode = "1",
+            movieKind = "episode"
+        )
+        val ep3Sub = OpenSubtitlesLegacySubtitle(
+            downloadLink = "https://dl.opensubtitles.org/en/download/src-api/vrf-1/file/333.gz",
+            languageName = "English",
+            seriesSeason = "1",
+            seriesEpisode = "3",
+            movieKind = "episode"
+        )
+        val movieSub = OpenSubtitlesLegacySubtitle(
+            downloadLink = "https://dl.opensubtitles.org/en/download/src-api/vrf-1/file/999.gz",
+            languageName = "English",
+            seriesSeason = "0",
+            seriesEpisode = "0",
+            movieKind = "movie"
+        )
+
+        assertFalse(StreamPlayExtractor.openSubtitlesEpisodeMatches(ep1Sub, season = 1, episode = 3))
+        assertTrue(StreamPlayExtractor.openSubtitlesEpisodeMatches(ep3Sub, season = 1, episode = 3))
+        assertFalse(StreamPlayExtractor.openSubtitlesEpisodeMatches(movieSub, season = 1, episode = 3))
+        assertTrue(StreamPlayExtractor.openSubtitlesEpisodeMatches(movieSub, season = null, episode = null))
     }
 
     @Test

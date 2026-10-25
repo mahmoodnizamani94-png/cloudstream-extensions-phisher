@@ -535,11 +535,17 @@ class StreamPlayAnime : MainAPI() {
                     val cleanedLang = cleanSubtitleLabel(sub.lang)
                     val key = "${cleanedLang.lowercase()}|$url"
                     if (emittedSubtitles.add(key)) {
+                        val explicitProvenance = sub.headers?.entries
+                            ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
+                            ?.value?.trim()?.takeIf { it.isNotBlank() }
+                        val provenance = explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(url) }
                         if (isEnglishSubtitleLabel(cleanedLang)) {
                             englishSubtitleCount.incrementAndGet()
-                            englishSubtitleSources.add(sourceKey.ifBlank { StreamPlayShield.hostOf(url) })
+                            englishSubtitleSources.add(provenance)
+                            if (sourceKey.isNotBlank()) {
+                                englishSubtitleSources.add(sourceKey)
+                            }
                         }
-                        val provenance = sourceKey.ifBlank { StreamPlayShield.hostOf(url) }
                         @Suppress("DEPRECATION")
                         val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = url).apply {
                             // Preserve the provider identity through shared CDN hosts. The app uses
@@ -672,63 +678,21 @@ class StreamPlayAnime : MainAPI() {
             }
         )
 
-        // Anime is indexed by its English, Romaji and native names depending on the catalogue, and
-        // a Japanese-only query often returns nothing even when an English sidecar exists. The
-        // fallback sources below search every known variant instead of one.
-        val animeSubtitleCatTitles = animeTitleQueries
-
+        // Dedicated anime soft-sub harvest sources. Generic movie/TV subtitle catalogues
+        // (SubtitleCat, Addic7ed, WyZIESUB, SubtitleAPI, OpenSubtitles) are intentionally excluded
+        // on anime because they serve machine-translated, TV-broadcast-cut, or wrong-episode
+        // tracks that desynchronize from Japanese web-rip/CR masters. Instead, KickAssAnime
+        // (VidStreaming + BirdStream soft-sub VTTs) runs alongside AniZone, AnimePahe, MegaPlay,
+        // Animex/ZokoAnime, and verified CineSrc/Cineby/VidLink tracks.
         val subtitleOnlySources = listOfNotNull(
-            if (canUseTmdbProviders && !subLookupId.isNullOrBlank()) {
-                AnimeSource("wyziesub", 99f) { onSubtitle, _ ->
-                    StreamPlayExtractor.invokeWYZIESubs(subLookupId, tmdbSeason, tmdbEpisode, onSubtitle)
-                }
-            } else null,
-            if (canUseTmdbProviders && !animeImdbId.isNullOrBlank()) {
-                AnimeSource("subtitles", 98f) { onSubtitle, _ ->
-                    StreamPlayExtractor.invokeSubtitleAPI(animeImdbId, tmdbSeason, tmdbEpisode, onSubtitle)
-                }
-            } else null,
-            if (canUseTmdbProviders &&
-                (!animeImdbId.isNullOrBlank() || animeSubtitleCatTitles.isNotEmpty())
-            ) {
-                AnimeSource("opensubtitles", 97f) { onSubtitle, _ ->
-                    StreamPlayExtractor.invokeOpenSubtitlesLegacy(
-                        id = animeImdbId,
-                        season = tmdbSeason,
-                        episode = tmdbEpisode,
-                        title = animeSubtitleCatTitles.firstOrNull() ?: anititle ?: jpTitle,
-                        titles = animeSubtitleCatTitles.drop(1),
-                        subtitleCallback = onSubtitle
-                    )
-                }
-            } else null,
-            // Addic7ed's own release list covers the TV-style anime that OpenSubtitles files under
-            // ambiguous names. It needs a verified TMDB season/episode, so it is skipped when the
-            // anime could not be mapped instead of guessing a cour number.
-            if (canUseTmdbProviders && animeSubtitleCatTitles.isNotEmpty() &&
-                (tmdbSeason ?: 0) > 0 && (tmdbEpisode ?: 0) > 0
-            ) {
-                AnimeSource("addic7ed", 96f) { onSubtitle, _ ->
-                    StreamPlayExtractor.invokeAddic7ed(
-                        title = animeSubtitleCatTitles.first(),
-                        season = tmdbSeason,
-                        episode = tmdbEpisode,
-                        subtitleCallback = onSubtitle
-                    )
-                }
-            } else null,
-            // SubtitleCat needs no id at all, so it stays available for MAL/AniList-only entries.
-            // The verified season form is preferred, and the bare absolute form covers the anime
-            // releases that are numbered without a season.
-            if (animeSubtitleCatTitles.isNotEmpty()) {
-                AnimeSource("subtitlecat", 95f) { onSubtitle, _ ->
-                    StreamPlayExtractor.invokeSubtitleCat(
-                        titles = animeSubtitleCatTitles,
-                        season = tmdbSeason?.takeIf { it > 0 },
-                        episode = tmdbEpisode ?: episode,
+            if (animeTitleQueries.isNotEmpty()) {
+                AnimeSource("kickassanime", 90f) { onSubtitle, _ ->
+                    StreamPlayExtractor.invokeKickAssAnime(
+                        titles = animeTitleQueries,
                         year = year,
+                        episode = episode,
                         isMovie = isMovie,
-                        isAnime = true,
+                        dubtype = dubStatus,
                         subtitleCallback = onSubtitle
                     )
                 }

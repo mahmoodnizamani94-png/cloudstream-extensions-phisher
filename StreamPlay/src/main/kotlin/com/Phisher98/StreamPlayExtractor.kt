@@ -706,9 +706,7 @@ object StreamPlayExtractor : StreamPlay() {
                     headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$animexOrigin/"),
                     timeoutSec = 5L
                 )
-                val plyrSlug = plyrHtml?.let {
-                    Regex("""\bid\s*:\s*"([a-z0-9][a-z0-9-]{2,})"""").find(it)?.groupValues?.getOrNull(1)
-                }
+                val plyrSlug = plyrHtml?.let(::animexExtractPlyrSlug)
                 if (!plyrSlug.isNullOrBlank()) {
                     anime = AnimeItem(
                         id = plyrSlug,
@@ -791,9 +789,10 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            // Direct KickAssAnime (kaa.lt -> krussdomi.com) SOTA fallback when graphql.animex.one / pp.animex.one
-            // misses a catalogue entry or returns no playable streams.
-            if (emittedStreamsCount.get() == 0) {
+            // Direct KickAssAnime (kaa.lt -> krussdomi.com) SOTA soft-sub & stream harvest:
+            // always runs for sub requests so BirdStream/VidStreaming English VTT sidecars are
+            // harvested even when pp.animex.one only answered with hardsubbed nero streams.
+            if (emittedStreamsCount.get() == 0 || "sub" in requestTypes) {
                 invokeKaaDirect(
                     candidateTitles = candidateTitles,
                     epNum = epNum,
@@ -845,6 +844,14 @@ object StreamPlayExtractor : StreamPlay() {
             }
         }
 
+        val subProvenance = animexSubtitleProvenance(providerId)
+        val subtitleHeaders = buildMap {
+            putAll(streamHeaders)
+            put("X-StreamPlay-Source", subProvenance)
+            if (subProvenance == "animex") {
+                put("X-StreamPlay-Compat", "cinesrc")
+            }
+        }
         sourceResponse.tracks?.forEach { track ->
             if (track.kind.equals("thumbnails", ignoreCase = true)) return@forEach
             val trackUrl = (track.url ?: track.file)?.trim()
@@ -860,8 +867,17 @@ object StreamPlayExtractor : StreamPlay() {
                 } else {
                     rawLabel.ifBlank { rawLang.ifBlank { "English" } }
                 }
-                val label = cleanSubtitleLabel(preferred)
-                subtitleCallback.invoke(newSubtitleFile(label, trackUrl))
+                val cleaned = cleanSubtitleLabel(preferred)
+                val label = if (!isEnglishSubtitleLabel(cleaned) && (isEnglishSubtitleLabel(rawLang) || isEnglishSubtitleLabel(rawLabel))) {
+                    "English"
+                } else {
+                    cleaned
+                }
+                subtitleCallback.invoke(
+                    newSubtitleFile(label, trackUrl) {
+                        this.headers = subtitleHeaders
+                    }
+                )
             }
         }
 
@@ -1054,6 +1070,7 @@ object StreamPlayExtractor : StreamPlay() {
                     if (subUrl.isBlank()) continue
                     val lang = subObj.optJSONArray("language")?.optString(1)?.trim()?.takeIf { it.isNotBlank() }
                     val label = subObj.optJSONArray("label")?.optString(1)?.trim()?.takeIf { it.isNotBlank() }
+                        ?: subObj.optJSONArray("name")?.optString(1)?.trim()?.takeIf { it.isNotBlank() }
                     tracks.add(Track(url = subUrl, lang = lang, label = label, kind = "captions"))
                 }
             }
@@ -1066,6 +1083,62 @@ object StreamPlayExtractor : StreamPlay() {
         return null
     }
 
+    internal fun animexExtractPlyrSlug(html: String): String? {
+        if (html.isBlank()) return null
+        val reservedProviderIds = setOf("nero", "yuki", "zuna", "loli", "sora", "kiwi", "zoro", "bili", "pahe")
+        return Regex("""\b(?:id|animeSlug)\\?["']?\s*:\s*\\?["']([a-z0-9][a-z0-9-]{2,})\\?["']""")
+            .findAll(html)
+            .map { it.groupValues[1] }
+            .firstOrNull { candidate ->
+                candidate.contains('-') &&
+                    !candidate.contains("-episode-", ignoreCase = true) &&
+                    candidate.lowercase(Locale.ROOT) !in reservedProviderIds
+            }
+    }
+
+    internal fun animexSubtitleProvenance(providerId: String): String = when (providerId.trim().lowercase(Locale.ROOT)) {
+        "zuna", "zoko", "zokoanime" -> "zokoanime"
+        "sora", "kaa", "kickassanime" -> "kickassanime"
+        else -> "animex"
+    }
+
+    suspend fun invokeKickAssAnime(
+        titles: List<String>,
+        year: Int? = null,
+        episode: Int?,
+        isMovie: Boolean,
+        dubtype: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit = {},
+    ) {
+        val cleanTitles = titles.mapNotNull { it.trim().takeIf(String::isNotBlank) }.distinctBy { it.lowercase(Locale.ROOT) }
+        if (cleanTitles.isEmpty()) return
+        val epNum = if (isMovie) 1 else (episode ?: return)
+        val requestTypes = when {
+            isMovie -> listOf("sub", "dub")
+            dubtype.equals("dub", ignoreCase = true) -> listOf("dub")
+            else -> listOf("sub")
+        }
+        try {
+            withTimeoutOrNull(14_000L) {
+                invokeKaaDirect(
+                    candidateTitles = cleanTitles,
+                    epNum = epNum,
+                    isMovie = isMovie,
+                    requestTypes = requestTypes,
+                    emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet(),
+                    emittedStreamsCount = java.util.concurrent.atomic.AtomicInteger(0),
+                    subtitleCallback = subtitleCallback,
+                    callback = callback,
+                    year = year
+                )
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w("StreamPlay", "invokeKickAssAnime failed: ${e.message}")
+        }
+    }
+
     private suspend fun invokeKaaDirect(
         candidateTitles: List<String>,
         epNum: Int,
@@ -1074,7 +1147,8 @@ object StreamPlayExtractor : StreamPlay() {
         emittedTracks: MutableSet<String>,
         emittedStreamsCount: java.util.concurrent.atomic.AtomicInteger,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
+        year: Int? = null
     ) {
         val kaaOrigin = "https://kaa.lt"
         val kaaHeaders = mapOf(
@@ -1092,7 +1166,7 @@ object StreamPlayExtractor : StreamPlay() {
                 requestBody = JSONObject().put("query", query).toString().toRequestBody(jsonMediaType),
                 timeoutSec = 5L
             ) ?: break
-            matchedHit = pickKaaHit(kaaParseSearch(raw), candidateTitles, year = null, isMovie = isMovie)
+            matchedHit = pickKaaHit(kaaParseSearch(raw), candidateTitles, year = year, isMovie = isMovie)
             if (matchedHit != null) break
         }
         val hit = matchedHit ?: return
@@ -1112,25 +1186,35 @@ object StreamPlayExtractor : StreamPlay() {
                 timeoutSec = 5L
             ) ?: continue
             val catPlayerUrls = kaaParseEpisodeCatPlayerUrls(epDataRaw)
-            for (playerUrl in catPlayerUrls) {
+            var emittedStreamForType = false
+            for ((serverIdx, playerUrl) in catPlayerUrls.withIndex()) {
                 val playerHtml = cancellableGetText(
                     playerUrl,
                     headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$kaaOrigin/"),
                     timeoutSec = 5L
                 ) ?: continue
                 val sourceResponse = kaaParseCatPlayerHtml(playerHtml) ?: continue
+                // VidStreaming (server 0) -> kickassanime ("sora"); BirdStream (server 1+) -> animex ("yuki")
+                // so both independent subtitle servers are preserved as distinct sidecar sources.
+                val kaaProviderId = if (serverIdx == 0) "sora" else "yuki"
                 emitAnimexSourceResponse(
                     sourceResponse = sourceResponse,
                     type = type,
-                    providerId = "sora",
+                    providerId = kaaProviderId,
                     providerTip = "Softsub",
                     defaultOrigin = kaaOrigin,
                     emittedTracks = emittedTracks,
                     emittedStreamsCount = emittedStreamsCount,
                     subtitleCallback = subtitleCallback,
-                    callback = callback
+                    callback = if (!emittedStreamForType) {
+                        { link ->
+                            emittedStreamForType = true
+                            callback(link)
+                        }
+                    } else {
+                        {}
+                    }
                 )
-                break
             }
         }
     }
@@ -1574,10 +1658,21 @@ object StreamPlayExtractor : StreamPlay() {
                         timeoutSec = 5L
                     ) ?: continue
 
+                    val cdnHeaders = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Referer" to "$MEGAPLAY_HOST/",
+                        "Origin" to MEGAPLAY_HOST
+                    )
+                    val megaplaySubHeaders = cdnHeaders + ("X-StreamPlay-Source" to "megaplay")
+
                     val initialPayload = megaplayParseSourcesPayload(sourcesRaw) ?: continue
                     initialPayload.tracks.forEach { (label, trackUrl) ->
                         if (emittedTracks.add(trackUrl)) {
-                            subtitleCallback(newSubtitleFile(label, trackUrl))
+                            subtitleCallback(
+                                newSubtitleFile(label, trackUrl) {
+                                    this.headers = megaplaySubHeaders
+                                }
+                            )
                         }
                     }
 
@@ -1602,7 +1697,11 @@ object StreamPlayExtractor : StreamPlay() {
                                 val decPayload = megaplayParseSourcesPayload(decRaw)
                                 decPayload?.tracks?.forEach { (label, trackUrl) ->
                                     if (emittedTracks.add(trackUrl)) {
-                                        subtitleCallback(newSubtitleFile(label, trackUrl))
+                                        subtitleCallback(
+                                            newSubtitleFile(label, trackUrl) {
+                                                this.headers = megaplaySubHeaders
+                                            }
+                                        )
                                     }
                                 }
                                 decPayload?.directUrls?.forEach { u ->
@@ -1611,12 +1710,6 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                         }
                     }
-
-                    val cdnHeaders = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to "$MEGAPLAY_HOST/",
-                        "Origin" to MEGAPLAY_HOST
-                    )
                     val baseName = if (type.equals("sub", ignoreCase = true)) {
                         "MegaPlay [Sub] [Original]"
                     } else {
@@ -1911,6 +2004,7 @@ object StreamPlayExtractor : StreamPlay() {
         val format: String?,
         val forced: Boolean,
         val url: String,
+        val isDefault: Boolean = false,
     )
 
     internal data class AniZonePlayer(
@@ -2041,7 +2135,8 @@ object StreamPlayExtractor : StreamPlay() {
                         language = track.optString("language").trim().takeIf { it.isNotBlank() },
                         format = track.optString("format").trim().takeIf { it.isNotBlank() },
                         forced = track.optString("forced").equals("yes", ignoreCase = true),
-                        url = file
+                        url = file,
+                        isDefault = track.optBoolean("default", false)
                     )
                 )
             }
@@ -2049,19 +2144,72 @@ object StreamPlayExtractor : StreamPlay() {
         return AniZonePlayer(streamUrl = streamUrl, subtitles = subtitles)
     }
 
+    private val ANIZONE_CC_REGEX = Regex("""(?i)(?:^|[^a-z0-9])cc(?:$|[^a-z0-9])""")
+
     /**
      * English, non-forced, non-SDH track selector.
      *
-     * Forced tracks cover on-screen text only and SDH adds sound descriptions, so neither is a
-     * usable English subtitle for a full episode. The host would drop them later anyway; filtering
-     * here keeps the emitted source count honest.
+     * Forced tracks cover on-screen text only and SDH/CC adds sound descriptions, so neither is a
+     * usable English subtitle for a full episode. Note that on some AniZone releases (e.g. Frieren
+     * S01E01), the primary 36 KB full-dialogue `"English (US)"` track is marked `default: true,
+     * forced: "yes"` while the secondary track is `"English (US) (CC)"`. A default track whose
+     * label does not indicate forced/signs/SDH/CC is therefore accepted as a full English dialogue
+     * track, while any non-default forced track or explicitly labeled Forced/Signs/SDH/CC track is
+     * rejected.
      */
     internal fun aniZoneIsEnglishSubtitle(track: AniZoneSubtitleTrack): Boolean {
-        if (track.forced) return false
         val label = track.label.lowercase(Locale.ROOT)
-        if (label.contains("sdh") || label.contains("hearing") || label.contains("forced")) return false
-        if (track.language?.equals("en", ignoreCase = true) == true) return true
+        if (label.contains("sdh") ||
+            label.contains("hearing") ||
+            label.contains("forced") ||
+            label.contains("signs") ||
+            ANIZONE_CC_REGEX.containsMatchIn(label)
+        ) {
+            return false
+        }
+        if (track.forced && !track.isDefault) return false
+        if (track.language?.equals("en", ignoreCase = true) == true ||
+            track.language?.equals("eng", ignoreCase = true) == true
+        ) {
+            return true
+        }
         return isEnglishSubtitleLabel(track.label)
+    }
+
+    /**
+     * Selects all valid English dialogue tracks from an AniZone episode payload, ordered with the
+     * provider's default track first and rescuing misflagged `forced="yes"` full-dialogue tracks
+     * when no `forced="no"` non-SDH/non-CC English track exists.
+     */
+    internal fun aniZoneSelectEnglishSubtitles(tracks: List<AniZoneSubtitleTrack>): List<AniZoneSubtitleTrack> {
+        val primary = tracks.filter(::aniZoneIsEnglishSubtitle)
+        val selected = if (primary.isNotEmpty()) {
+            primary
+        } else {
+            tracks.filter { track ->
+                val label = track.label.lowercase(Locale.ROOT)
+                val isEng = track.language?.equals("en", ignoreCase = true) == true ||
+                    track.language?.equals("eng", ignoreCase = true) == true ||
+                    isEnglishSubtitleLabel(track.label)
+                isEng &&
+                    !label.contains("sdh") &&
+                    !label.contains("hearing") &&
+                    !label.contains("forced") &&
+                    !label.contains("signs") &&
+                    !ANIZONE_CC_REGEX.containsMatchIn(label)
+            }
+        }
+        return selected.sortedByDescending { it.isDefault }
+    }
+
+    /**
+     * Normalizes an AniZone English subtitle track's label so fansub-titled English tracks such as
+     * `"Full Subtitles [Kaizoku]"` (`language = "en"`) are emitted with an English-recognizable
+     * language label (`"English"`) rather than `"Full Subtitles"`.
+     */
+    internal fun aniZoneNormalizeEnglishLabel(track: AniZoneSubtitleTrack): String {
+        val cleaned = cleanSubtitleLabel(track.label)
+        return if (isEnglishSubtitleLabel(cleaned)) cleaned else "English"
     }
 
     internal fun aniZoneTypeMatches(mediaType: String?, isMovie: Boolean): Boolean {
@@ -2334,29 +2482,132 @@ object StreamPlayExtractor : StreamPlay() {
                     .filter { if (wantDub) it.isDub else it.isOriginalAudio }
                 if (sources.isEmpty()) return@withTimeoutOrNull
 
-                for (source in sources) {
-                    val embedHtml = cancellableGetText(
-                        source.url,
-                        headers = mapOf(
-                            "User-Agent" to USER_AGENT,
-                            "Referer" to "$ANIMEPAHE_HOST$playPath",
-                            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                        ),
-                        timeoutSec = 5L
-                    ) ?: animePaheGetText(source.url, referer = "$ANIMEPAHE_HOST$playPath")
-                        ?: continue
-                    val streamUrl = animePaheParseKwikStream(embedHtml) ?: continue
-                    val embedReferer = runCatching {
-                        URI(source.url).let { uri -> "${uri.scheme}://${uri.host}/" }
-                    }.getOrNull()?.takeIf { it.startsWith("http", ignoreCase = true) }
-                        ?: "https://kwik.cx/"
-                    emitAnimePaheStream(source, streamUrl, wantDub, embedReferer, callback)
+                val companionTitles = (listOf(resolved.title) + titles)
+                    .mapNotNull { it.trim().takeIf(String::isNotBlank) }
+                    .distinctBy { it.lowercase(Locale.ROOT) }
+                val preferredFansubs = sources.mapNotNull { it.fansub?.trim()?.takeIf(String::isNotBlank) }.distinct()
+
+                coroutineScope {
+                    val subtitleJob = async {
+                        if (!wantDub) {
+                            harvestAnimePaheCompanionSubtitles(
+                                titles = companionTitles,
+                                year = resolved.year ?: year,
+                                episode = episodeNumber,
+                                isMovie = isMovie,
+                                preferredFansubs = preferredFansubs,
+                                subtitleCallback = subtitleCallback
+                            )
+                        }
+                    }
+                    for (source in sources) {
+                        val embedHtml = cancellableGetText(
+                            source.url,
+                            headers = mapOf(
+                                "User-Agent" to USER_AGENT,
+                                "Referer" to "$ANIMEPAHE_HOST$playPath",
+                                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                            ),
+                            timeoutSec = 5L
+                        ) ?: animePaheGetText(source.url, referer = "$ANIMEPAHE_HOST$playPath")
+                            ?: continue
+                        val streamUrl = animePaheParseKwikStream(embedHtml) ?: continue
+                        val embedReferer = runCatching {
+                            URI(source.url).let { uri -> "${uri.scheme}://${uri.host}/" }
+                        }.getOrNull()?.takeIf { it.startsWith("http", ignoreCase = true) }
+                            ?: "https://kwik.cx/"
+                        emitAnimePaheStream(source, streamUrl, wantDub, embedReferer, callback)
+                    }
+                    subtitleJob.await()
                 }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w("StreamPlay", "invokeAnimePahe failed: ${e.message}")
         }
+    }
+
+    /**
+     * Harvests frame-synced external soft-subtitles (`SubsPlease`, `Erai-raws`, `HorribleSubs`,
+     * `Kaizoku`) matching the resolved AnimePahe release so an AnimePahe download always carries
+     * external soft-sub sidecar files in addition to its burned-in encode.
+     */
+    internal suspend fun harvestAnimePaheCompanionSubtitles(
+        titles: List<String>,
+        year: Int?,
+        episode: Int,
+        isMovie: Boolean,
+        preferredFansubs: List<String> = emptyList(),
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        try {
+            val player = resolveAniZoneEpisodePlayer(titles, year, episode, isMovie) ?: return
+            val englishTracks = aniZoneSelectEnglishSubtitles(player.subtitles)
+            if (englishTracks.isEmpty()) return
+            val ordered = if (preferredFansubs.isNotEmpty()) {
+                englishTracks.sortedByDescending { track ->
+                    preferredFansubs.any { fansub -> track.label.contains(fansub, ignoreCase = true) }
+                }
+            } else {
+                // When AniZone has multiple English tracks (e.g. .srt + .ass or multiple fansub groups),
+                // emit the secondary track first under animepahe provenance so both tracks survive URL deduplication.
+                if (englishTracks.size > 1) englishTracks.drop(1) + englishTracks.first() else englishTracks
+            }
+            val subHeaders = ANIZONE_HEADERS + mapOf(
+                "X-StreamPlay-Source" to "animepahe",
+                "X-StreamPlay-Compat" to "meowtv"
+            )
+            val emitted = HashSet<String>()
+            ordered.forEach { track ->
+                val distinctTrackUrl = if (track.url.contains('#')) track.url else "${track.url}#animepahe"
+                if (emitted.add(distinctTrackUrl)) {
+                    subtitleCallback(
+                        newSubtitleFile(aniZoneNormalizeEnglishLabel(track), distinctTrackUrl) {
+                            this.headers = subHeaders
+                        }
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+        }
+    }
+
+    private suspend fun resolveAniZoneEpisodePlayer(
+        titles: List<String>,
+        year: Int?,
+        episodeNumber: Int,
+        isMovie: Boolean,
+    ): AniZonePlayer? {
+        val queries = titles
+            .mapNotNull { it.trim().takeIf(String::isNotBlank) }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(MAX_ANIME_SOURCE_TITLE_QUERIES)
+        if (queries.isEmpty()) return null
+        var hit: AniZoneSearchHit? = null
+        for (query in queries) {
+            val html = withTimeoutOrNull(7_000L) {
+                cancellableGetText(
+                    "$ANIZONE_HOST/anime?search=${URLEncoder.encode(query, "UTF-8")}",
+                    headers = ANIZONE_HEADERS,
+                    timeoutSec = 6L
+                )
+            } ?: break
+            hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
+            if (hit != null) break
+        }
+        val resolved = hit ?: return null
+        val baseUrl = resolved.url.trim()
+            .replaceFirst("http://", "https://")
+            .substringBefore('?')
+            .trimEnd('/')
+            .takeIf { it.startsWith("http", ignoreCase = true) }
+            ?: "$ANIZONE_HOST/anime/${resolved.slug}"
+        val pageUrl = "$baseUrl/$episodeNumber"
+        val pageHtml = withTimeoutOrNull(7_000L) {
+            cancellableGetText(pageUrl, headers = ANIZONE_HEADERS, timeoutSec = 6L)
+        } ?: return null
+        return aniZoneParsePlayer(pageHtml)
     }
 
     /**
@@ -2383,50 +2634,23 @@ object StreamPlayExtractor : StreamPlay() {
         callback: (ExtractorLink) -> Unit,
     ) {
         if (dubtype.equals("DUB", ignoreCase = true)) return
-        val queries = titles
-            .mapNotNull { it.trim().takeIf(String::isNotBlank) }
-            .distinctBy { it.lowercase(Locale.ROOT) }
-            .take(MAX_ANIME_SOURCE_TITLE_QUERIES)
-        if (queries.isEmpty()) return
         val episodeNumber = if (isMovie) 1 else (episode ?: return)
         try {
             withTimeoutOrNull(24_000L) {
-                var hit: AniZoneSearchHit? = null
-                for (query in queries) {
-                    val html = withTimeoutOrNull(7_000L) {
-                        cancellableGetText(
-                            "$ANIZONE_HOST/anime?search=${URLEncoder.encode(query, "UTF-8")}",
-                            headers = ANIZONE_HEADERS,
-                            timeoutSec = 6L
-                        )
-                    } ?: break
-                    hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
-                    if (hit != null) break
-                }
-                val resolved = hit ?: run {
-                    Log.d("StreamPlay", "AniZone: no catalogue match for ${titles.firstOrNull()}")
+                val player = resolveAniZoneEpisodePlayer(titles, year, episodeNumber, isMovie) ?: run {
+                    Log.d("StreamPlay", "AniZone: no player payload for ${titles.firstOrNull()} ep $episodeNumber")
                     return@withTimeoutOrNull
                 }
 
-                val baseUrl = resolved.url.trim()
-                    .replaceFirst("http://", "https://")
-                    .substringBefore('?')
-                    .trimEnd('/')
-                    .takeIf { it.startsWith("http", ignoreCase = true) }
-                    ?: "$ANIZONE_HOST/anime/${resolved.slug}"
-                val pageUrl = "$baseUrl/$episodeNumber"
-                val pageHtml = withTimeoutOrNull(7_000L) {
-                    cancellableGetText(pageUrl, headers = ANIZONE_HEADERS, timeoutSec = 6L)
-                } ?: return@withTimeoutOrNull
-                val player = aniZoneParsePlayer(pageHtml) ?: run {
-                    Log.d("StreamPlay", "AniZone: no player payload for $pageUrl")
-                    return@withTimeoutOrNull
-                }
-
+                val subHeaders = ANIZONE_HEADERS + ("X-StreamPlay-Source" to "anizone")
                 val emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-                player.subtitles.filter(::aniZoneIsEnglishSubtitle).forEach { track ->
+                aniZoneSelectEnglishSubtitles(player.subtitles).forEach { track ->
                     if (emittedTracks.add(track.url)) {
-                        subtitleCallback(newSubtitleFile(cleanSubtitleLabel(track.label), track.url))
+                        subtitleCallback(
+                            newSubtitleFile(aniZoneNormalizeEnglishLabel(track), track.url) {
+                                this.headers = subHeaders
+                            }
+                        )
                     }
                 }
 
@@ -2512,6 +2736,7 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     .filter { !it.downloadLink.isNullOrBlank() }
                     .filterNot { it.hearingImpaired == "1" || it.bad == "1" }
+                    .filter { openSubtitlesEpisodeMatches(it, season, episode) }
                     .sortedWith(
                         compareByDescending<OpenSubtitlesLegacySubtitle> { it.rating?.toDoubleOrNull() ?: 0.0 }
                             .thenByDescending { it.downloads?.toLongOrNull() ?: 0L }
@@ -2532,6 +2757,24 @@ object StreamPlayExtractor : StreamPlay() {
         } catch (e: Exception) {
             if (e is CancellationException) throw e
         }
+    }
+
+    internal fun openSubtitlesEpisodeMatches(
+        sub: OpenSubtitlesLegacySubtitle,
+        season: Int?,
+        episode: Int?,
+    ): Boolean {
+        if (episode == null || episode <= 0) return true
+        val subSeason = sub.seriesSeason?.trim()?.toIntOrNull()?.takeIf { it > 0 }
+        val subEpisode = sub.seriesEpisode?.trim()?.toIntOrNull()?.takeIf { it > 0 }
+        if (subEpisode != null) {
+            if (subEpisode != episode) return false
+            if (season != null && season > 0 && subSeason != null && subSeason != season) return false
+            return true
+        }
+        val haystack = normalizeSubtitleReleaseText("${sub.fileName.orEmpty()} ${sub.releaseName.orEmpty()}")
+        if (haystack.isBlank()) return false
+        return subtitleCatEpisodeMatches(haystack, season, episode)
     }
 
     internal fun buildOpenSubtitlesLegacyUrls(
@@ -2558,7 +2801,11 @@ object StreamPlayExtractor : StreamPlay() {
             }
             queries.forEach { query ->
                 val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
-                add("$OPENSUBTITLES_REST/search/query-$encoded/sublanguageid-eng")
+                if (season != null && season > 0 && episode != null && episode > 0) {
+                    add("$OPENSUBTITLES_REST/search/episode-$episode/query-$encoded/season-$season/sublanguageid-eng")
+                } else {
+                    add("$OPENSUBTITLES_REST/search/query-$encoded/sublanguageid-eng")
+                }
             }
         }
     }
@@ -3898,9 +4145,11 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                 }
 
-                // When vidlink.pro returns a stream without native English captions (common on Anime),
-                // harvest English subtitles from WyZIESUB and SubtitleAPI immediately after emitting video links.
-                if (!hasEnglishCaptions && subtitleCallback != null) {
+                // For non-anime Movie/TV streams without native English captions, harvest English
+                // subtitles from WyZIESUB and SubtitleAPI. Never do this on anime: disguising
+                // generic OpenSubtitles/Wyzie tracks under `vidlink` provenance (rank 100) crowds
+                // out frame-synced anime sidecars from AniZone, MegaPlay, ZokoAnime, and KAA.
+                if (!hasEnglishCaptions && !isAnime && subtitleCallback != null) {
                     val subLookupId = imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
                     if (!subLookupId.isNullOrBlank()) {
                         invokeWYZIESubs(subLookupId, season, episode, subtitleCallback)

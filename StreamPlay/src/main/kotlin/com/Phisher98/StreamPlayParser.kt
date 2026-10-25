@@ -120,6 +120,12 @@ data class OpenSubtitlesLegacySubtitle(
     val downloads: String? = null,
     @JsonProperty("SubEncoding")
     val encoding: String? = null,
+    @JsonProperty("SeriesSeason")
+    val seriesSeason: String? = null,
+    @JsonProperty("SeriesEpisode")
+    val seriesEpisode: String? = null,
+    @JsonProperty("MovieKind")
+    val movieKind: String? = null,
 )
 
 //anime animepahe parser
