@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.phisher98.StreamPlayExtractor.parseHlsMasterVariants
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -480,5 +481,201 @@ class StreamDeduplicationAndCdnAdversarialTest {
         assertEquals("Canonical deduplication must collapse all 100 emissions into 1 entry", 1, deduplicator.getEmittedCount())
         val finalLink = deduplicator.getEmittedLinks().first()
         assertEquals("Highest priority 720p stream must be the final retained entry", Qualities.P720.value, finalLink.quality)
+    }
+
+    // =========================================================================
+    // 9. Adaptive Variant Identity & Demuxed-Audio Ladder Deduplication
+    // =========================================================================
+
+    /**
+     * Regression: MegaPlay/AniZone ship demuxed-audio masters whose `#EXT-X-STREAM-INF` lines
+     * frequently omit `RESOLUTION`, so the extension routes each genuine rendition through a
+     * `#vid=` fragment (a declared height, the provider's bandwidth, or a sorted ordinal).
+     * Canonical dedupe used to strip URL fragments, collapsing the whole ladder onto the first
+     * (lowest-bandwidth) variant. On a 360p-first master the 720p download then silently became
+     * 360p. The fragment is the only identity signal in that case and must survive; every genuine
+     * variant must also survive the deduplicator.
+     */
+    @Test
+    fun testUnlabelledDemuxedAudioVariantsKeepDistinctIdentityAndAllSurviveDeduplication() {
+        val demuxedMaster = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Japanese",DEFAULT=YES,AUTOSELECT=YES,URI="audio/ja.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=460000,AVERAGE-BANDWIDTH=400000,AUDIO="aud",CODECS="avc1.42c01e,mp4a.40.2"
+            v0/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=1400000,AVERAGE-BANDWIDTH=1200000,AUDIO="aud",CODECS="avc1.4d401f,mp4a.40.2"
+            v1/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2900000,AVERAGE-BANDWIDTH=2400000,AUDIO="aud",CODECS="avc1.640028,mp4a.40.2"
+            v2/index.m3u8
+        """.trimIndent()
+
+        val variants = parseHlsMasterVariants(
+            masterUrl = "https://fetch.nexabloom.top/hls/12/master.m3u8",
+            manifestText = demuxedMaster
+        )
+
+        assertEquals("Every genuine rendition must survive variant parsing", 3, variants.size)
+        assertEquals(
+            "Unlabelled renditions must be pinned by the provider's own bandwidth, not a fabricated height",
+            listOf(
+                "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_400000",
+                "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_1200000",
+                "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_2400000"
+            ),
+            variants.map { it.url }
+        )
+        assertTrue(
+            "A manifest without RESOLUTION must not fabricate a height",
+            variants.all { it.quality == Qualities.Unknown.value }
+        )
+
+        val links = variants.map { variant ->
+            createLink(
+                source = "MegaPlay",
+                name = "MegaPlay [Auto] [Japanese]",
+                url = variant.url,
+                type = ExtractorLinkType.M3U8
+            )
+        }
+        val keys = links.map { StreamLinkOptimizer.canonicalStreamKey(it) }
+        assertEquals("Each unlabelled variant is one distinct stream", 3, keys.toSet().size)
+
+        val emitted = mutableListOf<ExtractorLink>()
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator { emitted.add(it) }
+        links.forEach { link ->
+            assertTrue("Variant ${link.url} must be emitted", deduplicator.emit(link))
+        }
+        assertEquals("The deduplicator must keep the whole ladder", 3, deduplicator.getEmittedCount())
+        assertEquals(3, emitted.size)
+        assertEquals(
+            "The lowest- and mid-bandwidth renditions must both stay addressable",
+            setOf(
+                "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_400000",
+                "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_1200000",
+                "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_2400000"
+            ),
+            emitted.map { it.url }.toSet()
+        )
+    }
+
+    /**
+     * HLS fixes attribute names, not their order. A master that writes `URI` before `TYPE=AUDIO`
+     * used to be classified as muxed audio: every rendition was emitted as a direct child playlist
+     * and the original audio rendition was dropped. Classification must be attribute-order
+     * independent, exactly like the parser's other attribute readers.
+     */
+    @Test
+    fun testDemuxedAudioDetectionIsAttributeOrderIndependent() {
+        val masterUrl = "https://hls.dramahot.top/anime/42/master.m3u8"
+        val uriBeforeTypeMaster = """
+            #EXTM3U
+            #EXT-X-MEDIA:GROUP-ID="aud",NAME="Japanese",DEFAULT=YES,URI="audio/ja.m3u8",TYPE=AUDIO
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,AVERAGE-BANDWIDTH=800000,AUDIO="aud"
+            v0/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2600000,AVERAGE-BANDWIDTH=2400000,AUDIO="aud"
+            v2/index.m3u8
+        """.trimIndent()
+
+        val variants = parseHlsMasterVariants(masterUrl, uriBeforeTypeMaster)
+
+        assertEquals("Both renditions must be preserved", 2, variants.size)
+        assertTrue(
+            "A demuxed-audio master must keep the master URL so the audio rendition can be muxed",
+            variants.all { it.url.startsWith(masterUrl) && it.url.contains("#vid=bw_") }
+        )
+        assertEquals(
+            listOf(
+                "$masterUrl#vid=bw_800000",
+                "$masterUrl#vid=bw_2400000"
+            ),
+            variants.map { it.url }
+        )
+    }
+
+    /**
+     * A `TYPE=AUDIO` rendition without a `URI` describes audio muxed inside the video segments.
+     * Preserving the master URL there would be wrong: the genuine renditions are the direct child
+     * playlists, and their declared heights must stay attached to those URLs.
+     */
+    @Test
+    fun testMuxedAudioRenditionKeepsDirectChildPlaylists() {
+        val masterUrl = "https://fetch.nexabloom.top/hls/7/master.m3u8"
+        val muxedMaster = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Japanese",DEFAULT=YES
+            #EXT-X-STREAM-INF:BANDWIDTH=2600000,AVERAGE-BANDWIDTH=2400000,RESOLUTION=1280x720,AUDIO="aud"
+            720/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=4800000,AVERAGE-BANDWIDTH=4200000,RESOLUTION=1920x1080,AUDIO="aud"
+            1080/index.m3u8
+        """.trimIndent()
+
+        val variants = parseHlsMasterVariants(masterUrl, muxedMaster)
+
+        assertEquals(
+            "A muxed audio declaration must not collapse the ladder onto the master URL",
+            listOf(
+                "https://fetch.nexabloom.top/hls/7/720/index.m3u8",
+                "https://fetch.nexabloom.top/hls/7/1080/index.m3u8"
+            ),
+            variants.map { it.url }
+        )
+        assertEquals(listOf(Qualities.P720.value, Qualities.P1080.value), variants.map { it.quality })
+    }
+
+    /**
+     * A demuxed master that declares neither `RESOLUTION` nor `BANDWIDTH` still has genuine
+     * renditions. They are addressed by their position in the ascending-bitrate order the host
+     * replays (`M3u8Helper2.pinnedVariantIndex`), never by a fabricated height.
+     */
+    @Test
+    fun testUnlabelledUnbandedDemuxedLadderFallsBackToSortedOrdinals() {
+        val masterUrl = "https://cdn.example/anime/master.m3u8"
+        val unbandedMaster = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Japanese",URI="audio/ja.m3u8"
+            #EXT-X-STREAM-INF:AUDIO="aud",CODECS="avc1.42c01e,mp4a.40.2"
+            low/index.m3u8
+            #EXT-X-STREAM-INF:AUDIO="aud",CODECS="avc1.4d401f,mp4a.40.2"
+            mid/index.m3u8
+            #EXT-X-STREAM-INF:AUDIO="aud",CODECS="avc1.640028,mp4a.40.2"
+            high/index.m3u8
+        """.trimIndent()
+
+        val variants = parseHlsMasterVariants(masterUrl, unbandedMaster)
+
+        assertEquals("Every rendition must stay addressable", 3, variants.size)
+        assertEquals(
+            "The ordinal is the ascending-bitrate position both sides agree on",
+            listOf("vid=auto_0", "vid=auto_1", "vid=auto_2"),
+            variants.map { it.url.substringAfter("#") }
+        )
+        assertTrue(
+            "Neither a height nor a bandwidth may be turned into a resolution label",
+            variants.all { it.quality == Qualities.Unknown.value }
+        )
+    }
+
+    /**
+     * The `optimize()` stage runs on every emitted link (headers, badging, shield hygiene). A
+     * routing fragment is the only identity an unlabelled rendition has, so it must survive the
+     * whole optimization pass byte-for-byte.
+     */
+    @Test
+    fun testOptimizePreservesVariantRoutingFragment() {
+        val link = createLink(
+            source = "MegaPlay",
+            name = "MegaPlay [Auto]",
+            url = "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_1200000",
+            type = ExtractorLinkType.M3U8
+        )
+
+        val optimized = StreamLinkOptimizer.optimize(link)
+
+        assertEquals(
+            "Optimization must never drop the rendition route that addresses the media",
+            "https://fetch.nexabloom.top/hls/12/master.m3u8#vid=bw_1200000",
+            optimized.url
+        )
     }
 }

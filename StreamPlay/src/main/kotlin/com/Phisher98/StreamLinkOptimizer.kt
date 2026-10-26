@@ -2020,7 +2020,19 @@ object StreamLinkOptimizer {
             } else {
                 extractQualityFromText(link.name, rawUrl)
             }
-            if (q > 0 && q != Qualities.Unknown.value) "$baseKey#$q" else baseKey
+            if (q > 0 && q != Qualities.Unknown.value) {
+                "$baseKey#$q"
+            } else {
+                // A demuxed-audio master is emitted once per genuine variant behind a routing
+                // fragment (`#vid=720p`, `#vid=bw_1200000`, or `#vid=auto_2` when the manifest
+                // declares neither a height nor a bandwidth). When no height is known the fragment
+                // is the only thing that tells the variants apart; dropping it collapsed an entire
+                // unlabelled ladder onto the lowest-bandwidth rendition, which is exactly the 360p
+                // stream a 720p download must never silently become.
+                val variantRoute = rawUrl.substringAfterLast('#', "")
+                    .takeIf { it.startsWith("vid=", ignoreCase = true) }
+                if (variantRoute != null) "$baseKey#$variantRoute" else baseKey
+            }
         } else {
             baseKey
         }

@@ -5344,7 +5344,27 @@ object StreamPlayExtractor : StreamPlay() {
     private val HLS_RESOLUTION_REGEX = Regex("""RESOLUTION=\s*(\d+)\s*x\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_AVG_BW_REGEX = Regex("""AVERAGE-BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_BW_REGEX = Regex("""(?:^|[:,])\s*BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
-    private val HLS_DEMUXED_AUDIO_REGEX = Regex("""#EXT-X-MEDIA:[^\r\n]*TYPE=AUDIO[^\r\n]*URI="[^"]+"""", RegexOption.IGNORE_CASE)
+    private val HLS_MEDIA_URI_ATTRIBUTE = Regex("""URI\s*=\s*"[^"]+"""", RegexOption.IGNORE_CASE)
+
+    /**
+     * True when the master declares an external audio rendition for at least one variant.
+     *
+     * HLS fixes attribute *names*, not their order, and real providers emit both
+     * `TYPE=AUDIO,...,URI="..."` and `...,URI="...",TYPE=AUDIO` in the wild. A single
+     * order-sensitive regex classified the second form as muxed audio, so the ladder was
+     * flattened into direct child playlists and the original audio track was lost. Each
+     * `#EXT-X-MEDIA` tag is therefore classified on its own: it is a demuxed-audio declaration
+     * only when it both declares `TYPE=AUDIO` and carries a non-empty `URI` (an entry without a
+     * URI describes audio muxed into the video segments and needs no master-preserving route).
+     */
+    private fun hasDemuxedAudioRendition(manifestText: String): Boolean {
+        return manifestText.lineSequence().any { rawLine ->
+            val line = rawLine.trim()
+            line.startsWith("#EXT-X-MEDIA:", ignoreCase = true) &&
+                line.contains("TYPE=AUDIO", ignoreCase = true) &&
+                HLS_MEDIA_URI_ATTRIBUTE.containsMatchIn(line)
+        }
+    }
 
     /**
      * Maps HLS `#EXT-X-STREAM-INF` `RESOLUTION={width}x{height}` dimensions to canonical quality
@@ -5396,7 +5416,7 @@ object StreamPlayExtractor : StreamPlay() {
         manifestText: String
     ): List<HlsMasterVariant> {
         if (!manifestText.contains("#EXT-X-STREAM-INF", ignoreCase = true)) return emptyList()
-        val hasDemuxedAudio = HLS_DEMUXED_AUDIO_REGEX.containsMatchIn(manifestText)
+        val hasDemuxedAudio = hasDemuxedAudioRendition(manifestText)
         val lines = manifestText.lines()
         val variants = mutableListOf<HlsMasterVariant>()
         val baseUrl = masterUrl.substringBefore('#')
@@ -5425,8 +5445,9 @@ object StreamPlayExtractor : StreamPlay() {
                 if (uriLine != null) {
                     val quality = normalizeHlsResolutionToQuality(width, height, uriLine)
                     val resolvedUrl = if (hasDemuxedAudio) {
-                        val tag = if (quality > 0 && quality != Qualities.Unknown.value) "${quality}p" else "auto_${variants.size}"
-                        "$baseUrl#vid=$tag"
+                        // Addressed after sorting so `#vid=auto_N` means the same ascending-bitrate
+                        // ordinal on both sides of the wire.
+                        baseUrl
                     } else {
                         runCatching { URI(baseUrl).resolve(uriLine).toString() }.getOrElse {
                             if (uriLine.startsWith("http", ignoreCase = true)) uriLine else baseUrl
@@ -5448,9 +5469,21 @@ object StreamPlayExtractor : StreamPlay() {
             }
             i++
         }
-        return variants
-            .sortedBy { it.bandwidthBps ?: Long.MAX_VALUE }
-            .distinctBy { "${it.quality}|${it.url}" }
+        val sorted = variants.sortedBy { it.bandwidthBps ?: Long.MAX_VALUE }
+        if (!hasDemuxedAudio) {
+            return sorted.distinctBy { "${it.quality}|${it.url}" }
+        }
+        return sorted.mapIndexed { index, variant ->
+            // A declared height is the strongest pin. Otherwise the provider's own bandwidth keeps
+            // the rendition addressable even when the master omits RESOLUTION; only a master that
+            // declares neither falls back to the ordinal. None of these invents a resolution.
+            val tag = when {
+                variant.quality > 0 && variant.quality != Qualities.Unknown.value -> "${variant.quality}p"
+                (variant.bandwidthBps ?: 0L) > 0L -> "bw_${variant.bandwidthBps}"
+                else -> "auto_$index"
+            }
+            variant.copy(url = "$baseUrl#vid=$tag")
+        }.distinctBy { "${it.quality}|${it.url}" }
     }
 
     /**
