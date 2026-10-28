@@ -20,7 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Parser contracts for the two v25 anime sources.
+ * Parser contracts for the two SOTA anime sources.
  *
  * The fixtures are the exact escape layout the live sites serve on 2026-10-23: AniZone embeds its
  * catalogues as `JSON.parse('...')` inside an Alpine `x-data` attribute with every quote written as

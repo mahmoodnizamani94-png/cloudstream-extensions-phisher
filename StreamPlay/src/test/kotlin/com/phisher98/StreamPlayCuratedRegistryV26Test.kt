@@ -29,24 +29,24 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 
 /**
- * Acceptance suite for the curated v25 SOTA StreamPlay source registry.
+ * Acceptance suite for the curated v26 SOTA StreamPlay source registry.
  *
  * It pins down, as executable contracts:
- *  1. exactly which sources may surface in the UI (VidLink, Cineby, CineSrc, VidFast, MegaPlay,
- *     MeowTV, AniZone, AnimePahe, Animex) and their strict launch hierarchy,
+ *  1. exactly which sources may surface in the UI (VidLink, VidRift, Cineby, CineSrc, VidFast,
+ *     MegaPlay, MeowTV, AniZone, AnimePahe, Animex) and their strict launch hierarchy,
  *  2. the ranking of those sources and of the CDN hosts they serve from, plus VidRock's and
  *     VidSrc's complete decommissioning,
  *  3. the settings migration that removes every decommissioned provider (including VidRock and
- *     VidSrc) from an existing install while enabling the v25 SOTA sources,
+ *     VidSrc) from an existing install while enabling the v26 SOTA sources,
  *  4. the bounded ordering windows of [StreamLinkOptimizer.PriorityStreamDispatcher],
  *  5. known-answer vectors for the offline VidLink token encryptor,
  *  6. protocol parsers for Cineby, CineSrc (CSP4 PoW + Nebula/Wave/Surge), MegaPlay, Animex,
- *     AniZone and AnimePahe (dedicated v25 suite), and HLS Master Variant + Size Estimation,
+ *     AniZone and AnimePahe (dedicated v26 anime suite), and HLS Master Variant + Size Estimation,
  *  7. the exception gates that keep the Movie/TV, Anime, and Universal segments of the registry
  *     properly partitioned, and
  *  8. the stream-only download-exclusion contract (`DOWNLOAD_EXCLUDED_PROVIDER_IDS = setOf("vidfast")`).
  */
-class StreamPlayCuratedRegistryV25Test {
+class StreamPlayCuratedRegistryV26Test {
 
     private val curatedIds = setOf(
         "vidlink",
@@ -183,7 +183,7 @@ class StreamPlayCuratedRegistryV25Test {
             assertTrue("$it must be listed in REMOVED_PROVIDER_IDS", REMOVED_PROVIDER_IDS.contains(it))
         }
 
-        // The v25 additions are live members of the curated set.
+        // The v26 additions are live members of the curated set.
         curatedIds.forEach { id ->
             assertTrue("$id must be registered", providerIds.contains(id))
             assertFalse("$id must not be listed as removed", REMOVED_PROVIDER_IDS.contains(id))
@@ -292,7 +292,7 @@ class StreamPlayCuratedRegistryV25Test {
     }
 
     // =========================================================================
-    // 2. SETTINGS MIGRATION (v25)
+    // 2. SETTINGS MIGRATION (v26)
     // =========================================================================
 
     @Test
@@ -623,7 +623,7 @@ class StreamPlayCuratedRegistryV25Test {
     }
 
     @Test
-    fun testPlaybackOrderingIsStrictlyRankDominatedAcrossTheV25Registry() {
+    fun testPlaybackOrderingIsStrictlyRankDominatedAcrossTheV26Registry() {
         boostByProvider.keys.toList().let { hierarchy ->
             for (i in 0 until hierarchy.size - 1) {
                 val higher = createLink(
@@ -958,7 +958,7 @@ class StreamPlayCuratedRegistryV25Test {
             assertTrue("$id must be an ANIME_ONLY provider", ANIME_ONLY_PROVIDERS.contains(id))
             assertFalse("$id must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains(id))
         }
-        // Universal SOTA sources (VidLink, Cineby, CineSrc) run on Movie, TV, and Anime.
+        // Universal SOTA sources (VidLink, VidRift, Cineby, CineSrc) run on Movie, TV, and Anime.
         listOf("vidlink", "cineby", "cinesrc").forEach { id ->
             assertFalse("$id must not be in NON_ANIME_PROVIDERS", NON_ANIME_PROVIDERS.contains(id))
             assertFalse("$id must not be in ANIME_ONLY_PROVIDERS", ANIME_ONLY_PROVIDERS.contains(id))

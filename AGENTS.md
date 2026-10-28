@@ -11,7 +11,7 @@ This document defines the non-negotiable architectural invariants and priorities
 3. **Fallback Ladder**:
    - `720p (lowest size)` > `1080p (lowest size)` > `480p` > `360p` > `2160p`.
 
-## 2. Curated v25 State-of-the-Art (SOTA) Source Registry (10 Sources)
+## 2. Curated v26 State-of-the-Art (SOTA) Source Registry (10 Sources)
 All streams and downloads for Movies, TV Series, and Anime **must** come exclusively from the vetted SOTA registry (`TOP_TIER_RANKS = listOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87)` in `StreamLinkOptimizer`):
 
 | Rank | ID | Display Name | Scope | Downloadable | Protocol & CDN Infrastructure |
@@ -28,7 +28,7 @@ All streams and downloads for Movies, TV Series, and Anime **must** come exclusi
 | **87** | `animex` | **Animex** | Anime | Yes | `animex.one` GraphQL (`plyr.animex.one` SSR fallback) + plaintext `pp.animex.one/rest/api/sources` (`nero`, `yuki`, `zuna`, `loli`, `sora`) + direct `kaa.lt` (`krussdomi.com/cat-player/player`) -> `s-91.megavid.se` / `hls.dramahot.top` / `hls.krussdomi.com` / `fetch.nexabloom.top` HLS + `.vtt`/`.srt` subtitles |
 
 ## 3. Anime Playback & Download Contract
-- When playing or downloading Anime (both in `StreamPlay` when `isAnime == true` and in `StreamPlay-Anime` / `StreamPlayAnime.kt`), streams and downloads **must** come from the v25 SOTA Anime chain, subtitles-first:
+- When playing or downloading Anime (both in `StreamPlay` when `isAnime == true` and in `StreamPlay-Anime` / `StreamPlayAnime.kt`), streams and downloads **must** come from the v26 SOTA Anime chain, subtitles-first:
   - **`VidLink` (100)** -> **`Cineby` (95)** -> **`CineSrc` (94)** -> **`MegaPlay` (92)** -> **`AniZone` (89)** -> **`AnimePahe` (88)** -> **`Animex` (87)**
 - The host enforces an anime-only download restriction that mirrors this chain: `DownloadSelectionPolicy.ANIME_DOWNLOAD_CHAIN`, `animeDownloadPool`, `isAnimeContent`, `sortCandidates(..., anime = true)` and `orderDownloadAttempts(..., anime = true)`. When an anime pool contains no chain source the host returns no download (an explicit refusal) instead of silently downgrading to a legacy mirror. Non-anime downloads keep the universal ranking unchanged.
 - Anime streams and downloads **must** preserve **original language (Japanese / Original Audio)** and **subtitles**:

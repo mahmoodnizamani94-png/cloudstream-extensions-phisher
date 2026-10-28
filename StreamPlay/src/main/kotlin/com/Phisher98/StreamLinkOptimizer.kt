@@ -1839,7 +1839,7 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Authentic Stream Emission for Top-Tier Sources (VidLink, HexaSU, AutoEmbed, VidFast, VidEasy, VidSrc).
+     * Authentic stream emission for the curated v26 top-tier sources.
      * Emits only genuine stream links and parsed manifest variants without synthetic companion duplication:
      * - If generatedLinks is provided: emits genuine variants parsed from the manifest sorted by stream priority.
      * - If generatedLinks is null or empty: emits exactly ONE ExtractorLink with its authentic detected quality,
@@ -2042,7 +2042,9 @@ object StreamLinkOptimizer {
 
     /**
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
-     * 1. Top-tier source priority rank (VidLink > Cineby > VidSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex > Secondary)
+     * 1. Top-tier source priority rank for the curated v26 registry
+     *    (VidLink 100 > VidRift 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
+     *     MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary)
      * 2. Quality priority score within the same source (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
      * 3. Genuine non-synthetic streams over synthetic companions
      * 4. Higher bitrate (kbps) (when quality score and source rank are equivalent)
@@ -2054,7 +2056,9 @@ object StreamLinkOptimizer {
      * 10. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Top-Tier Source Priority Rank (VidLink > Cineby > VidSrc > VidFast > VidSrcSU > MegaPlay > MeowTV > Animex > Secondary).
+        // 1. Top-Tier Source Priority Rank for the curated v26 registry
+        //    (VidLink 100 > VidRift 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
+        //     MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary).
         // Source rank is primary so a higher-ranked source can never be replaced by a
         // lower-ranked one that merely exposes a higher resolution ladder.
         val sourceRank1 = getSourcePriorityRank(candidate)
@@ -2138,23 +2142,24 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Definitive source priority ranking for the curated v25 SOTA registry:
+     * Definitive source priority ranking for the curated v26 SOTA registry:
      *
      *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)      -> 100
-     *   2. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 95
-     *   3. CineSrc   (cinesrc.st, CSP4 PoW + Nebula/Wave/Surge bright67.online HLS + subs)-> 94
-     *   4. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 93
-     *   5. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
-     *   6. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
-     *   7. AniZone   (anizone.to, jin-/vid-cdn HLS ladder + real English SRT/ASS sidecars) -> 89
-     *   8. AnimePahe (animepahe.pw, Cloudflare-gated Kwik HLS, deepest airing/rare catalog) -> 88
-     *   9. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 87
+     *   2. VidRift   (vidrift.net, embed-meta + /api/source fan-out, reelvault/bigbang HLS) -> 98
+     *   3. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 95
+     *   4. CineSrc   (cinesrc.st, CSP4 PoW + Nebula/Wave/Surge bright67.online HLS + subs)-> 94
+     *   5. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 93
+     *   6. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
+     *   7. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
+     *   8. AniZone   (anizone.to, xin-/vid-cdn HLS ladder + real English SRT/ASS sidecars) -> 89
+     *   9. AnimePahe (animepahe.pw, Cloudflare-gated Kwik HLS, deepest airing/rare catalog) -> 88
+     *  10. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 87
      *
      * The anime-only sources are ordered by how reliably they carry English subtitles and the
      * original Japanese audio: AniZone ships both as first-class artefacts of the episode pack,
      * AnimePahe has the widest catalogue but no sidecars, and Animex is the fallback of last resort.
-     * That ordering is what makes an anime download walk subtitles-first instead of
-     * resolution-first.
+     * That ordering only breaks ties between anime mirrors whose real sizes are equal or unknown,
+     * so it never overrides the host's 720p-first, lowest-real-size download walk.
      *
      * VidRock (`vidrock`), VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs`, `netoda.tech`,
      * `mov2day.xyz`, `vidora`), and VidSrcSU (`vidsrcsu`, `vidsrc.su`, `themoviedb.vidsrc.su`,
@@ -3123,16 +3128,16 @@ object StreamLinkOptimizer {
             /**
              * The v22-era top-tier ranks, kept only for the standalone fallback path of
              * [hasHigherPendingTop720Rank] (no [activeTopRanks] and no [isRankInFlight]):
-             * in that mode the dispatcher knows nothing about which v25 registry sources
+             * in that mode the dispatcher knows nothing about which v26 registry sources
              * are live, so it waits only for these historic ranks plus any rank it has
              * actually observed in the current session. Every production caller passes
-             * [activeTopRanks]/[isRankInFlight], where the full v25 [TOP_TIER_RANKS] set
+             * [activeTopRanks]/[isRankInFlight], where the full v26 [TOP_TIER_RANKS] set
              * is used against the live provider picture instead.
              */
             private val LEGACY_TOP_TIER_RANKS = listOf(100, 94, 90, 85)
 
             /**
-             * The complete set of top-tier ranks in the curated v25 registry. Kept as an
+             * The complete set of top-tier ranks in the curated v26 registry. Kept as an
              * explicit list (rather than derived from the string-keyed boost map) so the
              * dispatcher can reason about "is a higher-ranked source still running?"
              * without having to know any provider names.

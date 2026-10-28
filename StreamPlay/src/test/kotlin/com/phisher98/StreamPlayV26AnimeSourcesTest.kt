@@ -9,13 +9,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Parser and matching contracts for the two v25 anime sources.
+ * Parser and matching contracts for the two anime sources of the current registry.
  *
  * These tests are deliberately network-free: they pin the exact payload shapes the extractors
  * consume (AnimePahe's JSON API + `#resolutionMenu` + Kwik packer, AniZone's Livewire
  * `items: JSON.parse('...')` catalogue and `vidstackPlayer(JSON.parse('...'))` episode payload).
  * The live endpoints are probed separately; a parser regression must fail here first.\n */
-class StreamPlayV25AnimeSourcesTest {
+class StreamPlayV26AnimeSourcesTest {
 
     // =========================================================================================
     // AnimePahe: search / release / play page / Kwik

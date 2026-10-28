@@ -133,7 +133,7 @@ class DualQualityAndSotaHierarchyTest {
         val rVideasy = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidEasy", "VidEasy", "https://player.videasy.to/v.m3u8"))
         val rVidcore = StreamLinkOptimizer.getSourcePriorityRank(createLink("vidcore", "vidcore", "https://vidcore.io/v.m3u8"))
         val rVidEm = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidEm", "VidEm", "https://videm.xyz/v.m3u8"))
-        // The v25 anime tail: AniZone (soft-sub sidecars) > AnimePahe (catalogue breadth) > Animex.
+        // The v26 anime tail: AniZone (soft-sub sidecars) > AnimePahe (catalogue breadth) > Animex.
         val rAniZone = StreamLinkOptimizer.getSourcePriorityRank(createLink("AniZone", "AniZone", "https://anizone.to/anime/abc/1"))
         val rAnimepahe = StreamLinkOptimizer.getSourcePriorityRank(createLink("AnimePahe", "AnimePahe", "https://animepahe.pw/play/abc/def"))
         val rKwikCdn = StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://vault-01.uwucdn.top/stream/abc/uwu.m3u8"))
@@ -1023,7 +1023,7 @@ class DualQualityAndSotaHierarchyTest {
 
     @Test
     fun testExactSotaTopSourcesAndDualQuality12SequenceHierarchy() {
-        // User Specification (curated v24 registry):
+        // User Specification (curated v26 registry):
         // VidLink (100) variants in quality order 720 > 1080 > 480 > 360, then CineSrc (95)
         // variants in the same quality order, then Animex (90) variants. Source rank
         // dominates, so every VidLink entry outranks every CineSrc entry, which outranks
@@ -1921,8 +1921,8 @@ class DualQualityAndSotaHierarchyTest {
         assertTrue("vidfast must be active (re-issued id)", active.contains("vidfast"))
         assertTrue("megaplay must be active", active.contains("megaplay"))
         assertTrue("meowtv must be active", active.contains("meowtv"))
-        assertTrue("anizone must be active (v25 soft-sub anime source)", active.contains("anizone"))
-        assertTrue("animepahe must be active (v25 anime catalogue source)", active.contains("animepahe"))
+        assertTrue("anizone must be active (v26 soft-sub anime source)", active.contains("anizone"))
+        assertTrue("animepahe must be active (v26 anime catalogue source)", active.contains("animepahe"))
         assertTrue("animex must be active", active.contains("animex"))
 
         // No decommissioned provider may be injected into the clean-install disabled set.

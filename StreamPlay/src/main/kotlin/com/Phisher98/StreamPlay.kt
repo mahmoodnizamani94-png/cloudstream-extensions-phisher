@@ -81,7 +81,7 @@ internal const val SUBTITLE_COMPLETION_TIMEOUT_MS = 24_000L
 internal const val SUBTITLE_COMPLETION_TASK_TIMEOUT_MS = 16_000L
 
 /**
- * The curated v25 registry has no subtitle-only entries: every surviving source ships its
+ * The curated v26 registry has no subtitle-only entries: every surviving source ships its
  * own captions (VidLink's native caption tracks, Cineby/CineSrc/VidFast/MeowTV decrypted
  * track lists, MegaPlay/Animex soft-subs, AniZone's English SRT/ASS sidecars), which keeps
  * subtitle timing exactly in sync with the stream that was chosen. AnimePahe has no sidecars but
@@ -298,13 +298,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val jikanAPI = "https://api.jikan.moe/v4"
 
         const val reanime = "https://reanime.to"
-        const val kissKhAPI = "https://kisskh.nl"
-        const val watchSomuchAPI = "https://watchsomuch.tv" // sub only
-        const val nineTvAPI = "https://moviesapi.club"
-        const val zshowAPI = BuildConfig.ZSHOW_API
-        const val allmovielandAPI = "https://allmovieland.io"
-        const val animetoshoAPI = "https://animetosho.xyz"
-        const val nepuAPI = "https://nepu.to"
         const val dahmerMoviesAPI = "https://a.111477.xyz"
         const val animepaheAPI = "https://animepahe.pw"
         const val SubtitlesAPI = "https://opensubtitles-v3.strem.io"
@@ -312,23 +305,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         const val OPENSUBTITLES_USER_AGENT = "TemporaryUserAgent"
         const val WyZIESUBAPI = "https://sub.wyzie.ru"
         const val WYZIESubsAPI = "https://sub.wyzie.ru"
-        const val KickassAPI = "https://kaa.lt"
-        const val Vidsrcxyz = "https://vidsrc-embed.su"
-        const val Vidsrccc = "https://vidsrc.cc"
-        const val Vidsrcin = "https://vidsrc.in"
-        const val Vidsrcpm = "https://vidsrc.pm"
-        const val Vidsrcme = "https://vidsrc.me"
-        const val movieBox= "https://api.inmoviebox.com"
         const val vidlink = "https://vidlink.pro"
-        const val vidflixAPI = "https://vidsrc.pm"
-        const val moviesClubApi = "https://moviesapi.club"
-        const val cinemacity = "https://cinemacity.cc"
-        const val autoembedPlayer = "https://player.autoembed.cc"
-        const val autoembedDomain = "https://autoembed.cc"
-        const val mappleAPI = "https://mapple.uk"
-        const val twoEmbedAPI = "https://www.2embed.cc"
-        const val xpassAPI = "https://play.xpass.top"
-        const val peachifyAPI = "https://peachify.top"
         const val anineko = "https://anineko.to"
 
         fun getType(t: String?): TvType {

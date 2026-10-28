@@ -61,7 +61,6 @@ jobs:
           ANICHI_SERVER: ${{ secrets.ANICHI_SERVER }}
           ANICHI_ENDPOINT: ${{ secrets.ANICHI_ENDPOINT }}
           ANICHI_APP: ${{ secrets.ANICHI_APP }}
-          ZSHOW_API: ${{ secrets.ZSHOW_API }}
           SFMOVIES_API: ${{ secrets.SFMOVIES_API }}
           CINEMATV_API: ${{ secrets.CINEMATV_API }}
           GHOSTX_API: ${{ secrets.GHOSTX_API }}
@@ -85,7 +84,6 @@ jobs:
           SharmaflixApi: ${{ secrets.SharmaflixApi }}
           Theyallsayflix: ${{ secrets.Theyallsayflix }}
           HianimeAPI: ${{ secrets.HianimeAPI }}
-          Vidsrccc: ${{ secrets.Vidsrccc }}
           WASMAPI: ${{ secrets.WASMAPI }}
           KissKh: ${{ secrets.KissKh }}
           KisskhSub: ${{ secrets.KisskhSub }}
@@ -116,7 +114,6 @@ jobs:
           echo ANICHI_SERVER=$ANICHI_SERVER >> local.properties
           echo ANICHI_ENDPOINT=$ANICHI_ENDPOINT >> local.properties
           echo ANICHI_APP=$ANICHI_APP >> local.properties
-          echo ZSHOW_API=$ZSHOW_API >> local.properties
           echo SFMOVIES_API=$SFMOVIES_API >> local.properties
           echo CINEMATV_API=$CINEMATV_API >> local.properties
           echo GHOSTX_API=$GHOSTX_API >> local.properties
@@ -139,7 +136,6 @@ jobs:
           echo SharmaflixApi=$SharmaflixApi >> local.properties
           echo SharmaflixApikey=$SharmaflixApikey >> local.properties
           echo HianimeAPI=$HianimeAPI >> local.properties
-          echo Vidsrccc=$Vidsrccc >> local.properties
           echo WASMAPI=$WASMAPI >> local.properties
           echo KissKh=$KissKh >> local.properties
           echo KisskhSub=$KisskhSub >> local.properties

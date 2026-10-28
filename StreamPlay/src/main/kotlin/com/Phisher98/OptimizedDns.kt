@@ -315,7 +315,7 @@ open class OptimizedDns(
             "raw.githubusercontent.com",
             "megacloud.tv",
             "rabbitstream.net",
-            // v25 SOTA streaming tier: every provider API + its live verified CDNs,
+            // v26 SOTA streaming tier: every provider API + its live verified CDNs,
             // warmed so the first play attempt never pays a cold DNS roundtrip.
             "vidlink.pro",
             "vidrift.net",

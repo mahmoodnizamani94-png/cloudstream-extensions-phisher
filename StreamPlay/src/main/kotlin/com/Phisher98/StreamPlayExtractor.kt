@@ -5247,7 +5247,7 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    // ==================== v24 SOTA Extractor Suite (VidFast / MeowTV) ====================
+    // ==================== SOTA Extractor Suite (VidFast / MeowTV) ====================
     //
     // Protocols reverse-engineered and verified end-to-end over plain HTTP in the v23/v24
     // research passes. Each one hides its media URL behind a small closed-source
@@ -5345,6 +5345,17 @@ object StreamPlayExtractor : StreamPlay() {
     private val HLS_AVG_BW_REGEX = Regex("""AVERAGE-BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_BW_REGEX = Regex("""(?:^|[:,])\s*BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_MEDIA_URI_ATTRIBUTE = Regex("""URI\s*=\s*"[^"]+"""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Nominal episode length used only to turn a provider-declared HLS bandwidth into a ranking
+     * size hint.
+     *
+     * An HLS master playlist declares bandwidth but no duration, so any size derived from it has
+     * to assume one; 24 minutes is the median TV episode. The result is a hint for ordering
+     * variants inside one ladder and is replaced by the host's measured bytes before anything is
+     * downloaded or shown as measured truth.
+     */
+    private const val HLS_SIZE_HINT_SECONDS = 1440.0
 
     /**
      * True when the master declares an external audio rendition for at least one variant.
@@ -5453,8 +5464,14 @@ object StreamPlayExtractor : StreamPlay() {
                             if (uriLine.startsWith("http", ignoreCase = true)) uriLine else baseUrl
                         }
                     }
+                    // Size hint from the provider's own declared bandwidth: monotonic inside the
+                    // ladder, and only ever a ranking hint. The host replaces it with measured
+                    // bytes before committing a download. The floor is one megabyte so a very low
+                    // lane still carries a positive tag; the previous 25 MB floor overstated every
+                    // small rendition and made the tag look measured when it was not.
                     val estimatedMb = bw?.takeIf { it in 100_000L..80_000_000L }?.let { bps ->
-                        ((bps / 8.0) * 1440.0 / (1024.0 * 1024.0)).toInt().coerceAtLeast(25)
+                        val megabytes = (bps / 8.0) * HLS_SIZE_HINT_SECONDS / (1024.0 * 1024.0)
+                        maxOf(1, megabytes.toInt())
                     }
                     variants.add(
                         HlsMasterVariant(

@@ -11,7 +11,7 @@ import org.jetbrains.kotlin.konan.properties.Properties
 //    without ever needing to rewrite history.
 //  - Never decrement or re-issue an already-published number: users' apps compare
 //    `>` against the installed version, so any regression silently stops updates.
-version = 719
+version = 720
 
 android {
     buildFeatures {
@@ -28,22 +28,6 @@ android {
             ?: "1865f43a0549ca50d341dd9ab8b29f49"
         android.buildFeatures.buildConfig=true
         buildConfigField("String", "TMDB_API", "\"$tmdbApiKey\"")
-        buildConfigField("String", "ZSHOW_API", "\"${properties.getProperty("ZSHOW_API")}\"")
-        buildConfigField("String", "ANICHI_API", "\"${properties.getProperty("ANICHI_API")}\"")
-        buildConfigField("String", "KissKh", "\"${properties.getProperty("KissKh")}\"")
-        buildConfigField("String", "KisskhSub", "\"${properties.getProperty("KisskhSub")}\"")
-        buildConfigField("String", "PROXYAPI", "\"${properties.getProperty("PROXYAPI")}\"")
-        buildConfigField("String", "KAISVA", "\"${properties.getProperty("KAISVA")}\"")
-        buildConfigField("String", "MOVIEBOX_SECRET_KEY_ALT", "\"${properties.getProperty("MOVIEBOX_SECRET_KEY_ALT")}\"")
-        buildConfigField("String", "MOVIEBOX_SECRET_KEY_DEFAULT", "\"${properties.getProperty("MOVIEBOX_SECRET_KEY_DEFAULT")}\"")
-        buildConfigField("String", "KAIMEG", "\"${properties.getProperty("KAIMEG")}\"")
-        buildConfigField("String", "KAIDEC", "\"${properties.getProperty("KAIDEC")}\"")
-        buildConfigField("String", "KAIENC", "\"${properties.getProperty("KAIENC")}\"")
-        buildConfigField("String", "VideasyDEC", "\"${properties.getProperty("VideasyDEC")}\"")
-        buildConfigField("String", "YFXENC", "\"${properties.getProperty("YFXENC")}\"")
-        buildConfigField("String", "YFXDEC", "\"${properties.getProperty("YFXDEC")}\"")
-        buildConfigField("String", "NuvFeb", "\"${properties.getProperty("NuvFeb")}\"")
-        buildConfigField("String", "ANICHI_APP", "\"${properties.getProperty("ANICHI_APP")}\"")
     }
 }
 

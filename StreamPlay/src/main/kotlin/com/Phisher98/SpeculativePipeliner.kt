@@ -248,7 +248,7 @@ class EarlySatisfactionController(
 }
 
 /**
- * Authoritative cold-start priority boost for the curated v25 SOTA registry.
+ * Authoritative cold-start priority boost for the curated v26 SOTA registry.
  *
  * The hierarchy is deliberately flat and small: every entry is a source that has been
  * verified live with a plain HTTP probe, and the ordering is the order a well-behaved
@@ -295,7 +295,7 @@ object SpeculativePipeliner {
     private const val TAG = "SpeculativePipeliner"
 
     /**
-     * Cold-start latency expectation for the curated v25 registry. Every surviving source
+     * Cold-start latency expectation for the curated v26 registry. Every surviving source
      * is a single-round-trip JSON API, so they all live in TIER_1; the intent is that the
      * pipeline starts them together instead of serialising them.
      */

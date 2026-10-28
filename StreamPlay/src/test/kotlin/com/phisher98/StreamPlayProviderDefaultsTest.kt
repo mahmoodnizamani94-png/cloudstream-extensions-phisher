@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 class StreamPlayProviderDefaultsTest {
 
-    private val v25TopTier = setOf(
+    private val curatedTopTier = setOf(
         "vidlink", "vidrift", "cineby", "cinesrc", "vidfast", "megaplay", "meowtv",
         "anizone", "animepahe", "animex"
     )
@@ -36,7 +36,7 @@ class StreamPlayProviderDefaultsTest {
             10,
             DEFAULT_TOP_TIER_PROVIDERS.size
         )
-        assertEquals("Top tier default providers must match expected IDs", v25TopTier, DEFAULT_TOP_TIER_PROVIDERS)
+        assertEquals("Top tier default providers must match expected IDs", curatedTopTier, DEFAULT_TOP_TIER_PROVIDERS)
     }
 
     @Test
@@ -103,8 +103,8 @@ class StreamPlayProviderDefaultsTest {
         val activeProviders = buildProviders().map { it.id }.filterNot { initialDisabled.contains(it) }.toSet()
 
         assertEquals("Clean install must activate exactly 10 curated sources", 10, activeProviders.size)
-        assertEquals(v25TopTier, activeProviders)
-        v25TopTier.forEach { id ->
+        assertEquals(curatedTopTier, activeProviders)
+        curatedTopTier.forEach { id ->
             assertFalse("$id must NOT be in disabled set", initialDisabled.contains(id))
         }
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
@@ -140,7 +140,7 @@ class StreamPlayProviderDefaultsTest {
         assertFalse("cinesrc must be re-enabled", migratedDisabled.contains("cinesrc"))
 
         val active = buildProviders().map { it.id }.filterNot { migratedDisabled.contains(it) }.toSet()
-        assertEquals("Exactly the curated sources must be active after migration", v25TopTier, active)
+        assertEquals("Exactly the curated sources must be active after migration", curatedTopTier, active)
         assertTrue(mockPrefs.getBoolean(PREFS_TOP_TIER_INITIALIZED, false))
 
         // Idempotency.
@@ -173,8 +173,8 @@ class StreamPlayProviderDefaultsTest {
         val allProviders = buildProviders()
         for (res in results) {
             val active = allProviders.map { it.id }.filterNot { res.contains(it) }.toSet()
-            assertEquals("Every concurrent call must activate exactly the curated sources", v25TopTier, active)
-            for (top in v25TopTier) {
+            assertEquals("Every concurrent call must activate exactly the curated sources", curatedTopTier, active)
+            for (top in curatedTopTier) {
                 assertFalse("Top tier provider $top must not be disabled", res.contains(top))
             }
         }

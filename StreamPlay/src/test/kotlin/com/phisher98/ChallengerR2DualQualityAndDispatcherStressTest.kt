@@ -163,7 +163,7 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
-        // The v25 registry has nine ranked sources; every other label scores rank 0, so
+        // The v26 registry has ten ranked sources; every other label scores rank 0, so
         // monotonicity is asserted across the full distinct-rank chain:
         // VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 >
         // AniZone 89 > AnimePahe 88 > Animex 87.
