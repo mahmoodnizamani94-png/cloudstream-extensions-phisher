@@ -483,5 +483,73 @@ class StreamPlayV24SourceProtocolTest {
         val orionSubs = parseVidRiftOrionSubtitles(orionSubsJson)
         assertEquals(1, orionSubs.size)
         assertEquals("English" to "https://embed.vidrift.net/api/orion/s0/sub-0.vtt?sig=xyz", orionSubs[0])
+
+        // Unproxied server-IP-locked Lyra URLs (containing `:41.138.216.184:` token) must be rejected
+        val lyraJson = """{
+            "success": true,
+            "maxRes": 720,
+            "streams": [
+                {"url": "https://i-arch-400.husvu445bey.com/stream2/i-arch-400/abc/def:1774500000:41.138.216.184:sig/index.m3u8", "type": "hls", "direct": true},
+                {"proxyUrl": "https://edge.reelvault.click/proxy?u=lyra_proxied", "url": "https://i-arch-400.husvu445bey.com/stream2/i-arch-400/abc/def:1774500000:41.138.216.184:sig/index.m3u8", "type": "hls"}
+            ]
+        }"""
+        val lyraStreams = parseVidRiftSourceResponse("lyra", lyraJson, "https://embed.vidrift.net/embed/movie/872585")
+        assertEquals("Unproxied server-IP-locked Lyra URL must be filtered while proxied stream survives", 1, lyraStreams.size)
+        assertEquals("https://edge.reelvault.click/proxy?u=lyra_proxied", lyraStreams[0].url)
+    }
+
+    @Test
+    fun testVidRiftIntraLaneHierarchyPrioritizesHighSpeedH264LanesOverOrionAndBigBang() {
+        @Suppress("DEPRECATION")
+        fun vrLink(name: String, url: String, quality: Int = Qualities.P720.value) = ExtractorLink(
+            source = "VidRift",
+            name = name,
+            url = url,
+            referer = "https://embed.vidrift.net/embed/movie/872585",
+            quality = quality,
+            type = ExtractorLinkType.M3U8
+        )
+
+        val direct720 = vrLink("VidRift Direct [720p]", "https://media.reelvault.click/selfhost/720/index.m3u8")
+        val vexon720 = vrLink("VidRift Vexon [720p] [429 MB]", "https://media.reelvault.click/vexon/media/abc/video_720p.m3u8")
+        val evion720 = vrLink("VidRift Evion [720p] [181 MB]", "https://media.reelvault.click/evion/tv/1396/1/1/720p/index.m3u8")
+        val titanEng720 = vrLink("VidRift Titan (English) [720p]", "https://img1.hscow.com/v4/eb/720/index_287.m3u8")
+        val atlas720 = vrLink("VidRift Atlas [720p] [193 MB]", "https://edge.reelvault.click/proxy?u=atlas720")
+        val titanMulti720 = vrLink("VidRift Titan (Multi-audio) [720p]", "https://img1.fcxmb.com/v4/eb/720/index_266.m3u8")
+        val vela720 = vrLink("VidRift Vela [720p] [220 MB]", "https://edge.reelvault.click/proxy?u=vela720")
+        val orion720 = vrLink("[720p] [500 kbps] VidRift Orion - Original [720p] [89 MB]", "https://embed.vidrift.net/api/orion/s0/master.m3u8#vid=720p")
+        val bigbang720 = vrLink("[720p] [500 kbps] VidRift BigBang [720p] [89 MB]", "https://norway-canary.bigbang.cymru/media/master.m3u8.png#vid=720p")
+        val lyra720 = vrLink("VidRift Lyra [720p]", "https://i-arch-400.deton444eik.com/stream2/index.m3u8")
+
+        val ordered = listOf(direct720, vexon720, titanEng720, atlas720, titanMulti720, vela720, orion720, bigbang720, lyra720)
+        for (i in 0 until ordered.size - 1) {
+            val better = ordered[i]
+            val worse = ordered[i + 1]
+            assertTrue(
+                "${better.name} must outscore ${worse.name} in getStreamCompositeScore",
+                StreamLinkOptimizer.getStreamCompositeScore(better) > StreamLinkOptimizer.getStreamCompositeScore(worse)
+            )
+            assertTrue(
+                "${better.name} must beat ${worse.name} in isBetterThan",
+                StreamLinkOptimizer.isBetterThan(better, worse)
+            )
+            assertFalse(
+                "${worse.name} must not beat ${better.name} in isBetterThan",
+                StreamLinkOptimizer.isBetterThan(worse, better)
+            )
+        }
+
+        // Evion (TV owned CDN) and Vexon (Movie owned CDN) share the same top owned-CDN tier
+        assertEquals(
+            StreamLinkOptimizer.getVidRiftLaneScore(vexon720),
+            StreamLinkOptimizer.getVidRiftLaneScore(evion720)
+        )
+
+        // Resolution hierarchy (720p > 1080p > 480p) must still strictly dominate within VidRift
+        val direct1080 = vrLink("VidRift Direct [1080p]", "https://media.reelvault.click/selfhost/1080/index.m3u8", Qualities.P1080.value)
+        assertTrue(
+            "720p must still outscore 1080p within VidRift",
+            StreamLinkOptimizer.getStreamCompositeScore(lyra720) > StreamLinkOptimizer.getStreamCompositeScore(direct1080)
+        )
     }
 }
