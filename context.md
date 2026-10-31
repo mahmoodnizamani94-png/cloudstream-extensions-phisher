@@ -53,7 +53,7 @@ sources (the previous anime fallbacks were all TMDB-gated).
 
 | Provider | Rank | Sidecars | Behaviour |
 |---|---|---|---|
-| `vidrift` | 98 | Yes | `embed.vidrift.net/embed/{movie\|tv}/{tmdbId}` SSR `embed-meta` (`bigbangSubtitles` + `/api/orion/s0/subtitles.json` `.vtt` tracks) alongside `Orion`, `BigBang`, `Vexon`, `Evion`, `Titan`, `Atlas`, `Vela`, and `Lyra` HLS streams. Tagged `X-StreamPlay-Source: vidrift` (host marker priority 98). |
+| `vidrift` | 98 | Yes | `embed.vidrift.net/embed/{movie\|tv}/{tmdbId}` SSR `embed-meta` (`bigbangSubtitles` + `/api/orion/.../subtitles.json` `.vtt` tracks) alongside 720p-first co-staged wave emission across Wave 1A (`Direct`, `Vexon`, `Evion`), Wave 1B 600ms co-staged (`Titan` viewer-direct 720p H.264 with 512-byte `#EXTM3U` leaf prefix verification, `Atlas`), Wave 2 (`Vela`, proxied `Lyra` while rejecting unproxied server-IP-locked `Lyra` URLs), and Wave 3 zero-link fallback (`Orion`, `BigBang` without misleading video-only size tags), ranked honestly by `(healthTier DESC, hasKnownSize DESC, sizeBytes ASC, laneScore DESC)`. Tagged `X-StreamPlay-Source: vidrift` (host marker priority 98). |
 
 ### Provider-sidecar anime sources (v26)
 
