@@ -458,9 +458,36 @@ class StreamPlayV24SourceProtocolTest {
         }"""
         val titanStreams = parseVidRiftSourceResponse("titan", titanJson, "https://embed.vidrift.net/embed/movie/872585")
         assertEquals(2, titanStreams.size)
+        assertEquals("titan", titanStreams[0].lane)
         assertEquals(Qualities.P720.value, titanStreams[0].quality)
         assertTrue(titanStreams[0].isDirectSingleQuality)
         assertEquals("VidRift Titan (English)", titanStreams[0].name)
+
+        // Resolution Honesty Contract (§5): `direct: true` with `maxRes: 720` or `1080` must NOT
+        // synthesize a resolution or trigger the leaf fast-path when the URL path has no height,
+        // nor confuse track IDs (`index_360.m3u8`) or TMDB IDs (`/movie/720/`) with resolutions.
+        val unlabelledDirectJson = """{
+            "success": true,
+            "maxRes": 720,
+            "streams": [
+                {"url": "https://img1.hscow.com/v4/eb/index_287.m3u8", "name": "English", "type": "hls", "direct": true},
+                {"url": "https://img1.hscow.com/v4/eb/720/master.m3u8", "name": "Master", "type": "hls", "direct": true},
+                {"url": "https://img1.hscow.com/v4/eb/index_360.m3u8", "name": "English", "type": "hls", "direct": true},
+                {"url": "https://img1.hscow.com/movie/720/index.m3u8", "name": "English", "type": "hls", "direct": true},
+                {"url": "https://img1.hscow.com/v4/eb/720/index_360.m3u8", "name": "English", "type": "hls", "direct": true}
+            ]
+        }"""
+        val unlabelledDirectStreams = parseVidRiftSourceResponse("titan", unlabelledDirectJson, "https://embed.vidrift.net/embed/movie/872585")
+        assertEquals(5, unlabelledDirectStreams.size)
+        assertEquals(Qualities.Unknown.value, unlabelledDirectStreams[0].quality)
+        assertFalse("Unlabelled path must not bypass manifest verification", unlabelledDirectStreams[0].isDirectSingleQuality)
+        assertFalse("Master manifest path must not bypass manifest verification", unlabelledDirectStreams[1].isDirectSingleQuality)
+        assertEquals("Track ID 360 in index_360.m3u8 must not fabricate 360p", Qualities.Unknown.value, unlabelledDirectStreams[2].quality)
+        assertFalse(unlabelledDirectStreams[2].isDirectSingleQuality)
+        assertEquals("TMDB ID 720 in /movie/720/index.m3u8 must not fabricate 720p", Qualities.Unknown.value, unlabelledDirectStreams[3].quality)
+        assertFalse(unlabelledDirectStreams[3].isDirectSingleQuality)
+        assertEquals("Explicit /720/ folder with index_360 leaf must resolve to 720p, not 360p", Qualities.P720.value, unlabelledDirectStreams[4].quality)
+        assertTrue(unlabelledDirectStreams[4].isDirectSingleQuality)
 
         val atlasJson = """{
             "success": true,
@@ -471,6 +498,7 @@ class StreamPlayV24SourceProtocolTest {
         }"""
         val atlasStreams = parseVidRiftSourceResponse("atlas", atlasJson, "https://embed.vidrift.net/embed/movie/872585")
         assertEquals(1, atlasStreams.size)
+        assertEquals("atlas", atlasStreams[0].lane)
         assertEquals(Qualities.Unknown.value, atlasStreams[0].quality)
         assertFalse(atlasStreams[0].isDirectSingleQuality)
         assertEquals("VidRift Atlas", atlasStreams[0].name)
@@ -484,44 +512,70 @@ class StreamPlayV24SourceProtocolTest {
         assertEquals(1, orionSubs.size)
         assertEquals("English" to "https://embed.vidrift.net/api/orion/s0/sub-0.vtt?sig=xyz", orionSubs[0])
 
-        // Unproxied server-IP-locked Lyra URLs (containing `:41.138.216.184:` token) must be rejected
+        // Unproxied server-IP-locked Lyra URLs (containing `:41.138.216.184:` token) must be rejected,
+        // while proxied Lyra streams and direct numeric-host URLs without path IP tokens survive.
         val lyraJson = """{
             "success": true,
             "maxRes": 720,
             "streams": [
                 {"url": "https://i-arch-400.husvu445bey.com/stream2/i-arch-400/abc/def:1774500000:41.138.216.184:sig/index.m3u8", "type": "hls", "direct": true},
-                {"proxyUrl": "https://edge.reelvault.click/proxy?u=lyra_proxied", "url": "https://i-arch-400.husvu445bey.com/stream2/i-arch-400/abc/def:1774500000:41.138.216.184:sig/index.m3u8", "type": "hls"}
+                {"proxyUrl": "https://edge.reelvault.click/proxy?u=lyra_proxied", "url": "https://i-arch-400.husvu445bey.com/stream2/i-arch-400/abc/def:1774500000:41.138.216.184:sig/index.m3u8", "type": "hls"},
+                {"url": "http://198.51.100.42/hls/720/index.m3u8", "type": "hls", "direct": true}
             ]
         }"""
         val lyraStreams = parseVidRiftSourceResponse("lyra", lyraJson, "https://embed.vidrift.net/embed/movie/872585")
-        assertEquals("Unproxied server-IP-locked Lyra URL must be filtered while proxied stream survives", 1, lyraStreams.size)
+        assertEquals("Unproxied server-IP-locked Lyra URL must be filtered while proxied and non-locked streams survive", 2, lyraStreams.size)
         assertEquals("https://edge.reelvault.click/proxy?u=lyra_proxied", lyraStreams[0].url)
+        assertEquals("http://198.51.100.42/hls/720/index.m3u8", lyraStreams[1].url)
     }
 
     @Test
     fun testVidRiftIntraLaneHierarchyPrioritizesHighSpeedH264LanesOverOrionAndBigBang() {
         @Suppress("DEPRECATION")
-        fun vrLink(name: String, url: String, quality: Int = Qualities.P720.value) = ExtractorLink(
+        fun vrLink(
+            name: String,
+            url: String,
+            quality: Int = Qualities.P720.value,
+            extractorData: String? = null
+        ) = ExtractorLink(
             source = "VidRift",
             name = name,
             url = url,
             referer = "https://embed.vidrift.net/embed/movie/872585",
             quality = quality,
-            type = ExtractorLinkType.M3U8
+            type = ExtractorLinkType.M3U8,
+            extractorData = extractorData
         )
 
-        val direct720 = vrLink("VidRift Direct [720p]", "https://media.reelvault.click/selfhost/720/index.m3u8")
-        val vexon720 = vrLink("VidRift Vexon [720p] [429 MB]", "https://media.reelvault.click/vexon/media/abc/video_720p.m3u8")
-        val evion720 = vrLink("VidRift Evion [720p] [181 MB]", "https://media.reelvault.click/evion/tv/1396/1/1/720p/index.m3u8")
-        val titanEng720 = vrLink("VidRift Titan (English) [720p]", "https://img1.hscow.com/v4/eb/720/index_287.m3u8")
-        val atlas720 = vrLink("VidRift Atlas [720p] [193 MB]", "https://edge.reelvault.click/proxy?u=atlas720")
-        val titanMulti720 = vrLink("VidRift Titan (Multi-audio) [720p]", "https://img1.fcxmb.com/v4/eb/720/index_266.m3u8")
-        val vela720 = vrLink("VidRift Vela [720p] [220 MB]", "https://edge.reelvault.click/proxy?u=vela720")
-        val orion720 = vrLink("[720p] [500 kbps] VidRift Orion - Original [720p] [89 MB]", "https://embed.vidrift.net/api/orion/s0/master.m3u8#vid=720p")
-        val bigbang720 = vrLink("[720p] [500 kbps] VidRift BigBang [720p] [89 MB]", "https://norway-canary.bigbang.cymru/media/master.m3u8.png#vid=720p")
-        val lyra720 = vrLink("VidRift Lyra [720p]", "https://i-arch-400.deton444eik.com/stream2/index.m3u8")
+        val direct720 = vrLink("VidRift Direct [720p]", "https://media.reelvault.click/selfhost/720/index.m3u8", extractorData = "vidrift_lane=direct")
+        val evion720 = vrLink("VidRift Evion [720p] [181 MB]", "https://media.reelvault.click/evion/tv/1396/1/1/720p/index.m3u8", extractorData = "vidrift_lane=evion")
+        val titanEng720 = vrLink("VidRift Titan (English) [720p]", "https://img1.hscow.com/v4/eb/720/index_287.m3u8", extractorData = "vidrift_lane=titan")
+        val atlas720 = vrLink("VidRift Atlas [720p] [193 MB]", "https://edge.reelvault.click/proxy?u=atlas720", extractorData = "vidrift_lane=atlas")
+        val titanMulti720 = vrLink("VidRift Titan (Multi-audio) [720p]", "https://img1.fcxmb.com/v4/eb/720/index_266.m3u8", extractorData = "vidrift_lane=titan")
+        val vela720 = vrLink("VidRift Vela [720p] [220 MB]", "https://edge.reelvault.click/proxy?u=vela720", extractorData = "vidrift_lane=vela")
+        val lyraProxied720 = vrLink("VidRift Lyra [720p] [235 MB]", "https://edge.reelvault.click/proxy?u=lyra720", extractorData = "vidrift_lane=lyra")
+        val vexonLarge720 = vrLink("VidRift Vexon [720p] [429 MB]", "https://media.reelvault.click/vexon/media/abc/video_720p.m3u8", extractorData = "vidrift_lane=vexon")
+        val titanHindi720 = vrLink("VidRift Titan (Hindi) [720p]", "https://img1.hscow.com/v4/eb/720/index_290.m3u8", extractorData = "vidrift_lane=titan")
+        val orion720 = vrLink("[720p] [500 kbps] VidRift Orion - Original [720p] [89 MB]", "https://embed.vidrift.net/api/orion/s0/master.m3u8#vid=720p", extractorData = "vidrift_lane=orion")
+        val bigbang720 = vrLink("[720p] [500 kbps] VidRift BigBang [720p] [89 MB]", "https://norway-canary.bigbang.cymru/media/master.m3u8.png#vid=720p", extractorData = "vidrift_lane=bigbang")
+        val orionGermanDub720 = vrLink("VidRift Orion - German [720p] [89 MB]", "https://embed.vidrift.net/api/orion/s1/master.m3u8#vid=720p", extractorData = "vidrift_lane=orion")
+        val lyraUnproxied720 = vrLink("VidRift Lyra [720p]", "https://i-arch-400.deton444eik.com/stream2/index.m3u8", extractorData = "vidrift_lane=lyra")
 
-        val ordered = listOf(direct720, vexon720, titanEng720, atlas720, titanMulti720, vela720, orion720, bigbang720, lyra720)
+        val ordered = listOf(
+            evion720,
+            atlas720,
+            vela720,
+            lyraProxied720,
+            vexonLarge720,
+            direct720,
+            titanEng720,
+            titanMulti720,
+            titanHindi720,
+            orion720,
+            bigbang720,
+            orionGermanDub720,
+            lyraUnproxied720
+        )
         for (i in 0 until ordered.size - 1) {
             val better = ordered[i]
             val worse = ordered[i + 1]
@@ -537,19 +591,157 @@ class StreamPlayV24SourceProtocolTest {
                 "${worse.name} must not beat ${better.name} in isBetterThan",
                 StreamLinkOptimizer.isBetterThan(worse, better)
             )
+            assertTrue(
+                "${better.name} must beat ${worse.name} in isStreamBetter",
+                StreamLinkOptimizer.isStreamBetter(better, worse)
+            )
+            assertFalse(
+                "${worse.name} must not beat ${better.name} in isStreamBetter",
+                StreamLinkOptimizer.isStreamBetter(worse, better)
+            )
+            assertTrue(
+                "${better.name} must sort before ${worse.name} in STREAM_PRIORITY_COMPARATOR",
+                StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR.compare(better, worse) < 0
+            )
+            assertTrue(
+                "${worse.name} must sort after ${better.name} in STREAM_PRIORITY_COMPARATOR",
+                StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR.compare(worse, better) > 0
+            )
+        }
+
+        // AGENTS.md §1 & Codex review contract: among healthy 720p H.264 links with explicit size estimates,
+        // a smaller Vela link ([165 MB]) must outrank a larger Atlas link ([193 MB]), while lane score breaks equal-size ties.
+        val velaSmall720 = vrLink("VidRift Vela [720p] [165 MB]", "https://edge.reelvault.click/proxy?u=vela165", extractorData = "vidrift_lane=vela")
+        assertTrue(
+            "Smaller 720p Vela [165 MB] must beat larger 720p Atlas [193 MB] in isBetterThan",
+            StreamLinkOptimizer.isBetterThan(velaSmall720, atlas720)
+        )
+        assertTrue(
+            "Smaller 720p Vela [165 MB] must outscore larger 720p Atlas [193 MB] in getStreamCompositeScore",
+            StreamLinkOptimizer.getStreamCompositeScore(velaSmall720) > StreamLinkOptimizer.getStreamCompositeScore(atlas720)
+        )
+
+        // Equal-size ([200 MB]) tiebreak across all 7 Tier-2 lanes must produce strictly descending,
+        // non-colliding IEEE-754 Float scores (exact dyadic multiples of 0.0625f = 1 ulp at 989,400f).
+        val direct200 = vrLink("VidRift Direct [720p] [200 MB]", "https://media.reelvault.click/selfhost/720/index.m3u8", extractorData = "vidrift_lane=direct")
+        val vexon200 = vrLink("VidRift Vexon [720p] [200 MB]", "https://media.reelvault.click/vexon/720.m3u8", extractorData = "vidrift_lane=vexon")
+        val titanEng200 = vrLink("VidRift Titan (English) [720p] [200 MB]", "https://img1.hscow.com/v4/eb/720/index_287.m3u8", extractorData = "vidrift_lane=titan")
+        val atlas200 = vrLink("VidRift Atlas [720p] [200 MB]", "https://edge.reelvault.click/proxy?u=atlas200", extractorData = "vidrift_lane=atlas")
+        val titanMulti200 = vrLink("VidRift Titan (Multi-audio) [720p] [200 MB]", "https://img1.fcxmb.com/v4/eb/720/index_266.m3u8", extractorData = "vidrift_lane=titan")
+        val vela200 = vrLink("VidRift Vela [720p] [200 MB]", "https://edge.reelvault.click/proxy?u=vela200", extractorData = "vidrift_lane=vela")
+        val lyra200 = vrLink("VidRift Lyra [720p] [200 MB]", "https://edge.reelvault.click/proxy?u=lyra200", extractorData = "vidrift_lane=lyra")
+        val equalSizeLanes = listOf(direct200, vexon200, titanEng200, atlas200, titanMulti200, vela200, lyra200)
+        for (i in 0 until equalSizeLanes.size - 1) {
+            val hi = equalSizeLanes[i]
+            val lo = equalSizeLanes[i + 1]
+            assertTrue(
+                "Equal-size ${hi.name} must strictly outscore ${lo.name} in getStreamCompositeScore without Float ULP collision",
+                StreamLinkOptimizer.getStreamCompositeScore(hi) > StreamLinkOptimizer.getStreamCompositeScore(lo)
+            )
+            assertTrue(StreamLinkOptimizer.isBetterThan(hi, lo))
+            assertTrue(StreamLinkOptimizer.isStreamBetter(hi, lo))
+            assertTrue(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR.compare(hi, lo) < 0)
+        }
+
+        // A larger VidRift stream with high bitrate/codec badges must NOT outscore a smaller VidRift stream.
+        val vela190Plain = vrLink("VidRift Vela [720p] [190 MB]", "https://edge.reelvault.click/proxy?u=vela190", extractorData = "vidrift_lane=vela")
+        val vexon250Badged = vrLink("VidRift Vexon [720p] [250 MB] [9500 kbps] [HEVC] [5.1]", "https://media.reelvault.click/vexon/720_badged.m3u8", extractorData = "vidrift_lane=vexon")
+        assertTrue(
+            "Smaller Vela [190 MB] must outscore larger badged Vexon [250 MB] [9500 kbps] [HEVC] [5.1] in getStreamCompositeScore",
+            StreamLinkOptimizer.getStreamCompositeScore(vela190Plain) > StreamLinkOptimizer.getStreamCompositeScore(vexon250Badged)
+        )
+        assertTrue(StreamLinkOptimizer.isBetterThan(vela190Plain, vexon250Badged))
+        assertFalse(StreamLinkOptimizer.isBetterThan(vexon250Badged, vela190Plain))
+        assertTrue(StreamLinkOptimizer.isStreamBetter(vela190Plain, vexon250Badged))
+        assertFalse(StreamLinkOptimizer.isStreamBetter(vexon250Badged, vela190Plain))
+
+        // Unambiguous VidRift (Rank 98) vs MeowTV (Rank 91) classification on shared hscow.com / fcxmb.com CDN
+        // even when source/name/referer do not contain "vidrift".
+        @Suppress("DEPRECATION")
+        val titanRewrappedByExtractorData = ExtractorLink(
+            source = "StreamPlay",
+            name = "Titan (English) [720p]",
+            url = "https://img1.hscow.com/v4/eb/720/index_287.m3u8",
+            referer = "https://img1.hscow.com/",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8,
+            extractorData = "vidrift_lane=titan"
+        )
+        assertEquals(98, StreamLinkOptimizer.getSourcePriorityRank(titanRewrappedByExtractorData))
+
+        @Suppress("DEPRECATION")
+        val titanRewrappedByHeader = ExtractorLink(
+            source = "StreamPlay",
+            name = "Titan (English) [720p]",
+            url = "https://img1.hscow.com/v4/eb/720/index_287.m3u8",
+            referer = "https://img1.hscow.com/",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8,
+            headers = mapOf("X-StreamPlay-Source" to "vidrift")
+        )
+        assertEquals(98, StreamLinkOptimizer.getSourcePriorityRank(titanRewrappedByHeader))
+
+        // Provenance tag `vidrift_lane=atlas` must prevent false Vexon classification if query contains `vexon`
+        val atlasWithVexonQuery = vrLink(
+            "VidRift Atlas [720p] [193 MB]",
+            "https://edge.reelvault.click/proxy?u=https://example.com/vexon/master.m3u8",
+            extractorData = "vidrift_lane=atlas"
+        )
+        assertEquals(44, StreamLinkOptimizer.getVidRiftLaneScore(atlasWithVexonQuery))
+
+        // Strict weak order transitivity (zero Condorcet cycles) across all ordered candidates
+        for (i in ordered.indices) {
+            for (j in (i + 1) until ordered.size) {
+                for (k in (j + 1) until ordered.size) {
+                    val a = ordered[i]
+                    val b = ordered[j]
+                    val c = ordered[k]
+                    assertTrue(StreamLinkOptimizer.isBetterThan(a, b) && StreamLinkOptimizer.isBetterThan(b, c) && StreamLinkOptimizer.isBetterThan(a, c))
+                }
+            }
         }
 
         // Evion (TV owned CDN) and Vexon (Movie owned CDN) share the same top owned-CDN tier
         assertEquals(
-            StreamLinkOptimizer.getVidRiftLaneScore(vexon720),
+            StreamLinkOptimizer.getVidRiftLaneScore(vexonLarge720),
             StreamLinkOptimizer.getVidRiftLaneScore(evion720)
         )
 
-        // Resolution hierarchy (720p > 1080p > 480p) must still strictly dominate within VidRift
-        val direct1080 = vrLink("VidRift Direct [1080p]", "https://media.reelvault.click/selfhost/1080/index.m3u8", Qualities.P1080.value)
-        assertTrue(
-            "720p must still outscore 1080p within VidRift",
-            StreamLinkOptimizer.getStreamCompositeScore(lyra720) > StreamLinkOptimizer.getStreamCompositeScore(direct1080)
+        // Resolution hierarchy (720p > 1080p > 480p > 576p > 360p > 1440p > 2160p > Unknown) must strictly
+        // dominate within VidRift even when comparing worst laneBonus (-22.5f, unproxied Lyra) against
+        // best laneBonus (+385.9375f, Direct [1 MB]).
+        val qualityBucketsDesc = listOf(
+            Qualities.P720.value to "720p",
+            Qualities.P1080.value to "1080p",
+            Qualities.P480.value to "480p",
+            576 to "576p",
+            Qualities.P360.value to "360p",
+            Qualities.P1440.value to "1440p",
+            Qualities.P2160.value to "2160p",
+            Qualities.Unknown.value to "Auto"
         )
+        for (i in 0 until qualityBucketsDesc.size - 1) {
+            val (hiQ, hiLabel) = qualityBucketsDesc[i]
+            val (loQ, loLabel) = qualityBucketsDesc[i + 1]
+            val worstInHigherTier = vrLink(
+                "VidRift Lyra [$hiLabel]",
+                "https://cdn.DirectServer.click/lyra/${hiLabel}.m3u8",
+                hiQ,
+                extractorData = "vidrift_lane=lyra"
+            )
+            val bestInLowerTier = vrLink(
+                "VidRift Direct [$loLabel] [1 MB]",
+                "https://media.reelvault.click/selfhost/${loLabel}/index.m3u8",
+                loQ,
+                extractorData = "vidrift_lane=direct"
+            )
+            assertTrue(
+                "Worst VidRift lane at $hiLabel must strictly outscore best VidRift lane at $loLabel in getStreamCompositeScore",
+                StreamLinkOptimizer.getStreamCompositeScore(worstInHigherTier) > StreamLinkOptimizer.getStreamCompositeScore(bestInLowerTier)
+            )
+            assertTrue(StreamLinkOptimizer.isBetterThan(worstInHigherTier, bestInLowerTier))
+            assertTrue(StreamLinkOptimizer.isStreamBetter(worstInHigherTier, bestInLowerTier))
+            assertTrue(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR.compare(worstInHigherTier, bestInLowerTier) < 0)
+        }
     }
 }

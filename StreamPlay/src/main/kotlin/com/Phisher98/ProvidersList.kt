@@ -186,10 +186,12 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
  *   9. AnimePahe - animepahe.pw      | Anime                      | Rank 88  (#9, Cloudflare-gated Kwik HLS, deepest airing/rare catalogue)
  *  10. Animex    - animex.one        | Anime                      | Rank 87  (#10, GraphQL + SSR + kaa.lt multi-provider fan-out)
  *
- * VidRift (`embed.vidrift.net`) is the dedicated Movie/TV 720p-first powerhouse: its `Titan` lane
- * delivers viewer-direct 720p muxed H.264/AAC HLS streams without proxy indirection, while `Atlas`,
- * `Orion`, `BigBang`, `Vexon`, `Vela`, and `Lyra` provide adaptive 720p+1080p ladders plus
- * synchronized WebVTT sidecar subtitles.
+ * VidRift (`embed.vidrift.net`) is the dedicated Movie/TV 720p-first powerhouse: Wave 1A resolves
+ * owned Cloudflare R2 H.264 MPEG-TS lanes (`Direct`, `Vexon`, `Evion`), Wave 1B co-stages `Titan`
+ * (viewer-direct 720p muxed H.264/AAC HLS fast-path) and `Atlas` (adaptive 720p+1080p H.264),
+ * Wave 2 resolves `Vela` and proxied `Lyra` (rejecting unproxied server-IP-locked `Lyra` URLs),
+ * and Wave 3 isolates `Orion` and `BigBang` (fMP4 HEVC) as a zero-link fallback while always
+ * harvesting synchronized WebVTT sidecar subtitles.
  *
  * VidRock (`vidrock`, `vidrock.net`, `galacticvoyagers.xyz`, `moonfirekeeper.lol`),
  * VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs.cc`, `netoda.tech`, `mov2day.xyz`), and

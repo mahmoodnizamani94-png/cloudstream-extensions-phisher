@@ -519,7 +519,8 @@ object StreamLinkOptimizer {
             lowerUrl.contains("bigbang.cymru") ||
             lowerUrl.contains("deton444eik.com") ||
             lowerUrl.contains("husvu445bey.com") ||
-            referer?.contains("vidrift.net", ignoreCase = true) == true
+            referer?.contains("vidrift.net", ignoreCase = true) == true ||
+            headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) }
         val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
             name?.contains("cineby", ignoreCase = true) == true ||
             lowerUrl.contains("wecollege.net") ||
@@ -649,13 +650,13 @@ object StreamLinkOptimizer {
                 val supplied = headers.entries.firstOrNull {
                     it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
                 }?.value ?: referer?.takeIf { it.isNotBlank() }
-                val eff = if (supplied != null && supplied.contains("vidrift.net", ignoreCase = true)) {
+                val eff = if (supplied != null && supplied.startsWith("http", ignoreCase = true)) {
                     supplied
                 } else {
                     "https://embed.vidrift.net/"
                 }
                 headers[HEADER_REFERER] = eff
-                headers[HEADER_ORIGIN] = "https://embed.vidrift.net"
+                headers[HEADER_ORIGIN] = getHostUrl(eff) ?: "https://embed.vidrift.net"
                 headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -1047,7 +1048,8 @@ object StreamLinkOptimizer {
             lowerUrl.contains("bigbang.cymru") ||
             lowerUrl.contains("deton444eik.com") ||
             lowerUrl.contains("husvu445bey.com") ||
-            referer?.contains("vidrift.net", ignoreCase = true) == true
+            referer?.contains("vidrift.net", ignoreCase = true) == true ||
+            headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) }
         val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
             name?.contains("cineby", ignoreCase = true) == true ||
             lowerUrl.contains("wecollege.net") ||
@@ -1158,7 +1160,7 @@ object StreamLinkOptimizer {
                 val supplied = headers.entries.firstOrNull {
                     it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
                 }?.value ?: referer?.takeIf { it.isNotBlank() }
-                if (supplied != null && supplied.contains("vidrift.net", ignoreCase = true)) {
+                if (supplied != null && supplied.startsWith("http", ignoreCase = true)) {
                     supplied
                 } else {
                     "https://embed.vidrift.net/"
@@ -1855,8 +1857,17 @@ object StreamLinkOptimizer {
         headers: Map<String, String> = emptyMap(),
         streamType: ExtractorLinkType? = ExtractorLinkType.M3U8,
         generatedLinks: List<ExtractorLink>? = null,
+        extractorDataTag: String? = null,
         callback: (ExtractorLink) -> Unit
     ) {
+        fun mergeExtractorData(existing: String?): String {
+            return listOfNotNull(existing, extractorDataTag, "sota_dual_quality")
+                .flatMap { it.split(";") }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .joinToString(";")
+        }
         if (!generatedLinks.isNullOrEmpty()) {
             val finalLinks = generatedLinks.map { link ->
                 val detectedQ = if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
@@ -1864,7 +1875,7 @@ object StreamLinkOptimizer {
                 } else {
                     extractQualityFromText(link.name, link.url).takeIf { it > 0 && it != Qualities.Unknown.value } ?: Qualities.Unknown.value
                 }
-                val extData = link.extractorData?.let { if (it.contains("sota_dual_quality")) it else "$it;sota_dual_quality" } ?: "sota_dual_quality"
+                val extData = mergeExtractorData(link.extractorData)
                 @Suppress("DEPRECATION")
                 ExtractorLink(
                     source = link.source,
@@ -1921,7 +1932,7 @@ object StreamLinkOptimizer {
                     quality = finalQuality,
                     type = streamType ?: (if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO),
                     headers = headers,
-                    extractorData = "sota_dual_quality"
+                    extractorData = mergeExtractorData(null)
                 )
             )
         }
@@ -2080,16 +2091,19 @@ object StreamLinkOptimizer {
             return score1 > score2
         }
 
-        // 2b. Intra-VidRift lane health & throughput hierarchy within Rank 98:
-        //     Owned & direct muxed H.264 MPEG-TS lanes (Direct > Vexon/Evion > Titan English >
-        //     Atlas > Titan Multi-audio > Vela) strictly outrank low-bitrate demuxed fMP4 HEVC
-        //     lanes (Orion, BigBang) whose unpatched B-frame composition time offsets (cts) and
-        //     1.54 MB child playlists cause playback stutter, as well as IP-locked Lyra mirrors.
+        // 2b. Intra-VidRift health tier & lowest-file-size hierarchy within Rank 98:
+        //     - First, healthTier strictly isolates healthy primary H.264 MPEG-TS lanes
+        //       (Direct, Vexon, Evion, Titan English, Atlas, Titan Multi-audio, Vela, proxied Lyra -> tier 2)
+        //       above regional dubs (tier 1) and degraded fMP4 HEVC / IP-locked fallback lanes
+        //       (Orion -30/-40, BigBang -35, unproxied Lyra -45) so corrupted B-frame CTS streams
+        //       can never outrank healthy H.264 playback regardless of size labels.
+        //     - Second, within the same health tier, streams with genuine known file sizes outrank
+        //       unsized streams and lowest file size wins first (AGENTS.md §1 & §5), with lane
+        //       throughput score breaking equal-size or both-unsized ties.
         if (sourceRank1 == 98) {
-            val lane1 = getVidRiftLaneScore(candidate)
-            val lane2 = getVidRiftLaneScore(current)
-            if (lane1 != lane2) {
-                return lane1 > lane2
+            val vrCmp = compareVidRiftSameQuality(candidate, current)
+            if (vrCmp != 0) {
+                return vrCmp < 0
             }
         }
 
@@ -2156,10 +2170,20 @@ object StreamLinkOptimizer {
         return false
     }
 
-    private val VIDRIFT_REGIONAL_DUB_REGEX = Regex(
-        """\b(hindi|tamil|telugu|bangla|bengali|malayalam|kannada|arabic|french|spanish|portuguese|russian|turkish|indonesian|thai|vietnamese)\b""",
+    internal val VIDRIFT_REGIONAL_DUB_REGEX = Regex(
+        """\b(hindi|tamil|telugu|bangla|bengali|malayalam|kannada|marathi|punjabi|gujarati|urdu|arabic|french|spanish|portuguese|russian|turkish|indonesian|thai|vietnamese|german|italian|polish|dutch|czech|ukrainian|farsi|persian|hebrew|greek|romanian|hungarian|tagalog|filipino|malay|latino|latin|castellano|korean|chinese|mandarin|cantonese|japanese|swedish|norwegian|danish|finnish)\b""",
         RegexOption.IGNORE_CASE
     )
+
+    private val VIDRIFT_LANE_TAG_REGEX = Regex(
+        """(?:^|;)vidrift_lane=([a-z0-9_-]+)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    internal fun isVidRiftRegionalDub(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        return VIDRIFT_REGIONAL_DUB_REGEX.containsMatchIn(text)
+    }
 
     /**
      * Intra-VidRift lane health & CDN throughput score within Rank 98:
@@ -2170,33 +2194,119 @@ object StreamLinkOptimizer {
      *  - `Atlas` (`edge.reelvault.click` — 8.5 Mbps adaptive 1080p/720p H.264 MPEG-TS): +44
      *  - `Titan (Multi-audio)` / generic non-dub `Titan`: +36
      *  - `Vela` (`edge.reelvault.click` adaptive H.264 MPEG-TS): +24
+     *  - `Lyra (Proxied)` (`edge.reelvault.click/proxy` — proxied adaptive H.264): +20
      *  - `Titan` regional dubs: +12
      *  - Neutral / generic `VidRift`: 0
      *  - `Orion` (`/api/orion/` — demuxed fMP4 HEVC with B-frame CTS jitter & 1.54 MB child playlists): -30 (-40 for dubs)
      *  - `BigBang` (`bigbang.cymru` — same fMP4 HEVC encode & 1.54 MB child playlists): -35
-     *  - `Lyra` (`deton444eik.com` / `husvu445bey.com` — IP-locked upstream mirror): -45
+     *  - `Lyra (Unproxied)` (`deton444eik.com` / `husvu445bey.com` — IP-locked upstream mirror): -45
      */
     internal fun getVidRiftLaneScore(link: ExtractorLink): Int {
         val n = link.name.lowercase(Locale.ROOT)
         val u = link.url.lowercase(Locale.ROOT)
-        val isRegionalDub = VIDRIFT_REGIONAL_DUB_REGEX.containsMatchIn(n)
+        val isRegionalDub = isVidRiftRegionalDub(n)
+        val isUnproxiedIpLockedHost = u.contains("deton444eik.com") || u.contains("husvu445bey.com")
+        val explicitLane = VIDRIFT_LANE_TAG_REGEX.find(link.extractorData.orEmpty())
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.lowercase(Locale.ROOT)
+        if (explicitLane != null) {
+            return when (explicitLane) {
+                "direct", "selfhost" -> 60
+                "vexon", "evion" -> 55
+                "titan" -> when {
+                    isRegionalDub -> 12
+                    (n.contains("english") || n.contains("original")) && !n.contains("multi") && !isRegionalDub -> 48
+                    else -> 36
+                }
+                "atlas" -> 44
+                "vela" -> 24
+                "lyra" -> if (isUnproxiedIpLockedHost) -45 else 20
+                "orion" -> if (isRegionalDub) -40 else -30
+                "bigbang" -> -35
+                else -> 0
+            }
+        }
         return when {
             n.contains("vidrift direct") || u.contains("/selfhost") -> 60
             n.contains("vexon") || u.contains("/vexon/") ||
                 n.contains("evion") || u.contains("/evion/") -> 55
-            (n.contains("titan") || u.contains("hscow.com")) &&
-                !isRegionalDub &&
-                (n.contains("english") || u.contains("hscow.com")) &&
-                !n.contains("multi") -> 48
+            (n.contains("titan") || u.contains("hscow.com") || u.contains("fcxmb.com")) &&
+                (n.contains("english") || n.contains("original")) &&
+                !n.contains("multi") &&
+                !isRegionalDub -> 48
             n.contains("atlas") -> 44
-            (n.contains("titan") || u.contains("fcxmb.com")) && !isRegionalDub -> 36
+            (n.contains("titan") || u.contains("hscow.com") || u.contains("fcxmb.com")) && !isRegionalDub -> 36
             n.contains("vela") -> 24
+            n.contains("lyra") && !isUnproxiedIpLockedHost && u.contains("reelvault.click") -> 20
             (n.contains("titan") || u.contains("hscow.com") || u.contains("fcxmb.com")) && isRegionalDub -> 12
             n.contains("orion") || u.contains("/api/orion/") -> if (isRegionalDub) -40 else -30
             n.contains("bigbang") || u.contains("bigbang.cymru") -> -35
-            n.contains("lyra") || u.contains("deton444eik.com") || u.contains("husvu445bey.com") -> -45
+            n.contains("lyra") || isUnproxiedIpLockedHost -> -45
             else -> 0
         }
+    }
+
+    /**
+     * Partition of VidRift lanes into strict health tiers:
+     *  - `2`: Healthy primary H.264 MPEG-TS lanes (`Direct`, `Vexon`, `Evion`, `Titan English`,
+     *         `Atlas`, `Titan Multi-audio`, `Vela`, proxied `Lyra`).
+     *  - `1`: Healthy regional dub H.264 lanes (`Titan` regional dubs).
+     *  - `0`: Neutral / unlabelled VidRift lane.
+     *  - `< 0`: Degraded fMP4 HEVC (`Orion` -30/-40, `BigBang` -35) and unproxied IP-locked `Lyra` (-45).
+     */
+    internal fun getVidRiftHealthTier(link: ExtractorLink): Int {
+        val laneScore = getVidRiftLaneScore(link)
+        return when {
+            laneScore >= 20 -> 2
+            laneScore in 1..19 -> 1
+            laneScore == 0 -> 0
+            else -> laneScore
+        }
+    }
+
+    /**
+     * Honest same-quality comparator for VidRift (`AGENTS.md` §1 & §5):
+     *  1. `healthTier DESC` (healthy primary H.264 Tier 2 > regional dub Tier 1 > neutral Tier 0 > degraded HEVC/IP-locked < 0)
+     *  2. Within healthy tiers (`healthTier >= 1`): streams with genuine known file size outrank unsized streams (`hasKnownSize DESC`),
+     *     and among sized streams, lowest file size wins first (`sizeBytes ASC`).
+     *  3. `laneScore DESC` breaks equal-size or both-unsized ties without any synthetic per-lane MB lookup table.
+     */
+    internal fun compareVidRiftSameQuality(a: ExtractorLink, b: ExtractorLink): Int {
+        val health1 = getVidRiftHealthTier(a)
+        val health2 = getVidRiftHealthTier(b)
+        if (health1 != health2) {
+            return health2.compareTo(health1)
+        }
+        if (health1 >= 1) {
+            val size1 = parseSizeBytes(a.name)?.takeIf { it > 0L }
+            val size2 = parseSizeBytes(b.name)?.takeIf { it > 0L }
+            val hasSize1 = size1 != null
+            val hasSize2 = size2 != null
+            if (hasSize1 != hasSize2) {
+                return if (hasSize1) -1 else 1
+            }
+            if (size1 != null && size2 != null && size1 != size2) {
+                return size1.compareTo(size2)
+            }
+        }
+        val lane1 = getVidRiftLaneScore(a)
+        val lane2 = getVidRiftLaneScore(b)
+        if (lane1 != lane2) {
+            return lane2.compareTo(lane1)
+        }
+        return 0
+    }
+
+    private fun vidRiftLaneOrdinal(laneScore: Int): Int = when {
+        laneScore >= 60 -> 7
+        laneScore >= 55 -> 6
+        laneScore >= 48 -> 5
+        laneScore >= 44 -> 4
+        laneScore >= 36 -> 3
+        laneScore >= 24 -> 2
+        laneScore >= 20 -> 1
+        else -> 0
     }
 
     /**
@@ -2241,7 +2351,9 @@ object StreamLinkOptimizer {
                 u.contains("vidrift.net") || u.contains("reelvault.click") ||
                 u.contains("bigbang.cymru") || u.contains("deton444eik.com") ||
                 u.contains("husvu445bey.com") ||
-                r.contains("vidrift.net") -> 98
+                r.contains("vidrift.net") ||
+                link.extractorData?.contains("vidrift_lane=", ignoreCase = true) == true ||
+                link.headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) } -> 98
             s.contains("cineby") || n.contains("cineby") ||
                 u.contains("wecollege.net") || u.contains("paleoak.top") ||
                 u.contains("majorplay.net") || u.contains("falseparadise.workers.dev") ||
@@ -2317,9 +2429,9 @@ object StreamLinkOptimizer {
      *    it offers. VidLink (100) x 1080p therefore always outranks any secondary source
      *    x 720p, which is what makes VidLink the #1 result instead of being skipped in
      *    favour of a lower-ranked source that happens to expose a 720p ladder. The source
-     *    term is scaled by 10,000 while quality + tiebreaker is strictly < 10,000 (at most
-     *    9,509.9), so adjacent integer source ranks (a gap of >=1 -> 10,000) can never be
-     *    crossed by quality or bitrate tiebreakers.
+     *    term is scaled by 10,000 while quality + laneBonus + tiebreaker is strictly < 10,000
+     *    (at most 9,786.0), so adjacent integer source ranks (a gap of >=1 -> 10,000) can
+     *    never be crossed by quality, size, lane, or bitrate tiebreakers.
      *
      * 2. QUALITY IS SECONDARY, and only orders variants of the same source:
      *    720p > 1080p > 480p > other SD > 1440p/4K > Unknown.
@@ -2346,29 +2458,63 @@ object StreamLinkOptimizer {
         val headerScore = calculateHeaderScore(link)
         // Normalized tiebreaker (0.0f .. 9.9f) strictly prevents inverting source or quality tiers:
         val tiebreaker = minOf(9.9f, (minOf(50_000L, bitrate) / 10_000f) + (videoScore * 0.05f) + (audioScore * 0.05f) + (headerScore * 0.02f))
-        // Intra-VidRift lane bonus (-22.5f .. +30.0f) orders VidRift's lanes within the same
-        // resolution tier without ever crossing a quality bucket (>= 100f gap) or source rank (10,000f gap).
-        val laneBonus = if (sourceRank == 98) getVidRiftLaneScore(link) * 0.5f else 0f
+        // Intra-VidRift bonus (-22.5f .. +385.9375f) uses exact IEEE-754 dyadic multiples of
+        // 0.0625f (2^-4, 1 ulp at 989,400f) to order VidRift's lanes within the same resolution
+        // tier by healthTier DESC, hasKnownSize DESC, sizeBytes ASC (AGENTS.md §1 & §5), and
+        // laneScore DESC without float rounding collisions or crossing any quality bucket (>= 600f gap).
+        val laneBonus = if (sourceRank == 98) {
+            val healthTier = getVidRiftHealthTier(link)
+            val laneScore = getVidRiftLaneScore(link)
+            val laneOrd = vidRiftLaneOrdinal(laneScore)
+            val sizeBytes = parseSizeBytes(link.name)?.takeIf { it > 0L }
+            when {
+                healthTier >= 2 -> {
+                    if (sizeBytes != null) {
+                        val clampedMb = ((sizeBytes + (512L * 1024L)) / (1024L * 1024L)).toInt().coerceIn(1, 750)
+                        val steps = 176 + (8 * (750 - clampedMb)) + laneOrd
+                        steps * 0.0625f
+                    } else {
+                        (160 + laneOrd) * 0.0625f
+                    }
+                }
+                healthTier == 1 -> {
+                    if (sizeBytes != null) {
+                        val clampedMb = ((sizeBytes + (512L * 1024L)) / (1024L * 1024L)).toInt().coerceIn(1, 750)
+                        (16 + ((750 - clampedMb) / 6)) * 0.0625f
+                    } else {
+                        8 * 0.0625f
+                    }
+                }
+                healthTier == 0 -> 0.0f
+                else -> laneScore * 0.5f
+            }
+        } else {
+            0f
+        }
 
-        // Quality term, deliberately source-independent: 9,600 (720p) down to 1,200 so
-        // qualityTerm + laneBonus + tiebreaker <= 9,639.9 < 10,000 (1 rank step).
+        // Quality term, deliberately source-independent: 9,600 (720p) down to 1,000 (Unknown) with
+        // >= 500f separation between every quality bucket (exceeding the 408.4375f max laneBonus
+        // spread), >= 1,500f across major user tiers, and qualityTerm + laneBonus <= 9,985.9375f < 10,000f.
         val qualityTerm = when {
             is720 -> 9_600f
             is1080 -> 8_000f
             quality == Qualities.P480.value -> 6_000f
             isBelow720 -> {
-                val sdOffset = if (quality in (Qualities.P480.value + 1) until 700) 200f else (minOf(479, maxOf(1, quality)) / 4.79f)
-                4_000f + sdOffset
+                if (quality in (Qualities.P480.value + 1) until 700) {
+                    4_200f
+                } else {
+                    val clampedSd = minOf(479, maxOf(1, quality))
+                    3_500f + (clampedSd / 4.79f * 1.5f)
+                }
             }
             isAbove1080 -> {
-                val uhdOffset = when {
-                    quality == Qualities.P1440.value || (quality in 1089..1800) -> 200f
-                    quality == Qualities.P2160.value || (quality in 1801..3000) -> 100f
-                    else -> 50f
+                when {
+                    quality == Qualities.P1440.value || (quality in 1089..1800) -> 2_600f
+                    quality == Qualities.P2160.value || (quality in 1801..3000) -> 2_100f
+                    else -> 1_600f
                 }
-                2_000f + uhdOffset
             }
-            else -> 1_200f
+            else -> 1_000f
         }
 
         val baseScore = if (isTopTier) {
@@ -2386,11 +2532,29 @@ object StreamLinkOptimizer {
             }
         }
 
-        return baseScore + tiebreaker
+        val effectiveTiebreaker = if (sourceRank == 98) 0f else tiebreaker
+        return baseScore + effectiveTiebreaker
     }
 
     val STREAM_PRIORITY_COMPARATOR = Comparator<ExtractorLink> { a, b ->
-        getStreamCompositeScore(b).compareTo(getStreamCompositeScore(a))
+        if (getSourcePriorityRank(a) == 98 && getSourcePriorityRank(b) == 98) {
+            when {
+                isBetterThan(a, b) -> -1
+                isBetterThan(b, a) -> 1
+                else -> 0
+            }
+        } else {
+            val scoreCmp = getStreamCompositeScore(b).compareTo(getStreamCompositeScore(a))
+            if (scoreCmp != 0) {
+                scoreCmp
+            } else {
+                when {
+                    isBetterThan(a, b) -> -1
+                    isBetterThan(b, a) -> 1
+                    else -> 0
+                }
+            }
+        }
     }
 
     /**
@@ -2398,7 +2562,15 @@ object StreamLinkOptimizer {
      * enforcing the user priority hierarchy (720p > 1080p > 480p > above 1080p > below 480p).
      */
     fun isStreamBetter(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        return getStreamCompositeScore(candidate) > getStreamCompositeScore(current)
+        if (getSourcePriorityRank(candidate) == 98 && getSourcePriorityRank(current) == 98) {
+            return isBetterThan(candidate, current)
+        }
+        val scoreCand = getStreamCompositeScore(candidate)
+        val scoreCurr = getStreamCompositeScore(current)
+        if (scoreCand != scoreCurr) {
+            return scoreCand > scoreCurr
+        }
+        return isBetterThan(candidate, current)
     }
 
     private fun calculateVideoScore(link: ExtractorLink): Int {

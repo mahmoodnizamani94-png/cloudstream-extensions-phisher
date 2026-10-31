@@ -130,6 +130,20 @@ object StreamPlayExtractor : StreamPlay() {
     suspend fun cancellableGetText(
         url: String,
         headers: Map<String, String> = emptyMap(),
+        timeoutSec: Long = 3L,
+        retryCount: Int = 0
+    ): String? {
+        if (retryCount <= 0) {
+            return cancellableGetTextSingleAttempt(url, headers, timeoutSec)
+        }
+        return retryTransient(maxRetries = retryCount, delayMs = 200L) {
+            cancellableGetTextSingleAttempt(url, headers, timeoutSec)
+        }
+    }
+
+    private suspend fun cancellableGetTextSingleAttempt(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
         timeoutSec: Long = 3L
     ): String? = suspendCancellableCoroutine { cont ->
         try {
@@ -281,6 +295,7 @@ object StreamPlayExtractor : StreamPlay() {
         headers: Map<String, String> = emptyMap(),
         streamType: ExtractorLinkType? = ExtractorLinkType.M3U8,
         generatedLinks: List<ExtractorLink>? = null,
+        extractorDataTag: String? = null,
         callback: (ExtractorLink) -> Unit
     ) {
         StreamLinkOptimizer.emitTopTierDualQualityStreamLinks(
@@ -291,6 +306,7 @@ object StreamPlayExtractor : StreamPlay() {
             headers = headers,
             streamType = streamType,
             generatedLinks = generatedLinks,
+            extractorDataTag = extractorDataTag,
             callback = callback
         )
     }
@@ -5515,20 +5531,26 @@ object StreamPlayExtractor : StreamPlay() {
         referer: String,
         headers: Map<String, String> = emptyMap(),
         declaredQuality: Int = Qualities.Unknown.value,
+        manifestTimeoutMs: Long = 8000L,
+        fetchTimeoutSec: Long = 6L,
+        includeSizeTag: Boolean = true,
+        requireManifestVerification: Boolean = false,
+        extractorDataTag: String? = null,
         callback: (ExtractorLink) -> Unit
     ) {
         val cleanFilename = url.substringBefore('#').substringBefore('?').substringAfterLast('/')
         val isDirectVideo = Regex("""\.(?:mp4|mkv)$""", RegexOption.IGNORE_CASE).containsMatchIn(cleanFilename)
         val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
         val generated = if (!isDirectVideo) {
-            withTimeoutOrNull(8000L) {
+            withTimeoutOrNull(manifestTimeoutMs) {
                 val reqHeaders = buildMap {
                     put("User-Agent", USER_AGENT)
                     if (referer.isNotBlank()) put("Referer", referer)
                     headers.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
                 }
-                val manifestText = cancellableGetText(url, headers = reqHeaders, timeoutSec = 6L)
-                val parsedVariants = if (!manifestText.isNullOrBlank()) {
+                val manifestText = cancellableGetText(url, headers = reqHeaders, timeoutSec = fetchTimeoutSec)
+                val isValidM3u8 = !manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)
+                val parsedVariants = if (!manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)) {
                     parseHlsMasterVariants(url, manifestText)
                 } else {
                     emptyList()
@@ -5536,7 +5558,7 @@ object StreamPlayExtractor : StreamPlay() {
                 if (parsedVariants.isNotEmpty()) {
                     parsedVariants.map { v ->
                         val qTag = vidsrcQualityTag(v.quality)
-                        val sizeTag = v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                        val sizeTag = if (includeSizeTag) v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty() else ""
                         newExtractorLink(
                             source = source,
                             name = "$baseName [$qTag]$sizeTag",
@@ -5546,8 +5568,13 @@ object StreamPlayExtractor : StreamPlay() {
                             this.referer = referer
                             this.quality = v.quality
                             this.headers = headers
+                            if (!extractorDataTag.isNullOrBlank()) {
+                                this.extractorData = extractorDataTag
+                            }
                         }
                     }
+                } else if (requireManifestVerification && !isValidM3u8) {
+                    emptyList()
                 } else {
                     val declared = declaredQuality.takeIf { it > 0 && it != Qualities.Unknown.value }
                     if (declared != null) {
@@ -5562,6 +5589,28 @@ object StreamPlayExtractor : StreamPlay() {
                                 this.referer = referer
                                 this.quality = declared
                                 this.headers = headers
+                                if (!extractorDataTag.isNullOrBlank()) {
+                                    this.extractorData = extractorDataTag
+                                }
+                            }
+                        )
+                    } else if (requireManifestVerification && isValidM3u8) {
+                        val detectedQ = StreamLinkOptimizer.extractQualityFromText(baseName, url)
+                            .takeIf { it > 0 && it != Qualities.Unknown.value }
+                        val qTag = detectedQ?.let { vidsrcQualityTag(it) } ?: "Auto"
+                        listOf(
+                            newExtractorLink(
+                                source = source,
+                                name = "$baseName [$qTag]",
+                                url = url,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = referer
+                                this.quality = detectedQ ?: Qualities.Unknown.value
+                                this.headers = headers
+                                if (!extractorDataTag.isNullOrBlank()) {
+                                    this.extractorData = extractorDataTag
+                                }
                             }
                         )
                     } else {
@@ -5571,6 +5620,10 @@ object StreamPlayExtractor : StreamPlay() {
             }
         } else null
 
+        if (requireManifestVerification && !isDirectVideo && generated.isNullOrEmpty()) {
+            return
+        }
+
         emitTopTierDualQualityStreamLinks(
             source = source,
             baseName = baseName,
@@ -5579,6 +5632,7 @@ object StreamPlayExtractor : StreamPlay() {
             headers = headers,
             streamType = streamType,
             generatedLinks = generated,
+            extractorDataTag = extractorDataTag,
             callback = callback
         )
     }
@@ -5890,14 +5944,11 @@ object StreamPlayExtractor : StreamPlay() {
 
     private const val VIDRIFT_HOST = "https://embed.vidrift.net"
     private const val VIDRIFT_PARENT_REFERER = "https://vidrift.net/"
-    private val VIDRIFT_PRIMARY_API_LANES = listOf("titan", "atlas")
     private val VIDRIFT_EMBED_META_SCRIPT_ID_REGEX = Regex("""<script[^>]*\bid=["']embed-meta["'][^>]*>([\s\S]*?)</script>""", RegexOption.IGNORE_CASE)
     private val VIDRIFT_EMBED_META_REGEX = Regex("""embedMeta\s*=\s*(\{[\s\S]*?\})\s*;?\s*</script>""", RegexOption.IGNORE_CASE)
-    private val VIDRIFT_IP_LOCKED_PATH_REGEX = Regex("""(?::|/)\d{1,3}(?:\.\d{1,3}){3}(?::|/)""")
-    private val VIDRIFT_DUB_TRACK_REGEX = Regex(
-        """\b(hindi|tamil|telugu|bangla|bengali|malayalam|kannada|arabic|french|spanish|portuguese|russian|turkish|indonesian|thai|vietnamese)\b""",
-        RegexOption.IGNORE_CASE
-    )
+    private val VIDRIFT_IP_LOCKED_PATH_REGEX = Regex("""(?:^|[:/_=&?])\d{1,3}(?:\.\d{1,3}){3}(?:[:/_&?]|$)""")
+    private val VIDRIFT_PATH_DIR_QUALITY_REGEX = Regex("""^(2160|1440|1080|720|480|360)p?$""", RegexOption.IGNORE_CASE)
+    private val VIDRIFT_PATH_FILE_QUALITY_REGEX = Regex("""(?:^|[^0-9])(2160|1440|1080|720|480|360)p(?:[^a-z0-9]|60|50|$)""", RegexOption.IGNORE_CASE)
 
     internal data class VidRiftOrionStream(
         val url: String,
@@ -5917,12 +5968,74 @@ object StreamPlayExtractor : StreamPlay() {
     )
 
     internal data class VidRiftResolvedStream(
+        val lane: String,
         val url: String,
         val name: String,
         val quality: Int,
         val isDirectSingleQuality: Boolean,
         val referer: String
     )
+
+    private fun resolveVidRiftUrl(raw: String?): String? {
+        val trimmed = raw?.trim()?.takeIf { it.isNotBlank() && it != "null" } ?: return null
+        return when {
+            trimmed.startsWith("http", ignoreCase = true) -> trimmed
+            trimmed.startsWith("/") -> "$VIDRIFT_HOST$trimmed"
+            else -> "$VIDRIFT_HOST/$trimmed"
+        }
+    }
+
+    internal fun orderVidRiftOrionStreams(streams: List<VidRiftOrionStream>): List<VidRiftOrionStream> {
+        return streams.sortedBy { StreamLinkOptimizer.isVidRiftRegionalDub(it.name) }
+    }
+
+    /**
+     * Extracts an explicit vertical resolution height (`360`, `480`, `720`, `1080`, `1440`, `2160`)
+     * from a VidRift playlist URL path ONLY when:
+     * (a) The directory segment immediately preceding the playlist filename is an explicit resolution
+     *     (e.g. `/v4/eb/720/index_287.m3u8`, `/hls/720p/index.m3u8`, `/selfhost/1080/index.m3u8`,
+     *     `/tv/1396/1/1/720p/index.m3u8`) and the segment before `<res>` is NOT `movie` or `tv`
+     *     (so TMDB IDs like `/movie/720/index.m3u8` and `/tv/720/index.m3u8` never false-match), or
+     * (b) The playlist filename itself carries an explicit `<res>p` suffix (e.g. `/video_720p.m3u8`,
+     *     `/720p.m3u8`, `/1080p.mp4`), never bare stream track IDs like `index_360.m3u8`.
+     */
+    internal fun extractVidRiftExplicitPathQuality(pathOnly: String): Int {
+        val cleanPath = pathOnly.substringBefore('?').substringBefore('#')
+        val segments = cleanPath.split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return Qualities.Unknown.value
+
+        fun mapHeight(rawHeight: String?): Int = when (rawHeight?.toIntOrNull()) {
+            2160 -> Qualities.P2160.value
+            1440 -> Qualities.P1440.value
+            1080 -> Qualities.P1080.value
+            720 -> Qualities.P720.value
+            480 -> Qualities.P480.value
+            360 -> Qualities.P360.value
+            else -> Qualities.Unknown.value
+        }
+
+        if (segments.size >= 2) {
+            val parentDir = segments[segments.size - 2]
+            val grandParentDir = if (segments.size >= 3) segments[segments.size - 3] else null
+            if (!grandParentDir.equals("movie", ignoreCase = true) &&
+                !grandParentDir.equals("tv", ignoreCase = true)
+            ) {
+                val dirMatch = VIDRIFT_PATH_DIR_QUALITY_REGEX.matchEntire(parentDir)
+                if (dirMatch != null) {
+                    val mapped = mapHeight(dirMatch.groupValues[1])
+                    if (mapped != Qualities.Unknown.value) return mapped
+                }
+            }
+        }
+
+        val fileName = segments.last()
+        val fileMatch = VIDRIFT_PATH_FILE_QUALITY_REGEX.find(fileName)
+        if (fileMatch != null) {
+            return mapHeight(fileMatch.groupValues[1])
+        }
+
+        return Qualities.Unknown.value
+    }
 
     /**
      * Extracts and parses the inline `embedMeta = {...};</script>` JSON object from a VidRift
@@ -5955,20 +6068,9 @@ object StreamPlayExtractor : StreamPlay() {
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
                     val rawUrl = obj.optString("url").trim().takeIf { it.isNotBlank() && it != "null" } ?: continue
-                    val resolvedUrl = if (rawUrl.startsWith("http", ignoreCase = true)) {
-                        rawUrl
-                    } else if (rawUrl.startsWith("/")) {
-                        "$VIDRIFT_HOST$rawUrl"
-                    } else {
-                        "$VIDRIFT_HOST/$rawUrl"
-                    }
+                    val resolvedUrl = resolveVidRiftUrl(rawUrl) ?: continue
                     val name = obj.optString("name").trim().ifBlank { "Orion" }
-                    val rawSubListUrl = obj.optString("subtitleListUrl").trim().takeIf { it.isNotBlank() && it != "null" }
-                    val resolvedSubListUrl = rawSubListUrl?.let {
-                        if (it.startsWith("http", ignoreCase = true)) it
-                        else if (it.startsWith("/")) "$VIDRIFT_HOST$it"
-                        else "$VIDRIFT_HOST/$it"
-                    }
+                    val resolvedSubListUrl = resolveVidRiftUrl(obj.optString("subtitleListUrl"))
                     val warm = warmMap[rawUrl] ?: warmMap[resolvedUrl]
                     orionList.add(
                         VidRiftOrionStream(
@@ -5981,14 +6083,13 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            val bigbangUrl = root.optString("bigbangUrl").trim()
-                .takeIf { it.startsWith("http", ignoreCase = true) }
+            val bigbangUrl = resolveVidRiftUrl(root.optString("bigbangUrl"))
 
             val bigbangSubs = mutableListOf<Pair<String, String>>()
             root.optJSONArray("bigbangSubtitles")?.let { arr ->
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
-                    val subUrl = obj.optString("url").trim().takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+                    val subUrl = resolveVidRiftUrl(obj.optString("url")) ?: continue
                     val rawLabel = obj.optString("label").substringBefore("·").trim().ifBlank {
                         obj.optString("lang").trim().ifBlank { "English" }
                     }
@@ -5996,12 +6097,9 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            val vexonUrl = root.optString("vexonUrl").trim()
-                .takeIf { it.startsWith("http", ignoreCase = true) }
-            val evionUrl = root.optString("evionUrl").trim()
-                .takeIf { it.startsWith("http", ignoreCase = true) }
-            val selfhostUrl = root.optString("selfhostUrl").trim()
-                .takeIf { it.startsWith("http", ignoreCase = true) }
+            val vexonUrl = resolveVidRiftUrl(root.optString("vexonUrl"))
+            val evionUrl = resolveVidRiftUrl(root.optString("evionUrl"))
+            val selfhostUrl = resolveVidRiftUrl(root.optString("selfhostUrl"))
 
             VidRiftEmbedMeta(
                 playbackToken = token,
@@ -6020,8 +6118,8 @@ object StreamPlayExtractor : StreamPlay() {
      * into verified stream descriptors.
      *
      * `titan` delivers direct viewer-direct 720p muxed H.264/AAC MPEG-TS HLS playlists (`maxRes: 720`,
-     * `direct: true`, `/720/index_*.m3u8`), while `atlas` and `vela` deliver adaptive
-     * multi-variant (`720p` + `1080p`) HLS master manifests. Unproxied URLs whose path token is
+     * `direct: true`, `/720/index_*.m3u8`), while `atlas`, `vela`, and proxied `lyra` deliver adaptive
+     * multi-variant (`720p` + `1080p`) HLS master manifests. Unproxied URLs whose path/query token is
      * cryptographically bound to the VidRift backend server IPv4 address (`:41.138.216.184:`) are
      * rejected upfront so viewers never hit 403/timeout dead-ends.
      */
@@ -6034,17 +6132,18 @@ object StreamPlayExtractor : StreamPlay() {
         return runCatching {
             val root = JSONObject(rawJson)
             if (!root.optBoolean("success", false)) return@runCatching emptyList()
-            val maxRes = root.optInt("maxRes", 0)
             val streamsArr = root.optJSONArray("streams") ?: return@runCatching emptyList()
-            val displayLane = lane.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+            val normalizedLane = lane.trim().lowercase(Locale.ROOT)
+            val displayLane = normalizedLane.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
             val out = mutableListOf<VidRiftResolvedStream>()
 
             for (i in 0 until streamsArr.length()) {
                 val obj = streamsArr.optJSONObject(i) ?: continue
-                val proxyUrl = obj.optString("proxyUrl").trim().takeIf { it.startsWith("http", ignoreCase = true) }
-                val rawUrl = obj.optString("url").trim().takeIf { it.startsWith("http", ignoreCase = true) }
-                // Reject unproxied server-IP-locked URLs (e.g. Lyra's `:41.138.216.184:` token)
-                if (proxyUrl == null && rawUrl != null && VIDRIFT_IP_LOCKED_PATH_REGEX.containsMatchIn(rawUrl)) {
+                val proxyUrl = resolveVidRiftUrl(obj.optString("proxyUrl"))
+                val rawUrl = resolveVidRiftUrl(obj.optString("url"))
+                // Reject unproxied server-IP-locked URLs (e.g. Lyra's `:41.138.216.184:` token in path/query)
+                val pathAndQuery = rawUrl?.substringAfter("://")?.substringAfter("/", "").orEmpty()
+                if (proxyUrl == null && pathAndQuery.isNotEmpty() && VIDRIFT_IP_LOCKED_PATH_REGEX.containsMatchIn(pathAndQuery)) {
                     continue
                 }
                 val streamUrl = proxyUrl ?: rawUrl ?: continue
@@ -6060,14 +6159,26 @@ object StreamPlayExtractor : StreamPlay() {
                 val isDirect = obj.optBoolean("direct", false)
                 val pathOnly = runCatching { URI(streamUrl).path.orEmpty() }
                     .getOrDefault(streamUrl.substringBefore('?'))
-                val pathQuality = StreamLinkOptimizer.extractQualityFromText(pathOnly)
-                val resolvedQuality = when {
-                    pathQuality > 0 && pathQuality != Qualities.Unknown.value -> pathQuality
-                    isDirect && maxRes == 720 -> Qualities.P720.value
-                    isDirect && maxRes == 1080 -> Qualities.P1080.value
-                    else -> Qualities.Unknown.value
+                val isMasterPath = pathOnly.contains("master", ignoreCase = true) ||
+                    pathOnly.contains("playlist.m3u8", ignoreCase = true)
+                val pathQuality = if (isMasterPath) {
+                    Qualities.Unknown.value
+                } else {
+                    extractVidRiftExplicitPathQuality(pathOnly)
                 }
-                val isSingleQualityLeaf = isDirect && resolvedQuality != Qualities.Unknown.value
+                val hasExplicitPathQuality = !isMasterPath && pathQuality > 0 && pathQuality != Qualities.Unknown.value
+                // Resolution Honesty Contract (§5): only treat as a verified single-quality leaf when
+                // `direct: true` is paired with an explicit numeric height in the playlist path
+                // (e.g. Titan's `/720/index_287.m3u8`) and not a master manifest. Never synthesize
+                // a resolution from response-level `maxRes` or bare track IDs (`index_360.m3u8`).
+                val isSingleQualityLeaf = if (isMasterPath) false else (isDirect && hasExplicitPathQuality)
+                val resolvedQuality = if (isMasterPath) {
+                    Qualities.Unknown.value
+                } else if (hasExplicitPathQuality) {
+                    pathQuality
+                } else {
+                    Qualities.Unknown.value
+                }
 
                 val referer = obj.optJSONObject("headers")?.optString("Referer")?.trim()
                     ?.takeIf { it.startsWith("http", ignoreCase = true) }
@@ -6075,6 +6186,7 @@ object StreamPlayExtractor : StreamPlay() {
 
                 out.add(
                     VidRiftResolvedStream(
+                        lane = normalizedLane,
                         url = streamUrl,
                         name = fullLabel,
                         quality = resolvedQuality,
@@ -6098,14 +6210,7 @@ object StreamPlayExtractor : StreamPlay() {
             val out = mutableListOf<Pair<String, String>>()
             for (i in 0 until tracks.length()) {
                 val t = tracks.optJSONObject(i) ?: continue
-                val rawUrl = t.optString("url").trim().takeIf { it.isNotBlank() && it != "null" } ?: continue
-                val resolvedUrl = if (rawUrl.startsWith("http", ignoreCase = true)) {
-                    rawUrl
-                } else if (rawUrl.startsWith("/")) {
-                    "$VIDRIFT_HOST$rawUrl"
-                } else {
-                    "$VIDRIFT_HOST/$rawUrl"
-                }
+                val resolvedUrl = resolveVidRiftUrl(t.optString("url")) ?: continue
                 val label = cleanSubtitleLabel(
                     t.optString("label").substringBefore("·").trim().ifBlank {
                         t.optString("lang").trim().ifBlank { "English" }
@@ -6118,81 +6223,185 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
+     * Bounded 512-byte `#EXTM3U` prefix probe for viewer-direct single-quality leaf playlists
+     * (such as `Titan` `/720/index_*.m3u8`). Verifies HTTP 2xx liveness and `#EXTM3U` header
+     * presence while closing the response stream after 512 bytes so the remaining ~358 KB of
+     * `#EXTINF` segment entries is never downloaded.
+     */
+    private suspend fun cancellableProbeM3u8Prefix(
+        url: String,
+        headers: Map<String, String>,
+        timeoutMs: Long = 2_500L
+    ): String? = withTimeoutOrNull(timeoutMs) {
+        suspendCancellableCoroutine { cont ->
+            try {
+                val client = app.baseClient.newBuilder()
+                    .callTimeout(4, TimeUnit.SECONDS)
+                    .connectTimeout(3, TimeUnit.SECONDS)
+                    .readTimeout(3, TimeUnit.SECONDS)
+                    .build()
+                val reqBuilder = Request.Builder()
+                    .url(url)
+                    .addHeader("User-Agent", USER_AGENT)
+                headers.forEach { (k, v) ->
+                    if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
+                        reqBuilder.addHeader(k, v)
+                    }
+                }
+                val call = client.newCall(reqBuilder.build())
+                cont.invokeOnCancellation {
+                    call.cancel()
+                }
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        if (cont.isActive) {
+                            cont.resume(null)
+                        }
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        try {
+                            val prefix = response.use { resp ->
+                                if (!resp.isSuccessful) {
+                                    null
+                                } else {
+                                    val stream = resp.body.byteStream()
+                                    val buffer = ByteArray(512)
+                                    var totalRead = 0
+                                    while (totalRead < 512) {
+                                        val read = stream.read(buffer, totalRead, 512 - totalRead)
+                                        if (read == -1) break
+                                        totalRead += read
+                                    }
+                                    if (totalRead <= 0) null else String(buffer, 0, totalRead, Charsets.UTF_8)
+                                }
+                            }
+                            if (cont.isActive) {
+                                cont.resume(prefix)
+                            }
+                        } catch (t: Throwable) {
+                            if (cont.isActive) {
+                                cont.resume(null)
+                            }
+                        }
+                    }
+                })
+            } catch (t: Throwable) {
+                if (cont.isActive) {
+                    if (t is CancellationException) {
+                        cont.cancel(t)
+                    } else {
+                        cont.resume(null)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Emits a resolved VidRift API stream descriptor.
      *
      * When `stream.isDirectSingleQuality` is `true` (e.g. `Titan` viewer-direct `720p` muxed H.264
-     * MPEG-TS streams), the URL is already a single-quality leaf media playlist (`/720/index_*.m3u8`),
-     * not a master manifest. Emitting it directly with its verified quality avoids downloading a
-     * 358 KB `#EXTINF` segment list over the network just to check for `#EXT-X-STREAM-INF`.
+     * MPEG-TS streams), the URL is probed with a bounded 512-byte `#EXTM3U` prefix check and emitted
+     * with its verified quality and explicit `vidrift_lane=<lane>` provenance tag without downloading
+     * the full 358 KB `#EXTINF` segment list.
      */
     private suspend fun emitVidRiftResolvedStream(
         stream: VidRiftResolvedStream,
         embedUrl: String,
         baseStreamHeaders: Map<String, String>,
+        manifestTimeoutMs: Long = 4_500L,
+        fetchTimeoutSec: Long = 4L,
         callback: (ExtractorLink) -> Unit
     ) {
-        val effHeaders = if (stream.referer != embedUrl) {
-            baseStreamHeaders + ("Referer" to stream.referer)
+        val baseWithSource = if (baseStreamHeaders["X-StreamPlay-Source"].isNullOrBlank()) {
+            baseStreamHeaders + mapOf("X-StreamPlay-Source" to "vidrift")
         } else {
             baseStreamHeaders
         }
-        if (stream.isDirectSingleQuality && stream.quality > 0 && stream.quality != Qualities.Unknown.value) {
-            val qTag = vidsrcQualityTag(stream.quality)
-            val leafLink = newExtractorLink(
-                source = "VidRift",
-                name = "${stream.name} [$qTag]",
-                url = stream.url,
-                type = ExtractorLinkType.M3U8
-            ) {
-                this.referer = stream.referer
-                this.quality = stream.quality
-                this.headers = effHeaders
-            }
-            emitTopTierDualQualityStreamLinks(
-                source = "VidRift",
-                baseName = stream.name,
-                url = stream.url,
-                referer = stream.referer,
-                headers = effHeaders,
-                streamType = ExtractorLinkType.M3U8,
-                generatedLinks = listOf(leafLink),
-                callback = callback
-            )
+        val effHeaders = if (stream.referer != embedUrl) {
+            val customOrigin = runCatching {
+                val u = URI(stream.referer)
+                if (!u.scheme.isNullOrBlank() && !u.host.isNullOrBlank()) "${u.scheme}://${u.host}" else VIDRIFT_HOST
+            }.getOrDefault(VIDRIFT_HOST)
+            baseWithSource + mapOf("Referer" to stream.referer, "Origin" to customOrigin)
         } else {
-            emitVerifiedStream(
-                source = "VidRift",
-                baseName = stream.name,
-                url = stream.url,
-                referer = stream.referer,
-                headers = effHeaders,
-                declaredQuality = stream.quality,
-                callback = callback
-            )
+            baseWithSource
         }
+        val laneTag = "vidrift_lane=${stream.lane.lowercase(Locale.ROOT)}"
+        if (stream.isDirectSingleQuality && stream.quality > 0 && stream.quality != Qualities.Unknown.value) {
+            val prefix = cancellableProbeM3u8Prefix(stream.url, effHeaders, timeoutMs = 2_500L)
+            if (prefix == null || !prefix.contains("#EXTM3U", ignoreCase = true)) {
+                return
+            }
+            if (!prefix.contains("#EXT-X-STREAM-INF", ignoreCase = true)) {
+                val qTag = vidsrcQualityTag(stream.quality)
+                val leafLink = newExtractorLink(
+                    source = "VidRift",
+                    name = "${stream.name} [$qTag]",
+                    url = stream.url,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = stream.referer
+                    this.quality = stream.quality
+                    this.headers = effHeaders
+                    this.extractorData = laneTag
+                }
+                emitTopTierDualQualityStreamLinks(
+                    source = "VidRift",
+                    baseName = stream.name,
+                    url = stream.url,
+                    referer = stream.referer,
+                    headers = effHeaders,
+                    streamType = ExtractorLinkType.M3U8,
+                    generatedLinks = listOf(leafLink),
+                    extractorDataTag = laneTag,
+                    callback = callback
+                )
+                return
+            }
+        }
+        emitVerifiedStream(
+            source = "VidRift",
+            baseName = stream.name,
+            url = stream.url,
+            referer = stream.referer,
+            headers = effHeaders,
+            declaredQuality = stream.quality,
+            manifestTimeoutMs = manifestTimeoutMs,
+            fetchTimeoutSec = fetchTimeoutSec,
+            includeSizeTag = true,
+            requireManifestVerification = true,
+            extractorDataTag = laneTag,
+            callback = callback
+        )
     }
 
     /**
      * SOTA Movie & TV Series Extractor for VidRift (`embed.vidrift.net`, Rank 98).
      *
      * Architecture & Lag Prevention:
-     * 1. **Wave 1 — High-Speed Owned & Viewer-Direct Muxed H.264 MPEG-TS Lanes**:
-     *    Concurrently resolves `Direct` (`selfhostUrl`), `Vexon` (`media.reelvault.click/vexon/...`
-     *    owned Movie CDN), `Evion` (`media.reelvault.click/evion/...` owned TV CDN), `Titan`
-     *    (`img1.hscow.com` 9.5 Mbps viewer-direct 720p H.264 MPEG-TS via zero-download leaf fast-path),
-     *    and `Atlas` (`edge.reelvault.click` 8.5 Mbps adaptive 1080p/720p H.264 MPEG-TS), sorting
-     *    and emitting them in strict `STREAM_PRIORITY_COMPARATOR` order (`Direct > Vexon/Evion >
-     *    Titan English > Atlas > Titan Multi-audio`).
-     * 2. **Wave 2 — Secondary Adaptive H.264 Lane (`Vela`)**:
-     *    Launched in parallel at `t = 0ms` so its network round-trip overlaps with Wave 1, but
-     *    awaited after Wave 1 so a slow `Vela` upstream never delays primary playback.
-     * 3. **Wave 3 — Isolated Zero-Link Fallback (`Orion · Original` & `BigBang`)**:
+     * 1. **Wave 1A — Instant Inline Owned CDN H.264 Lanes (`Direct`, `Vexon`, `Evion`)**:
+     *    Resolves `selfhostUrl`, `vexonUrl` (Movie Cloudflare R2 CDN), and `evionUrl` (TV Cloudflare R2 CDN)
+     *    directly from `embedMeta` with `#EXTM3U` verification, emitting in ~0.39s–1.5s.
+     * 2. **Wave 1B — Co-Staged Primary API H.264 Lanes (`Titan` & `Atlas`)**:
+     *    Launched as independent concurrent jobs at `t = 0ms`. Uses a bounded 600ms co-staging window
+     *    across `Direct`/`Vexon`/`Evion`, `Titan`, and `Atlas` so fast primary lanes finish together
+     *    and emit `720p` in `STREAM_PRIORITY_COMPARATOR` order (lowest file size first!), while a fast
+     *    lane is never blocked behind a slow sibling.
+     * 3. **Wave 2 — Secondary Adaptive H.264 Lanes (`Vela` & Proxied `Lyra`)**:
+     *    Launched in parallel at `t = 0ms` so their network I/O overlaps with Wave 1, emitting
+     *    non-blockingly as each completes while deferring non-720p variants until all healthy `720p`
+     *    lanes have had their chance.
+     * 4. **Wave 3 — Isolated Fallback (`Orion` & `BigBang`)**:
      *    `Orion` and `BigBang` serve low-bitrate (520 kbps @ 720p) MovieBox fMP4 HEVC streams with
      *    unpatched B-frame composition time offsets (`cts`), 1.54 MB demuxed child playlists, and
      *    350–630 kbps segment throttling. They are strictly isolated as a last-resort fallback
-     *    only when Wave 1 and Wave 2 produce zero healthy H.264 streams, preventing their `[89 MB]`
-     *    size tag from poisoning `DownloadSelectionPolicy` or causing ExoPlayer B-frame stutter.
-     * 4. **Multi-Language WebVTT Subtitles**:
-     *    Always harvested immediately from inline `bigbangSubtitles` and `/api/orion/.../subtitles.json`.
+     *    when Wave 1 and Wave 2 produce zero non-dub verified H.264 streams, and omit misleading
+     *    video-only `[89 MB]` size tags so they never poison `DownloadSelectionPolicy`.
+     * 5. **Multi-Language WebVTT Subtitles**:
+     *    Always harvested immediately from inline `bigbangSubtitles` and all `/api/orion/.../subtitles.json`
+     *    endpoints regardless of whether `Orion`/`BigBang` video lanes are suppressed.
      */
     suspend fun invokeVidRift(
         tmdbId: Int? = null,
@@ -6219,15 +6428,17 @@ object StreamPlayExtractor : StreamPlay() {
                     "Referer" to VIDRIFT_PARENT_REFERER,
                     "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                 )
-                val html = cancellableGetText(embedUrl, headers = pageHeaders, timeoutSec = 5L)
-                    ?: return@withTimeoutOrNull
+                val html = withTimeoutOrNull(4_500L) {
+                    cancellableGetText(embedUrl, headers = pageHeaders, timeoutSec = 4L)
+                } ?: return@withTimeoutOrNull
                 val meta = parseVidRiftEmbedMeta(html) ?: return@withTimeoutOrNull
 
                 val streamHeaders = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Referer" to embedUrl,
                     "Origin" to VIDRIFT_HOST,
-                    "Accept" to "*/*"
+                    "Accept" to "*/*",
+                    "X-StreamPlay-Source" to "vidrift"
                 )
                 val emittedSubs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
                 fun emitSub(lang: String, url: String) {
@@ -6250,6 +6461,28 @@ object StreamPlayExtractor : StreamPlay() {
                 }
 
                 val healthyLinksEmitted = java.util.concurrent.atomic.AtomicInteger(0)
+                val nonDubHealthyLinksEmitted = java.util.concurrent.atomic.AtomicInteger(0)
+                val deferredNon720Links = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
+                val emissionLock = Any()
+
+                fun recordHealthyEmission(link: ExtractorLink) {
+                    healthyLinksEmitted.incrementAndGet()
+                    if (!StreamLinkOptimizer.isVidRiftRegionalDub(link.name)) {
+                        nonDubHealthyLinksEmitted.incrementAndGet()
+                    }
+                }
+
+                fun emitHealthy720AndDeferOthers(links: Collection<ExtractorLink>) {
+                    if (links.isEmpty()) return
+                    val (links720, otherLinks) = links.partition { StreamLinkOptimizer.is720p(it) }
+                    deferredNon720Links.addAll(otherLinks)
+                    val sorted720 = links720.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+                    for (link in sorted720) {
+                        recordHealthyEmission(link)
+                        callback(link)
+                    }
+                }
+
                 val encodedToken = meta.playbackToken?.takeIf { it.isNotBlank() }
                     ?.let { URLEncoder.encode(it, "UTF-8") }
                 val sourceBasePath = if (isMovie) {
@@ -6258,234 +6491,275 @@ object StreamPlayExtractor : StreamPlay() {
                     "/api/source/tv/$id/$season/$episode"
                 }
 
+                suspend fun resolveApiLane(lane: String): List<ExtractorLink> {
+                    if (encodedToken == null) return emptyList()
+                    val collected = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
+                    try {
+                        // Outer budget (9_000ms) >= API fetch (4_000ms) + manifest verification (4_500ms)
+                        withTimeoutOrNull(9_000L) {
+                            currentCoroutineContext().ensureActive()
+                            val apiUrl = "$VIDRIFT_HOST$sourceBasePath?token=$encodedToken&provider=$lane&parent=vidrift.net&nofallback=1"
+                            val rawJson = withTimeoutOrNull(4_000L) {
+                                cancellableGetText(
+                                    apiUrl,
+                                    headers = streamHeaders,
+                                    timeoutSec = 4L,
+                                    retryCount = 0
+                                )
+                            } ?: return@withTimeoutOrNull
+                            val allStreams = parseVidRiftSourceResponse(lane, rawJson, embedUrl)
+                            // Order primary English/Original/Multi-audio streams ahead of regional dubs
+                            // while keeping regional dubs available in Health Tier 1 for Titan.
+                            val orderedStreams = if (lane == "titan") {
+                                allStreams.sortedBy { StreamLinkOptimizer.isVidRiftRegionalDub(it.name) }
+                            } else {
+                                allStreams.filterNot {
+                                    StreamLinkOptimizer.isVidRiftRegionalDub(it.name)
+                                }.ifEmpty { allStreams }
+                            }
+                            for (stream in orderedStreams) {
+                                emitVidRiftResolvedStream(
+                                    stream = stream,
+                                    embedUrl = embedUrl,
+                                    baseStreamHeaders = streamHeaders,
+                                    manifestTimeoutMs = 4_500L,
+                                    fetchTimeoutSec = 4L
+                                ) {
+                                    collected.add(it)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                    }
+                    return collected.toList()
+                }
+
                 coroutineScope {
-                    // 1. Orion subtitle track list harvest (always runs for WebVTT sidecars)
+                    // 1. Orion subtitle track list harvest (iterates all distinct subtitleListUrls, non-dub first)
                     val orionSubsJob = async {
                         if (subtitleCallback == null) return@async
-                        val subListUrl = meta.orionStreams.firstNotNullOfOrNull { it.subtitleListUrl } ?: return@async
-                        try {
-                            val subJson = cancellableGetText(subListUrl, headers = streamHeaders, timeoutSec = 4L)
-                                ?: return@async
-                            parseVidRiftOrionSubtitles(subJson).forEach { (lang, subUrl) ->
-                                emitSub(lang, subUrl)
-                            }
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                        }
-                    }
-
-                    // 2. Launch Secondary Adaptive H.264 Lane (Vela) in background at t=0ms so its I/O
-                    //    overlaps with Wave 1 without blocking Wave 1 emission if Vela times out.
-                    val velaDeferred = async {
-                        val collected = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
-                        if (encodedToken != null) {
+                        val subListUrls = orderVidRiftOrionStreams(meta.orionStreams)
+                            .mapNotNull { it.subtitleListUrl }
+                            .distinct()
+                        for (subListUrl in subListUrls) {
                             try {
-                                withTimeoutOrNull(4_500L) {
-                                    val apiUrl = "$VIDRIFT_HOST$sourceBasePath?token=$encodedToken&provider=vela&parent=vidrift.net&nofallback=1"
-                                    val rawJson = cancellableGetText(
-                                        apiUrl,
-                                        headers = streamHeaders,
-                                        timeoutSec = 4L,
-                                        retryCount = 0
-                                    ) ?: return@withTimeoutOrNull
-                                    val resolvedStreams = parseVidRiftSourceResponse("vela", rawJson, embedUrl)
-                                    for (stream in resolvedStreams) {
-                                        emitVidRiftResolvedStream(stream, embedUrl, streamHeaders) { collected.add(it) }
+                                val subJson = withTimeoutOrNull(3_500L) {
+                                    cancellableGetText(subListUrl, headers = streamHeaders, timeoutSec = 3L)
+                                } ?: continue
+                                val parsedSubs = parseVidRiftOrionSubtitles(subJson)
+                                if (parsedSubs.isNotEmpty()) {
+                                    parsedSubs.forEach { (lang, subUrl) ->
+                                        emitSub(lang, subUrl)
                                     }
+                                    break
                                 }
                             } catch (e: Exception) {
                                 if (e is CancellationException) throw e
                             }
                         }
-                        collected.toList()
                     }
 
-                    // 3A. Launch Wave 1B (Primary API H.264 Lanes: Titan & Atlas) at t=0ms so their
-                    //     network round-trips overlap with Wave 1A (Direct/Vexon/Evion). Each lane
-                    //     has its own independent timeout + retryCount=0 so a cold upstream cache
-                    //     miss on one lane never cancels or delays the other.
-                    val wave1BDeferred = async {
-                        val collected = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
-                        if (encodedToken != null) {
+                    // 2. Launch ALL healthy H.264 lanes concurrently at t = 0ms
+                    val firstPrimaryWithLinks = CompletableDeferred<Unit>()
+
+                    val wave1ADeferred = async {
+                        val wave1ACollected = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
+                        withTimeoutOrNull(4_500L) {
                             coroutineScope {
-                                VIDRIFT_PRIMARY_API_LANES.map { lane ->
-                                    async {
-                                        try {
-                                            withTimeoutOrNull(5_000L) {
-                                                currentCoroutineContext().ensureActive()
-                                                val apiUrl = "$VIDRIFT_HOST$sourceBasePath?token=$encodedToken&provider=$lane&parent=vidrift.net&nofallback=1"
-                                                val rawJson = cancellableGetText(
-                                                    apiUrl,
-                                                    headers = streamHeaders,
-                                                    timeoutSec = 4L,
-                                                    retryCount = 0
-                                                ) ?: return@withTimeoutOrNull
-                                                val allStreams = parseVidRiftSourceResponse(lane, rawJson, embedUrl)
-                                                val primaryStreams = allStreams.filterNot {
-                                                    VIDRIFT_DUB_TRACK_REGEX.containsMatchIn(it.name)
-                                                }.ifEmpty { allStreams }
-                                                for (stream in primaryStreams) {
-                                                    emitVidRiftResolvedStream(stream, embedUrl, streamHeaders) {
-                                                        collected.add(it)
-                                                    }
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            if (e is CancellationException) throw e
-                                        }
-                                    }
-                                }.awaitAll()
-                            }
-                        }
-                        collected.toList()
-                    }
-
-                    // 3B. Wave 1A: Instant Inline Owned CDN H.264 Lanes (Direct, Vexon, Evion).
-                    //     Their URLs are already embedded in `embedMeta` on VidRift's owned
-                    //     Cloudflare R2 CDN (`media.reelvault.click`) and resolve in ~300-500ms.
-                    val wave1ACollected = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
-                    withTimeoutOrNull(4_500L) {
-                        coroutineScope {
-                            val wave1AJobs = buildList {
-                                meta.selfhostUrl?.let { shUrl ->
-                                    add(
-                                        async {
-                                            try {
-                                                emitVerifiedStream(
-                                                    source = "VidRift",
-                                                    baseName = "VidRift Direct",
-                                                    url = shUrl,
-                                                    referer = embedUrl,
-                                                    headers = streamHeaders,
-                                                    callback = { wave1ACollected.add(it) }
-                                                )
-                                            } catch (e: Exception) {
-                                                if (e is CancellationException) throw e
-                                            }
-                                        }
-                                    )
-                                }
-                                meta.vexonUrl?.let { vxUrl ->
-                                    add(
-                                        async {
-                                            try {
-                                                emitVerifiedStream(
-                                                    source = "VidRift",
-                                                    baseName = "VidRift Vexon",
-                                                    url = vxUrl,
-                                                    referer = embedUrl,
-                                                    headers = streamHeaders,
-                                                    callback = { wave1ACollected.add(it) }
-                                                )
-                                            } catch (e: Exception) {
-                                                if (e is CancellationException) throw e
-                                            }
-                                        }
-                                    )
-                                }
-                                meta.evionUrl?.let { evUrl ->
-                                    add(
-                                        async {
-                                            try {
-                                                emitVerifiedStream(
-                                                    source = "VidRift",
-                                                    baseName = "VidRift Evion",
-                                                    url = evUrl,
-                                                    referer = embedUrl,
-                                                    headers = streamHeaders,
-                                                    callback = { wave1ACollected.add(it) }
-                                                )
-                                            } catch (e: Exception) {
-                                                if (e is CancellationException) throw e
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                            wave1AJobs.awaitAll()
-                        }
-                    }
-
-                    // Emit Wave 1A (Owned CDN Direct / Vexon / Evion) immediately (~300-500ms)
-                    val sortedWave1A = wave1ACollected.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
-                    for (link in sortedWave1A) {
-                        healthyLinksEmitted.incrementAndGet()
-                        callback(link)
-                    }
-
-                    // Emit Wave 1B (Titan English / Atlas / Titan Multi-audio) sorted by lane priority
-                    val sortedWave1B = wave1BDeferred.await().sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
-                    for (link in sortedWave1B) {
-                        healthyLinksEmitted.incrementAndGet()
-                        callback(link)
-                    }
-
-                    // Emit Wave 2 (Vela) links if any resolved
-                    val velaLinks = velaDeferred.await().sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
-                    for (link in velaLinks) {
-                        healthyLinksEmitted.incrementAndGet()
-                        callback(link)
-                    }
-
-                    // 4. Wave 3: Last-resort fallback to primary Orion / BigBang ONLY when all
-                    //    high-speed H.264 MPEG-TS lanes yielded zero streams.
-                    if (healthyLinksEmitted.get() == 0) {
-                        val primaryOrion = meta.orionStreams.firstOrNull {
-                            !VIDRIFT_DUB_TRACK_REGEX.containsMatchIn(it.name)
-                        } ?: meta.orionStreams.firstOrNull()
-
-                        val fallbackJobs = buildList {
-                            if (primaryOrion != null) {
-                                add(
-                                    async {
-                                        try {
-                                            val cleanLabel = primaryOrion.name.replace("·", "-").trim()
-                                            val baseName = if (cleanLabel.startsWith("VidRift", ignoreCase = true)) {
-                                                cleanLabel
-                                            } else {
-                                                "VidRift $cleanLabel"
-                                            }
-                                            val warmText = primaryOrion.warmManifest
-                                            if (!warmText.isNullOrBlank()) {
-                                                val parsed = parseHlsMasterVariants(primaryOrion.url, warmText)
-                                                if (parsed.isNotEmpty()) {
-                                                    val generated = parsed.map { v ->
-                                                        val qTag = vidsrcQualityTag(v.quality)
-                                                        val sizeTag = v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
-                                                        newExtractorLink(
-                                                            source = "VidRift",
-                                                            name = "$baseName [$qTag]$sizeTag",
-                                                            url = v.url,
-                                                            type = ExtractorLinkType.M3U8
-                                                        ) {
-                                                            this.referer = embedUrl
-                                                            this.quality = v.quality
-                                                            this.headers = streamHeaders
-                                                        }
-                                                    }
-                                                    emitTopTierDualQualityStreamLinks(
+                                val wave1AJobs = buildList {
+                                    meta.selfhostUrl?.let { shUrl ->
+                                        add(
+                                            async {
+                                                try {
+                                                    emitVerifiedStream(
                                                         source = "VidRift",
-                                                        baseName = baseName,
-                                                        url = primaryOrion.url,
+                                                        baseName = "VidRift Direct",
+                                                        url = shUrl,
                                                         referer = embedUrl,
                                                         headers = streamHeaders,
-                                                        streamType = ExtractorLinkType.M3U8,
-                                                        generatedLinks = generated,
-                                                        callback = callback
+                                                        manifestTimeoutMs = 3_800L,
+                                                        fetchTimeoutSec = 3L,
+                                                        requireManifestVerification = true,
+                                                        extractorDataTag = "vidrift_lane=direct",
+                                                        callback = { wave1ACollected.add(it) }
                                                     )
-                                                    return@async
+                                                } catch (e: Exception) {
+                                                    if (e is CancellationException) throw e
                                                 }
                                             }
-                                            emitVerifiedStream(
-                                                source = "VidRift",
-                                                baseName = baseName,
-                                                url = primaryOrion.url,
-                                                referer = embedUrl,
-                                                headers = streamHeaders,
-                                                callback = callback
-                                            )
-                                        } catch (e: Exception) {
-                                            if (e is CancellationException) throw e
+                                        )
+                                    }
+                                    meta.vexonUrl?.let { vxUrl ->
+                                        add(
+                                            async {
+                                                try {
+                                                    emitVerifiedStream(
+                                                        source = "VidRift",
+                                                        baseName = "VidRift Vexon",
+                                                        url = vxUrl,
+                                                        referer = embedUrl,
+                                                        headers = streamHeaders,
+                                                        manifestTimeoutMs = 3_800L,
+                                                        fetchTimeoutSec = 3L,
+                                                        requireManifestVerification = true,
+                                                        extractorDataTag = "vidrift_lane=vexon",
+                                                        callback = { wave1ACollected.add(it) }
+                                                    )
+                                                } catch (e: Exception) {
+                                                    if (e is CancellationException) throw e
+                                                }
+                                            }
+                                        )
+                                    }
+                                    meta.evionUrl?.let { evUrl ->
+                                        add(
+                                            async {
+                                                try {
+                                                    emitVerifiedStream(
+                                                        source = "VidRift",
+                                                        baseName = "VidRift Evion",
+                                                        url = evUrl,
+                                                        referer = embedUrl,
+                                                        headers = streamHeaders,
+                                                        manifestTimeoutMs = 3_800L,
+                                                        fetchTimeoutSec = 3L,
+                                                        requireManifestVerification = true,
+                                                        extractorDataTag = "vidrift_lane=evion",
+                                                        callback = { wave1ACollected.add(it) }
+                                                    )
+                                                } catch (e: Exception) {
+                                                    if (e is CancellationException) throw e
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                                wave1AJobs.awaitAll()
+                            }
+                        }
+                        val links = wave1ACollected.toList()
+                        if (links.isNotEmpty()) firstPrimaryWithLinks.complete(Unit)
+                        links
+                    }
+
+                    val titanDeferred = async {
+                        val links = resolveApiLane("titan")
+                        if (links.isNotEmpty()) firstPrimaryWithLinks.complete(Unit)
+                        links
+                    }
+                    val atlasDeferred = async {
+                        val links = resolveApiLane("atlas")
+                        if (links.isNotEmpty()) firstPrimaryWithLinks.complete(Unit)
+                        links
+                    }
+                    val velaDeferred = async {
+                        val links = resolveApiLane("vela")
+                        if (links.isNotEmpty()) firstPrimaryWithLinks.complete(Unit)
+                        links
+                    }
+                    val lyraDeferred = async {
+                        val links = resolveApiLane("lyra")
+                        if (links.isNotEmpty()) firstPrimaryWithLinks.complete(Unit)
+                        links
+                    }
+                    val primaryWatcher = async {
+                        wave1ADeferred.join()
+                        titanDeferred.join()
+                        atlasDeferred.join()
+                        firstPrimaryWithLinks.complete(Unit)
+                    }
+
+                    // 3. Co-staging & non-blocking completion order:
+                    //    Wait until the first healthy lane produces links (or all primary lanes finish),
+                    //    then allow a bounded 600ms co-staging window so fast primary lanes (Direct/Vexon/Evion,
+                    //    Titan, Atlas) finish together and their 720p links are sorted by lowest file size first.
+                    firstPrimaryWithLinks.await()
+                    withTimeoutOrNull(600L) {
+                        wave1ADeferred.join()
+                        titanDeferred.join()
+                        atlasDeferred.join()
+                    }
+
+                    val allHealthyDeferreds = listOf(
+                        wave1ADeferred,
+                        titanDeferred,
+                        atlasDeferred,
+                        velaDeferred,
+                        lyraDeferred
+                    )
+                    val (completedNow, remainingDeferreds) = allHealthyDeferreds.partition { it.isCompleted }
+                    val completedNowLinks = completedNow.flatMap { it.await() }
+                    synchronized(emissionLock) {
+                        emitHealthy720AndDeferOthers(completedNowLinks)
+                    }
+
+                    if (remainingDeferreds.isNotEmpty()) {
+                        coroutineScope {
+                            remainingDeferreds.map { deferred ->
+                                async {
+                                    val links = deferred.await()
+                                    synchronized(emissionLock) {
+                                        emitHealthy720AndDeferOthers(links)
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                    }
+                    primaryWatcher.await()
+
+                    // Flush deferred non-720p links (1080p, 480p, Auto) sorted by priority
+                    val sortedNon720 = deferredNon720Links.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+                    deferredNon720Links.clear()
+                    for (link in sortedNon720) {
+                        recordHealthyEmission(link)
+                        callback(link)
+                    }
+
+                    // 4. Wave 3: Last-resort fallback to Orion / BigBang when Wave 1 and Wave 2
+                    //    yielded zero non-dub verified H.264 streams. Misleading video-only `[89 MB]`
+                    //    size tags are omitted (`includeSizeTag = false`) so fallback streams
+                    //    cannot poison `DownloadSelectionPolicy`.
+                    if (nonDubHealthyLinksEmitted.get() == 0) {
+                        val orderedOrions = if (healthyLinksEmitted.get() > 0) {
+                            orderVidRiftOrionStreams(meta.orionStreams).filterNot {
+                                StreamLinkOptimizer.isVidRiftRegionalDub(it.name)
+                            }
+                        } else {
+                            orderVidRiftOrionStreams(meta.orionStreams)
+                        }
+                        val fallbackJobs = buildList {
+                            if (orderedOrions.isNotEmpty()) {
+                                add(
+                                    async {
+                                        for (orionCandidate in orderedOrions) {
+                                            var emittedFromCandidate = 0
+                                            try {
+                                                val cleanLabel = orionCandidate.name.replace("·", "-").trim()
+                                                val baseName = if (cleanLabel.startsWith("VidRift", ignoreCase = true)) {
+                                                    cleanLabel
+                                                } else {
+                                                    "VidRift $cleanLabel"
+                                                }
+                                                emitVerifiedStream(
+                                                    source = "VidRift",
+                                                    baseName = baseName,
+                                                    url = orionCandidate.url,
+                                                    referer = embedUrl,
+                                                    headers = streamHeaders,
+                                                    manifestTimeoutMs = 4_500L,
+                                                    fetchTimeoutSec = 4L,
+                                                    includeSizeTag = false,
+                                                    requireManifestVerification = true,
+                                                    extractorDataTag = "vidrift_lane=orion"
+                                                ) {
+                                                    emittedFromCandidate++
+                                                    callback(it)
+                                                }
+                                                if (emittedFromCandidate > 0) break
+                                            } catch (e: Exception) {
+                                                if (e is CancellationException) throw e
+                                            }
                                         }
                                     }
                                 )
@@ -6500,6 +6774,11 @@ object StreamPlayExtractor : StreamPlay() {
                                                 url = bbUrl,
                                                 referer = embedUrl,
                                                 headers = streamHeaders,
+                                                manifestTimeoutMs = 4_500L,
+                                                fetchTimeoutSec = 4L,
+                                                includeSizeTag = false,
+                                                requireManifestVerification = true,
+                                                extractorDataTag = "vidrift_lane=bigbang",
                                                 callback = callback
                                             )
                                         } catch (e: Exception) {

@@ -308,6 +308,7 @@ object StreamPlayShield {
         "reelvault.click",
         "bigbang.cymru",
         "deton444eik.com",
+        "husvu445bey.com",
         "wecollege.net",
         "videasy.to",
         "paleoak.top",
