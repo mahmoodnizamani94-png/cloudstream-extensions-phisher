@@ -366,7 +366,8 @@ object StreamLinkOptimizer {
             referer = link.referer,
             linkType = resolvedType,
             source = link.source,
-            name = link.name
+            name = link.name,
+            extractorData = link.extractorData
         )
 
         // 8. Effective referer
@@ -375,7 +376,8 @@ object StreamLinkOptimizer {
             link.referer,
             optimizedHeaders,
             source = link.source,
-            name = link.name
+            name = link.name,
+            extractorData = link.extractorData
         )
 
         @Suppress("DEPRECATION")
@@ -430,6 +432,38 @@ object StreamLinkOptimizer {
 
     // ==================== Anti-Throttling Header Engine ====================
 
+    private fun hasExplicitVidRiftProvenance(
+        source: String?,
+        name: String?,
+        referer: String?,
+        extractorData: String?,
+        headers: Map<String, String>
+    ): Boolean {
+        return source?.contains("vidrift", ignoreCase = true) == true ||
+            name?.contains("vidrift", ignoreCase = true) == true ||
+            referer?.contains("vidrift.net", ignoreCase = true) == true ||
+            extractorData?.contains("vidrift_lane=", ignoreCase = true) == true ||
+            headers.entries.any {
+                it.key.equals("X-StreamPlay-Source", ignoreCase = true) &&
+                    it.value.equals("vidrift", ignoreCase = true)
+            }
+    }
+
+    private fun hasExplicitMeowTvProvenance(
+        source: String?,
+        name: String?,
+        referer: String?,
+        headers: Map<String, String>
+    ): Boolean {
+        return source?.contains("meowtv", ignoreCase = true) == true ||
+            name?.contains("meowtv", ignoreCase = true) == true ||
+            referer?.contains("meowtv.ru", ignoreCase = true) == true ||
+            headers.entries.any {
+                it.key.equals("X-StreamPlay-Source", ignoreCase = true) &&
+                    it.value.equals("meowtv", ignoreCase = true)
+            }
+    }
+
     /**
      * Builds HTTP headers tuned for maximum multi-connection chunk download speed
      * and anti-throttling across video CDNs.
@@ -440,7 +474,8 @@ object StreamLinkOptimizer {
         referer: String?,
         linkType: ExtractorLinkType = ExtractorLinkType.VIDEO,
         source: String? = null,
-        name: String? = null
+        name: String? = null,
+        extractorData: String? = null
     ): Map<String, String> {
         if (url.startsWith("magnet:", ignoreCase = true) ||
             (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true))
@@ -512,16 +547,37 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.buzz") ||
             referer?.contains("videm.xyz", ignoreCase = true) == true ||
             referer?.contains("vidsrc.buzz", ignoreCase = true) == true
-        val isVidRift = source?.contains("vidrift", ignoreCase = true) == true ||
-            name?.contains("vidrift", ignoreCase = true) == true ||
-            lowerUrl.contains("vidrift.net") ||
-            lowerUrl.contains("reelvault.click") ||
-            lowerUrl.contains("bigbang.cymru") ||
-            lowerUrl.contains("bigbang.observer") ||
-            lowerUrl.contains("deton444eik.com") ||
-            lowerUrl.contains("husvu445bey.com") ||
-            referer?.contains("vidrift.net", ignoreCase = true) == true ||
-            headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) }
+        val hasExplicitVidRiftProvenance = hasExplicitVidRiftProvenance(
+            source = source,
+            name = name,
+            referer = referer,
+            extractorData = extractorData,
+            headers = headers
+        )
+        val hasExplicitMeowTvProvenance = hasExplicitMeowTvProvenance(
+            source = source,
+            name = name,
+            referer = referer,
+            headers = headers
+        )
+        val isMeowTv = hasExplicitMeowTvProvenance ||
+            (!hasExplicitVidRiftProvenance && (
+                lowerUrl.contains("meowtv.ru") ||
+                    lowerUrl.contains("hscow.com") ||
+                    lowerUrl.contains("fcxmb.com") ||
+                    lowerUrl.contains("vidjoy.org") ||
+                    lowerUrl.contains("krico443jez.com") ||
+                    lowerUrl.contains("fastcloud.live")
+                ))
+        val isVidRift = !hasExplicitMeowTvProvenance && (
+            hasExplicitVidRiftProvenance ||
+                lowerUrl.contains("vidrift.net") ||
+                lowerUrl.contains("reelvault.click") ||
+                lowerUrl.contains("bigbang.cymru") ||
+                lowerUrl.contains("bigbang.observer") ||
+                lowerUrl.contains("deton444eik.com") ||
+                lowerUrl.contains("husvu445bey.com")
+            )
         val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
             name?.contains("cineby", ignoreCase = true) == true ||
             lowerUrl.contains("wecollege.net") ||
@@ -530,8 +586,13 @@ object StreamLinkOptimizer {
             lowerUrl.contains("majorplay.net") ||
             lowerUrl.contains("finalsignal.top") ||
             lowerUrl.contains("falseparadise.workers.dev") ||
+            lowerUrl.contains("wellsrobertsonkmlt.workers.dev") ||
             referer?.contains("vidy.st", ignoreCase = true) == true ||
-            referer?.contains("player.videasy.to", ignoreCase = true) == true
+            referer?.contains("player.videasy.to", ignoreCase = true) == true ||
+            headers.entries.any {
+                it.key.equals("X-StreamPlay-Source", ignoreCase = true) &&
+                    it.value.equals("cineby", ignoreCase = true)
+            }
         val isMegaPlay = source?.contains("megaplay", ignoreCase = true) == true ||
             name?.contains("megaplay", ignoreCase = true) == true ||
             lowerUrl.contains("megaplay.buzz") ||
@@ -582,20 +643,30 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidup.to") ||
             lowerUrl.contains("keenanchor.top") ||
             referer?.contains("vidup.to", ignoreCase = true) == true
-        val isCineSrc = source?.contains("cinesrc", ignoreCase = true) == true ||
+        val explicitCineSrc = source?.contains("cinesrc", ignoreCase = true) == true ||
             name?.contains("cinesrc", ignoreCase = true) == true ||
-            lowerUrl.contains("cinesrc.st") ||
-            referer?.contains("cinesrc.st", ignoreCase = true) == true ||
-            headers.entries.any { it.value.contains("cinesrc.st", ignoreCase = true) }
-        val isCineJoy = source?.contains("cinejoy", ignoreCase = true) == true ||
-            name?.contains("cinejoy", ignoreCase = true) == true ||
-            lowerUrl.contains("cinejoy.to") ||
-            lowerUrl.contains("cinejoy.pk") ||
-            lowerUrl.contains("solarpanelcleaning") ||
-            lowerUrl.contains("api.wing.st") ||
-            lowerUrl.contains("bright67.online") ||
-            referer?.contains("cinejoy.to", ignoreCase = true) == true ||
-            referer?.contains("cinejoy.pk", ignoreCase = true) == true
+            headers.entries.any {
+                it.key.equals("X-StreamPlay-Source", ignoreCase = true) &&
+                    it.value.equals("cinesrc", ignoreCase = true)
+            }
+        val explicitCineJoy = !explicitCineSrc && (
+            source?.contains("cinejoy", ignoreCase = true) == true ||
+                name?.contains("cinejoy", ignoreCase = true) == true ||
+                referer?.contains("cinejoy", ignoreCase = true) == true ||
+                lowerUrl.contains("cinejoy.to") ||
+                lowerUrl.contains("cinejoy.pk") ||
+                lowerUrl.contains("solarpanelcleaning")
+            )
+        val isCineSrc = explicitCineSrc ||
+            (!explicitCineJoy && (
+                lowerUrl.contains("cinesrc.st") ||
+                    lowerUrl.contains("api.wing.st") ||
+                    lowerUrl.contains("bright67.online") ||
+                    lowerUrl.contains("lightspeed.st") ||
+                    referer?.contains("cinesrc.st", ignoreCase = true) == true ||
+                    headers.entries.any { it.value.contains("cinesrc.st", ignoreCase = true) }
+                ))
+        val isCineJoy = explicitCineJoy
         val isHexa = source?.contains("hexa", ignoreCase = true) == true ||
             name?.contains("hexa", ignoreCase = true) == true ||
             source?.contains("embedsu", ignoreCase = true) == true ||
@@ -648,6 +719,21 @@ object StreamLinkOptimizer {
                 headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
+                headers[HEADER_ACCEPT] = "*/*"
+                headers["Accept-Ranges"] = "bytes"
+            }
+            isMeowTv -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                val eff = if (supplied != null && supplied.startsWith("http", ignoreCase = true)) {
+                    supplied
+                } else {
+                    "https://meowtv.ru/"
+                }
+                headers[HEADER_REFERER] = eff
+                headers[HEADER_ORIGIN] = getHostUrl(eff) ?: "https://meowtv.ru"
+                headers[HEADER_USER_AGENT] = MODERN_DESKTOP_UA
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
             }
@@ -872,11 +958,21 @@ object StreamLinkOptimizer {
                 headers[HEADER_ORIGIN] = "https://solarpanelcleaning.cc"
             }
             lowerUrl.contains("cinesrc.st") || isCineSrc -> {
-                val eff = if (referer?.contains("cinejoy.pk", ignoreCase = true) == true) "https://cinejoy.pk/" else "https://cinesrc.st/"
+                val suppliedRef = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                val eff = if (
+                    suppliedRef?.contains("cinejoy.pk", ignoreCase = true) == true ||
+                    lowerUrl.contains("lightspeed.st")
+                ) {
+                    "https://cinejoy.pk/"
+                } else {
+                    "https://cinesrc.st/"
+                }
                 headers[HEADER_REFERER] = eff
                 headers[HEADER_ORIGIN] = eff.removeSuffix("/")
             }
-            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") || lowerUrl.contains("bright67.online") || isCineJoy -> {
+            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") || lowerUrl.contains("bright67.online") || lowerUrl.contains("lightspeed.st") || isCineJoy -> {
                 headers[HEADER_REFERER] = "https://cinejoy.pk/"
                 headers[HEADER_ORIGIN] = "https://cinejoy.pk"
             }
@@ -1019,7 +1115,8 @@ object StreamLinkOptimizer {
         referer: String?,
         headers: Map<String, String>,
         source: String? = null,
-        name: String? = null
+        name: String? = null,
+        extractorData: String? = null
     ): String {
         val lowerUrl = url.lowercase(Locale.ROOT)
         val isVideasy = source?.contains("videasy", ignoreCase = true) == true ||
@@ -1056,16 +1153,37 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.buzz") ||
             referer?.contains("videm.xyz", ignoreCase = true) == true ||
             referer?.contains("vidsrc.buzz", ignoreCase = true) == true
-        val isVidRift = source?.contains("vidrift", ignoreCase = true) == true ||
-            name?.contains("vidrift", ignoreCase = true) == true ||
-            lowerUrl.contains("vidrift.net") ||
-            lowerUrl.contains("reelvault.click") ||
-            lowerUrl.contains("bigbang.cymru") ||
-            lowerUrl.contains("bigbang.observer") ||
-            lowerUrl.contains("deton444eik.com") ||
-            lowerUrl.contains("husvu445bey.com") ||
-            referer?.contains("vidrift.net", ignoreCase = true) == true ||
-            headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) }
+        val hasExplicitVidRiftProvenance = hasExplicitVidRiftProvenance(
+            source = source,
+            name = name,
+            referer = referer,
+            extractorData = extractorData,
+            headers = headers
+        )
+        val hasExplicitMeowTvProvenance = hasExplicitMeowTvProvenance(
+            source = source,
+            name = name,
+            referer = referer,
+            headers = headers
+        )
+        val isMeowTv = hasExplicitMeowTvProvenance ||
+            (!hasExplicitVidRiftProvenance && (
+                lowerUrl.contains("meowtv.ru") ||
+                    lowerUrl.contains("hscow.com") ||
+                    lowerUrl.contains("fcxmb.com") ||
+                    lowerUrl.contains("vidjoy.org") ||
+                    lowerUrl.contains("krico443jez.com") ||
+                    lowerUrl.contains("fastcloud.live")
+                ))
+        val isVidRift = !hasExplicitMeowTvProvenance && (
+            hasExplicitVidRiftProvenance ||
+                lowerUrl.contains("vidrift.net") ||
+                lowerUrl.contains("reelvault.click") ||
+                lowerUrl.contains("bigbang.cymru") ||
+                lowerUrl.contains("bigbang.observer") ||
+                lowerUrl.contains("deton444eik.com") ||
+                lowerUrl.contains("husvu445bey.com")
+            )
         val isCineby = source?.contains("cineby", ignoreCase = true) == true ||
             name?.contains("cineby", ignoreCase = true) == true ||
             lowerUrl.contains("wecollege.net") ||
@@ -1074,8 +1192,13 @@ object StreamLinkOptimizer {
             lowerUrl.contains("majorplay.net") ||
             lowerUrl.contains("finalsignal.top") ||
             lowerUrl.contains("falseparadise.workers.dev") ||
+            lowerUrl.contains("wellsrobertsonkmlt.workers.dev") ||
             referer?.contains("vidy.st", ignoreCase = true) == true ||
-            referer?.contains("player.videasy.to", ignoreCase = true) == true
+            referer?.contains("player.videasy.to", ignoreCase = true) == true ||
+            headers.entries.any {
+                it.key.equals("X-StreamPlay-Source", ignoreCase = true) &&
+                    it.value.equals("cineby", ignoreCase = true)
+            }
         val isMegaPlay = source?.contains("megaplay", ignoreCase = true) == true ||
             name?.contains("megaplay", ignoreCase = true) == true ||
             lowerUrl.contains("megaplay.buzz") ||
@@ -1126,20 +1249,30 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidup.to") ||
             lowerUrl.contains("keenanchor.top") ||
             referer?.contains("vidup.to", ignoreCase = true) == true
-        val isCineSrc = source?.contains("cinesrc", ignoreCase = true) == true ||
+        val explicitCineSrc = source?.contains("cinesrc", ignoreCase = true) == true ||
             name?.contains("cinesrc", ignoreCase = true) == true ||
-            lowerUrl.contains("cinesrc.st") ||
-            referer?.contains("cinesrc.st", ignoreCase = true) == true ||
-            headers.entries.any { it.value.contains("cinesrc.st", ignoreCase = true) }
-        val isCineJoy = source?.contains("cinejoy", ignoreCase = true) == true ||
-            name?.contains("cinejoy", ignoreCase = true) == true ||
-            lowerUrl.contains("cinejoy.to") ||
-            lowerUrl.contains("cinejoy.pk") ||
-            lowerUrl.contains("solarpanelcleaning") ||
-            lowerUrl.contains("api.wing.st") ||
-            lowerUrl.contains("bright67.online") ||
-            referer?.contains("cinejoy.to", ignoreCase = true) == true ||
-            referer?.contains("cinejoy.pk", ignoreCase = true) == true
+            headers.entries.any {
+                it.key.equals("X-StreamPlay-Source", ignoreCase = true) &&
+                    it.value.equals("cinesrc", ignoreCase = true)
+            }
+        val explicitCineJoy = !explicitCineSrc && (
+            source?.contains("cinejoy", ignoreCase = true) == true ||
+                name?.contains("cinejoy", ignoreCase = true) == true ||
+                referer?.contains("cinejoy", ignoreCase = true) == true ||
+                lowerUrl.contains("cinejoy.to") ||
+                lowerUrl.contains("cinejoy.pk") ||
+                lowerUrl.contains("solarpanelcleaning")
+            )
+        val isCineSrc = explicitCineSrc ||
+            (!explicitCineJoy && (
+                lowerUrl.contains("cinesrc.st") ||
+                    lowerUrl.contains("api.wing.st") ||
+                    lowerUrl.contains("bright67.online") ||
+                    lowerUrl.contains("lightspeed.st") ||
+                    referer?.contains("cinesrc.st", ignoreCase = true) == true ||
+                    headers.entries.any { it.value.contains("cinesrc.st", ignoreCase = true) }
+                ))
+        val isCineJoy = explicitCineJoy
         val isHexa = source?.contains("hexa", ignoreCase = true) == true ||
             name?.contains("hexa", ignoreCase = true) == true ||
             source?.contains("embedsu", ignoreCase = true) == true ||
@@ -1176,6 +1309,16 @@ object StreamLinkOptimizer {
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
             isVidlink -> ""
+            isMeowTv -> {
+                val supplied = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                if (supplied != null && supplied.startsWith("http", ignoreCase = true)) {
+                    supplied
+                } else {
+                    "https://meowtv.ru/"
+                }
+            }
             isVidRift -> {
                 val supplied = headers.entries.firstOrNull {
                     it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
@@ -1260,9 +1403,19 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidup.to") || isVidup -> "https://vidup.to/"
             lowerUrl.contains("solarpanelcleaning") || referer?.contains("solarpanelcleaning") == true -> "https://solarpanelcleaning.cc/"
             lowerUrl.contains("cinesrc.st") || isCineSrc -> {
-                if (referer?.contains("cinejoy.pk", ignoreCase = true) == true) "https://cinejoy.pk/" else "https://cinesrc.st/"
+                val suppliedRef = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                if (
+                    suppliedRef?.contains("cinejoy.pk", ignoreCase = true) == true ||
+                    lowerUrl.contains("lightspeed.st")
+                ) {
+                    "https://cinejoy.pk/"
+                } else {
+                    "https://cinesrc.st/"
+                }
             }
-            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") || lowerUrl.contains("bright67.online") || isCineJoy -> "https://cinejoy.pk/"
+            lowerUrl.contains("cinejoy.pk") || lowerUrl.contains("cinejoy.to") || lowerUrl.contains("bright67.online") || lowerUrl.contains("lightspeed.st") || isCineJoy -> "https://cinejoy.pk/"
             lowerUrl.contains("embed.su") || lowerUrl.contains("hexa.su") || lowerUrl.contains("flixer.su") || isHexa -> {
                 when {
                     lowerUrl.contains("embed.su") || referer?.contains("embed.su") == true ||
@@ -2375,24 +2528,46 @@ object StreamLinkOptimizer {
         val n = link.name.lowercase(Locale.ROOT)
         val u = link.url.lowercase(Locale.ROOT)
         val r = link.referer.lowercase(Locale.ROOT)
+        val explicitSourceHeader = link.headers.entries
+            .firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
+            ?.value?.trim()?.lowercase(Locale.ROOT)
+        val explicitMeowTv = hasExplicitMeowTvProvenance(
+            source = link.source,
+            name = link.name,
+            referer = link.referer,
+            headers = link.headers
+        )
+        val explicitVidRift = hasExplicitVidRiftProvenance(
+            source = link.source,
+            name = link.name,
+            referer = link.referer,
+            extractorData = link.extractorData,
+            headers = link.headers
+        )
         return when {
-            (s.contains("vidlink") || n.contains("vidlink") ||
-                u.contains("vidlink.pro") || u.contains("hakunaymatata")) &&
-                !u.contains("mov2day") && !u.contains("/proxy?") && !u.contains("hd4u.") &&
-                !s.contains("vidsrc") -> 100
-            s.contains("vidrift") || n.contains("vidrift") ||
-                u.contains("vidrift.net") || u.contains("reelvault.click") ||
+            explicitSourceHeader == "vidlink" ||
+                ((s.contains("vidlink") || n.contains("vidlink") ||
+                    u.contains("vidlink.pro") || u.contains("hakunaymatata")) &&
+                    !u.contains("mov2day") && !u.contains("/proxy?") && !u.contains("hd4u.") &&
+                    !s.contains("vidsrc")) -> 100
+            explicitMeowTv -> 98
+            explicitVidRift -> VIDRIFT_SOURCE_RANK
+            explicitSourceHeader == "cineby" -> 95
+            explicitSourceHeader == "cinesrc" -> 94
+            explicitSourceHeader == "vidfast" -> 93
+            explicitSourceHeader == "megaplay" -> 92
+            explicitSourceHeader == "anizone" -> 89
+            explicitSourceHeader == "animepahe" -> 88
+            explicitSourceHeader == "animex" -> 87
+            u.contains("meowtv.ru") || u.contains("hscow.com") || u.contains("fcxmb.com") ||
+                u.contains("vidjoy.org") || u.contains("krico443jez.com") || u.contains("fastcloud.live") -> 98
+            u.contains("vidrift.net") || u.contains("reelvault.click") ||
                 u.contains("bigbang.cymru") || u.contains("bigbang.observer") ||
-                u.contains("deton444eik.com") || u.contains("husvu445bey.com") ||
-                r.contains("vidrift.net") ||
-                link.extractorData?.contains("vidrift_lane=", ignoreCase = true) == true ||
-                link.headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) } -> VIDRIFT_SOURCE_RANK
-            s.contains("meowtv") || n.contains("meowtv") ||
-                u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
-                u.contains("krico443jez.com") || u.contains("fastcloud.live") -> 98
+                u.contains("deton444eik.com") || u.contains("husvu445bey.com") -> VIDRIFT_SOURCE_RANK
             s.contains("cineby") || n.contains("cineby") ||
                 u.contains("wecollege.net") || u.contains("goldenkite.top") || u.contains("paleoak.top") ||
                 u.contains("majorplay.net") || u.contains("finalsignal.top") || u.contains("falseparadise.workers.dev") ||
+                u.contains("wellsrobertsonkmlt.workers.dev") ||
                 r.contains("vidy.st") || r.contains("player.videasy.to") -> 95
             s.contains("cinesrc") || n.contains("cinesrc") ||
                 u.contains("cinesrc.st") || u.contains("bright67.online") ||
@@ -2783,6 +2958,8 @@ object StreamLinkOptimizer {
         @Volatile
         private var top720GraceExpired = false
         @Volatile
+        private var top720WindowElapsed = false
+        @Volatile
         private var fhdGraceExpired = false
         @Volatile
         private var sdGraceExpired = false
@@ -2823,29 +3000,95 @@ object StreamLinkOptimizer {
             if (rank in completedProviderRanks) return true
             if (rank !in completedTop720Ranks) return false
             if (rank in completedTop1080Ranks || rank == VIDRIFT_SOURCE_RANK) return true
-            return isRankInFlight == null && pending1080Links.isEmpty()
+            return (isRankInFlight == null || !isRankInFlight.invoke(rank)) && pending1080Links.isEmpty()
+        }
+
+        private fun hasAnyHigherInFlightRankThanBestReady(): Boolean {
+            val inFlightCheck = isRankInFlight ?: return false
+            if (topSourceGraceExpired) return false
+            val bestBufferedRank = listOfNotNull(
+                pendingTop720Links.maxOfOrNull { getSourcePriorityRank(it) },
+                pending1080Links.maxOfOrNull { getSourcePriorityRank(it) },
+                stagedLinks.filter { is720p(it) || is1080p(it) }.maxOfOrNull { getSourcePriorityRank(it) }
+            ).maxOrNull() ?: 0
+            val candidateRanks = if (activeTopRanks != null) {
+                (TOP_TIER_RANKS.filter { it in activeTopRanks } + activeTopRanks).distinct()
+            } else {
+                TOP_TIER_RANKS
+            }
+            return candidateRanks.any { rank ->
+                rank > bestBufferedRank && !isRankOrderingSatisfied(rank) && inFlightCheck(rank)
+            }
+        }
+
+        private fun isCrossSourceGraceStillActive(): Boolean {
+            if (topSourceGraceMs > top720GraceMs) {
+                return topSourceGraceMs > 0L && !topSourceGraceExpired
+            }
+            if (top720GraceMs > 0L && !top720GraceExpired) return true
+            if (topSourceGraceMs > 0L && !topSourceGraceExpired) return true
+            return false
         }
 
         /**
          * Determines whether a `1080p` candidate from [linkRank] must be held in [pending1080Links]:
-         * - Only holds while `top720GraceMs > 0` and the grace window has not expired.
-         * - Holds if any higher-ranked source (`> linkRank`) still has pending or in-flight `720p`/`1080p`.
+         * - Holds if any higher-ranked source (`> linkRank`) still has pending or in-flight `720p`/`1080p`
+         *   within the active cross-source grace window.
          * - Holds if the same source (`== linkRank`) still has a queued `720p` or has not yet emitted its `720p`
-         *   while that source is still in flight.
+         *   while that source is still in flight within `top720GraceMs`.
          * - Never holds a completed higher-ranked source's `1080p` behind a lower-ranked source (`< linkRank`).
          */
         private fun shouldHold1080ForRank(linkRank: Int): Boolean {
-            if (top720GraceMs <= 0L || top720GraceExpired) return false
-            if (hasHigherPendingTop720Rank(linkRank)) return true
             val hasSameRankQueued720 = (pendingTop720Links + stagedLinks).any {
                 is720p(it) && getSourcePriorityRank(it) == linkRank && canonicalStreamKey(it) !in emittedKeys
             }
             if (hasSameRankQueued720) return true
+            if (hasHigherPendingTop720Rank(linkRank)) {
+                if (isRankInFlight != null) {
+                    if (isCrossSourceGraceStillActive()) return true
+                } else if (top720GraceMs > 0L && !top720GraceExpired) {
+                    return true
+                }
+            }
+            if (top720GraceMs <= 0L || top720GraceExpired || top720WindowElapsed) return false
             if (linkRank >= 85) {
                 if (linkRank in completedTop720Ranks || linkRank in completedProviderRanks) return false
                 return isRankInFlight == null || isRankInFlight.invoke(linkRank)
             }
-            return if (isRankInFlight != null) hasHigherPendingTop720Rank(0) else true
+            return if (isRankInFlight != null) {
+                hasHigherPendingTop720Rank(0) && isCrossSourceGraceStillActive()
+            } else {
+                true
+            }
+        }
+
+        private fun scheduleTimersForPendingTopTier() {
+            if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) return
+            val hasCrossSourceWait = isRankInFlight != null && (
+                hasAnyHigherInFlightRankThanBestReady() ||
+                    pendingTop720Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) } ||
+                    pending1080Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) }
+                )
+            if (hasCrossSourceWait &&
+                topSourceGraceMs > 0L &&
+                !topSourceGraceExpired &&
+                (topSourceGraceMs > top720GraceMs || pendingTop720Links.isNotEmpty())
+            ) {
+                startTopSourceGraceTimer()
+            }
+            val hasFrontier1080WaitingForSameRank720 = pending1080Links.any {
+                val r = getSourcePriorityRank(it)
+                !hasHigherPendingTop720Rank(r) || isRankInFlight == null || topSourceGraceMs <= top720GraceMs
+            }
+            val needs720TimerForStandalone = (isRankInFlight == null || topSourceGraceMs <= top720GraceMs) &&
+                (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty())
+            if ((hasFrontier1080WaitingForSameRank720 || needs720TimerForStandalone) &&
+                top720GraceMs > 0L &&
+                !top720GraceExpired &&
+                (!top720WindowElapsed || topSourceGraceMs <= top720GraceMs)
+            ) {
+                startTop720GraceTimer()
+            }
         }
 
         fun onSubtitleReceived() {
@@ -2872,7 +3115,15 @@ object StreamLinkOptimizer {
             } else {
                 // A higher-ranked source is still in flight: hold this link in
                 // pendingTop720Links and wait (bounded) for it.
-                pendingTop720Links.add(best)
+                if (is1080p(best)) {
+                    pending1080Links.add(best)
+                } else if (isBelow720p(best)) {
+                    pendingBelowFhdLinks.add(best)
+                } else if (isAbove1080p(best)) {
+                    pendingAbove1080Links.add(best)
+                } else {
+                    pendingTop720Links.add(best)
+                }
                 startTopSourceGraceTimer()
             }
         }
@@ -2890,10 +3141,15 @@ object StreamLinkOptimizer {
                 if (hasEmittedTopStream) {
                     // Secondary sources (< 85 rank) buffered while top tier streams are active/pending
                     if (!linkIsTopTier && linkRankIsSecondary(link)) {
-                        if (!hasEmitted1080p || (!top720GraceExpired && top720GraceMs > 0L && hasHigherPendingTop720Rank(0)) || !sdGraceExpired || pendingSecondaryLinks.isNotEmpty() || pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty() || pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty()) {
+                        val topTierPendingOrInFlight = (!top720GraceExpired && top720GraceMs > 0L && hasHigherPendingTop720Rank(0)) ||
+                            (isRankInFlight != null && !topSourceGraceExpired && topSourceGraceMs > 0L && hasHigherPendingTop720Rank(0))
+                        if (!hasEmitted1080p || topTierPendingOrInFlight || !sdGraceExpired || pendingSecondaryLinks.isNotEmpty() || pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty() || pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty()) {
                             pendingSecondaryLinks.add(link)
-                            if (!top720GraceExpired && top720GraceMs > 0L && (hasHigherPendingTop720Rank(0) || pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty())) {
-                                startTop720GraceTimer()
+                            if (topTierPendingOrInFlight || pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
+                                scheduleTimersForPendingTopTier()
+                                if (topSourceTimerJob == null && top720TimerJob == null && top720GraceMs > 0L && !top720GraceExpired) {
+                                    startTop720GraceTimer()
+                                }
                             } else if (!hasEmitted1080p && !fhdGraceExpired) {
                                 startFhdGraceTimer()
                             } else if (!sdGraceExpired) {
@@ -2908,9 +3164,13 @@ object StreamLinkOptimizer {
                     // Tier 1: 720p from top-tier sources
                     if (linkIs720) {
                         val linkRank = getSourcePriorityRank(link)
-                        if (hasHigherPendingTop720Rank(linkRank) && top720GraceMs > 0L && !top720GraceExpired) {
+                        val shouldHoldLower720 = hasHigherPendingTop720Rank(linkRank) && (
+                            (isRankInFlight != null && isCrossSourceGraceStillActive()) ||
+                                (isRankInFlight == null && top720GraceMs > 0L && !top720GraceExpired)
+                            )
+                        if (shouldHoldLower720) {
                             pendingTop720Links.add(link)
-                            startTop720GraceTimer()
+                            scheduleTimersForPendingTopTier()
                             return
                         } else {
                             emitSingleLink(link)
@@ -2925,7 +3185,7 @@ object StreamLinkOptimizer {
                         val linkRank = getSourcePriorityRank(link)
                         if (shouldHold1080ForRank(linkRank)) {
                             pending1080Links.add(link)
-                            startTop720GraceTimer()
+                            scheduleTimersForPendingTopTier()
                             return
                         }
                         emitSingleLink(link)
@@ -2934,7 +3194,9 @@ object StreamLinkOptimizer {
                         fhdTimerJob?.cancel()
                         fhdTimerJob = null
                         drainPendingTop720()
-                        flushPendingBelowFhd()
+                        if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                            flushPendingBelowFhd()
+                        }
                         return
                     }
 
@@ -2951,13 +3213,13 @@ object StreamLinkOptimizer {
 
                     // Tier 3: below 720p (480p, SD) links emit immediately as priority #3
                     if (linkIsBelow720) {
-                        // ...unless a 1080p of this same ordering window is already buffered.
-                        // 1080 > 480 in the SOTA hierarchy, so the SD entry must never jump
-                        // ahead of it; queue it and let flushPending1080() release both in
+                        // ...unless a 1080p or 720p of this same ordering window is already buffered.
+                        // 720 > 1080 > 480 in the SOTA hierarchy, so the SD entry must never jump
+                        // ahead of them; queue it and let flushPending1080() release both in
                         // comparator order.
-                        if (pending1080Links.isNotEmpty()) {
+                        if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
                             pendingBelowFhdLinks.add(link)
-                            startTop720GraceTimer()
+                            scheduleTimersForPendingTopTier()
                             return
                         }
                         hasEmittedBelow720p = true
@@ -2988,7 +3250,7 @@ object StreamLinkOptimizer {
                 )
                 if (shouldHoldInitial1080) {
                     pending1080Links.add(link)
-                    startTop720GraceTimer()
+                    scheduleTimersForPendingTopTier()
                     return
                 }
 
@@ -3045,7 +3307,23 @@ object StreamLinkOptimizer {
                                 val best = bestUnemittedCandidate()
                                 if (best != null) {
                                     val bestRank = getSourcePriorityRank(best)
-                                    if (is1080p(best) && (
+                                    val maxRank = activeTopRanks?.maxOrNull() ?: 100
+                                    val shouldHoldBestForHigherInFlight = isRankInFlight != null &&
+                                        bestRank < maxRank &&
+                                        hasHigherPendingTop720Rank(bestRank) &&
+                                        isCrossSourceGraceStillActive()
+                                    if (shouldHoldBestForHigherInFlight) {
+                                        val staged720 = stagedLinks.filter { is720p(it) }
+                                        val staged1080 = stagedLinks.filter { is1080p(it) }
+                                        val stagedBelow = stagedLinks.filter { isBelow720p(it) }
+                                        val stagedOther = stagedLinks.filter { !is720p(it) && !is1080p(it) && !isBelow720p(it) }
+                                        stagedLinks.clear()
+                                        pendingTop720Links.addAll(staged720)
+                                        pending1080Links.addAll(staged1080)
+                                        pendingBelowFhdLinks.addAll(stagedBelow)
+                                        pendingAbove1080Links.addAll(stagedOther)
+                                        scheduleTimersForPendingTopTier()
+                                    } else if (is1080p(best) && (
                                         pending1080Links.isNotEmpty() ||
                                         (isRankInFlight != null && shouldHold1080ForRank(bestRank)) ||
                                         (isRankInFlight == null && top720TimerJob?.isActive == true)
@@ -3055,7 +3333,17 @@ object StreamLinkOptimizer {
                                         val other1080 = stagedLinks.filter { is1080p(it) }
                                         stagedLinks.removeAll(other1080)
                                         pending1080Links.addAll(other1080)
-                                        startTop720GraceTimer()
+                                        val stagedNonHd = stagedLinks.filter { !is720p(it) }
+                                        stagedLinks.removeAll(stagedNonHd)
+                                        pendingBelowFhdLinks.addAll(stagedNonHd)
+                                        scheduleTimersForPendingTopTier()
+                                    } else if ((pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) && !is720p(best) && !is1080p(best)) {
+                                        val stagedBelow = stagedLinks.filter { isBelow720p(it) }
+                                        val stagedOther = stagedLinks.filter { !is720p(it) && !is1080p(it) && !isBelow720p(it) }
+                                        stagedLinks.removeAll(stagedBelow + stagedOther)
+                                        pendingBelowFhdLinks.addAll(stagedBelow)
+                                        pendingAbove1080Links.addAll(stagedOther)
+                                        scheduleTimersForPendingTopTier()
                                     } else {
                                         dispatchOrStageBest(best)
                                     }
@@ -3067,7 +3355,7 @@ object StreamLinkOptimizer {
                                     val stagedNonHd = stagedLinks.filter { !is720p(it) }
                                     stagedLinks.removeAll(stagedNonHd)
                                     pendingBelowFhdLinks.addAll(stagedNonHd)
-                                    startTop720GraceTimer()
+                                    scheduleTimersForPendingTopTier()
                                 } else {
                                     val bestStream = stagedLinks.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
                                     if (bestStream != null) {
@@ -3078,7 +3366,7 @@ object StreamLinkOptimizer {
                                             if (is1080p(bestStream)) {
                                                 stagedLinks.remove(bestStream)
                                                 pending1080Links.add(bestStream)
-                                                startTop720GraceTimer()
+                                                scheduleTimersForPendingTopTier()
                                             } else if (isBelow720p(bestStream)) {
                                                 stagedLinks.remove(bestStream)
                                                 pendingBelowFhdLinks.add(bestStream)
@@ -3100,7 +3388,7 @@ object StreamLinkOptimizer {
                                                 val other1080 = stagedLinks.filter { is1080p(it) }
                                                 stagedLinks.removeAll(other1080)
                                                 pending1080Links.addAll(other1080)
-                                                startTop720GraceTimer()
+                                                scheduleTimersForPendingTopTier()
                                             } else {
                                                 stagedLinks.remove(bestStream)
                                                 emitTopStreamAndAdvance(bestStream)
@@ -3158,6 +3446,7 @@ object StreamLinkOptimizer {
                 completedTop720Ranks.add(rank)
                 completedTop1080Ranks.add(rank)
                 drainPendingTop720()
+                scheduleTimersForPendingTopTier()
             }
         }
 
@@ -3176,6 +3465,8 @@ object StreamLinkOptimizer {
                 if (is720p(nextCandidate)) {
                     val higherInFlight = hasHigherPendingTop720Rank(candRank)
                     val canDrain = if (!hasEmittedTopStream) {
+                        !higherInFlight || topSourceGraceExpired
+                    } else if (isRankInFlight != null && topSourceGraceMs > top720GraceMs) {
                         !higherInFlight || topSourceGraceExpired
                     } else {
                         !higherInFlight || top720GraceExpired || topSourceGraceExpired
@@ -3216,9 +3507,6 @@ object StreamLinkOptimizer {
                     emittedAny = true
                 }
             }
-            if (hasEmitted1080p || fhdGraceExpired) {
-                flushPendingBelowFhd()
-            }
             val canFlush1080Early = if (isRankInFlight != null) {
                 !hasHigherPendingTop720Rank(0)
             } else {
@@ -3226,6 +3514,8 @@ object StreamLinkOptimizer {
             }
             if (pendingTop720Links.isEmpty() && canFlush1080Early) {
                 flushPending1080()
+            } else if ((hasEmitted1080p || fhdGraceExpired) && pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                flushPendingBelowFhd()
             }
         }
 
@@ -3236,7 +3526,15 @@ object StreamLinkOptimizer {
                     synchronized(lock) {
                         topSourceTimerJob = null
                         topSourceGraceExpired = true
+                        if (top720WindowElapsed || topSourceGraceMs >= top720GraceMs) {
+                            top720WindowElapsed = true
+                        }
                         drainPendingTop720()
+                        if (topSourceGraceMs >= top720GraceMs && (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty())) {
+                            flushPending1080()
+                        } else {
+                            scheduleTimersForPendingTopTier()
+                        }
                     }
                 }
             }
@@ -3248,7 +3546,19 @@ object StreamLinkOptimizer {
                     delay(top720GraceMs)
                     synchronized(lock) {
                         top720TimerJob = null
-                        flushPending1080()
+                        top720WindowElapsed = true
+                        val hasHigherInFlight = isRankInFlight != null &&
+                            topSourceGraceMs > top720GraceMs &&
+                            !topSourceGraceExpired &&
+                            (hasAnyHigherInFlightRankThanBestReady() ||
+                                pendingTop720Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) } ||
+                                pending1080Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) })
+                        if (hasHigherInFlight) {
+                            drainPendingTop720()
+                            scheduleTimersForPendingTopTier()
+                        } else {
+                            flushPending1080()
+                        }
                     }
                 }
             }
@@ -3256,7 +3566,9 @@ object StreamLinkOptimizer {
 
         private fun startFhdGraceTimer() {
             if (fhdGraceMs <= 0L) {
-                flushPendingBelowFhd()
+                if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                    flushPendingBelowFhd()
+                }
                 return
             }
             if (fhdTimerJob == null) {
@@ -3264,7 +3576,9 @@ object StreamLinkOptimizer {
                     delay(fhdGraceMs)
                     synchronized(lock) {
                         fhdTimerJob = null
-                        flushPendingBelowFhd()
+                        if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                            flushPendingBelowFhd()
+                        }
                     }
                 }
             }
@@ -3312,17 +3626,15 @@ object StreamLinkOptimizer {
             // #1 & #2: Top-tier 720p and 1080p links drained in strict source-first comparator order
             pendingTop720Links.addAll(remaining720)
             pending1080Links.addAll(remaining1080)
-            drainPendingTop720()
-            if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
-                startTop720GraceTimer()
-            }
-
             pendingBelowFhdLinks.addAll(remainingBelow720)
             pendingAbove1080Links.addAll(remainingAbove1080)
             pendingSecondaryLinks.addAll(remainingSecondary)
             pendingAbove1080Links.addAll(remainingOther)
 
-            if (hasEmitted1080p || fhdGraceExpired) {
+            drainPendingTop720()
+            if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
+                scheduleTimersForPendingTopTier()
+            } else if (hasEmitted1080p || fhdGraceExpired) {
                 flushPendingBelowFhd()
             } else {
                 startFhdGraceTimer()
@@ -3462,6 +3774,8 @@ object StreamLinkOptimizer {
                 hasEmittedTopStream = true
                 hasEmitted1080p = true
                 hasEmittedBelow720p = true
+                topSourceGraceExpired = true
+                top720WindowElapsed = true
                 top720GraceExpired = true
                 fhdGraceExpired = true
                 sdGraceExpired = true

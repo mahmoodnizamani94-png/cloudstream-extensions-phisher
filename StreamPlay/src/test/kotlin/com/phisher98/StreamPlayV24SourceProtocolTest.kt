@@ -809,6 +809,35 @@ class StreamPlayV24SourceProtocolTest {
         assertEquals(1, parsedCurrent.subtitles.size)
         assertEquals("English" to "https://cc.2cdns.com/aa/3b/eng-2.vtt", parsedCurrent.subtitles[0])
 
+        val arrayStreamWingJson = """{
+            "status": 200,
+            "result": {
+                "data": {
+                    "headers": {},
+                    "stream": [
+                        {
+                            "id": "cinejoy-secret",
+                            "type": "hls",
+                            "playlist": "https://lightspeed.st/hls2/05/00038/p0xyz/master.txt",
+                            "captions": [
+                                {
+                                    "url": "https://cc.2cdns.com/aa/3b/eng-array.vtt",
+                                    "hasCorsRestrictions": false,
+                                    "language": "English"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }"""
+        val parsedArray = StreamPlayExtractor.cinesrcParseWingDecryptedResult(arrayStreamWingJson)
+        assertNotNull(parsedArray)
+        assertEquals(1, parsedArray!!.entries.size)
+        assertEquals("https://lightspeed.st/hls2/05/00038/p0xyz/master.txt", parsedArray.entries[0].url)
+        assertEquals(1, parsedArray.subtitles.size)
+        assertEquals("English" to "https://cc.2cdns.com/aa/3b/eng-array.vtt", parsedArray.subtitles[0])
+
         val legacyWingJson = """{
             "result": {
                 "sources": [
@@ -820,6 +849,113 @@ class StreamPlayV24SourceProtocolTest {
         assertNotNull(parsedLegacy)
         assertEquals(1, parsedLegacy!!.entries.size)
         assertEquals("https://nebula.bright67.online/hls2/01/00105/abc/master.txt", parsedLegacy.entries[0].url)
+    }
+
+    @Test
+    fun testMeowTvOfflineDecryptorParsesAcmeStreamsArrayAndFiltersServerIpLockedUrls() {
+        val secret = "10eE3wyyhkF38rwLFwisRYgwP2bbTL_Y"
+        val nonce = "acme_nonce_2026"
+        val key = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((secret + nonce).toByteArray(Charsets.UTF_8))
+
+        val plainAcmeJson = """{
+            "streams": [
+                {
+                    "url": "https://i-arch-400.husvu445bey.com/stream2/i-arch-400/abc/def:1774500000:41.138.216.184:sig/index.m3u8",
+                    "language": "English",
+                    "headers": {"Referer": "https://meowtv.ru/"}
+                },
+                {
+                    "url": "https://img1.hscow.com/v4/eb/720/index.m3u8",
+                    "language": "English",
+                    "headers": {"Referer": "https://meowtv.ru/"}
+                },
+                {
+                    "url": "https://cdn2.fastcloud.live/hls2/01/master.m3u8",
+                    "language": "Original",
+                    "headers": {"Referer": "https://vidjoy.org/"}
+                }
+            ]
+        }"""
+        val plainBytes = plainAcmeJson.toByteArray(Charsets.UTF_8)
+        val cipherBytes = ByteArray(plainBytes.size) { i ->
+            (plainBytes[i].toInt() xor key[i and 31].toInt()).toByte()
+        }
+        val dB64 = cinesrcBase64UrlEncode(cipherBytes)
+
+        val streams = StreamPlayExtractor.meowTvDecryptStreamsOffline(nonce, dB64)
+        assertEquals("Server-IP-locked URL must be filtered while 2 non-locked streams survive", 2, streams.size)
+        assertEquals("https://img1.hscow.com/v4/eb/720/index.m3u8", streams[0].url)
+        assertEquals("English", streams[0].language)
+        assertEquals("https://cdn2.fastcloud.live/hls2/01/master.m3u8", streams[1].url)
+
+        val firstOnly = StreamPlayExtractor.meowTvDecryptOffline(nonce, dB64)
+        assertNotNull(firstOnly)
+        assertEquals("https://img1.hscow.com/v4/eb/720/index.m3u8", firstOnly!!.url)
+    }
+
+    @Test
+    fun testCinebyDallasHlsMasterExtracts720pFromNameAttributeWhenResolutionOmitted() {
+        val dallasManifest = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-STREAM-INF:BANDWIDTH=1800000,NAME="480p"
+            https://wellsrobertsonkmlt.workers.dev/hls/v0/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=3500000,NAME="720p"
+            https://wellsrobertsonkmlt.workers.dev/hls/v1/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=6200000,NAME="1080p"
+            https://wellsrobertsonkmlt.workers.dev/hls/v2/index.m3u8
+        """.trimIndent()
+
+        val variants = parseHlsMasterVariants(
+            masterUrl = "https://wellsrobertsonkmlt.workers.dev/hls/master.m3u8",
+            manifestText = dallasManifest
+        )
+        assertEquals(3, variants.size)
+        assertEquals(Qualities.P480.value, variants[0].quality)
+        assertEquals(Qualities.P720.value, variants[1].quality)
+        assertEquals(Qualities.P1080.value, variants[2].quality)
+        assertEquals("https://wellsrobertsonkmlt.workers.dev/hls/v1/index.m3u8", variants[1].url)
+        assertTrue(variants[1].estimatedSizeMb != null && variants[1].estimatedSizeMb!! > 0)
+    }
+
+    @Test
+    fun testMeasureHlsMediaPlaylistSizeMbByteRangeFastPath() = kotlinx.coroutines.runBlocking {
+        // 200 MiB total across two byte-range segments + 1 MiB init map = 201 MiB
+        val segBytes = 100L * 1024L * 1024L
+        val mapBytes = 1L * 1024L * 1024L
+        val byteRangeLeaf = """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-TARGETDURATION:6
+            #EXT-X-MAP:URI="init.mp4",BYTERANGE="$mapBytes@0"
+            #EXTINF:6.000,
+            #EXT-X-BYTERANGE:$segBytes@$mapBytes
+            main.mp4
+            #EXTINF:6.000,
+            #EXT-X-BYTERANGE:$segBytes@${mapBytes + segBytes}
+            main.mp4
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val measuredMb = StreamPlayExtractor.measureHlsMediaPlaylistSizeMb(
+            playlistUrl = "https://img1.hscow.com/v4/eb/720/index_287.m3u8",
+            manifestText = byteRangeLeaf,
+            headers = emptyMap()
+        )
+        assertEquals(201, measuredMb)
+
+        @Suppress("DEPRECATION")
+        val measuredTitanLink = ExtractorLink(
+            source = "VidRift",
+            name = "VidRift Titan (English) [720p] [${measuredMb} MB]",
+            url = "https://img1.hscow.com/v4/eb/720/index_287.m3u8",
+            referer = "https://embed.vidrift.net/",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8,
+            extractorData = "vidrift_lane=titan"
+        )
+        assertTrue(StreamPlayExtractor.isEligibleVidRift720BackupLink(measuredTitanLink))
     }
 
     @Test

@@ -317,6 +317,7 @@ object StreamPlayShield {
         "finalsignal.top",
         "paleoak.top",
         "majorplay.net",
+        "wellsrobertsonkmlt.workers.dev",
         "cinesrc.st",
         "bright67.online",
         "wing.st",

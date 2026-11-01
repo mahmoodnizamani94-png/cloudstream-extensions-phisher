@@ -2147,6 +2147,213 @@ class DualQualityAndSotaHierarchyTest {
 
         dispatcher.flush()
     }
+
+    @Test
+    fun testPriorityStreamDispatcherAntiSkipHoldsLowerRanksPastTop720GraceWhileVidLinkOrMeowTvInFlight() = runBlocking {
+        // Scenario 1 (Bug A): Before hasEmittedTopStream, Cineby 1080p (95), VidRift 720p (91), and a <720p link
+        // arrive early while VidLink (100) is still in flight. Neither stageWindowMs (40ms) nor top720GraceMs (90ms)
+        // may prematurely flush VidRift 720p or Cineby 1080p while topSourceGraceMs (350ms) is still active!
+        val emittedA = mutableListOf<ExtractorLink>()
+        val inFlightA = mutableSetOf(100, 98, 95, 91)
+        val dispatcherA = StreamLinkOptimizer.PriorityStreamDispatcher(
+            upstreamCallback = { emittedA.add(it) },
+            scope = this,
+            stageWindowMs = 40L,
+            subtitleGraceMs = 40L,
+            topSourceGraceMs = 350L,
+            top720GraceMs = 90L,
+            fhdGraceMs = 120L,
+            activeTopRanks = setOf(100, 98, 95, 91),
+            isRankInFlight = { rank -> inFlightA.contains(rank) }
+        )
+        dispatcherA.onSubtitleReceived()
+
+        val vidrift720 = createLink("VidRift", "VidRift Vexon [720p] [210 MB]", "https://media.reelvault.click/vexon/720.m3u8", Qualities.P720.value)
+        val cineby1080 = createLink("Cineby", "Cineby Dallas [1080p] [680 MB]", "https://wellsrobertsonkmlt.workers.dev/1080.m3u8", Qualities.P1080.value)
+        val cineby480 = createLink("Cineby", "Cineby Dallas [480p] [220 MB]", "https://wellsrobertsonkmlt.workers.dev/480.m3u8", Qualities.P480.value)
+        val vidlink720 = createLink("VidLink", "VidLink [720p] [310 MB]", "https://vidlink.pro/720.mp4", Qualities.P720.value, ExtractorLinkType.VIDEO)
+        val vidlink1080 = createLink("VidLink", "VidLink [1080p] [640 MB]", "https://vidlink.pro/1080.mp4", Qualities.P1080.value, ExtractorLinkType.VIDEO)
+        val meow720 = createLink("MeowTV", "MeowTV [720p] [290 MB]", "https://img1.hscow.com/v4/720/index.m3u8", Qualities.P720.value)
+        val meow1080 = createLink("MeowTV", "MeowTV [1080p] [590 MB]", "https://img1.hscow.com/v4/1080/index.m3u8", Qualities.P1080.value)
+        val cineby720 = createLink("Cineby", "Cineby Dallas [720p] [340 MB]", "https://wellsrobertsonkmlt.workers.dev/720.m3u8", Qualities.P720.value)
+
+        // Lower-ranked links and a 480p link arrive at t=0
+        dispatcherA.onLinkAccepted(cineby480)
+        dispatcherA.onLinkAccepted(cineby1080)
+        dispatcherA.onLinkAccepted(vidrift720)
+
+        // Wait past both stageWindowMs (40ms) AND top720GraceMs (90ms), but within topSourceGraceMs (350ms)
+        delay(150L)
+        assertTrue(
+            "Lower-ranked 720p/1080p links must NOT flush at stageWindowMs or top720GraceMs while VidLink (100) is in flight",
+            emittedA.isEmpty()
+        )
+
+        // Now VidLink (100) arrives at t=150ms and completes
+        dispatcherA.onLinkAccepted(vidlink720)
+        dispatcherA.onLinkAccepted(vidlink1080)
+        inFlightA.remove(100)
+        dispatcherA.markRankCompleted(100)
+
+        assertEquals("Only VidLink 720p and 1080p should emit while MeowTV (98) is still in flight", listOf(vidlink720, vidlink1080), emittedA)
+
+        // Scenario 2 (Bug B): After VidLink (100) has emitted, wait another 110ms (> top720GraceMs = 90ms)
+        // while MeowTV (98) is still in flight within topSourceGraceMs (350ms). VidRift (91) and Cineby (95) must STILL be held!
+        delay(110L)
+        assertEquals(
+            "VidRift 720p (91) and Cineby 1080p (95) must remain held past top720GraceMs while MeowTV (98) is in flight",
+            listOf(vidlink720, vidlink1080),
+            emittedA
+        )
+
+        // MeowTV (98) and Cineby 720p (95) finish before topSourceGraceMs expires
+        dispatcherA.onLinkAccepted(cineby720)
+        inFlightA.remove(95)
+        dispatcherA.markRankCompleted(95)
+        dispatcherA.onLinkAccepted(meow720)
+        dispatcherA.onLinkAccepted(meow1080)
+        inFlightA.remove(98)
+        dispatcherA.markRankCompleted(98)
+
+        assertEquals(
+            "Once MeowTV (98) and Cineby (95) complete, all top-tier links must drain in exact SOTA rank order",
+            listOf(vidlink720, vidlink1080, meow720, meow1080, cineby720, cineby1080, vidrift720),
+            emittedA.take(7)
+        )
+        dispatcherA.flush()
+    }
+
+    @Test
+    fun testSharedCdnProvenanceDisambiguationMeowTvVsVidRiftAndCinebyCineSrcHeaders() {
+        @Suppress("DEPRECATION")
+        fun linkWith(
+            source: String,
+            name: String,
+            url: String,
+            referer: String = "",
+            headers: Map<String, String> = emptyMap(),
+            extractorData: String? = null
+        ) = ExtractorLink(
+            source = source,
+            name = name,
+            url = url,
+            referer = referer,
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8,
+            headers = headers,
+            extractorData = extractorData
+        )
+
+        // 1. Shared hscow.com / fcxmb.com / husvu445bey.com disambiguation via X-StreamPlay-Source and extractorData
+        val meowOnHscow = linkWith(
+            source = "StreamPlay",
+            name = "English [720p]",
+            url = "https://img1.hscow.com/v4/eb/720/index.m3u8",
+            headers = mapOf("X-StreamPlay-Source" to "meowtv")
+        )
+        val vidriftOnHscowByHeader = linkWith(
+            source = "StreamPlay",
+            name = "Titan (English) [720p]",
+            url = "https://img1.hscow.com/v4/eb/720/index.m3u8",
+            headers = mapOf("X-StreamPlay-Source" to "vidrift")
+        )
+        val vidriftOnFcxmbByExtractorData = linkWith(
+            source = "StreamPlay",
+            name = "Titan (Multi) [720p]",
+            url = "https://img1.fcxmb.com/v4/eb/720/index.m3u8",
+            extractorData = "vidrift_lane=titan"
+        )
+        val meowOnHusvuByHeader = linkWith(
+            source = "StreamPlay",
+            name = "Acme [720p]",
+            url = "https://i-arch-400.husvu445bey.com/stream2/index.m3u8",
+            headers = mapOf("X-StreamPlay-Source" to "meowtv")
+        )
+        val vidriftOnHusvuDefault = linkWith(
+            source = "StreamPlay",
+            name = "Lyra [720p]",
+            url = "https://i-arch-400.husvu445bey.com/stream2/index.m3u8"
+        )
+
+        assertEquals(98, StreamLinkOptimizer.getSourcePriorityRank(meowOnHscow))
+        assertEquals(91, StreamLinkOptimizer.getSourcePriorityRank(vidriftOnHscowByHeader))
+        assertEquals(91, StreamLinkOptimizer.getSourcePriorityRank(vidriftOnFcxmbByExtractorData))
+        assertEquals(98, StreamLinkOptimizer.getSourcePriorityRank(meowOnHusvuByHeader))
+        assertEquals(91, StreamLinkOptimizer.getSourcePriorityRank(vidriftOnHusvuDefault))
+
+        // Verify buildDownloadHeaders & getEffectiveReferer honor extractorData = "vidrift_lane=titan" on hscow.com
+        val titanHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = vidriftOnFcxmbByExtractorData.url,
+            referer = "",
+            linkType = ExtractorLinkType.M3U8,
+            source = vidriftOnFcxmbByExtractorData.source,
+            name = vidriftOnFcxmbByExtractorData.name,
+            extractorData = vidriftOnFcxmbByExtractorData.extractorData
+        )
+        assertEquals("https://embed.vidrift.net/", titanHeaders["Referer"])
+        assertEquals(
+            "https://embed.vidrift.net/",
+            StreamLinkOptimizer.getEffectiveReferer(
+                url = vidriftOnFcxmbByExtractorData.url,
+                referer = "",
+                headers = emptyMap(),
+                source = vidriftOnFcxmbByExtractorData.source,
+                name = vidriftOnFcxmbByExtractorData.name,
+                extractorData = vidriftOnFcxmbByExtractorData.extractorData
+            )
+        )
+
+        // Verify MeowTV sets Referer: https://meowtv.ru/ and Accept-Ranges: bytes on hscow.com
+        val meowHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = meowOnHscow.headers,
+            url = meowOnHscow.url,
+            referer = "",
+            linkType = ExtractorLinkType.M3U8,
+            source = meowOnHscow.source,
+            name = meowOnHscow.name
+        )
+        assertEquals("https://meowtv.ru/", meowHeaders["Referer"])
+        assertEquals("bytes", meowHeaders["Accept-Ranges"])
+
+        // 2. Cineby wellsrobertsonkmlt.workers.dev and X-StreamPlay-Source == "cineby"
+        val cinebyWorkersLink = linkWith(
+            source = "Unknown",
+            name = "Dallas [720p]",
+            url = "https://wellsrobertsonkmlt.workers.dev/hls/720/index.m3u8"
+        )
+        assertEquals(95, StreamLinkOptimizer.getSourcePriorityRank(cinebyWorkersLink))
+        val cinebyWorkersHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = emptyMap(),
+            url = cinebyWorkersLink.url,
+            referer = "https://vidy.st/",
+            linkType = ExtractorLinkType.M3U8,
+            source = "Cineby",
+            name = cinebyWorkersLink.name
+        )
+        assertEquals("https://vidy.st/", cinebyWorkersHeaders["Referer"])
+
+        // 3. CineSrc referer preservation: cinesrc.st for CSP4 bright67.online vs cinejoy.pk for wing.st / lightspeed.st
+        val cinesrcCspHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = mapOf("X-StreamPlay-Source" to "cinesrc"),
+            url = "https://nebula.bright67.online/hls2/01/master.m3u8",
+            referer = "https://cinesrc.st/",
+            linkType = ExtractorLinkType.M3U8,
+            source = "CineSrc",
+            name = "CineSrc Nebula [720p]"
+        )
+        assertEquals("https://cinesrc.st/", cinesrcCspHeaders["Referer"])
+
+        val cinesrcWingHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = mapOf("X-StreamPlay-Source" to "cinesrc", "Referer" to "https://cinejoy.pk/"),
+            url = "https://nebula.bright67.online/hls2/01/master.m3u8",
+            referer = "https://cinejoy.pk/",
+            linkType = ExtractorLinkType.M3U8,
+            source = "CineSrc",
+            name = "CineSrc Secret [720p]"
+        )
+        assertEquals("https://cinejoy.pk/", cinesrcWingHeaders["Referer"])
+    }
 }
 
 

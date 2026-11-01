@@ -334,6 +334,7 @@ open class OptimizedDns(
             "finalsignal.top",
             "sun.paleoak.top",
             "e2e.majorplay.net",
+            "wellsrobertsonkmlt.workers.dev",
             "cinesrc.st",
             "nebula.bright67.online",
             "ice.bright67.online",

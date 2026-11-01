@@ -1466,10 +1466,12 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                     priorityBoost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
                                 ) {
                                     try {
+                                        val phase3VideoCallback: (ExtractorLink) -> Unit =
+                                            if (linksFound.get() > 0) ({ _ -> }) else ({ link -> emitLink(link) })
                                         provider.invoke(
                                             res,
                                             { subtitle -> emitSubtitle(subtitle, provider.id) },
-                                            { link -> emitLink(link) },
+                                            phase3VideoCallback,
                                             authToken,
                                             dahmerMoviesAPI
                                         )
