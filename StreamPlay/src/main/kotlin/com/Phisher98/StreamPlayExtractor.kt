@@ -4217,7 +4217,7 @@ object StreamPlayExtractor : StreamPlay() {
         invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== CineSrc (cinesrc.st) SOTA Universal Extractor (Rank 95) ====================
+    // ==================== CineSrc (cinesrc.st) SOTA Universal Extractor (Rank 94) ====================
 
     private const val CINESRC_HOST = "https://cinesrc.st"
     private const val CINESRC_SUBS_API = "https://subs.bright67.online"
@@ -5286,7 +5286,7 @@ object StreamPlayExtractor : StreamPlay() {
                     ?.takeIf { it.isNotBlank() } ?: return@withTimeoutOrNull
 
                 val mediaType = if (isMovie) "movie" else "tv"
-                val encodedTitle = URLEncoder.encode(URLEncoder.encode(title.orEmpty(), "UTF-8"), "UTF-8")
+                val encodedTitle = URLEncoder.encode(title.orEmpty(), "UTF-8").replace("+", "%20")
                 val encodedSeed = URLEncoder.encode(seed, "UTF-8")
                 val yearStr = year?.toString().orEmpty()
 
@@ -5510,7 +5510,9 @@ object StreamPlayExtractor : StreamPlay() {
      * variants inside one ladder and is replaced by the host's measured bytes before anything is
      * downloaded or shown as measured truth.
      */
-    private const val HLS_SIZE_HINT_SECONDS = 1440.0
+    internal const val HLS_SIZE_HINT_SECONDS = 1440.0
+    internal const val HLS_TV_SIZE_HINT_SECONDS = 2520.0
+    internal const val HLS_MOVIE_SIZE_HINT_SECONDS = 6000.0
 
     /**
      * True when the master declares an external audio rendition for at least one variant.
@@ -5579,13 +5581,15 @@ object StreamPlayExtractor : StreamPlay() {
      */
     internal fun parseHlsMasterVariants(
         masterUrl: String,
-        manifestText: String
+        manifestText: String,
+        durationHintSeconds: Double = HLS_SIZE_HINT_SECONDS
     ): List<HlsMasterVariant> {
         if (!manifestText.contains("#EXT-X-STREAM-INF", ignoreCase = true)) return emptyList()
         val hasDemuxedAudio = hasDemuxedAudioRendition(manifestText)
         val lines = manifestText.lines()
         val variants = mutableListOf<HlsMasterVariant>()
         val baseUrl = masterUrl.substringBefore('#')
+        val effectiveDurationSec = if (durationHintSeconds > 0.0) durationHintSeconds else HLS_SIZE_HINT_SECONDS
 
         var i = 0
         while (i < lines.size) {
@@ -5625,7 +5629,7 @@ object StreamPlayExtractor : StreamPlay() {
                     // lane still carries a positive tag; the previous 25 MB floor overstated every
                     // small rendition and made the tag look measured when it was not.
                     val estimatedMb = bw?.takeIf { it in 100_000L..80_000_000L }?.let { bps ->
-                        val megabytes = (bps / 8.0) * HLS_SIZE_HINT_SECONDS / (1024.0 * 1024.0)
+                        val megabytes = (bps / 8.0) * effectiveDurationSec / (1024.0 * 1024.0)
                         maxOf(1, megabytes.toInt())
                     }
                     variants.add(
@@ -5675,6 +5679,7 @@ object StreamPlayExtractor : StreamPlay() {
         includeSizeTag: Boolean = true,
         requireManifestVerification: Boolean = false,
         extractorDataTag: String? = null,
+        durationHintSeconds: Double = HLS_SIZE_HINT_SECONDS,
         callback: (ExtractorLink) -> Unit
     ) {
         val cleanFilename = url.substringBefore('#').substringBefore('?').substringAfterLast('/')
@@ -5690,7 +5695,7 @@ object StreamPlayExtractor : StreamPlay() {
                 val manifestText = cancellableGetText(url, headers = reqHeaders, timeoutSec = fetchTimeoutSec)
                 val isValidM3u8 = !manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)
                 val parsedVariants = if (!manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)) {
-                    parseHlsMasterVariants(url, manifestText)
+                    parseHlsMasterVariants(url, manifestText, durationHintSeconds = durationHintSeconds)
                 } else {
                     emptyList()
                 }
@@ -6079,7 +6084,7 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         invokeMeowTV(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
-    // ==================== VidRift SOTA Movie/TV Multi-Lane Extractor (embed.vidrift.net, Rank 98) ====================
+    // ==================== VidRift SOTA Movie/TV Multi-Lane Extractor (embed.vidrift.net, Rank 91) ====================
 
     private const val VIDRIFT_HOST = "https://embed.vidrift.net"
     private const val VIDRIFT_PARENT_REFERER = "https://vidrift.net/"
@@ -6442,8 +6447,9 @@ object StreamPlayExtractor : StreamPlay() {
      *
      * When `stream.isDirectSingleQuality` is `true` (e.g. `Titan` viewer-direct `720p` muxed H.264
      * MPEG-TS streams), the URL is probed with a bounded 512-byte `#EXTM3U` prefix check and emitted
-     * with its verified quality and explicit `vidrift_lane=<lane>` provenance tag without downloading
-     * the full 358 KB `#EXTINF` segment list.
+     * with its verified quality, nominal size tag (`[245 MB]` for TV / `[580 MB]` for Movies), and
+     * explicit `vidrift_lane=<lane>` provenance tag without downloading the full 358 KB `#EXTINF`
+     * segment list.
      */
     private suspend fun emitVidRiftResolvedStream(
         stream: VidRiftResolvedStream,
@@ -6451,6 +6457,7 @@ object StreamPlayExtractor : StreamPlay() {
         baseStreamHeaders: Map<String, String>,
         manifestTimeoutMs: Long = 4_500L,
         fetchTimeoutSec: Long = 4L,
+        durationHintSeconds: Double = HLS_SIZE_HINT_SECONDS,
         callback: (ExtractorLink) -> Unit
     ) {
         val baseWithSource = if (baseStreamHeaders["X-StreamPlay-Source"].isNullOrBlank()) {
@@ -6475,9 +6482,10 @@ object StreamPlayExtractor : StreamPlay() {
             }
             if (!prefix.contains("#EXT-X-STREAM-INF", ignoreCase = true)) {
                 val qTag = vidsrcQualityTag(stream.quality)
+                val nominalLeafMb = if (durationHintSeconds >= HLS_MOVIE_SIZE_HINT_SECONDS) 580 else 245
                 val leafLink = newExtractorLink(
                     source = "VidRift",
-                    name = "${stream.name} [$qTag]",
+                    name = "${stream.name} [$qTag] [$nominalLeafMb MB]",
                     url = stream.url,
                     type = ExtractorLinkType.M3U8
                 ) {
@@ -6512,6 +6520,7 @@ object StreamPlayExtractor : StreamPlay() {
             includeSizeTag = true,
             requireManifestVerification = true,
             extractorDataTag = laneTag,
+            durationHintSeconds = durationHintSeconds,
             callback = callback
         )
     }
@@ -6519,7 +6528,7 @@ object StreamPlayExtractor : StreamPlay() {
     internal const val VIDRIFT_MAX_720P_SIZE_BYTES = 650L * 1024L * 1024L
 
     internal fun isVidRiftOversized720p(link: ExtractorLink): Boolean {
-        val sizeBytes = StreamLinkOptimizer.parseSizeBytes(link.name) ?: return false
+        val sizeBytes = StreamLinkOptimizer.parseSizeBytes(link.name)?.takeIf { it > 0L } ?: return true
         return sizeBytes > VIDRIFT_MAX_720P_SIZE_BYTES
     }
 
@@ -6532,9 +6541,9 @@ object StreamPlayExtractor : StreamPlay() {
      * Architecture & Oversized-File Guard:
      * 1. **Strict 720p-Only Backup Policy**:
      *    VidRift is isolated as a Rank 91 720p-only backup behind VidLink (100), MeowTV (98),
-     *    Cineby (95), and CineSrc (94). Only verified `720p` variants at or below `650 MB`
-     *    (`isEligibleVidRift720BackupLink`) are emitted; all `1080p`, `480p`, `360p`, `4K`, `[Auto]`,
-     *    and oversized (>650 MB) `720p` streams are suppressed.
+     *    Cineby (95), and CineSrc (94). Only verified `720p` variants with a known size at or below
+     *    `650 MB` (`isEligibleVidRift720BackupLink`) are emitted; all `1080p`, `480p`, `360p`, `4K`,
+     *    `[Auto]`, unsized, and oversized (>650 MB) `720p` streams are suppressed.
      * 2. **Wave 1A — Instant Inline Owned CDN H.264 Lanes (`Direct`, `Vexon`, `Evion`)**:
      *    Resolves `selfhostUrl`, `vexonUrl` (Movie Cloudflare R2 CDN), and `evionUrl` (TV Cloudflare R2 CDN)
      *    directly from `embedMeta` with `#EXTM3U` verification, emitting in ~0.39s–1.5s.
@@ -6569,6 +6578,7 @@ object StreamPlayExtractor : StreamPlay() {
             val id = effectiveTmdbId ?: return
             val isMovie = season == null || (season == 0 && episode == null)
             if (!isMovie && episode == null) return
+            val vidRiftDurationHintSeconds = if (isMovie) HLS_MOVIE_SIZE_HINT_SECONDS else HLS_TV_SIZE_HINT_SECONDS
 
             withTimeoutOrNull(22_000L) {
                 val embedPath = if (isMovie) "/embed/movie/$id" else "/embed/tv/$id/$season/$episode"
@@ -6671,7 +6681,8 @@ object StreamPlayExtractor : StreamPlay() {
                                     embedUrl = embedUrl,
                                     baseStreamHeaders = streamHeaders,
                                     manifestTimeoutMs = 4_500L,
-                                    fetchTimeoutSec = 4L
+                                    fetchTimeoutSec = 4L,
+                                    durationHintSeconds = vidRiftDurationHintSeconds
                                 ) {
                                     if (isEligibleVidRift720BackupLink(it)) {
                                         collected.add(it)
@@ -6732,6 +6743,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                         fetchTimeoutSec = 3L,
                                                         requireManifestVerification = true,
                                                         extractorDataTag = "vidrift_lane=direct",
+                                                        durationHintSeconds = vidRiftDurationHintSeconds,
                                                         callback = {
                                                             if (isEligibleVidRift720BackupLink(it)) {
                                                                 wave1ACollected.add(it)
@@ -6758,6 +6770,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                         fetchTimeoutSec = 3L,
                                                         requireManifestVerification = true,
                                                         extractorDataTag = "vidrift_lane=vexon",
+                                                        durationHintSeconds = vidRiftDurationHintSeconds,
                                                         callback = {
                                                             if (isEligibleVidRift720BackupLink(it)) {
                                                                 wave1ACollected.add(it)
@@ -6784,6 +6797,7 @@ object StreamPlayExtractor : StreamPlay() {
                                                         fetchTimeoutSec = 3L,
                                                         requireManifestVerification = true,
                                                         extractorDataTag = "vidrift_lane=evion",
+                                                        durationHintSeconds = vidRiftDurationHintSeconds,
                                                         callback = {
                                                             if (isEligibleVidRift720BackupLink(it)) {
                                                                 wave1ACollected.add(it)
@@ -6871,9 +6885,10 @@ object StreamPlayExtractor : StreamPlay() {
                     primaryWatcher.await()
 
                     // 4. Wave 3: Last-resort 720p-only fallback to Orion / BigBang when Wave 1 and Wave 2
-                    //    yielded zero non-dub verified H.264 720p streams. Misleading video-only `[89 MB]`
-                    //    size tags are omitted (`includeSizeTag = false`) so fallback streams
-                    //    cannot poison `DownloadSelectionPolicy`.
+                    //    yielded zero non-dub verified H.264 720p streams. Duration-accurate size tags are
+                    //    preserved (`includeSizeTag = true`) so every fallback candidate is checked against
+                    //    the <= 650 MB backup cap while `getVidRiftHealthTier` (-30/-35) keeps them strictly
+                    //    below all healthy H.264 lanes.
                     if (nonDubHealthyLinksEmitted.get() == 0) {
                         val orderedOrions = if (healthyLinksEmitted.get() > 0) {
                             orderVidRiftOrionStreams(meta.orionStreams).filterNot {
@@ -6903,9 +6918,10 @@ object StreamPlayExtractor : StreamPlay() {
                                                     headers = streamHeaders,
                                                     manifestTimeoutMs = 4_500L,
                                                     fetchTimeoutSec = 4L,
-                                                    includeSizeTag = false,
+                                                    includeSizeTag = true,
                                                     requireManifestVerification = true,
-                                                    extractorDataTag = "vidrift_lane=orion"
+                                                    extractorDataTag = "vidrift_lane=orion",
+                                                    durationHintSeconds = vidRiftDurationHintSeconds
                                                 ) {
                                                     if (isEligibleVidRift720BackupLink(it)) {
                                                         emittedFromCandidate++
@@ -6932,9 +6948,10 @@ object StreamPlayExtractor : StreamPlay() {
                                                 headers = streamHeaders,
                                                 manifestTimeoutMs = 4_500L,
                                                 fetchTimeoutSec = 4L,
-                                                includeSizeTag = false,
+                                                includeSizeTag = true,
                                                 requireManifestVerification = true,
-                                                extractorDataTag = "vidrift_lane=bigbang"
+                                                extractorDataTag = "vidrift_lane=bigbang",
+                                                durationHintSeconds = vidRiftDurationHintSeconds
                                             ) {
                                                 if (isEligibleVidRift720BackupLink(it)) {
                                                     callback(it)
