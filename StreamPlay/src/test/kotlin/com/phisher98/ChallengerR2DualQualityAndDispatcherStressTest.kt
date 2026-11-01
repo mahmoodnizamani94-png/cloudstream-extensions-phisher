@@ -163,17 +163,18 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
 
     @Test
     fun testMonotonicProviderOrderingWithMaximalAdversarialTiebreakers() {
-        // The v26 registry has ten ranked sources; every other label scores rank 0, so
+        // The v27 registry has ten ranked sources; every other label scores rank 0, so
         // monotonicity is asserted across the full distinct-rank chain:
-        // VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > MeowTV 91 >
+        // VidLink 100 > MeowTV 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > VidRift 91 >
         // AniZone 89 > AnimePahe 88 > Animex 87.
         val providersInOrder = listOf(
             "VidLink" to 100,
+            "MeowTV" to 98,
             "Cineby" to 95,
             "CineSrc" to 94,
             "VidFast" to 93,
             "MegaPlay" to 92,
-            "MeowTV" to 91,
+            "VidRift" to 91,
             "AniZone" to 89,
             "AnimePahe" to 88,
             "Animex" to 87
@@ -308,35 +309,34 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             subtitleGraceMs = 150L,
             topSourceGraceMs = 150L,
             top720GraceMs = 1000L,
-            activeTopRanks = setOf(100, 95, 94, 93, 92, 91, 89, 88, 87),
+            activeTopRanks = setOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87),
             isRankInFlight = { inFlightRanks.contains(it) }
         )
 
         dispatcher.onSubtitleReceived()
 
-        // MeowTV (rank 91) emits 1080p at t=0ms, while higher ranks (VidSrc 95, VidFast 94)
-        // are still in flight.
-        val meowtv1080 = createLink("MeowTV", "MeowTV [1080p]", "https://meowtv.ru/1080.m3u8", Qualities.P1080.value)
-        // MegaPlay (rank 92) arrives later with 720p and must preempt the held 1080p.
-        val megaplay720 = createLink("MegaPlay", "MegaPlay [720p]", "https://fetch.nexabloom.top/720.m3u8", Qualities.P720.value)
+        // CineSrc (rank 94) emits 1080p at t=0ms, while higher rank (Cineby 95) is still in flight.
+        val cinesrc1080 = createLink("CineSrc", "CineSrc [1080p]", "https://nebula.bright67.online/1080.m3u8", Qualities.P1080.value)
+        // Cineby (rank 95) arrives later with 720p and must preempt the held 1080p.
+        val cineby720 = createLink("Cineby", "Cineby [720p]", "https://moon.goldenkite.top/720.m3u8", Qualities.P720.value)
 
-        dispatcher.onLinkAccepted(meowtv1080)
+        dispatcher.onLinkAccepted(cinesrc1080)
         delay(50L)
-        // MeowTV 1080p must be held because higher-ranked candidates (ranks 95/94) are in flight.
-        assertTrue("MeowTV 1080p must be held waiting for higher-ranked candidates", emitted.isEmpty())
+        // CineSrc 1080p must be held because higher-ranked candidate (rank 95) is in flight.
+        assertTrue("CineSrc 1080p must be held waiting for higher-ranked candidates", emitted.isEmpty())
 
-        // MegaPlay 720p (rank 92) arrives at t=60ms
-        dispatcher.onLinkAccepted(megaplay720)
+        // Cineby 720p (rank 95) arrives at t=60ms
+        dispatcher.onLinkAccepted(cineby720)
 
-        // The higher-ranked in-flight sources finish with no 720p of their own
+        // The higher-ranked in-flight sources finish
         inFlightRanks.remove(95)
         inFlightRanks.remove(94)
         dispatcher.markRankCompleted(95)
         dispatcher.markRankCompleted(94)
 
         assertEquals("Both streams must be emitted", 2, emitted.size)
-        assertEquals("MegaPlay 720p MUST be emitted BEFORE MeowTV 1080p", megaplay720, emitted[0])
-        assertEquals("MeowTV 1080p must be emitted AFTER the higher-ranked 720p", meowtv1080, emitted[1])
+        assertEquals("Cineby 720p MUST be emitted BEFORE CineSrc 1080p", cineby720, emitted[0])
+        assertEquals("CineSrc 1080p must be emitted AFTER the higher-ranked 720p", cinesrc1080, emitted[1])
     }
 
     @Test

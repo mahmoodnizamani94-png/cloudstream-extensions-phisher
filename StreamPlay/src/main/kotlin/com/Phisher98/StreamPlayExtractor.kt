@@ -3882,7 +3882,7 @@ object StreamPlayExtractor : StreamPlay() {
                 suspend fun fetchStreamForToken(token: String): VidlinkStream? {
                     val urls = buildApiUrls(token)
                     for (apiUrl in urls) {
-                        val epResponse = retryTransient(2, 250L) {
+                        val epResponse = retryTransient(3, 300L) {
                             val resp = suspendCancellable {
                                 runCatching { app.get(apiUrl, headers = headers, timeout = 12L) }.getOrNull()
                             }
@@ -3966,8 +3966,19 @@ object StreamPlayExtractor : StreamPlay() {
                     result["User-Agent"] = cronetUserAgent
                     result["Accept"] = "*/*"
                     result["Accept-Ranges"] = "bytes"
+                    result["X-StreamPlay-Source"] = "vidlink"
                     return result
                 }
+
+                val vidlinkSubtitleHeaders = mapOf(
+                    "User-Agent" to cronetUserAgent,
+                    "Accept" to "*/*",
+                    "X-StreamPlay-Source" to "vidlink"
+                )
+                val vidlinkDurationHintSeconds = resolveDurationHintSeconds(
+                    isMovie = season == null || season == 0,
+                    isAnime = isAnime
+                )
 
                 // 1. Parse captions / subtitles
                 var hasCaptions = false
@@ -3986,7 +3997,11 @@ object StreamPlayExtractor : StreamPlay() {
                         if (lang.contains("en", ignoreCase = true)) {
                             hasEnglishCaptions = true
                         }
-                        subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+                        subtitleCallback?.invoke(
+                            newSubtitleFile(lang, subUrl) {
+                                this.headers = vidlinkSubtitleHeaders
+                            }
+                        )
                     }
                 }
                 val captionMeta = if (hasCaptions) "captions=sub" else null
@@ -3994,7 +4009,84 @@ object StreamPlayExtractor : StreamPlay() {
                 val hlsBaseName = "Vidlink HLS$animeTag"
                 val directBaseName = "Vidlink$animeTag"
 
-                // 2. Parse playlist (HLS m3u8)
+                // 2. Emit direct MP4 stream qualities FIRST (prioritized 720p > 1080p > 480p)
+                //    `stream.qualities` is already present in the initial `/api/b/...` JSON response with
+                //    authentic byte counts, so emitting it before the secondary HLS manifest network fetch
+                //    delivers 720p/1080p VidLink links in a single HTTP round-trip (~400ms-800ms) and
+                //    prevents slow/mobile HLS manifest fetches from ever delaying VidLink's #1 slot.
+                val directQualitiesLinks = mutableListOf<ExtractorLink>()
+                stream.qualities?.entries?.forEach { (qualityKey, qualityObj) ->
+                    val videoUrl = qualityObj.url?.trim()
+                    if (!videoUrl.isNullOrBlank() && videoUrl.startsWith("http", ignoreCase = true)) {
+                        val qInt = qualityKey.replace(Regex("[^0-9]"), "").toIntOrNull()
+                        val qual = when (qInt) {
+                            2160 -> Qualities.P2160.value
+                            1440 -> Qualities.P1440.value
+                            1080 -> Qualities.P1080.value
+                            720 -> Qualities.P720.value
+                            480 -> Qualities.P480.value
+                            360 -> Qualities.P360.value
+                            else -> StreamLinkOptimizer.extractQualityFromText(qualityKey).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
+                        }
+                        val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
+                        val qualHeaders = sanitizeVidlinkHeaders(qualityObj.headers)
+
+                        val cleanVideoUrl = if (videoUrl.contains("headers=")) {
+                            videoUrl.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
+                        } else {
+                            videoUrl
+                        }
+                        if (cleanVideoUrl.startsWith("http", ignoreCase = true)) {
+                            val effectiveQuality = when {
+                                qualityKey.equals("720", ignoreCase = true) || qualityKey.equals("720p", ignoreCase = true) -> "720p"
+                                qualityKey.equals("1080", ignoreCase = true) || qualityKey.equals("1080p", ignoreCase = true) -> "1080p"
+                                qualityKey.equals("480", ignoreCase = true) || qualityKey.equals("480p", ignoreCase = true) -> "480p"
+                                qualityKey.equals("360", ignoreCase = true) || qualityKey.equals("360p", ignoreCase = true) -> "360p"
+                                qualityKey.equals("2160", ignoreCase = true) || qualityKey.equals("4k", ignoreCase = true) -> "4K"
+                                !qualityKey.isNullOrBlank() -> if (qualityKey.endsWith("p", ignoreCase = true)) qualityKey else "${qualityKey}p"
+                                else -> "Auto"
+                            }
+                            // Authentic per-quality size from the VidLink API, threaded into the
+                            // link name in the exact dialect the app's download ranker parses —
+                            // the host elects the lowest-size candidate among equal qualities
+                            // from this label, so it must never be fabricated or rounded away.
+                            val sizeLabel = StreamLinkOptimizer.normalizeSizeLabel(qualityObj.size)
+                            val displayName = if (sizeLabel != null) {
+                                "$directBaseName $effectiveQuality [$sizeLabel]"
+                            } else {
+                                "$directBaseName $effectiveQuality"
+                            }
+                            directQualitiesLinks.add(
+                                newExtractorLink(
+                                    "Vidlink",
+                                    displayName,
+                                    url = cleanVideoUrl,
+                                    type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = ""
+                                    this.quality = qual
+                                    this.headers = qualHeaders
+                                    this.extractorData = captionMeta
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (directQualitiesLinks.isNotEmpty()) {
+                    emitTopTierDualQualityStreamLinks(
+                        source = "Vidlink",
+                        baseName = directBaseName,
+                        url = directQualitiesLinks.first().url,
+                        referer = directQualitiesLinks.first().referer,
+                        headers = directQualitiesLinks.first().headers,
+                        streamType = directQualitiesLinks.first().type,
+                        generatedLinks = directQualitiesLinks,
+                        callback = callback
+                    )
+                }
+
+                // 3. Parse playlist (HLS m3u8)
                 val m3u8 = stream.playlist?.trim()
                 if (!m3u8.isNullOrBlank()) {
                     var referer = ""
@@ -4034,7 +4126,11 @@ object StreamPlayExtractor : StreamPlay() {
                     val generatedLinks = withTimeoutOrNull(15000L) {
                         val manifestText = cancellableGetText(cleanM3u8Url, headers = hlsHeaders, timeoutSec = 8L)
                         val parsedVariants = if (!manifestText.isNullOrBlank()) {
-                            parseHlsMasterVariants(cleanM3u8Url, manifestText)
+                            parseHlsMasterVariants(
+                                cleanM3u8Url,
+                                manifestText,
+                                durationHintSeconds = vidlinkDurationHintSeconds
+                            )
                         } else {
                             emptyList()
                         }
@@ -4111,79 +4207,6 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-                // 3. Parse direct MP4 stream qualities prioritized by SOTA quality hierarchy (720p > 1080p > 480p)
-                val directQualitiesLinks = mutableListOf<ExtractorLink>()
-                stream.qualities?.entries?.forEach { (qualityKey, qualityObj) ->
-                    val videoUrl = qualityObj.url?.trim()
-                    if (!videoUrl.isNullOrBlank() && videoUrl.startsWith("http", ignoreCase = true)) {
-                        val qInt = qualityKey.replace(Regex("[^0-9]"), "").toIntOrNull()
-                        val qual = when (qInt) {
-                            2160 -> Qualities.P2160.value
-                            1440 -> Qualities.P1440.value
-                            1080 -> Qualities.P1080.value
-                            720 -> Qualities.P720.value
-                            480 -> Qualities.P480.value
-                            360 -> Qualities.P360.value
-                            else -> StreamLinkOptimizer.extractQualityFromText(qualityKey).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
-                        }
-                        val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true)
-                        val qualHeaders = sanitizeVidlinkHeaders(qualityObj.headers)
-
-                        val cleanVideoUrl = if (videoUrl.contains("headers=")) {
-                            videoUrl.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
-                        } else {
-                            videoUrl
-                        }
-                        if (cleanVideoUrl.startsWith("http", ignoreCase = true)) {
-                            val effectiveQuality = when {
-                                qualityKey.equals("720", ignoreCase = true) || qualityKey.equals("720p", ignoreCase = true) -> "720p"
-                                qualityKey.equals("1080", ignoreCase = true) || qualityKey.equals("1080p", ignoreCase = true) -> "1080p"
-                                qualityKey.equals("480", ignoreCase = true) || qualityKey.equals("480p", ignoreCase = true) -> "480p"
-                                qualityKey.equals("360", ignoreCase = true) || qualityKey.equals("360p", ignoreCase = true) -> "360p"
-                                qualityKey.equals("2160", ignoreCase = true) || qualityKey.equals("4k", ignoreCase = true) -> "4K"
-                                !qualityKey.isNullOrBlank() -> if (qualityKey.endsWith("p", ignoreCase = true)) qualityKey else "${qualityKey}p"
-                                else -> "Auto"
-                            }
-                            // Authentic per-quality size from the VidLink API, threaded into the
-                            // link name in the exact dialect the app's download ranker parses —
-                            // the host elects the lowest-size candidate among equal qualities
-                            // from this label, so it must never be fabricated or rounded away.
-                            val sizeLabel = StreamLinkOptimizer.normalizeSizeLabel(qualityObj.size)
-                            val displayName = if (sizeLabel != null) {
-                                "$directBaseName $effectiveQuality [$sizeLabel]"
-                            } else {
-                                "$directBaseName $effectiveQuality"
-                            }
-                            directQualitiesLinks.add(
-                                newExtractorLink(
-                                    "Vidlink",
-                                    displayName,
-                                    url = cleanVideoUrl,
-                                    type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = ""
-                                    this.quality = qual
-                                    this.headers = qualHeaders
-                                    this.extractorData = captionMeta
-                                }
-                            )
-                        }
-                    }
-                }
-
-                if (directQualitiesLinks.isNotEmpty()) {
-                    emitTopTierDualQualityStreamLinks(
-                        source = "Vidlink",
-                        baseName = directBaseName,
-                        url = directQualitiesLinks.first().url,
-                        referer = directQualitiesLinks.first().referer,
-                        headers = directQualitiesLinks.first().headers,
-                        streamType = directQualitiesLinks.first().type,
-                        generatedLinks = directQualitiesLinks,
-                        callback = callback
-                    )
-                }
-
                 // For non-anime Movie/TV streams without native English captions, harvest English
                 // subtitles from WyZIESUB and SubtitleAPI. Never do this on anime: disguising
                 // generic OpenSubtitles/Wyzie tracks under `vidlink` provenance (rank 100) crowds
@@ -4213,7 +4236,7 @@ object StreamPlayExtractor : StreamPlay() {
         invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== CineSrc (cinesrc.st) SOTA Universal Extractor (Rank 95) ====================
+    // ==================== CineSrc (cinesrc.st) SOTA Universal Extractor (Rank 94) ====================
 
     private const val CINESRC_HOST = "https://cinesrc.st"
     private const val CINESRC_SUBS_API = "https://subs.bright67.online"
@@ -4598,6 +4621,126 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
+    private val CINESRC_WING_SERVERS = listOf("secret", "Nebula")
+
+    /**
+     * Parses a decrypted `dec-cinejoy` (`api.wing.st`) response envelope into verified stream entries and captions.
+     * Supports both the current `result.data.stream` (`JSONObject` or `JSONArray` of `playlist` + `captions`)
+     * schema and legacy `result.sources` schema.
+     */
+    internal fun cinesrcParseWingDecryptedResult(rawJson: String): CineSrcDecryptedPayload? {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
+        val target = root.optJSONObject("result") ?: root
+        val dataNode = target.optJSONObject("data") ?: target
+
+        val entries = mutableListOf<CineSrcStreamEntry>()
+        val subtitles = mutableListOf<Pair<String, String>>()
+
+        fun parseCaptionsArray(arr: JSONArray?, checkCorsFlag: Boolean) {
+            if (arr == null) return
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (checkCorsFlag && obj.optBoolean("hasCorsRestrictions", false)) continue
+                if (obj.optString("kind").equals("thumbnails", ignoreCase = true)) continue
+                val subUrl = obj.optString("url").ifBlank { obj.optString("file") }.trim()
+                if (!subUrl.startsWith("http", ignoreCase = true) || subUrl.contains("thumbnails", ignoreCase = true)) continue
+                val lang = cleanSubtitleLabel(
+                    obj.optString("language").ifBlank {
+                        obj.optString("lang").ifBlank {
+                            obj.optString("label").ifBlank { "English" }
+                        }
+                    }
+                )
+                subtitles.add(lang to subUrl)
+            }
+        }
+
+        fun parseStreamObject(streamObj: JSONObject) {
+            val playlist = streamObj.optString("playlist").ifBlank {
+                streamObj.optString("file").ifBlank { streamObj.optString("url") }
+            }.trim()
+            if (playlist.startsWith("http", ignoreCase = true)) {
+                val qLabel = streamObj.optString("quality").ifBlank { streamObj.optString("label") }
+                entries.add(
+                    CineSrcStreamEntry(
+                        url = playlist,
+                        quality = cinebyQualityOf(qLabel),
+                        sizeMb = cinesrcPayloadSizeMb(streamObj)
+                    )
+                )
+            }
+            streamObj.optJSONObject("qualities")?.let { qObj ->
+                val keys = qObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val qEntry = qObj.optJSONObject(key)
+                    val qUrl = qEntry?.optString("url")?.ifBlank { qEntry.optString("file") }?.trim()
+                        ?: qObj.optString(key).trim()
+                    if (qUrl.startsWith("http", ignoreCase = true)) {
+                        entries.add(
+                            CineSrcStreamEntry(
+                                url = qUrl,
+                                quality = cinebyQualityOf(key),
+                                sizeMb = qEntry?.let { cinesrcPayloadSizeMb(it) }
+                            )
+                        )
+                    }
+                }
+            }
+            val streamCaps = streamObj.optJSONArray("captions")
+                ?: streamObj.optJSONArray("subtitles")
+                ?: streamObj.optJSONArray("tracks")
+            parseCaptionsArray(streamCaps, checkCorsFlag = true)
+        }
+
+        // 1. Current schema: result.data.stream (JSONObject or JSONArray)
+        val streamNode = dataNode.opt("stream") ?: target.opt("stream")
+        when (streamNode) {
+            is JSONObject -> parseStreamObject(streamNode)
+            is JSONArray -> {
+                for (i in 0 until streamNode.length()) {
+                    val elem = streamNode.optJSONObject(i) ?: continue
+                    parseStreamObject(elem)
+                }
+            }
+        }
+
+        // 2. Legacy schema: result.sources / data.captions / result.captions / result.tracks
+        val sourcesArr = dataNode.optJSONArray("sources") ?: target.optJSONArray("sources")
+        sourcesArr?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val streamUrl = obj.optString("file").ifBlank { obj.optString("url") }.trim()
+                if (!streamUrl.startsWith("http", ignoreCase = true)) continue
+                val qLabel = obj.optString("quality").ifBlank { obj.optString("label") }
+                entries.add(
+                    CineSrcStreamEntry(
+                        url = streamUrl,
+                        quality = cinebyQualityOf(qLabel),
+                        sizeMb = cinesrcPayloadSizeMb(obj)
+                    )
+                )
+            }
+        }
+        val dataCaps = dataNode.optJSONArray("captions")
+            ?: dataNode.optJSONArray("subtitles")
+            ?: dataNode.optJSONArray("tracks")
+        parseCaptionsArray(dataCaps, checkCorsFlag = true)
+
+        if (dataNode !== target) {
+            val rootCaps = target.optJSONArray("captions")
+                ?: target.optJSONArray("subtitles")
+                ?: target.optJSONArray("tracks")
+            parseCaptionsArray(rootCaps, checkCorsFlag = false)
+        }
+
+        if (entries.isEmpty() && subtitles.isEmpty()) return null
+        return CineSrcDecryptedPayload(
+            entries = entries.distinctBy { it.url },
+            subtitles = subtitles.distinctBy { it.second }
+        )
+    }
+
     private suspend fun cinesrcAcquireSessionToken(
         embedUrl: String,
         xCsQ: String,
@@ -4689,15 +4832,14 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * SOTA Universal Extractor for CineSrc (`cinesrc.st`, Rank 95).
+     * SOTA Universal Extractor for CineSrc (`cinesrc.st`, Rank 94).
      *
-     * Replaces the decommissioned `vidsrc.pm` provider with a dual-engine, live-verified
-     * universal source supporting Movies, TV Series, and Anime:
+     * Dual-engine, live-verified universal source supporting Movies, TV Series, and Anime:
      *  1. `cinesrc.st` native CSP4 + SHA-256 Proof-of-Work engine fanning out across `wave`,
      *     `nebula`, and `surge` (`ice.bright67.online` discrete 720p/1080p VOD HLS +
      *     `nebula.bright67.online` multi-variant HLS ladders).
-     *  2. `api.wing.st` (`Nebula`) zero-PoW fast-lane (`enc-cinejoy` -> `/g` binary POST ->
-     *     `dec-cinejoy` -> `nebula.bright67.online` master HLS).
+     *  2. `api.wing.st` (`secret` + `Nebula`) zero-PoW fast-lane (`enc-cinejoy` -> `/g` binary POST ->
+     *     `dec-cinejoy` -> `lightspeed.st` / `nebula.bright67.online` master HLS + captions).
      *  3. `subs.bright67.online/search` human-verified multi-language `.srt` subtitle tracks.
      */
     suspend fun invokeCineSrc(
@@ -4719,13 +4861,15 @@ object StreamPlayExtractor : StreamPlay() {
             val id = effectiveTmdbId ?: return
             val isMovie = season == null || (season == 0 && episode == null)
             if (!isMovie && episode == null) return
+            val durationHintSeconds = resolveDurationHintSeconds(isMovie, isAnime)
 
             withTimeoutOrNull(22_000L) {
                 val baseHeaders = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Origin" to CINESRC_HOST,
                     "Referer" to "$CINESRC_HOST/",
-                    "Accept" to "*/*"
+                    "Accept" to "*/*",
+                    "X-StreamPlay-Source" to "cinesrc"
                 )
                 val emittedTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
                 val emittedLangCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
@@ -4755,7 +4899,11 @@ object StreamPlayExtractor : StreamPlay() {
                                 val count = emittedLangCounts.getOrDefault(lang.lowercase(Locale.ROOT), 0)
                                 if (count < 2 && emittedTracks.add(subUrl)) {
                                     emittedLangCounts[lang.lowercase(Locale.ROOT)] = count + 1
-                                    subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+                                    subtitleCallback?.invoke(
+                                        newSubtitleFile(lang, subUrl) {
+                                            this.headers = baseHeaders
+                                        }
+                                    )
                                 }
                             }
                         } catch (e: Exception) {
@@ -4763,75 +4911,96 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
 
-                    // 2. Concurrent zero-PoW Nebula fast-lane via api.wing.st
-                    val wingJob = async {
-                        try {
-                            val wingType = if (isMovie) "movie" else "series"
-                            val wingUrl = buildString {
-                                append("$CINESRC_WING_API/?title=").append(URLEncoder.encode(title.orEmpty(), "UTF-8"))
-                                append("&type=").append(wingType)
-                                append("&year=").append(year?.toString().orEmpty())
-                                append("&imdb=").append(URLEncoder.encode(imdbId.orEmpty(), "UTF-8"))
-                                append("&tmdb=").append(id)
-                                if (!isMovie) {
-                                    append("&season=").append(season)
-                                    append("&episode=").append(episode)
+                    // 2. Concurrent zero-PoW Secret + Nebula fast-lanes via api.wing.st
+                    val wingJobs = CINESRC_WING_SERVERS.map { wingServer ->
+                        async {
+                            try {
+                                val wingType = if (isMovie) "movie" else "series"
+                                val wingUrl = buildString {
+                                    append("$CINESRC_WING_API/?title=").append(URLEncoder.encode(title.orEmpty(), "UTF-8"))
+                                    append("&type=").append(wingType)
+                                    append("&year=").append(year?.toString().orEmpty())
+                                    append("&imdb=").append(URLEncoder.encode(imdbId.orEmpty(), "UTF-8"))
+                                    append("&tmdb=").append(id)
+                                    if (!isMovie) {
+                                        append("&season=").append(season)
+                                        append("&episode=").append(episode)
+                                    }
+                                    append("&server=").append(wingServer)
                                 }
-                                append("&server=Nebula")
-                            }
-                            val encRaw = encDecGet(
-                                "$ENC_DEC_API/enc-cinejoy?url=${URLEncoder.encode(wingUrl, "UTF-8")}",
-                                headers = mapOf("User-Agent" to USER_AGENT),
-                                timeoutSec = 4L
-                            ) ?: return@async
-                            val encRes = runCatching { JSONObject(encRaw).optJSONObject("result") }.getOrNull() ?: return@async
-                            val b64Data = encRes.optString("data").takeIf { it.isNotBlank() } ?: return@async
-                            val wingState = encRes.optString("state").takeIf { it.isNotBlank() } ?: return@async
+                                val encRaw = encDecGet(
+                                    "$ENC_DEC_API/enc-cinejoy?url=${URLEncoder.encode(wingUrl, "UTF-8")}",
+                                    headers = mapOf("User-Agent" to USER_AGENT),
+                                    timeoutSec = 4L
+                                ) ?: return@async
+                                val encRes = runCatching { JSONObject(encRaw).optJSONObject("result") }.getOrNull() ?: return@async
+                                val b64Data = encRes.optString("data").takeIf { it.isNotBlank() } ?: return@async
+                                val wingState = encRes.optString("state").takeIf { it.isNotBlank() } ?: return@async
 
-                            val rawBytes = runCatching { cinesrcBase64UrlDecode(b64Data) }.getOrNull() ?: return@async
-                            val wingHeaders = mapOf(
-                                "User-Agent" to USER_AGENT,
-                                "Origin" to CINESRC_WING_ORIGIN,
-                                "Referer" to "$CINESRC_WING_ORIGIN/",
-                                "Accept" to "*/*"
-                            )
-                            val resp = cancellablePost(
-                                "$CINESRC_WING_API/g",
-                                headers = wingHeaders,
-                                requestBody = rawBytes.toRequestBody("application/octet-stream".toMediaType()),
-                                timeoutSec = 5L
-                            ) ?: return@async
-                            val respBytes = runCatching { resp.body.bytes() }.getOrNull()
-                                ?.takeIf { it.size > 32 } ?: return@async
-
-                            val b64Resp = cinesrcBase64UrlEncode(respBytes)
-                            val decRaw = encDecPost(
-                                "dec-cinejoy",
-                                JSONObject().put("text", b64Resp).put("state", wingState).toString(),
-                                timeoutSec = 4L
-                            ) ?: return@async
-                            val decRes = runCatching { JSONObject(decRaw).optJSONObject("result") }.getOrNull() ?: return@async
-                            val sourcesArr = decRes.optJSONArray("sources") ?: return@async
-                            val langTag = if (isAnime) " [Sub] [Original]" else ""
-                            for (i in 0 until sourcesArr.length()) {
-                                val srcObj = sourcesArr.optJSONObject(i) ?: continue
-                                val streamUrl = srcObj.optString("file").ifBlank { srcObj.optString("url") }.trim()
-                                if (!streamUrl.startsWith("http", true)) continue
-                                emitVerifiedStream(
-                                    source = "CineSrc",
-                                    baseName = "CineSrc Nebula$langTag",
-                                    url = streamUrl,
-                                    referer = "$CINESRC_WING_ORIGIN/",
-                                    headers = wingHeaders,
-                                    callback = callback
+                                val rawBytes = runCatching { cinesrcBase64UrlDecode(b64Data) }.getOrNull() ?: return@async
+                                val wingHeaders = mapOf(
+                                    "User-Agent" to USER_AGENT,
+                                    "Origin" to CINESRC_WING_ORIGIN,
+                                    "Referer" to "$CINESRC_WING_ORIGIN/",
+                                    "Accept" to "*/*",
+                                    "X-StreamPlay-Source" to "cinesrc"
                                 )
+                                val resp = cancellablePost(
+                                    "$CINESRC_WING_API/g",
+                                    headers = wingHeaders,
+                                    requestBody = rawBytes.toRequestBody("application/octet-stream".toMediaType()),
+                                    timeoutSec = 5L
+                                ) ?: return@async
+                                val respBytes = runCatching { resp.body.bytes() }.getOrNull()
+                                    ?.takeIf { it.size > 32 } ?: return@async
+
+                                val b64Resp = cinesrcBase64UrlEncode(respBytes)
+                                val decRaw = encDecPost(
+                                    "dec-cinejoy",
+                                    JSONObject().put("text", b64Resp).put("state", wingState).toString(),
+                                    timeoutSec = 4L
+                                ) ?: return@async
+                                val wingPayload = cinesrcParseWingDecryptedResult(decRaw) ?: return@async
+                                wingPayload.subtitles.forEach { (lang, subUrl) ->
+                                    if (emittedTracks.add(subUrl)) {
+                                        subtitleCallback?.invoke(
+                                            newSubtitleFile(lang, subUrl) {
+                                                this.headers = wingHeaders
+                                            }
+                                        )
+                                    }
+                                }
+                                val displayServer = wingServer.replaceFirstChar {
+                                    if (it.isLowerCase()) it.titlecase() else it.toString()
+                                }
+                                val langTag = if (isAnime || wingPayload.subtitles.isNotEmpty() || emittedTracks.isNotEmpty()) {
+                                    " [Sub] [Original]"
+                                } else {
+                                    ""
+                                }
+                                val baseName = "CineSrc $displayServer$langTag"
+                                for (entry in wingPayload.entries) {
+                                    emitVerifiedStream(
+                                        source = "CineSrc",
+                                        baseName = baseName,
+                                        url = entry.url,
+                                        referer = "$CINESRC_WING_ORIGIN/",
+                                        headers = wingHeaders,
+                                        declaredQuality = entry.quality,
+                                        requireManifestVerification = true,
+                                        durationHintSeconds = durationHintSeconds,
+                                        callback = callback
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
                             }
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
                         }
                     }
 
                     // 3. Native cinesrc.st CSP4 + SHA-256 PoW fan-out across wave, nebula, surge
+                    //    Staggered by 350ms so zero-PoW wingJobs (`secret` / `Nebula`) acquire
+                    //    `encDecApiSemaphore` first without queueing behind 6 CSP4 `enc-cinesrc` calls.
                     val embedUrl = if (isMovie) {
                         "$CINESRC_HOST/embed/movie/$id"
                     } else {
@@ -4847,6 +5016,7 @@ object StreamPlayExtractor : StreamPlay() {
                     val serverJobs = CINESRC_SERVERS.map { serverId ->
                         async {
                             try {
+                                delay(350L)
                                 currentCoroutineContext().ensureActive()
                                 val session = cinesrcAcquireSessionToken(embedUrl, xCsQ, baseHeaders) ?: return@async
                                 val actionBody = if (isMovie) {
@@ -4887,7 +5057,11 @@ object StreamPlayExtractor : StreamPlay() {
                                 val payload = cinesrcParseDecryptedResult(decRaw) ?: return@async
                                 payload.subtitles.forEach { (lang, subUrl) ->
                                     if (emittedTracks.add(subUrl)) {
-                                        subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+                                        subtitleCallback?.invoke(
+                                            newSubtitleFile(lang, subUrl) {
+                                                this.headers = baseHeaders
+                                            }
+                                        )
                                     }
                                 }
 
@@ -4938,6 +5112,8 @@ object StreamPlayExtractor : StreamPlay() {
                                         url = master.url,
                                         referer = "$CINESRC_HOST/",
                                         headers = baseHeaders,
+                                        requireManifestVerification = true,
+                                        durationHintSeconds = durationHintSeconds,
                                         callback = callback
                                     )
                                 }
@@ -4947,7 +5123,7 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
 
-                    (listOf(subsJob, wingJob) + serverJobs).awaitAll()
+                    (listOf(subsJob) + wingJobs + serverJobs).awaitAll()
                 }
             }
         } catch (e: Exception) {
@@ -4968,8 +5144,8 @@ object StreamPlayExtractor : StreamPlay() {
     // ==================== Cineby SOTA Universal Extractor (api.wecollege.net, Rank 95) ====================
 
     private const val CINEBY_API = "https://api.wecollege.net"
-    private const val CINEBY_ORIGIN = "https://player.videasy.to"
-    private val CINEBY_SERVERS = listOf("tampa", "dallas", "oakland", "seattle", "vegas", "portland")
+    private const val CINEBY_ORIGIN = "https://vidy.st"
+    private val CINEBY_SERVERS = listOf("oakland", "reno", "dallas", "boise", "miami", "vegas", "atlanta", "phoenix")
 
     internal data class CinebyDecryptedSource(
         val url: String,
@@ -4998,7 +5174,7 @@ object StreamPlayExtractor : StreamPlay() {
 
     /**
      * Offline native `mvm1` stream cipher decryption for `api.wecollege.net` (`enc=2`).
-     * Derived from `player.videasy.to/_next/static/chunks/8351-ad3ea010cfe1b6bd.js` (`f(cipher, seed, mediaId)`).
+     * Derived from `vidy.st` / `player.videasy.to/_next/static/chunks/8351-ad3ea010cfe1b6bd.js` (`f(cipher, seed, mediaId)`).
      * Decrypts the Base64URL payload in <0.1ms with zero network requests and verifies the `mvm1` magic header.
      */
     internal fun cinebyDecryptMvm1(cipherTextBase64Url: String, seed: String, mediaId: Int): String? {
@@ -5116,10 +5292,10 @@ object StreamPlayExtractor : StreamPlay() {
      *
      * Protocol (verified live across Movies, TV Shows, and Anime):
      *   1. GET `https://api.wecollege.net/seed?mediaId={tmdbId}` -> `{"seed": "..."}`
-     *   2. Concurrent fan-out across `tampa`, `dallas`, `oakland`, `seattle`, `vegas`, `portland`:
+     *   2. Concurrent fan-out across `oakland`, `reno`, `dallas`, `boise`, `miami`, `vegas`, `atlanta`, `phoenix`:
      *      `GET https://api.wecollege.net/{server}/sources?title=...&mediaType={movie|tv}&year=...&tmdbId={id}&imdbId=...&seasonId=...&episodeId=...&enc=2&seed={seed}`
      *   3. Offline `mvm1` stream cipher decryption (`cinebyDecryptMvm1(ciphertext, seed, tmdbId)`) with fallback to `dec-videasy`
-     *   4. Emits multi-CDN HLS (`sun.paleoak.top`, `e2e.majorplay.net`) + multi-language subtitles
+     *   4. Emits multi-CDN HLS (`moon.goldenkite.top`, `sun.paleoak.top`, `e2e.majorplay.net`) with `720p` sorted ahead of `1080p` + multi-language subtitles
      */
     suspend fun invokeCineby(
         tmdbId: Int? = null,
@@ -5140,16 +5316,18 @@ object StreamPlayExtractor : StreamPlay() {
             val id = effectiveTmdbId ?: return
             val isMovie = season == null || (season == 0 && episode == null)
             if (!isMovie && episode == null) return
+            val durationHintSeconds = resolveDurationHintSeconds(isMovie, isAnime)
 
             withTimeoutOrNull(20_000L) {
                 val baseHeaders = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Origin" to CINEBY_ORIGIN,
                     "Referer" to "$CINEBY_ORIGIN/",
-                    "Accept" to "*/*"
+                    "Accept" to "*/*",
+                    "X-StreamPlay-Source" to "cineby"
                 )
 
-                val seedRaw = retryTransient(1, 200L) {
+                val seedRaw = retryTransient(2, 250L) {
                     cancellableGetText(
                         "$CINEBY_API/seed?mediaId=$id",
                         headers = baseHeaders,
@@ -5161,7 +5339,7 @@ object StreamPlayExtractor : StreamPlay() {
                     ?.takeIf { it.isNotBlank() } ?: return@withTimeoutOrNull
 
                 val mediaType = if (isMovie) "movie" else "tv"
-                val encodedTitle = URLEncoder.encode(title.orEmpty(), "UTF-8")
+                val encodedTitle = URLEncoder.encode(title.orEmpty(), "UTF-8").replace("+", "%20")
                 val encodedSeed = URLEncoder.encode(seed, "UTF-8")
                 val yearStr = year?.toString().orEmpty()
 
@@ -5197,14 +5375,18 @@ object StreamPlayExtractor : StreamPlay() {
 
                                 val decRaw = cinebyDecryptMvm1(encBody, seed, id) ?: encDecPost(
                                     "dec-videasy",
-                                    JSONObject().put("text", encBody).put("id", id.toString()).toString(),
+                                    JSONObject().put("text", encBody).put("id", id.toString()).put("seed", seed).toString(),
                                     timeoutSec = 5L
                                 ) ?: return@async
 
                                 val payload = cinebyParseDecryptedResult(decRaw) ?: return@async
                                 payload.subtitles.forEach { (lang, subUrl) ->
                                     if (emittedTracks.add(subUrl)) {
-                                        subtitleCallback?.invoke(newSubtitleFile(lang, subUrl))
+                                        subtitleCallback?.invoke(
+                                            newSubtitleFile(lang, subUrl) {
+                                                this.headers = baseHeaders
+                                            }
+                                        )
                                     }
                                 }
 
@@ -5215,40 +5397,72 @@ object StreamPlayExtractor : StreamPlay() {
                                 val langTag = if (isAnime || hasSubs) " [Sub] [Original]" else ""
                                 val baseName = "Cineby $displayServer$langTag"
 
-                                for (src in payload.sources) {
-                                    if (src.quality != Qualities.Unknown.value && !src.url.contains("master.m3u8", ignoreCase = true) && !src.url.contains("index.m3u8", ignoreCase = true)) {
-                                        val isM3u8 = src.url.contains(".m3u8", ignoreCase = true)
+                                val discreteSources = payload.sources.filter { src ->
+                                    src.quality != Qualities.Unknown.value &&
+                                        !src.url.contains("master.m3u8", ignoreCase = true) &&
+                                        !src.url.contains("index.m3u8", ignoreCase = true)
+                                }
+                                val masterSources = payload.sources.filterNot { src ->
+                                    src.quality != Qualities.Unknown.value &&
+                                        !src.url.contains("master.m3u8", ignoreCase = true) &&
+                                        !src.url.contains("index.m3u8", ignoreCase = true)
+                                }
+
+                                if (discreteSources.isNotEmpty()) {
+                                    val liveDiscreteSources = coroutineScope {
+                                        discreteSources.map { src ->
+                                            async {
+                                                val isM3u8 = src.url.contains(".m3u8", ignoreCase = true)
+                                                if (!isM3u8) {
+                                                    src
+                                                } else {
+                                                    val prefix = cancellableProbeM3u8Prefix(src.url, baseHeaders, timeoutMs = 2_500L)
+                                                    if (prefix != null && prefix.contains("#EXTM3U", ignoreCase = true)) src else null
+                                                }
+                                            }
+                                        }.awaitAll().filterNotNull()
+                                    }
+                                    if (liveDiscreteSources.isNotEmpty()) {
+                                        val generated = liveDiscreteSources.map { src ->
+                                            val isM3u8 = src.url.contains(".m3u8", ignoreCase = true)
+                                            newExtractorLink(
+                                                "Cineby",
+                                                "$baseName [${vidsrcQualityTag(src.quality)}]",
+                                                src.url,
+                                                if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                            ) {
+                                                this.referer = "$CINEBY_ORIGIN/"
+                                                this.quality = src.quality
+                                                this.headers = baseHeaders
+                                            }
+                                        }
+                                        val firstUrl = liveDiscreteSources.first().url
+                                        val firstIsM3u8 = firstUrl.contains(".m3u8", ignoreCase = true)
                                         emitTopTierDualQualityStreamLinks(
                                             source = "Cineby",
                                             baseName = baseName,
-                                            url = src.url,
+                                            url = firstUrl,
                                             referer = "$CINEBY_ORIGIN/",
                                             headers = baseHeaders,
-                                            streamType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                            generatedLinks = listOf(
-                                                newExtractorLink(
-                                                    "Cineby",
-                                                    "$baseName [${vidsrcQualityTag(src.quality)}]",
-                                                    src.url,
-                                                    if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                                ) {
-                                                    this.referer = "$CINEBY_ORIGIN/"
-                                                    this.quality = src.quality
-                                                    this.headers = baseHeaders
-                                                }
-                                            ),
-                                            callback = callback
-                                        )
-                                    } else {
-                                        emitVerifiedStream(
-                                            source = "Cineby",
-                                            baseName = baseName,
-                                            url = src.url,
-                                            referer = "$CINEBY_ORIGIN/",
-                                            headers = baseHeaders,
+                                            streamType = if (firstIsM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                            generatedLinks = generated,
                                             callback = callback
                                         )
                                     }
+                                }
+
+                                for (src in masterSources) {
+                                    emitVerifiedStream(
+                                        source = "Cineby",
+                                        baseName = baseName,
+                                        url = src.url,
+                                        referer = "$CINEBY_ORIGIN/",
+                                        headers = baseHeaders,
+                                        declaredQuality = src.quality,
+                                        requireManifestVerification = true,
+                                        durationHintSeconds = durationHintSeconds,
+                                        callback = callback
+                                    )
                                 }
                             } catch (e: Exception) {
                                 if (e is CancellationException) throw e
@@ -5282,40 +5496,64 @@ object StreamPlayExtractor : StreamPlay() {
     private const val MEOWTV_API = "https://api.meowtv.ru"
     private const val MEOWTV_SECRET = "10eE3wyyhkF38rwLFwisRYgwP2bbTL_Y"
 
-    /** MeowTV upstream servers, in the site's current active preference order (`dcloud` first). */
-    private val MEOWTV_SERVERS = listOf("dcloud", "acme", "tik", "ipcloud", "english", "hindi")
+    /** MeowTV upstream servers (`english` first for verified H.264 streams, then `dcloud`, then `acme` with `list=1`). */
+    private val MEOWTV_SERVERS = listOf("english" to false, "dcloud" to false, "acme" to true)
 
     /**
      * Offline pure-Kotlin MeowTV payload decryptor extracted from `meowtv.wasm` (`s-p-CmJx-XQh.js`,
      * 3-way XOR-masked data segments 5 ^ 9 ^ 13). Computes `SHA-256(MEOWTV_SECRET + n)` and XORs the
      * 32-byte digest cyclically against `Base64.decode(d)` in <0.1ms with zero network calls.
+     * Supports both single-stream JSON objects and `acme` multi-stream `{"streams": [...]}` payloads,
+     * while rejecting server-IP-locked path tokens.
      */
-    internal fun meowTvDecryptOffline(n: String, d: String): MeowTvDecResult? {
-        if (n.isBlank() || d.isBlank()) return null
+    internal fun meowTvDecryptStreamsOffline(nB64: String, dB64: String): List<MeowTvDecResult> {
+        if (nB64.isBlank() || dB64.isBlank()) return emptyList()
         return runCatching {
             val key = java.security.MessageDigest.getInstance("SHA-256")
-                .digest((MEOWTV_SECRET + n.trim()).toByteArray(Charsets.UTF_8))
-            val cipher = cinesrcBase64UrlDecode(d.trim())
+                .digest((MEOWTV_SECRET + nB64.trim()).toByteArray(Charsets.UTF_8))
+            val cipher = cinesrcBase64UrlDecode(dB64.trim())
             val plain = ByteArray(cipher.size) { i ->
                 (cipher[i].toInt() xor key[i and 31].toInt()).toByte()
             }
             val jsonStr = String(plain, Charsets.UTF_8).trim()
-            if (!jsonStr.startsWith("{")) return@runCatching null
+            if (!jsonStr.startsWith("{")) return@runCatching emptyList()
             val obj = JSONObject(jsonStr)
-            val url = obj.optString("url").takeIf { it.isNotBlank() } ?: return@runCatching null
-            val language = obj.optString("language").takeIf { it.isNotBlank() }
-            val headersMap = mutableMapOf<String, String>()
-            obj.optJSONObject("headers")?.let { hObj ->
-                val keys = hObj.keys()
-                while (keys.hasNext()) {
-                    val k = keys.next()
-                    val v = hObj.optString(k)
-                    if (k.isNotBlank() && v.isNotBlank()) headersMap[k] = v
+
+            fun parseSingleStreamObj(sObj: JSONObject): MeowTvDecResult? {
+                val url = sObj.optString("url").trim().takeIf { it.isNotBlank() } ?: return null
+                val pathAndQuery = url.substringAfter("://").substringAfter("/", "")
+                if (pathAndQuery.isNotEmpty() && VIDRIFT_IP_LOCKED_PATH_REGEX.containsMatchIn(pathAndQuery)) {
+                    return null
                 }
+                val language = sObj.optString("language").trim().takeIf { it.isNotBlank() }
+                val headersMap = mutableMapOf<String, String>()
+                sObj.optJSONObject("headers")?.let { hObj ->
+                    val keys = hObj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        val v = hObj.optString(k)
+                        if (k.isNotBlank() && v.isNotBlank()) headersMap[k] = v
+                    }
+                }
+                return MeowTvDecResult(language = language, url = url, headers = headersMap)
             }
-            MeowTvDecResult(language = language, url = url, headers = headersMap)
-        }.getOrNull()
+
+            val streamsArr = obj.optJSONArray("streams")
+            if (streamsArr != null) {
+                buildList {
+                    for (i in 0 until streamsArr.length()) {
+                        val item = streamsArr.optJSONObject(i) ?: continue
+                        parseSingleStreamObj(item)?.let { add(it) }
+                    }
+                }
+            } else {
+                listOfNotNull(parseSingleStreamObj(obj))
+            }
+        }.getOrDefault(emptyList())
     }
+
+    internal fun meowTvDecryptOffline(n: String, d: String): MeowTvDecResult? =
+        meowTvDecryptStreamsOffline(n, d).firstOrNull()
 
     private val VIDFAST_PAGE_TOKEN_REGEX = Regex("\"(?:en|token)\":\"([A-Za-z0-9_-]+)\"")
 
@@ -5360,7 +5598,11 @@ object StreamPlayExtractor : StreamPlay() {
     private val HLS_RESOLUTION_REGEX = Regex("""RESOLUTION=\s*(\d+)\s*x\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_AVG_BW_REGEX = Regex("""AVERAGE-BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val HLS_BW_REGEX = Regex("""(?:^|[:,])\s*BANDWIDTH=\s*(\d+)""", RegexOption.IGNORE_CASE)
+    private val HLS_NAME_REGEX = Regex("""NAME=\s*"?([^",]+)"?""", RegexOption.IGNORE_CASE)
     private val HLS_MEDIA_URI_ATTRIBUTE = Regex("""URI\s*=\s*"[^"]+"""", RegexOption.IGNORE_CASE)
+    private val HLS_BYTERANGE_REGEX = Regex("""#EXT-X-BYTERANGE:\s*(\d+)""", RegexOption.IGNORE_CASE)
+    private val HLS_MAP_BYTERANGE_REGEX = Regex("""#EXT-X-MAP:[^\r\n]*BYTERANGE="(\d+)@""", RegexOption.IGNORE_CASE)
+    private val HLS_EXTINF_REGEX = Regex("""#EXTINF:\s*([0-9]+(?:\.[0-9]+)?)""", RegexOption.IGNORE_CASE)
 
     /**
      * Nominal episode length used only to turn a provider-declared HLS bandwidth into a ranking
@@ -5371,7 +5613,15 @@ object StreamPlayExtractor : StreamPlay() {
      * variants inside one ladder and is replaced by the host's measured bytes before anything is
      * downloaded or shown as measured truth.
      */
-    private const val HLS_SIZE_HINT_SECONDS = 1440.0
+    internal const val HLS_SIZE_HINT_SECONDS = 1440.0
+    internal const val HLS_TV_SIZE_HINT_SECONDS = 2520.0
+    internal const val HLS_MOVIE_SIZE_HINT_SECONDS = 6000.0
+
+    internal fun resolveDurationHintSeconds(isMovie: Boolean, isAnime: Boolean = false): Double = when {
+        isAnime -> HLS_SIZE_HINT_SECONDS
+        isMovie -> HLS_MOVIE_SIZE_HINT_SECONDS
+        else -> HLS_TV_SIZE_HINT_SECONDS
+    }
 
     /**
      * True when the master declares an external audio rendition for at least one variant.
@@ -5399,10 +5649,19 @@ object StreamPlayExtractor : StreamPlay() {
      * 1.85:1 cinema widescreen encodes (`1280x534` -> `720p`, `1920x800` -> `1080p`,
      * `854x356` -> `480p`, `640x268` -> `360p`).
      */
-    internal fun normalizeHlsResolutionToQuality(width: Int?, height: Int?, uriLine: String): Int {
+    internal fun normalizeHlsResolutionToQuality(
+        width: Int?,
+        height: Int?,
+        uriLine: String,
+        nameHint: String? = null
+    ): Int {
         val w = width ?: 0
         val h = height ?: 0
-        if (w <= 0 && h <= 0) return StreamLinkOptimizer.extractQualityFromText(uriLine)
+        if (w <= 0 && h <= 0) {
+            val fromName = StreamLinkOptimizer.extractQualityFromText(nameHint)
+            if (fromName != Qualities.Unknown.value) return fromName
+            return StreamLinkOptimizer.extractQualityFromText(uriLine)
+        }
         if (w <= 0 || h <= 0) return snapHlsTier(if (w > 0) w else h)
         val shortDim = minOf(w, h)
         val longDim = maxOf(w, h)
@@ -5426,6 +5685,159 @@ object StreamPlayExtractor : StreamPlay() {
         return ladder.minByOrNull { kotlin.math.abs(it - px) } ?: Qualities.Unknown.value
     }
 
+    internal fun resolveRelativeUrl(baseUrl: String, uriLine: String): String {
+        val cleanBase = baseUrl.substringBefore('#')
+        val trimmedUri = uriLine.trim()
+        if (trimmedUri.startsWith("http://", ignoreCase = true) ||
+            trimmedUri.startsWith("https://", ignoreCase = true)
+        ) {
+            return trimmedUri
+        }
+        return runCatching { URI(cleanBase).resolve(trimmedUri).toString() }.getOrElse {
+            if (trimmedUri.startsWith("//")) "https:$trimmedUri" else cleanBase
+        }
+    }
+
+    /**
+     * Probes a single HLS media segment's exact byte size using `Range: bytes=0-0` and reading
+     * the total length from `Content-Range` (HTTP 206) or `Content-Length` (HTTP 200) while
+     * closing the response socket immediately without downloading the segment body.
+     */
+    internal suspend fun probeSingleSegmentSizeBytes(
+        segUrl: String,
+        headers: Map<String, String>,
+        timeoutMs: Long = 2_500L
+    ): Long? = withTimeoutOrNull(timeoutMs) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val client = app.baseClient.newBuilder()
+                    .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .build()
+                val reqBuilder = Request.Builder()
+                    .url(segUrl)
+                    .header("User-Agent", USER_AGENT)
+                headers.forEach { (k, v) ->
+                    if (!k.equals("User-Agent", ignoreCase = true) &&
+                        !k.equals("Range", ignoreCase = true) &&
+                        v.isNotBlank()
+                    ) {
+                        reqBuilder.header(k, v)
+                    }
+                }
+                reqBuilder.header("Range", "bytes=0-0")
+                client.newCall(reqBuilder.build()).execute().use { resp ->
+                    when {
+                        resp.code == 206 -> {
+                            resp.header("Content-Range")
+                                ?.substringAfterLast('/')
+                                ?.trim()
+                                ?.toLongOrNull()
+                                ?.takeIf { it > 0L }
+                        }
+                        resp.isSuccessful -> {
+                            resp.header("Content-Length")
+                                ?.trim()
+                                ?.toLongOrNull()
+                                ?.takeIf { it > 16L }
+                        }
+                        else -> null
+                    }
+                }
+            }.getOrNull()
+        }
+    }
+
+    /**
+     * Real HLS media playlist size measurer (`[XXX MB]`).
+     * - Fast Path A (`#EXT-X-BYTERANGE`): sums declared segment byte ranges + `#EXT-X-MAP` byte
+     *   ranges with zero extra network requests.
+     * - Path B (Concurrent 3-Segment `Range: bytes=0-0` / `Content-Range` Sampling): samples up
+     *   to 3 deterministic representative segments across the stream (20%, 50%, 80%) and scales
+     *   the measured bytes-per-second across total `#EXTINF` duration.
+     */
+    internal suspend fun measureHlsMediaPlaylistSizeMb(
+        playlistUrl: String,
+        manifestText: String,
+        headers: Map<String, String>
+    ): Int? {
+        if (manifestText.isBlank() || !manifestText.contains("#EXTM3U", ignoreCase = true)) return null
+
+        // Fast Path A: #EXT-X-BYTERANGE
+        var segmentByteRangeCount = 0
+        var totalByteRangeSum = 0L
+        for (match in HLS_BYTERANGE_REGEX.findAll(manifestText)) {
+            val len = match.groupValues.getOrNull(1)?.toLongOrNull() ?: continue
+            if (len > 0L) {
+                segmentByteRangeCount++
+                totalByteRangeSum += len
+            }
+        }
+        if (segmentByteRangeCount > 0 && totalByteRangeSum > 0L) {
+            for (mapMatch in HLS_MAP_BYTERANGE_REGEX.findAll(manifestText)) {
+                val mapLen = mapMatch.groupValues.getOrNull(1)?.toLongOrNull() ?: continue
+                if (mapLen > 0L) totalByteRangeSum += mapLen
+            }
+            return bytesToMiB(totalByteRangeSum).takeIf { it > 0 }
+        }
+
+        // Path B: Concurrent 3-Segment Range: bytes=0-0 / Content-Range Sampling
+        val lines = manifestText.lines()
+        val segments = mutableListOf<Pair<Double, String>>()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line.startsWith("#EXTINF:", ignoreCase = true)) {
+                val dur = HLS_EXTINF_REGEX.find(line)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+                if (dur != null && dur > 0.0) {
+                    var j = i + 1
+                    var uriLine: String? = null
+                    while (j < lines.size) {
+                        val candidate = lines[j].trim()
+                        if (candidate.isNotEmpty() && !candidate.startsWith("#")) {
+                            uriLine = candidate
+                            break
+                        }
+                        j++
+                    }
+                    if (uriLine != null) {
+                        segments.add(dur to resolveRelativeUrl(playlistUrl, uriLine))
+                        i = j
+                    }
+                }
+            }
+            i++
+        }
+
+        val totalDurationSec = segments.sumOf { it.first }
+        if (segments.isEmpty() || totalDurationSec <= 0.0) return null
+
+        val sampleIndices = listOf(
+            segments.size / 5,
+            segments.size / 2,
+            (segments.size * 4) / 5
+        ).map { it.coerceIn(0, segments.lastIndex) }.distinct()
+
+        val sampleResults = coroutineScope {
+            sampleIndices.map { idx ->
+                val (segDur, segUrl) = segments[idx]
+                async {
+                    val segBytes = probeSingleSegmentSizeBytes(segUrl, headers, timeoutMs = 2_500L)
+                    if (segBytes != null && segBytes > 0L) segBytes to segDur else null
+                }
+            }.awaitAll().filterNotNull()
+        }
+
+        val sampledBytes = sampleResults.sumOf { it.first }
+        val sampledDurationSec = sampleResults.sumOf { it.second }
+        if (sampledBytes <= 0L || sampledDurationSec <= 0.0) return null
+
+        val estimatedTotalBytes = ((sampledBytes.toDouble() / sampledDurationSec) * totalDurationSec).toLong()
+        if (estimatedTotalBytes <= 0L) return null
+        return bytesToMiB(estimatedTotalBytes).takeIf { it > 0 }
+    }
+
     /**
      * Parses an HLS master manifest into verified resolution variants while:
      * 1. Preserving the master manifest URL (with `#vid={height}p` fragment) whenever the manifest
@@ -5436,17 +5848,19 @@ object StreamPlayExtractor : StreamPlay() {
      *    `AVERAGE-BANDWIDTH` / `BANDWIDTH` so `DownloadSelectionPolicy` can compare HLS bitrates
      *    and select the lowest-file-size 720p and lowest-file-size 1080p stream.
      * 3. Normalizing cinema widescreen dimensions (`1280x534` -> `720p`, `1920x800` -> `1080p`)
-     *    via [normalizeHlsResolutionToQuality].
+     *    and `NAME="720p"` attributes via [normalizeHlsResolutionToQuality].
      */
     internal fun parseHlsMasterVariants(
         masterUrl: String,
-        manifestText: String
+        manifestText: String,
+        durationHintSeconds: Double = HLS_SIZE_HINT_SECONDS
     ): List<HlsMasterVariant> {
         if (!manifestText.contains("#EXT-X-STREAM-INF", ignoreCase = true)) return emptyList()
         val hasDemuxedAudio = hasDemuxedAudioRendition(manifestText)
         val lines = manifestText.lines()
         val variants = mutableListOf<HlsMasterVariant>()
         val baseUrl = masterUrl.substringBefore('#')
+        val effectiveDurationSec = if (durationHintSeconds > 0.0) durationHintSeconds else HLS_SIZE_HINT_SECONDS
 
         var i = 0
         while (i < lines.size) {
@@ -5458,6 +5872,7 @@ object StreamPlayExtractor : StreamPlay() {
                 val avgBw = HLS_AVG_BW_REGEX.find(line)?.groupValues?.get(1)?.toLongOrNull()
                 val maxBw = HLS_BW_REGEX.find(line)?.groupValues?.get(1)?.toLongOrNull()
                 val bw = avgBw ?: maxBw
+                val nameAttr = HLS_NAME_REGEX.find(line)?.groupValues?.getOrNull(1)?.trim()
 
                 var j = i + 1
                 var uriLine: String? = null
@@ -5470,7 +5885,7 @@ object StreamPlayExtractor : StreamPlay() {
                     j++
                 }
                 if (uriLine != null) {
-                    val quality = normalizeHlsResolutionToQuality(width, height, uriLine)
+                    val quality = normalizeHlsResolutionToQuality(width, height, uriLine, nameAttr)
                     val resolvedUrl = if (hasDemuxedAudio) {
                         // Addressed after sorting so `#vid=auto_N` means the same ascending-bitrate
                         // ordinal on both sides of the wire.
@@ -5486,7 +5901,7 @@ object StreamPlayExtractor : StreamPlay() {
                     // lane still carries a positive tag; the previous 25 MB floor overstated every
                     // small rendition and made the tag look measured when it was not.
                     val estimatedMb = bw?.takeIf { it in 100_000L..80_000_000L }?.let { bps ->
-                        val megabytes = (bps / 8.0) * HLS_SIZE_HINT_SECONDS / (1024.0 * 1024.0)
+                        val megabytes = (bps / 8.0) * effectiveDurationSec / (1024.0 * 1024.0)
                         maxOf(1, megabytes.toInt())
                     }
                     variants.add(
@@ -5521,8 +5936,11 @@ object StreamPlayExtractor : StreamPlay() {
 
     /**
      * Shared expander for verified protocol outputs: parses HLS master manifests for
-     * demuxed-audio safety and bitrate-proportional size tags (with M3u8Helper fallback),
-     * then delegates to the repo-standard non-synthetic top-tier emission.
+     * demuxed-audio safety and bitrate-proportional size tags (or measures real leaf media
+     * playlist sizes when a single-quality `.m3u8` leaf is served), then delegates to the
+     * repo-standard non-synthetic top-tier emission.
+     *
+     * Returns `true` if at least one verified link was emitted, `false` otherwise.
      */
     private suspend fun emitVerifiedStream(
         source: String,
@@ -5536,11 +5954,14 @@ object StreamPlayExtractor : StreamPlay() {
         includeSizeTag: Boolean = true,
         requireManifestVerification: Boolean = false,
         extractorDataTag: String? = null,
+        durationHintSeconds: Double = HLS_SIZE_HINT_SECONDS,
         callback: (ExtractorLink) -> Unit
-    ) {
-        val cleanFilename = url.substringBefore('#').substringBefore('?').substringAfterLast('/')
+    ): Boolean {
+        val cleanUrl = url.substringBefore('#')
+        val cleanFilename = cleanUrl.substringBefore('?').substringAfterLast('/')
         val isDirectVideo = Regex("""\.(?:mp4|mkv)$""", RegexOption.IGNORE_CASE).containsMatchIn(cleanFilename)
         val streamType = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+        val fixedQuality = declaredQuality.takeIf { it > 0 && it != Qualities.Unknown.value }
         val generated = if (!isDirectVideo) {
             withTimeoutOrNull(manifestTimeoutMs) {
                 val reqHeaders = buildMap {
@@ -5550,8 +5971,8 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 val manifestText = cancellableGetText(url, headers = reqHeaders, timeoutSec = fetchTimeoutSec)
                 val isValidM3u8 = !manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)
-                val parsedVariants = if (!manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)) {
-                    parseHlsMasterVariants(url, manifestText)
+                val parsedVariants = if (isValidM3u8) {
+                    parseHlsMasterVariants(url, manifestText, durationHintSeconds = durationHintSeconds)
                 } else {
                     emptyList()
                 }
@@ -5573,57 +5994,71 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                         }
                     }
-                } else if (requireManifestVerification && !isValidM3u8) {
-                    emptyList()
-                } else {
-                    val declared = declaredQuality.takeIf { it > 0 && it != Qualities.Unknown.value }
-                    if (declared != null) {
-                        val qTag = vidsrcQualityTag(declared)
-                        listOf(
-                            newExtractorLink(
-                                source = source,
-                                name = "$baseName [$qTag]",
-                                url = url,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = referer
-                                this.quality = declared
-                                this.headers = headers
-                                if (!extractorDataTag.isNullOrBlank()) {
-                                    this.extractorData = extractorDataTag
-                                }
-                            }
-                        )
-                    } else if (requireManifestVerification && isValidM3u8) {
-                        val detectedQ = StreamLinkOptimizer.extractQualityFromText(baseName, url)
-                            .takeIf { it > 0 && it != Qualities.Unknown.value }
-                        val qTag = detectedQ?.let { vidsrcQualityTag(it) } ?: "Auto"
-                        listOf(
-                            newExtractorLink(
-                                source = source,
-                                name = "$baseName [$qTag]",
-                                url = url,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = referer
-                                this.quality = detectedQ ?: Qualities.Unknown.value
-                                this.headers = headers
-                                if (!extractorDataTag.isNullOrBlank()) {
-                                    this.extractorData = extractorDataTag
-                                }
-                            }
-                        )
+                } else if (isValidM3u8) {
+                    val inferredQuality = fixedQuality
+                        ?: extractVidRiftExplicitPathQuality(cleanUrl).takeIf { it != Qualities.Unknown.value }
+                        ?: StreamLinkOptimizer.extractQualityFromText(cleanUrl).takeIf { it != Qualities.Unknown.value }
+                        ?: StreamLinkOptimizer.extractQualityFromText(baseName).takeIf { it != Qualities.Unknown.value }
+                        ?: Qualities.Unknown.value
+                    val leafMb = if (includeSizeTag &&
+                        inferredQuality != Qualities.Unknown.value &&
+                        StreamLinkOptimizer.parseSizeBytes(baseName) == null
+                    ) {
+                        measureHlsMediaPlaylistSizeMb(cleanUrl, manifestText, reqHeaders)
                     } else {
-                        runCatching { generateM3u8(baseName, url, referer, headers = headers) }.getOrNull()
+                        null
                     }
+                    val qTag = if (inferredQuality != Qualities.Unknown.value) {
+                        vidsrcQualityTag(inferredQuality)
+                    } else {
+                        "Auto"
+                    }
+                    val sizeTag = if (leafMb != null && leafMb > 0) " [$leafMb MB]" else ""
+                    listOf(
+                        newExtractorLink(
+                            source = source,
+                            name = "$baseName [$qTag]$sizeTag",
+                            url = url,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = referer
+                            this.quality = inferredQuality
+                            this.headers = headers
+                            if (!extractorDataTag.isNullOrBlank()) {
+                                this.extractorData = extractorDataTag
+                            }
+                        }
+                    )
+                } else if (requireManifestVerification) {
+                    emptyList()
+                } else if (fixedQuality != null) {
+                    val qTag = vidsrcQualityTag(fixedQuality)
+                    listOf(
+                        newExtractorLink(
+                            source = source,
+                            name = "$baseName [$qTag]",
+                            url = url,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = referer
+                            this.quality = fixedQuality
+                            this.headers = headers
+                            if (!extractorDataTag.isNullOrBlank()) {
+                                this.extractorData = extractorDataTag
+                            }
+                        }
+                    )
+                } else {
+                    runCatching { generateM3u8(baseName, url, referer, headers = headers) }.getOrNull()
                 }
             }
         } else null
 
         if (requireManifestVerification && !isDirectVideo && generated.isNullOrEmpty()) {
-            return
+            return false
         }
 
+        var emittedCount = 0
         emitTopTierDualQualityStreamLinks(
             source = source,
             baseName = baseName,
@@ -5633,8 +6068,12 @@ object StreamPlayExtractor : StreamPlay() {
             streamType = streamType,
             generatedLinks = generated,
             extractorDataTag = extractorDataTag,
-            callback = callback
+            callback = { link ->
+                emittedCount++
+                callback(link)
+            }
         )
+        return emittedCount > 0
     }
 
     // -------------------- VidFast --------------------
@@ -5789,6 +6228,7 @@ object StreamPlayExtractor : StreamPlay() {
             val id = effectiveTmdbId ?: return
             val isMovie = season == null || (season == 0 && episode == null)
             if (!isMovie && episode == null) return
+            val durationHintSeconds = resolveDurationHintSeconds(isMovie, isAnime = false)
 
             withTimeoutOrNull(24_000L) {
                 val streamPath = if (isMovie) "/streams/movie/$id" else "/streams/tv/$id/$season/$episode"
@@ -5796,7 +6236,8 @@ object StreamPlayExtractor : StreamPlay() {
                 val baseHeaders = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Origin" to MEOWTV_HOST,
-                    "Referer" to "$MEOWTV_HOST/"
+                    "Referer" to "$MEOWTV_HOST/",
+                    "X-StreamPlay-Source" to "meowtv"
                 )
 
                 coroutineScope {
@@ -5819,7 +6260,11 @@ object StreamPlayExtractor : StreamPlay() {
                                         obj.optString("language").ifBlank { "English" }
                                     }
                                 )
-                                subtitleCallback.invoke(newSubtitleFile(label, file))
+                                subtitleCallback.invoke(
+                                    newSubtitleFile(label, file) {
+                                        this.headers = baseHeaders
+                                    }
+                                )
                             }
                         } catch (e: Exception) {
                             if (e is CancellationException) throw e
@@ -5827,7 +6272,7 @@ object StreamPlayExtractor : StreamPlay() {
                     }
 
                     val streamsJob = async {
-                        for (server in MEOWTV_SERVERS) {
+                        for ((server, useListParam) in MEOWTV_SERVERS) {
                             currentCoroutineContext().ensureActive()
 
                             // Tickets are single-use: every server attempt needs a fresh one, and the
@@ -5841,7 +6286,7 @@ object StreamPlayExtractor : StreamPlay() {
                             val ticket = tryParseJson<MeowTvTicketResponse>(ticketRaw)?.ticket?.takeIf { it.isNotBlank() }
                                 ?: continue
 
-                            val streamQuery = if (server == "acme") "$streamPath?s=$server&list=1" else "$streamPath?s=$server"
+                            val streamQuery = if (useListParam) "$streamPath?s=$server&list=1" else "$streamPath?s=$server"
                             val streamRaw = cancellableGetText(
                                 "$MEOWTV_API$streamQuery",
                                 headers = baseHeaders + mapOf("X-Stream-Ticket" to ticket),
@@ -5870,54 +6315,79 @@ object StreamPlayExtractor : StreamPlay() {
                             for ((payloadN, payloadD) in payloadEntries) {
                                 // Primary 0ms offline decryption via WASM-extracted SHA-256 + XOR keystream;
                                 // enc-dec.app is retained strictly as a last-resort fallback.
-                                val decRes = meowTvDecryptOffline(payloadN, payloadD) ?: run {
+                                val decList = meowTvDecryptStreamsOffline(payloadN, payloadD).ifEmpty {
                                     val decRaw = encDecPost(
                                         "dec-meowtv",
                                         JSONObject().put("data", JSONObject().put("n", payloadN).put("d", payloadD)).toString(),
                                         timeoutSec = 5L
-                                    ) ?: return@run null
-                                    tryParseJson<MeowTvDecResponse>(decRaw)?.result
-                                } ?: continue
-                                val streamUrl = decRes.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+                                    )
+                                    val singleFallback = decRaw?.let { tryParseJson<MeowTvDecResponse>(it)?.result }
+                                    listOfNotNull(singleFallback)
+                                }
+                                if (decList.isEmpty()) continue
 
-                                val decHeaders = decRes.headers.orEmpty()
-                                val referer = decHeaders.entries
-                                    .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
-                                    ?.takeIf { it.isNotBlank() }
-                                    ?: "$MEOWTV_HOST/"
-                                val origin = decHeaders.entries
-                                    .firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
-                                    ?.takeIf { it.isNotBlank() }
-                                    ?: getBaseUrl(referer).takeIf { it.startsWith("http", ignoreCase = true) }
-                                    ?: MEOWTV_HOST
-                                val streamHeaders = buildMap {
-                                    put("User-Agent", USER_AGENT)
-                                    put("Referer", referer)
-                                    put("Origin", origin)
-                                    decHeaders.forEach { (k, v) ->
-                                        if (!k.equals("User-Agent", true) &&
-                                            !k.equals("Referer", true) &&
-                                            !k.equals("Origin", true) &&
-                                            v.isNotBlank()
-                                        ) {
-                                            put(k, v)
+                                for (decRes in decList) {
+                                    val streamUrl = decRes.url?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+                                    val rawLang = decRes.language?.trim().orEmpty()
+                                    val isExplicitlyNonEnglish = rawLang.isNotBlank() &&
+                                        !rawLang.equals("English", ignoreCase = true) &&
+                                        !rawLang.equals("en", ignoreCase = true) &&
+                                        !rawLang.equals("eng", ignoreCase = true) &&
+                                        !rawLang.equals("Original", ignoreCase = true) &&
+                                        !rawLang.equals("Auto", ignoreCase = true) &&
+                                        !rawLang.equals("Multi", ignoreCase = true)
+                                    if (StreamLinkOptimizer.isVidRiftRegionalDub(streamUrl) ||
+                                        StreamLinkOptimizer.isVidRiftRegionalDub(rawLang) ||
+                                        isExplicitlyNonEnglish
+                                    ) {
+                                        continue
+                                    }
+
+                                    val decHeaders = decRes.headers.orEmpty()
+                                    val referer = decHeaders.entries
+                                        .firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: "$MEOWTV_HOST/"
+                                    val origin = decHeaders.entries
+                                        .firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: getBaseUrl(referer).takeIf { it.startsWith("http", ignoreCase = true) }
+                                        ?: MEOWTV_HOST
+                                    val streamHeaders = buildMap {
+                                        put("User-Agent", USER_AGENT)
+                                        put("Referer", referer)
+                                        put("Origin", origin)
+                                        put("X-StreamPlay-Source", "meowtv")
+                                        decHeaders.forEach { (k, v) ->
+                                            if (!k.equals("User-Agent", true) &&
+                                                !k.equals("Referer", true) &&
+                                                !k.equals("Origin", true) &&
+                                                !k.equals("X-StreamPlay-Source", true) &&
+                                                v.isNotBlank()
+                                            ) {
+                                                put(k, v)
+                                            }
                                         }
                                     }
-                                }
 
-                                val language = decRes.language?.takeIf { it.isNotBlank() } ?: "Auto"
-                                val displayLanguage = language.replaceFirstChar {
-                                    if (it.isLowerCase()) it.titlecase() else it.toString()
+                                    val language = rawLang.ifBlank { "Auto" }
+                                    val displayLanguage = language.replaceFirstChar {
+                                        if (it.isLowerCase()) it.titlecase() else it.toString()
+                                    }
+                                    val emitted = emitVerifiedStream(
+                                        source = "MeowTV",
+                                        baseName = "MeowTV $displayLanguage",
+                                        url = streamUrl,
+                                        referer = referer,
+                                        headers = streamHeaders,
+                                        requireManifestVerification = true,
+                                        durationHintSeconds = durationHintSeconds,
+                                        callback = callback
+                                    )
+                                    if (emitted) {
+                                        emittedFromServer = true
+                                    }
                                 }
-                                emitVerifiedStream(
-                                    source = "MeowTV",
-                                    baseName = "MeowTV $displayLanguage",
-                                    url = streamUrl,
-                                    referer = referer,
-                                    headers = streamHeaders,
-                                    callback = callback
-                                )
-                                emittedFromServer = true
                             }
                             if (emittedFromServer) return@async
                         }
@@ -5940,7 +6410,7 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         invokeMeowTV(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
-    // ==================== VidRift SOTA Movie/TV Multi-Lane Extractor (embed.vidrift.net, Rank 98) ====================
+    // ==================== VidRift SOTA Movie/TV Multi-Lane Extractor (embed.vidrift.net, Rank 91) ====================
 
     private const val VIDRIFT_HOST = "https://embed.vidrift.net"
     private const val VIDRIFT_PARENT_REFERER = "https://vidrift.net/"
@@ -6090,7 +6560,7 @@ object StreamPlayExtractor : StreamPlay() {
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
                     val subUrl = resolveVidRiftUrl(obj.optString("url")) ?: continue
-                    val rawLabel = obj.optString("label").substringBefore("·").trim().ifBlank {
+                    val rawLabel = obj.optString("label").substringBefore("\u00b7").trim().ifBlank {
                         obj.optString("lang").trim().ifBlank { "English" }
                     }
                     bigbangSubs.add(cleanSubtitleLabel(rawLabel) to subUrl)
@@ -6212,7 +6682,7 @@ object StreamPlayExtractor : StreamPlay() {
                 val t = tracks.optJSONObject(i) ?: continue
                 val resolvedUrl = resolveVidRiftUrl(t.optString("url")) ?: continue
                 val label = cleanSubtitleLabel(
-                    t.optString("label").substringBefore("·").trim().ifBlank {
+                    t.optString("label").substringBefore("\u00b7").trim().ifBlank {
                         t.optString("lang").trim().ifBlank { "English" }
                     }
                 )
@@ -6223,10 +6693,9 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * Bounded 512-byte `#EXTM3U` prefix probe for viewer-direct single-quality leaf playlists
-     * (such as `Titan` `/720/index_*.m3u8`). Verifies HTTP 2xx liveness and `#EXTM3U` header
-     * presence while closing the response stream after 512 bytes so the remaining ~358 KB of
-     * `#EXTINF` segment entries is never downloaded.
+     * Bounded 512-byte `#EXTM3U` prefix probe for viewer-direct single-quality leaf playlists.
+     * Verifies HTTP 2xx liveness and `#EXTM3U` header presence while closing the response stream
+     * after 512 bytes.
      */
     private suspend fun cancellableProbeM3u8Prefix(
         url: String,
@@ -6302,9 +6771,10 @@ object StreamPlayExtractor : StreamPlay() {
      * Emits a resolved VidRift API stream descriptor.
      *
      * When `stream.isDirectSingleQuality` is `true` (e.g. `Titan` viewer-direct `720p` muxed H.264
-     * MPEG-TS streams), the URL is probed with a bounded 512-byte `#EXTM3U` prefix check and emitted
-     * with its verified quality and explicit `vidrift_lane=<lane>` provenance tag without downloading
-     * the full 358 KB `#EXTINF` segment list.
+     * MPEG-TS streams), the leaf media playlist is fetched and its real byte size is measured via
+     * [measureHlsMediaPlaylistSizeMb] (`#EXT-X-BYTERANGE` sum or 3-segment `Range: bytes=0-0` /
+     * `Content-Range` sampling). Only verified 720p streams with a real measured size at or below
+     * `VIDRIFT_MAX_720P_SIZE_BYTES` (650 MB) pass [isEligibleVidRift720BackupLink].
      */
     private suspend fun emitVidRiftResolvedStream(
         stream: VidRiftResolvedStream,
@@ -6312,6 +6782,7 @@ object StreamPlayExtractor : StreamPlay() {
         baseStreamHeaders: Map<String, String>,
         manifestTimeoutMs: Long = 4_500L,
         fetchTimeoutSec: Long = 4L,
+        durationHintSeconds: Double = HLS_SIZE_HINT_SECONDS,
         callback: (ExtractorLink) -> Unit
     ) {
         val baseWithSource = if (baseStreamHeaders["X-StreamPlay-Source"].isNullOrBlank()) {
@@ -6330,22 +6801,31 @@ object StreamPlayExtractor : StreamPlay() {
         }
         val laneTag = "vidrift_lane=${stream.lane.lowercase(Locale.ROOT)}"
         if (stream.isDirectSingleQuality && stream.quality > 0 && stream.quality != Qualities.Unknown.value) {
-            val prefix = cancellableProbeM3u8Prefix(stream.url, effHeaders, timeoutMs = 2_500L)
-            if (prefix == null || !prefix.contains("#EXTM3U", ignoreCase = true)) {
+            val manifestText = cancellableGetText(stream.url, effHeaders, timeoutSec = fetchTimeoutSec)
+            if (manifestText.isNullOrBlank() || !manifestText.contains("#EXTM3U", ignoreCase = true)) {
                 return
             }
-            if (!prefix.contains("#EXT-X-STREAM-INF", ignoreCase = true)) {
-                val qTag = vidsrcQualityTag(stream.quality)
-                val leafLink = newExtractorLink(
-                    source = "VidRift",
-                    name = "${stream.name} [$qTag]",
-                    url = stream.url,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = stream.referer
-                    this.quality = stream.quality
-                    this.headers = effHeaders
-                    this.extractorData = laneTag
+            if (manifestText.contains("#EXT-X-STREAM-INF", ignoreCase = true)) {
+                val variants = parseHlsMasterVariants(
+                    stream.url,
+                    manifestText,
+                    durationHintSeconds = durationHintSeconds
+                )
+                if (variants.isEmpty()) return
+                val generated = variants.map { v ->
+                    val qTag = vidsrcQualityTag(v.quality)
+                    val sizeTag = v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                    newExtractorLink(
+                        source = "VidRift",
+                        name = "${stream.name} [$qTag]$sizeTag",
+                        url = v.url,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = stream.referer
+                        this.quality = v.quality
+                        this.headers = effHeaders
+                        this.extractorData = laneTag
+                    }
                 }
                 emitTopTierDualQualityStreamLinks(
                     source = "VidRift",
@@ -6354,12 +6834,41 @@ object StreamPlayExtractor : StreamPlay() {
                     referer = stream.referer,
                     headers = effHeaders,
                     streamType = ExtractorLinkType.M3U8,
-                    generatedLinks = listOf(leafLink),
+                    generatedLinks = generated,
                     extractorDataTag = laneTag,
                     callback = callback
                 )
                 return
             }
+            val measuredMb = measureHlsMediaPlaylistSizeMb(stream.url, manifestText, effHeaders)
+            val qTag = vidsrcQualityTag(stream.quality)
+            val sizeSuffix = if (measuredMb != null && measuredMb > 0) " [$measuredMb MB]" else ""
+            val leafLink = newExtractorLink(
+                source = "VidRift",
+                name = "${stream.name} [$qTag]$sizeSuffix",
+                url = stream.url,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.referer = stream.referer
+                this.quality = stream.quality
+                this.headers = effHeaders
+                this.extractorData = laneTag
+            }
+            if (!isEligibleVidRift720BackupLink(leafLink)) {
+                return
+            }
+            emitTopTierDualQualityStreamLinks(
+                source = "VidRift",
+                baseName = stream.name,
+                url = stream.url,
+                referer = stream.referer,
+                headers = effHeaders,
+                streamType = ExtractorLinkType.M3U8,
+                generatedLinks = listOf(leafLink),
+                extractorDataTag = laneTag,
+                callback = callback
+            )
+            return
         }
         emitVerifiedStream(
             source = "VidRift",
@@ -6373,33 +6882,48 @@ object StreamPlayExtractor : StreamPlay() {
             includeSizeTag = true,
             requireManifestVerification = true,
             extractorDataTag = laneTag,
+            durationHintSeconds = durationHintSeconds,
             callback = callback
         )
     }
 
+    internal const val VIDRIFT_MAX_720P_SIZE_BYTES = 650L * 1024L * 1024L
+
+    internal fun isVidRiftOversized720p(link: ExtractorLink): Boolean {
+        val sizeBytes = StreamLinkOptimizer.parseSizeBytes(link.name)?.takeIf { it > 0L } ?: return true
+        return sizeBytes > VIDRIFT_MAX_720P_SIZE_BYTES
+    }
+
+    internal fun isEligibleVidRift720BackupLink(link: ExtractorLink): Boolean {
+        if (!StreamLinkOptimizer.is720p(link)) return false
+        val sizeBytes = StreamLinkOptimizer.parseSizeBytes(link.name) ?: return false
+        return sizeBytes in 1L..VIDRIFT_MAX_720P_SIZE_BYTES
+    }
+
     /**
-     * SOTA Movie & TV Series Extractor for VidRift (`embed.vidrift.net`, Rank 98).
+     * SOTA Movie & TV Series 720p-Only Backup Extractor for VidRift (`embed.vidrift.net`, Rank 91).
      *
-     * Architecture & Lag Prevention:
-     * 1. **Wave 1A — Instant Inline Owned CDN H.264 Lanes (`Direct`, `Vexon`, `Evion`)**:
+     * Architecture & Oversized-File Guard:
+     * 1. **Strict 720p-Only Backup Policy**:
+     *    VidRift is isolated as a Rank 91 720p-only backup behind VidLink (100), MeowTV (98),
+     *    Cineby (95), and CineSrc (94). Only verified `720p` variants with a known size at or below
+     *    `650 MB` (`isEligibleVidRift720BackupLink`) are emitted; all `1080p`, `480p`, `360p`, `4K`,
+     *    `[Auto]`, unsized, and oversized (>650 MB) `720p` streams are suppressed.
+     * 2. **Wave 1A — Instant Inline Owned CDN H.264 Lanes (`Direct`, `Vexon`, `Evion`)**:
      *    Resolves `selfhostUrl`, `vexonUrl` (Movie Cloudflare R2 CDN), and `evionUrl` (TV Cloudflare R2 CDN)
      *    directly from `embedMeta` with `#EXTM3U` verification, emitting in ~0.39s–1.5s.
-     * 2. **Wave 1B — Co-Staged Primary API H.264 Lanes (`Titan` & `Atlas`)**:
+     * 3. **Wave 1B — Co-Staged Primary API H.264 Lanes (`Titan` & `Atlas`)**:
      *    Launched as independent concurrent jobs at `t = 0ms`. Uses a bounded 600ms co-staging window
      *    across `Direct`/`Vexon`/`Evion`, `Titan`, and `Atlas` so fast primary lanes finish together
      *    and emit `720p` in `STREAM_PRIORITY_COMPARATOR` order (lowest file size first!), while a fast
      *    lane is never blocked behind a slow sibling.
-     * 3. **Wave 2 — Secondary Adaptive H.264 Lanes (`Vela` & Proxied `Lyra`)**:
+     * 4. **Wave 2 — Secondary Adaptive H.264 Lanes (`Vela` & Proxied `Lyra`)**:
      *    Launched in parallel at `t = 0ms` so their network I/O overlaps with Wave 1, emitting
-     *    non-blockingly as each completes while deferring non-720p variants until all healthy `720p`
-     *    lanes have had their chance.
-     * 4. **Wave 3 — Isolated Fallback (`Orion` & `BigBang`)**:
-     *    `Orion` and `BigBang` serve low-bitrate (520 kbps @ 720p) MovieBox fMP4 HEVC streams with
-     *    unpatched B-frame composition time offsets (`cts`), 1.54 MB demuxed child playlists, and
-     *    350–630 kbps segment throttling. They are strictly isolated as a last-resort fallback
-     *    when Wave 1 and Wave 2 produce zero non-dub verified H.264 streams, and omit misleading
-     *    video-only `[89 MB]` size tags so they never poison `DownloadSelectionPolicy`.
-     * 5. **Multi-Language WebVTT Subtitles**:
+     *    non-blockingly as each completes.
+     * 5. **Wave 3 — Isolated 720p Fallback (`Orion` & `BigBang`)**:
+     *    Strictly isolated as a last-resort 720p-only fallback when Wave 1 and Wave 2 produce zero
+     *    non-dub verified H.264 720p streams.
+     * 6. **Multi-Language WebVTT Subtitles**:
      *    Always harvested immediately from inline `bigbangSubtitles` and all `/api/orion/.../subtitles.json`
      *    endpoints regardless of whether `Orion`/`BigBang` video lanes are suppressed.
      */
@@ -6419,6 +6943,7 @@ object StreamPlayExtractor : StreamPlay() {
             val id = effectiveTmdbId ?: return
             val isMovie = season == null || (season == 0 && episode == null)
             if (!isMovie && episode == null) return
+            val vidRiftDurationHintSeconds = if (isMovie) HLS_MOVIE_SIZE_HINT_SECONDS else HLS_TV_SIZE_HINT_SECONDS
 
             withTimeoutOrNull(22_000L) {
                 val embedPath = if (isMovie) "/embed/movie/$id" else "/embed/tv/$id/$season/$episode"
@@ -6462,7 +6987,6 @@ object StreamPlayExtractor : StreamPlay() {
 
                 val healthyLinksEmitted = java.util.concurrent.atomic.AtomicInteger(0)
                 val nonDubHealthyLinksEmitted = java.util.concurrent.atomic.AtomicInteger(0)
-                val deferredNon720Links = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
                 val emissionLock = Any()
 
                 fun recordHealthyEmission(link: ExtractorLink) {
@@ -6472,10 +6996,9 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-                fun emitHealthy720AndDeferOthers(links: Collection<ExtractorLink>) {
+                fun emitHealthy720Only(links: Collection<ExtractorLink>) {
                     if (links.isEmpty()) return
-                    val (links720, otherLinks) = links.partition { StreamLinkOptimizer.is720p(it) }
-                    deferredNon720Links.addAll(otherLinks)
+                    val links720 = links.filter { isEligibleVidRift720BackupLink(it) }
                     val sorted720 = links720.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
                     for (link in sorted720) {
                         recordHealthyEmission(link)
@@ -6523,9 +7046,12 @@ object StreamPlayExtractor : StreamPlay() {
                                     embedUrl = embedUrl,
                                     baseStreamHeaders = streamHeaders,
                                     manifestTimeoutMs = 4_500L,
-                                    fetchTimeoutSec = 4L
+                                    fetchTimeoutSec = 4L,
+                                    durationHintSeconds = vidRiftDurationHintSeconds
                                 ) {
-                                    collected.add(it)
+                                    if (isEligibleVidRift720BackupLink(it)) {
+                                        collected.add(it)
+                                    }
                                 }
                             }
                         }
@@ -6582,7 +7108,12 @@ object StreamPlayExtractor : StreamPlay() {
                                                         fetchTimeoutSec = 3L,
                                                         requireManifestVerification = true,
                                                         extractorDataTag = "vidrift_lane=direct",
-                                                        callback = { wave1ACollected.add(it) }
+                                                        durationHintSeconds = vidRiftDurationHintSeconds,
+                                                        callback = {
+                                                            if (isEligibleVidRift720BackupLink(it)) {
+                                                                wave1ACollected.add(it)
+                                                            }
+                                                        }
                                                     )
                                                 } catch (e: Exception) {
                                                     if (e is CancellationException) throw e
@@ -6604,7 +7135,12 @@ object StreamPlayExtractor : StreamPlay() {
                                                         fetchTimeoutSec = 3L,
                                                         requireManifestVerification = true,
                                                         extractorDataTag = "vidrift_lane=vexon",
-                                                        callback = { wave1ACollected.add(it) }
+                                                        durationHintSeconds = vidRiftDurationHintSeconds,
+                                                        callback = {
+                                                            if (isEligibleVidRift720BackupLink(it)) {
+                                                                wave1ACollected.add(it)
+                                                            }
+                                                        }
                                                     )
                                                 } catch (e: Exception) {
                                                     if (e is CancellationException) throw e
@@ -6626,7 +7162,12 @@ object StreamPlayExtractor : StreamPlay() {
                                                         fetchTimeoutSec = 3L,
                                                         requireManifestVerification = true,
                                                         extractorDataTag = "vidrift_lane=evion",
-                                                        callback = { wave1ACollected.add(it) }
+                                                        durationHintSeconds = vidRiftDurationHintSeconds,
+                                                        callback = {
+                                                            if (isEligibleVidRift720BackupLink(it)) {
+                                                                wave1ACollected.add(it)
+                                                            }
+                                                        }
                                                     )
                                                 } catch (e: Exception) {
                                                     if (e is CancellationException) throw e
@@ -6691,7 +7232,7 @@ object StreamPlayExtractor : StreamPlay() {
                     val (completedNow, remainingDeferreds) = allHealthyDeferreds.partition { it.isCompleted }
                     val completedNowLinks = completedNow.flatMap { it.await() }
                     synchronized(emissionLock) {
-                        emitHealthy720AndDeferOthers(completedNowLinks)
+                        emitHealthy720Only(completedNowLinks)
                     }
 
                     if (remainingDeferreds.isNotEmpty()) {
@@ -6700,7 +7241,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 async {
                                     val links = deferred.await()
                                     synchronized(emissionLock) {
-                                        emitHealthy720AndDeferOthers(links)
+                                        emitHealthy720Only(links)
                                     }
                                 }
                             }.awaitAll()
@@ -6708,18 +7249,11 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     primaryWatcher.await()
 
-                    // Flush deferred non-720p links (1080p, 480p, Auto) sorted by priority
-                    val sortedNon720 = deferredNon720Links.sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
-                    deferredNon720Links.clear()
-                    for (link in sortedNon720) {
-                        recordHealthyEmission(link)
-                        callback(link)
-                    }
-
-                    // 4. Wave 3: Last-resort fallback to Orion / BigBang when Wave 1 and Wave 2
-                    //    yielded zero non-dub verified H.264 streams. Misleading video-only `[89 MB]`
-                    //    size tags are omitted (`includeSizeTag = false`) so fallback streams
-                    //    cannot poison `DownloadSelectionPolicy`.
+                    // 4. Wave 3: Last-resort 720p-only fallback to Orion / BigBang when Wave 1 and Wave 2
+                    //    yielded zero non-dub verified H.264 720p streams. Duration-accurate size tags are
+                    //    preserved (`includeSizeTag = true`) so every fallback candidate is checked against
+                    //    the <= 650 MB backup cap while `getVidRiftHealthTier` (-30/-35) keeps them strictly
+                    //    below all healthy H.264 lanes.
                     if (nonDubHealthyLinksEmitted.get() == 0) {
                         val orderedOrions = if (healthyLinksEmitted.get() > 0) {
                             orderVidRiftOrionStreams(meta.orionStreams).filterNot {
@@ -6749,12 +7283,15 @@ object StreamPlayExtractor : StreamPlay() {
                                                     headers = streamHeaders,
                                                     manifestTimeoutMs = 4_500L,
                                                     fetchTimeoutSec = 4L,
-                                                    includeSizeTag = false,
+                                                    includeSizeTag = true,
                                                     requireManifestVerification = true,
-                                                    extractorDataTag = "vidrift_lane=orion"
+                                                    extractorDataTag = "vidrift_lane=orion",
+                                                    durationHintSeconds = vidRiftDurationHintSeconds
                                                 ) {
-                                                    emittedFromCandidate++
-                                                    callback(it)
+                                                    if (isEligibleVidRift720BackupLink(it)) {
+                                                        emittedFromCandidate++
+                                                        callback(it)
+                                                    }
                                                 }
                                                 if (emittedFromCandidate > 0) break
                                             } catch (e: Exception) {
@@ -6776,11 +7313,15 @@ object StreamPlayExtractor : StreamPlay() {
                                                 headers = streamHeaders,
                                                 manifestTimeoutMs = 4_500L,
                                                 fetchTimeoutSec = 4L,
-                                                includeSizeTag = false,
+                                                includeSizeTag = true,
                                                 requireManifestVerification = true,
                                                 extractorDataTag = "vidrift_lane=bigbang",
-                                                callback = callback
-                                            )
+                                                durationHintSeconds = vidRiftDurationHintSeconds
+                                            ) {
+                                                if (isEligibleVidRift720BackupLink(it)) {
+                                                    callback(it)
+                                                }
+                                            }
                                         } catch (e: Exception) {
                                             if (e is CancellationException) throw e
                                         }

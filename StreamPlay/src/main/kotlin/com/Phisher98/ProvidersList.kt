@@ -176,22 +176,19 @@ private suspend fun getAnimeIds(res: StreamPlay.LinkData): StreamPlayExtractor.A
  * provider, and the `.com` -> `.pw` redirect was verified on 2026-10-23.
  *
  *   1. VidLink   - vidlink.pro       | Universal (Movie/TV/Anime) | Rank 100 (#1, mandatory)
- *   2. VidRift   - embed.vidrift.net | Movie/TV                   | Rank 98  (#2, Titan 720p direct + Atlas/Orion/BigBang/Vexon + subs)
+ *   2. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 98  (#2, single-use ticket + offline SHA-256 XOR)
  *   3. Cineby    - api.wecollege.net | Universal (Movie/TV/Anime) | Rank 95  (#3, multi-server + offline mvm1)
- *   4. CineSrc   - cinesrc.st        | Universal (Movie/TV/Anime) | Rank 94  (#4, CSP4 PoW + Nebula/Wave/Surge + subs)
+ *   4. CineSrc   - cinesrc.st        | Universal (Movie/TV/Anime) | Rank 94  (#4, CSP4 PoW + Nebula/secret/Wave/Surge + subs)
  *   5. VidFast   - vidfast.vc        | Movie/TV (stream-only)     | Rank 93  (#5, enc-vidfast handshake)
  *   6. MegaPlay  - megaplay.buzz     | Anime                      | Rank 92  (#6, MAL/AniList + offline AES-CBC/HMAC)
- *   7. MeowTV    - meowtv.ru         | Movie/TV                   | Rank 91  (#7, single-use ticket + offline SHA-256 XOR)
+ *   7. VidRift   - embed.vidrift.net | Movie/TV (720p backup)     | Rank 91  (#7, 720p-only backup + WebVTT subs)
  *   8. AniZone   - anizone.to        | Anime                      | Rank 89  (#8, soft-sub HLS ladder + English SRT/ASS sidecars)
  *   9. AnimePahe - animepahe.pw      | Anime                      | Rank 88  (#9, Cloudflare-gated Kwik HLS, deepest airing/rare catalogue)
  *  10. Animex    - animex.one        | Anime                      | Rank 87  (#10, GraphQL + SSR + kaa.lt multi-provider fan-out)
  *
- * VidRift (`embed.vidrift.net`) is the dedicated Movie/TV 720p-first powerhouse: Wave 1A resolves
- * owned Cloudflare R2 H.264 MPEG-TS lanes (`Direct`, `Vexon`, `Evion`), Wave 1B co-stages `Titan`
- * (viewer-direct 720p muxed H.264/AAC HLS fast-path) and `Atlas` (adaptive 720p+1080p H.264),
- * Wave 2 resolves `Vela` and proxied `Lyra` (rejecting unproxied server-IP-locked `Lyra` URLs),
- * and Wave 3 isolates `Orion` and `BigBang` (fMP4 HEVC) as a zero-link fallback while always
- * harvesting synchronized WebVTT sidecar subtitles.
+ * VidRift (`embed.vidrift.net`) is retained at Rank 91 as a dedicated 720p-only Movie/TV backup
+ * (suppressing oversized 1080p/UHD/SD variants and oversized >650 MB 720p files) after VidLink (100),
+ * MeowTV (98), Cineby (95), and CineSrc (94), while still harvesting synchronized WebVTT sidecar subtitles.
  *
  * VidRock (`vidrock`, `vidrock.net`, `galacticvoyagers.xyz`, `moonfirekeeper.lol`),
  * VidSrc (`vidsrc`, `vidsrc.pm`, `cheaptruckrepairs.cc`, `netoda.tech`, `mov2day.xyz`), and
@@ -203,9 +200,9 @@ private val providers by lazy {
         Provider("vidlink", "VidLink") { res, subtitleCallback, callback, _, _ ->
             invokeVidlink(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId, isAnime = res.isAnime)
         },
-        Provider("vidrift", "VidRift") { res, subtitleCallback, callback, _, _ ->
+        Provider("meowtv", "MeowTV") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) {
-                invokeVidRift(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
+                invokeMeowTV(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
         Provider("cineby", "Cineby") { res, subtitleCallback, callback, _, _ ->
@@ -252,9 +249,9 @@ private val providers by lazy {
                 )
             }
         },
-        Provider("meowtv", "MeowTV") { res, subtitleCallback, callback, _, _ ->
+        Provider("vidrift", "VidRift") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) {
-                invokeMeowTV(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
+                invokeVidRift(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
             }
         },
         Provider("anizone", "AniZone") { res, subtitleCallback, callback, _, _ ->
@@ -306,18 +303,18 @@ private val providers by lazy {
 /**
  * The curated v26 SOTA set. Order defines the authoritative source hierarchy:
  * VidLink (100), Cineby (95), and CineSrc (94) are universal primaries (Movie, TV, Anime);
- * VidRift (98) > VidFast (93) > MeowTV (91) serve Movie/TV;
+ * MeowTV (98) > Cineby (95) > CineSrc (94) > VidFast (93) > VidRift (91, 720p backup) serve Movie/TV;
  * MegaPlay (92) > AniZone (89) > AnimePahe (88) > Animex (87) serve Anime alongside
  * VidLink (100), Cineby (95), and CineSrc (94).
  */
 val DEFAULT_TOP_TIER_PROVIDERS = setOf(
     "vidlink",
-    "vidrift",
+    "meowtv",
     "cineby",
     "cinesrc",
     "vidfast",
     "megaplay",
-    "meowtv",
+    "vidrift",
     "anizone",
     "animepahe",
     "animex"

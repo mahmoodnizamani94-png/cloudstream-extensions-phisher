@@ -510,7 +510,7 @@ class StreamPlayShieldTest {
     @Test
     fun testAdBlockedExceptionIsTextuallyAnIoException() {
         val exception = StreamPlayShield.AdBlockedException("ads.example.com", "ad")
-        assertTrue("failures must route through the standard IOException network contract", exception is java.io.IOException)
+        assertTrue("failures must route through the standard IOException network contract", java.io.IOException::class.java.isInstance(exception))
         assertTrue(exception.message!!.contains("ads.example.com"))
         assertEquals("ad", exception.category)
     }

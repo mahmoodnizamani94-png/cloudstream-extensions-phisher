@@ -49,13 +49,17 @@ otherwise, and queries both `SXXEXX` and the bare `- XX` form.
 episode number, so anime that could not be mapped to TMDB no longer ends up with zero subtitle
 sources (the previous anime fallbacks were all TMDB-gated).
 
-### Provider-sidecar Movie/TV & Anime sources (v26)
+### Provider-sidecar Movie/TV & Anime sources (v27)
 
 | Provider | Rank | Sidecars | Behaviour |
 |---|---|---|---|
-| `vidrift` | 98 | Yes | `embed.vidrift.net/embed/{movie\|tv}/{tmdbId}` SSR `embed-meta` (`bigbangSubtitles` + `/api/orion/.../subtitles.json` `.vtt` tracks) alongside 720p-first co-staged wave emission across Wave 1A (`Direct`, `Vexon`, `Evion`), Wave 1B 600ms co-staged (`Titan` viewer-direct 720p H.264 with 512-byte `#EXTM3U` leaf prefix verification, `Atlas`), Wave 2 (`Vela`, proxied `Lyra` while rejecting unproxied server-IP-locked `Lyra` URLs), and Wave 3 zero-link fallback (`Orion`, `BigBang` without misleading video-only size tags), ranked honestly by `(healthTier DESC, hasKnownSize DESC, sizeBytes ASC, laneScore DESC)`. Tagged `X-StreamPlay-Source: vidrift` (host marker priority 98). |
+| `vidlink` | 100 | Yes | Offline `XSalsa20-Poly1305` (`VidLinkCrypto.encryptToken`) -> `vidlink.pro/api/b/{movie\|tv}/{token}` -> emits direct MP4 (`stream.qualities` sorted `720p` -> `1080p`) immediately before secondary HLS manifest fetch, plus multi-language `.vtt`/`.srt` subtitles. |
+| `meowtv` | 98 | Yes | `api.meowtv.ru` single-use ticket (`english` -> `dcloud` -> `acme?list=1`) -> offline `meowTvDecryptStreamsOffline` / `meowTvDecryptOffline` (`SHA-256` + XOR) + `/subs/{movie\|tv}` (`rezesubs.com` `.vtt`) -> `cdn2.fastcloud.live` / `hscow.com` / `vidjoy.org` / `fcxmb.com` / `krico443jez.com` HLS (`720p` -> `1080p`). |
+| `cineby` | 95 | Yes | `api.wecollege.net/seed` (`Origin: https://vidy.st`) + multi-server (`oakland`, `reno`, `dallas`, `boise`, `miami`, `vegas`, `atlanta`, `phoenix`) -> offline `cinebyDecryptMvm1` (`dec-videasy` fallback) -> `moon.goldenkite.top` / `sun.paleoak.top` / `e2e.majorplay.net` / `finalsignal.top` / `wellsrobertsonkmlt.workers.dev` discrete `720p`/`1080p` HLS + `.vtt` subtitles. |
+| `cinesrc` | 94 | Yes | `cinesrc.st` CSP4 + SHA-256 PoW (`wave`, `nebula`, `surge`, staggered 350ms) + `api.wing.st` (`secret` + `Nebula` via `enc-cinejoy`/`dec-cinejoy` `cinesrcParseWingDecryptedResult` handling both `JSONObject` and `JSONArray` `result.data.stream`) -> `ice.bright67.online` / `nebula.bright67.online` / `lightspeed.st` HLS + `subs.bright67.online` `.srt`/`.vtt` subtitles. |
+| `vidrift` | 91 | Yes | `embed.vidrift.net/embed/{movie\|tv}/{tmdbId}` SSR `embed-meta` (`bigbangSubtitles` + `/api/orion/.../subtitles.json` `.vtt` tracks) alongside strictly 720p-only backup emission (`isEligibleVidRift720BackupLink`, `<= 650 MB`, measuring single-quality leaf playlists via `measureHlsMediaPlaylistSizeMb` and suppressing all non-720p, unsized, and oversized 720p variants) across Wave 1A (`Direct`, `Vexon`, `Evion`), Wave 1B 600ms co-staged (`Titan`, `Atlas`), Wave 2 (`Vela`, proxied `Lyra`), and Wave 3 zero-link fallback (`Orion`, `BigBang`). Tagged `X-StreamPlay-Source: vidrift`. |
 
-### Provider-sidecar anime sources (v26)
+### Provider-sidecar anime sources (v27)
 
 | Provider | Rank | Sidecars | Behaviour |
 |---|---|---|---|

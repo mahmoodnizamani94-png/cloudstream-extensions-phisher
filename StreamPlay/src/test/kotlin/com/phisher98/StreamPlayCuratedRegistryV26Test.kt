@@ -50,12 +50,12 @@ class StreamPlayCuratedRegistryV26Test {
 
     private val curatedIds = setOf(
         "vidlink",
-        "vidrift",
+        "meowtv",
         "cineby",
         "cinesrc",
         "vidfast",
         "megaplay",
-        "meowtv",
+        "vidrift",
         "anizone",
         "animepahe",
         "animex"
@@ -64,12 +64,12 @@ class StreamPlayCuratedRegistryV26Test {
     /** Authoritative launch hierarchy: strictly descending boost per provider id. */
     private val boostByProvider = linkedMapOf(
         "vidlink" to 100f,
-        "vidrift" to 98f,
+        "meowtv" to 98f,
         "cineby" to 95f,
         "cinesrc" to 94f,
         "vidfast" to 93f,
         "megaplay" to 92f,
-        "meowtv" to 91f,
+        "vidrift" to 91f,
         "anizone" to 89f,
         "animepahe" to 88f,
         "animex" to 87f
@@ -84,12 +84,12 @@ class StreamPlayCuratedRegistryV26Test {
      */
     private val tierByProvider = mapOf(
         "vidlink" to LatencyTier.TIER_1,
-        "vidrift" to LatencyTier.TIER_1,
+        "meowtv" to LatencyTier.TIER_1,
         "cineby" to LatencyTier.TIER_1,
         "cinesrc" to LatencyTier.TIER_1,
         "vidfast" to LatencyTier.TIER_1,
         "megaplay" to LatencyTier.TIER_1,
-        "meowtv" to LatencyTier.TIER_1,
+        "vidrift" to LatencyTier.TIER_1,
         "anizone" to LatencyTier.TIER_1,
         "animepahe" to LatencyTier.TIER_2,
         "animex" to LatencyTier.TIER_1
@@ -143,12 +143,12 @@ class StreamPlayCuratedRegistryV26Test {
 
         val byId = providers.associateBy { it.id }
         assertEquals("VidLink", byId.getValue("vidlink").name)
-        assertEquals("VidRift", byId.getValue("vidrift").name)
+        assertEquals("MeowTV", byId.getValue("meowtv").name)
         assertEquals("Cineby", byId.getValue("cineby").name)
         assertEquals("CineSrc", byId.getValue("cinesrc").name)
         assertEquals("VidFast", byId.getValue("vidfast").name)
         assertEquals("MegaPlay", byId.getValue("megaplay").name)
-        assertEquals("MeowTV", byId.getValue("meowtv").name)
+        assertEquals("VidRift", byId.getValue("vidrift").name)
         assertEquals("AniZone", byId.getValue("anizone").name)
         assertEquals("AnimePahe", byId.getValue("animepahe").name)
         assertEquals("Animex", byId.getValue("animex").name)
@@ -213,16 +213,16 @@ class StreamPlayCuratedRegistryV26Test {
     @Test
     fun testSourcePriorityRankCoversLabelsAndCdnHosts() {
         assertEquals(100, rankOf("VidLink", "VidLink [1080p]", "https://cdn.example/a.mp4"))
-        assertEquals(98, rankOf("VidRift", "VidRift Titan [720p]", "https://img1.hscow.com/v4/720/index_287.m3u8"))
-        assertEquals(98, rankOf("Unknown", "stream", "https://edge.reelvault.click/proxy?u=abc"))
-        assertEquals(98, rankOf("Unknown", "stream", "https://media.reelvault.click/vexon/media/index.m3u8"))
-        assertEquals(98, rankOf("Unknown", "stream", "https://bigbang.cymru/media/master.m3u8.png"))
-        assertEquals(98, rankOf("Unknown", "stream", "https://i-arch-400.deton444eik.com/stream2/index.m3u8"))
-        assertEquals(95, rankOf("Cineby", "Cineby Tampa [1080p]", "https://sun.paleoak.top/x.m3u8"))
+        assertEquals(98, rankOf("MeowTV", "MeowTV [1080p]", "https://cdn.example/m.m3u8"))
+        assertEquals(95, rankOf("Cineby", "Cineby Boise [1080p]", "https://moon.goldenkite.top/x.m3u8"))
         assertEquals(94, rankOf("CineSrc", "CineSrc Nebula [720p]", "https://nebula.bright67.online/hls2/master.txt"))
         assertEquals(93, rankOf("VidFast", "VidFast [1080p]", "https://cdn.example/c.m3u8"))
         assertEquals(92, rankOf("MegaPlay", "MegaPlay [Sub] [Original]", "https://fetch.nexabloom.top/e.m3u8"))
-        assertEquals(91, rankOf("MeowTV", "MeowTV [1080p]", "https://cdn.example/m.m3u8"))
+        assertEquals(91, rankOf("VidRift", "VidRift Titan [720p]", "https://img1.hscow.com/v4/720/index_287.m3u8"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://edge.reelvault.click/proxy?u=abc"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://media.reelvault.click/vexon/media/index.m3u8"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://bigbang.cymru/media/master.m3u8.png"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://i-arch-400.deton444eik.com/stream2/index.m3u8"))
         assertEquals(89, rankOf("AniZone", "AniZone [Sub] [Original]", "https://cdn.example/z.m3u8"))
         assertEquals(88, rankOf("AnimePahe", "AnimePahe [Sub] [Original]", "https://cdn.example/p.m3u8"))
         assertEquals(87, rankOf("Animex", "Animex [Sub] [Original]", "https://cdn.example/x.m3u8"))
@@ -235,10 +235,12 @@ class StreamPlayCuratedRegistryV26Test {
         assertEquals(0, rankOf("VidSrc", "VidSrc 720p", "https://mov2day.xyz/proxy?url=https%3A%2F%2Fbcdn.hakunaymatata.com%2Fbt%2F720.mp4"))
 
         // Every provider also ranks on the CDN hosts it actually serves from.
+        assertEquals(95, rankOf("Unknown", "stream", "https://moon.goldenkite.top/file2/master.m3u8"))
         assertEquals(95, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
         assertEquals(95, rankOf("Unknown", "stream", "https://e2e.majorplay.net/hls/master.m3u8"))
         assertEquals(94, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/01/master.txt"))
         assertEquals(94, rankOf("Unknown", "stream", "https://ice.bright67.online/Deadpool/720p/playlist.jpg"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://lightspeed.st/hls2/05/00038/abc/master.txt"))
         assertEquals(94, rankOf("Unknown", "stream", "https://cinesrc.st/api/v2/stream"))
         assertEquals(0, rankOf("Unknown", "stream", "https://vidsrc.buzz/_stream?id=abc"))
         assertEquals(93, rankOf("Unknown", "stream", "https://vidfast.vc/e/abc.m3u8"))
@@ -247,9 +249,9 @@ class StreamPlayCuratedRegistryV26Test {
         assertEquals(0, rankOf("Unknown", "stream", "https://theemoviedb.hexa.su/api/tmdb/movie/550/images"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://megaplay.buzz/stream/s-2/123/sub"))
-        assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/thumb.jpg"))
-        assertEquals(91, rankOf("Unknown", "stream", "https://cdn.vidjoy.org/hls/master.m3u8"))
-        assertEquals(91, rankOf("Unknown", "stream", "https://i-arch-400.krico443jez.com/x.m3u8"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://img1.hscow.com/thumb.jpg"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://cdn.vidjoy.org/hls/master.m3u8"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://i-arch-400.krico443jez.com/x.m3u8"))
         assertEquals(89, rankOf("Unknown", "stream", "https://anizone.to/anime/eu8bdgty/1"))
         assertEquals(89, rankOf("Unknown", "stream", "https://suzaku.xin-cdn.xyz/abc/master.m3u8"))
         assertEquals(89, rankOf("Unknown", "stream", "https://seiryuu.vid-cdn.xyz/abc/master.m3u8"))
@@ -981,12 +983,15 @@ class StreamPlayCuratedRegistryV26Test {
     @Test
     fun testEveryProviderCdnHostCarriesRankForRewrappedLinks() {
         assertEquals(100, rankOf("Unknown", "stream", "https://bcdn.hakunaymatata.com/bt/master.m3u8"))
+        assertEquals(98, rankOf("Unknown", "stream", "https://img1.hscow.com/i/master.m3u8"))
+        assertEquals(95, rankOf("Unknown", "stream", "https://moon.goldenkite.top/file2/master.m3u8"))
         assertEquals(95, rankOf("Unknown", "stream", "https://sun.paleoak.top/file2/master.m3u8"))
         assertEquals(94, rankOf("Unknown", "stream", "https://nebula.bright67.online/hls2/master.txt"))
+        assertEquals(94, rankOf("Unknown", "stream", "https://lightspeed.st/hls2/master.txt"))
         assertEquals(93, rankOf("Unknown", "stream", "https://moon.zenoak.top/hls/master.m3u8"))
         assertEquals(0, rankOf("Unknown", "stream", "https://dragonballzfans.xyz/stream/master.m3u8"))
         assertEquals(92, rankOf("Unknown", "stream", "https://fetch.nexabloom.top/hls/master.m3u8"))
-        assertEquals(91, rankOf("Unknown", "stream", "https://img1.hscow.com/i/master.m3u8"))
+        assertEquals(91, rankOf("Unknown", "stream", "https://edge.reelvault.click/proxy?u=abc"))
         assertEquals(89, rankOf("Unknown", "stream", "https://suzaku.xin-cdn.xyz/e/master.m3u8"))
         assertEquals(88, rankOf("Unknown", "stream", "https://animepahe.pw/e/master.m3u8"))
         assertEquals(87, rankOf("Unknown", "stream", "https://hls.krussdomi.com/e/master.m3u8"))
@@ -1006,8 +1011,8 @@ class StreamPlayCuratedRegistryV26Test {
             listOf(
                 "vidlink.pro", "bcdn.hakunaymatata.com",
                 "vidrift.net", "embed.vidrift.net", "edge.reelvault.click", "media.reelvault.click", "bigbang.cymru",
-                "api.wecollege.net", "player.videasy.to", "sun.paleoak.top", "e2e.majorplay.net",
-                "cinesrc.st", "nebula.bright67.online", "ice.bright67.online", "subs.bright67.online", "api.wing.st",
+                "api.wecollege.net", "vidy.st", "player.videasy.to", "moon.goldenkite.top", "sun.paleoak.top", "e2e.majorplay.net",
+                "cinesrc.st", "nebula.bright67.online", "ice.bright67.online", "lightspeed.st", "subs.bright67.online", "api.wing.st",
                 "vidfast.vc", "moon.zenoak.top",
                 "megaplay.buzz", "fetch.nexabloom.top", "broforgotsave.online",
                 "meowtv.ru", "api.meowtv.ru", "img1.hscow.com", "img1.fcxmb.com",
