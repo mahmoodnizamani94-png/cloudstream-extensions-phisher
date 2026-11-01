@@ -50,6 +50,52 @@
             android:background="#2A2A2A"
             android:layout_marginBottom="16dp" />
 
+        <!-- 0. Subtitle Mode Card (Default English <-> Urdu) -->
+        <LinearLayout
+            android:id="@+id/subtitle_mode_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:orientation="horizontal"
+            android:padding="16dp"
+            android:gravity="center_vertical"
+            android:clickable="true"
+            android:focusable="true"
+            android:nextFocusUp="@id/saveIcon">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/subtitle_mode_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Subtitle Mode: Default (English)"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Switch between Default (English) and Urdu (اردو) subtitles for streams &amp; downloads (takes effect immediately)"
+                    android:textColor="#AAAAAA"
+                    android:textSize="12sp"
+                    android:layout_marginTop="4dp" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/subtitle_mode_icon"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginStart="16dp"
+                android:focusable="false"
+                android:clickable="false" />
+        </LinearLayout>
+
         <!-- 1. Performance Setting Card -->
         <LinearLayout
             android:id="@+id/performanceRow"
@@ -61,7 +107,7 @@
             android:gravity="center_vertical"
             android:clickable="true"
             android:focusable="true"
-            android:nextFocusUp="@id/saveIcon">
+            android:nextFocusUp="@id/subtitle_mode_button">
 
             <LinearLayout
                 android:layout_width="0dp"

@@ -100,6 +100,8 @@ class LanguageSelectFragment(
         "Malaysia (Malay)" to "ms-MY",
         "Norway (Norwegian)" to "no-NO",
         "Netherlands (Dutch)" to "nl-NL",
+        "Pakistan (Urdu)" to "ur-PK",
+        "India (Urdu)" to "ur-IN",
         "Poland (Polish)" to "pl-PL",
         "Brazil (Portuguese)" to "pt-BR",
         "Portugal (Portuguese)" to "pt-PT",
@@ -144,6 +146,11 @@ class LanguageSelectFragment(
             savedCode
         ) { code ->
             sharedPref.edit { putString("tmdb_language_code", code) }
+            if (code.startsWith("ur", ignoreCase = true)) {
+                UrduSubtitleEngine.setSubtitleMode(UrduSubtitleEngine.SubtitleMode.URDU, requireContext(), sharedPref)
+            } else if (code.startsWith("en", ignoreCase = true)) {
+                UrduSubtitleEngine.setSubtitleMode(UrduSubtitleEngine.SubtitleMode.DEFAULT, requireContext(), sharedPref)
+            }
             Toast.makeText(requireContext(), "Language set to $code", Toast.LENGTH_SHORT).show()
             dismiss()
         }

@@ -569,7 +569,8 @@ val nativeToStandardLanguage: Map<String, String> = mapOf(
     "ภาษาไทย" to "Thai",
     "tiếng việt" to "Vietnamese",
     "bahasa indonesia" to "Indonesian",
-    "українська" to "Ukrainian"
+    "українська" to "Ukrainian",
+    "اردو" to "Urdu"
 )
 
 private val bcp47LanguageMap: Map<String, String> = mapOf(
@@ -588,7 +589,9 @@ private val bcp47LanguageMap: Map<String, String> = mapOf(
     "en-au" to "English",
     "es-es" to "Spanish",
     "es-mx" to "Spanish",
-    "es-ar" to "Spanish"
+    "es-ar" to "Spanish",
+    "ur-pk" to "Urdu",
+    "ur-in" to "Urdu"
 )
 
 fun getLanguage(code: String): String {
@@ -728,6 +731,29 @@ fun isEnglishSubtitleLabel(raw: String?): Boolean {
         .substringBefore('_')
         .trim()
     return code == "en" || code == "eng"
+}
+
+/**
+ * Whether a subtitle label or language tag denotes Urdu.
+ *
+ * Accepts `Urdu`, `Urdu (AI Translated)`, `Urdu [SDH]`, `ur`, `urd`, `ur-PK`, `ur-IN`, and `اردو`.
+ */
+fun isUrduSubtitleLabel(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+    val rawTrimmed = raw.trim().lowercase(Locale.ROOT)
+    if (rawTrimmed.contains("urdu") || rawTrimmed.contains("اردو")) return true
+
+    val cleaned = cleanSubtitleLabel(raw).lowercase(Locale.ROOT)
+    if (cleaned.isEmpty()) return false
+    if (cleaned.contains("urdu") || cleaned.contains("اردو")) return true
+
+    val code = cleaned.substringBefore(' ')
+        .substringBefore('(')
+        .substringBefore('[')
+        .substringBefore('-')
+        .substringBefore('_')
+        .trim()
+    return code == "ur" || code == "urd"
 }
 
 

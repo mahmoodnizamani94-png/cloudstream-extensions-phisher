@@ -173,17 +173,25 @@ object SuperStreamExtractor : SuperStream() {
         } else {
             "https://opensubtitles-v3.strem.io/subtitles/series/$id:$season:$episode.json"
         }
-        app.get(url, headers = SUBTITLE_HEADERS, timeout = 10L)
-            .parsedSafe<SubtitlesAPI>()?.subtitles?.amap {
-                val lan = getLanguage(it.lang) ?: "Unknown"
-                val suburl = it.url
-                subtitleCallback.invoke(
-                    newSubtitleFile(
-                        lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
-                        suburl
-                    )
+        val urduMode = isUrduSubtitleMode(sharedPref)
+        val allSubs = app.get(url, headers = SUBTITLE_HEADERS, timeout = 10L)
+            .parsedSafe<SubtitlesAPI>()?.subtitles.orEmpty()
+        val orderedSubs = if (urduMode) {
+            val (urduSubs, otherSubs) = allSubs.partition { isUrduSubtitleCode(it.lang) }
+            urduSubs + otherSubs
+        } else {
+            allSubs.filterNot { isUrduSubtitleCode(it.lang) }
+        }
+        orderedSubs.amap {
+            val lan = if (isUrduSubtitleCode(it.lang)) "Urdu" else (getLanguage(it.lang) ?: "Unknown")
+            val suburl = it.url
+            subtitleCallback.invoke(
+                newSubtitleFile(
+                    lan.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.titlecase(Locale.getDefault()) else ch.toString() },
+                    suburl
                 )
-            }
+            )
+        }
     }
 
 
@@ -193,24 +201,53 @@ object SuperStreamExtractor : SuperStream() {
         episode: Int? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
-        val WyZIESUBAPI = "https://sub.wyzie.ru"
-        val url = if (season == null) {
-            "$WyZIESUBAPI/search?id=$id"
-        } else {
-            "$WyZIESUBAPI/search?id=$id&season=$season&episode=$episode"
-        }
+        val urduMode = isUrduSubtitleMode(sharedPref)
+        val wyzieBases = listOf("https://sub.wyzie.io", "https://sub.wyzie.ru")
+        for (base in wyzieBases) {
+            try {
+                val baseQuery = if (season == null) {
+                    "$base/search?id=$id"
+                } else {
+                    "$base/search?id=$id&season=$season&episode=$episode"
+                }
+                if (urduMode) {
+                    try {
+                        val urText = app.get("$baseQuery&language=ur", timeout = 8L).text
+                        val urSubs: List<WyZIESUB> = GSON.fromJson(urText, WYZIESUB_LIST_TYPE) ?: emptyList()
+                        urSubs.forEach {
+                            val suburl = it.url
+                            if (suburl.isNotBlank()) {
+                                subtitleCallback.invoke(newSubtitleFile("Urdu", suburl))
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
 
-        val res = app.get(url, timeout = 10L).text
-        val subtitles: List<WyZIESUB> = GSON.fromJson(res, WYZIESUB_LIST_TYPE)
-        subtitles.map {
-            val lan = it.display
-            val suburl = it.url
-            subtitleCallback.invoke(
-                newSubtitleFile(
-                    lan.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
-                    suburl
-                )
-            )
+                val res = app.get(baseQuery, timeout = 10L).text
+                val subtitles: List<WyZIESUB> = GSON.fromJson(res, WYZIESUB_LIST_TYPE) ?: emptyList()
+                if (subtitles.isEmpty()) continue
+                val ordered = if (urduMode) {
+                    val (urList, otherList) = subtitles.partition {
+                        isUrduSubtitleCode(it.display)
+                    }
+                    urList + otherList
+                } else {
+                    subtitles.filterNot { isUrduSubtitleCode(it.display) }
+                }
+                ordered.map {
+                    val lan = if (isUrduSubtitleCode(it.display)) "Urdu" else it.display
+                    val suburl = it.url
+                    subtitleCallback.invoke(
+                        newSubtitleFile(
+                            lan.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.titlecase(Locale.getDefault()) else ch.toString() },
+                            suburl
+                        )
+                    )
+                }
+                return
+            } catch (_: Exception) {
+            }
         }
     }
 

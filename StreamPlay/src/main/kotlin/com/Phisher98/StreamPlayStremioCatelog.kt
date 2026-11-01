@@ -220,6 +220,23 @@ class StreamPlayStremioCatelog(
             add(PipelinedTask("WyZIESUB", LatencyTier.TIER_1, isVideo = false) {
                 invokeWYZIESubs(imdb, res.season, res.episode, trackedSubCallback)
             })
+            if (!imdb.isNullOrBlank() || !resolved.title.isNullOrBlank()) {
+                add(PipelinedTask("SubDLUrdu", LatencyTier.TIER_1, isVideo = false) {
+                    UrduSubtitleEngine.invokeSubDlUrduKeyless(
+                        imdbId = imdb,
+                        title = resolved.title,
+                        season = resolved.season,
+                        episode = resolved.episode,
+                        year = resolved.year,
+                        subtitleCallback = trackedSubCallback
+                    )
+                })
+            }
+            if (!imdb.isNullOrBlank()) {
+                add(PipelinedTask("SubSenseUrdu", LatencyTier.TIER_1, isVideo = false) {
+                    UrduSubtitleEngine.invokeSubSenseUrdu(imdb, resolved.season, resolved.episode, trackedSubCallback)
+                })
+            }
             providersList.forEach { provider ->
                 add(PipelinedTask(
                     providerId = provider.id,

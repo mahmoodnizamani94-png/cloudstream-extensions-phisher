@@ -16,18 +16,42 @@ Every emitted `SubtitleFile` carries `X-StreamPlay-Source: <sourceKey>`, which t
 download diversity and for the sidecar file name. The URL alone cannot identify the source because
 several providers share CDN hosts.
 
+## 1b. Instant Subtitle Mode Switch: Default (English) <-> Urdu (اردو)
+
+`UrduSubtitleEngine` provides a zero-latency, cross-classloader subtitle mode switch between:
+- **`SubtitleMode.DEFAULT` (`"default"`, `"Default (English)"`)** — the out-of-the-box default:
+  - `StreamPlay`, `StreamPlayExtractor`, and `SuperStreamExtractor` harvest and emit **English** subtitles (`TARGET_ENGLISH_SUBTITLE_SOURCES = 5`).
+  - Urdu-only scrapers (`subdl`, `subsense`, `subf2m`) and `synthesizeUrduFallbackFromEnglish` are skipped, and Urdu tracks are filtered out so streams and downloads immediately receive English subtitles.
+- **`SubtitleMode.URDU` (`"urdu"`, `"Urdu (اردو)"`)**:
+  - Harvests all human Urdu subtitle sources in parallel (`subdl` Urdu, `subsense` Urdu, `subf2m` Urdu, `yts-subs` Urdu, `opensubtitles` `urd`, `subtitlecat` `-ur.srt`, `wyzie` `ur`) alongside English donor candidates.
+  - Runs `UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish` when fewer than `TARGET_URDU_SUBTITLE_SOURCES` human Urdu sources respond, guaranteeing Urdu subtitles for every movie and episode.
+  - Emits **Urdu subtitles FIRST** to `subtitleCallback` (buffering non-Urdu fallback tracks until Urdu harvesting/synthesis completes) so both streaming and downloading immediately pick Urdu.
+
+### Zero-Latency Synchronization (0 ms, no app restart)
+Because the host app (`com.lagradost.cloudstream3`) and `StreamPlay` run in the same JVM process, `UrduSubtitleEngine.getSubtitleMode` / `setSubtitleMode` read and write:
+1. `System.getProperty("cloudstream.subtitle.mode")` (`"default"` or `"urdu"`)
+2. Shared preferences `"cloudstream_subtitle_mode_prefs"` (`"subtitle_mode"`)
+3. `StreamPlay` plugin `sharedPref` (`"subtitle_mode"`)
+4. Host `PreferenceManager.getDefaultSharedPreferences(context)` (`"subtitles_auto_select"` = `"en"` or `"ur"`)
+
+Users can toggle the mode at any time from **StreamPlay Settings -> Subtitle Mode (`Default (English)` / `Urdu (اردو)`)** and the very next stream or download immediately uses the selected subtitle language.
+
 ## 2. Sources the extension schedules
 
 ### `StreamPlay.kt` (movies and TV)
 
 | Task id | Method | Key | Covers | Priority |
 |---|---|---|---|---|
-| `wyziesub` | `invokeWYZIESubs` | IMDb/TMDB id + season/episode | Movies, TV, anime | 110 (host marker) |
-| `subtitles` | `invokeSubtitleAPI` | IMDb id | Movies, TV | 105 |
-| `opensubtitles` | `invokeOpenSubtitlesLegacy` | IMDb id, then every known title | Movies, TV, anime | 104 |
+| `wyziesub` | `invokeWYZIESubs` | IMDb/TMDB id + season/episode (`sub.wyzie.io` + `.ru` fallback) | Movies, TV, anime (English + Urdu) | 110 (host marker) |
+| `subtitles` | `invokeSubtitleAPI` | IMDb id (`opensubtitles-v3.strem.io`) | Movies, TV (English + Urdu) | 105 |
+| `opensubtitles` | `invokeOpenSubtitlesLegacy` | IMDb id, then every known title (`eng` + `urd`) | Movies, TV, anime (English + Urdu) | 104 |
 | `addic7ed` | `invokeAddic7ed` | title + season + episode | TV | 103 |
-| `subtitlecat` | `invokeSubtitleCat` | release text: title + `SXXEXX` / `NxNN` / `- XX` | Movies, TV, anime | 102 |
-| `yifysub` | `invokeYifySubs` | IMDb id | Movies | 103 |
+| `subtitlecat` | `invokeSubtitleCat` | release text: title + `SXXEXX` / `NxNN` / `- XX` | Movies, TV, anime (English + State A `-ur.srt` + State B neural Urdu) | 102 |
+| `yifysub` | `invokeYifySubs` | IMDb id (`yts-subs.com` + `yifysubtitles.ch` fallback) | Movies (English + Urdu) | 103 |
+| `subdl` | `UrduSubtitleEngine.invokeSubDlUrduKeyless` | IMDb id / title (`api3.subdl.com/auto` -> `subdl.com/.../urdu`) | Movies, TV (Urdu `.zip`) | 101 |
+| `subsense` | `UrduSubtitleEngine.invokeSubSenseUrdu` | IMDb id (`subsense.nepiraw.com` Stremio Urdu config) | Movies, TV (Urdu) | 101 |
+| `subf2m` | `UrduSubtitleEngine.invokeSubf2mUrdu` | Normalized title + year/episode (`subf2m.co/subtitles/.../urdu`) | Movies, TV (Urdu) | 100 |
+| `urdu-neural-fallback` | `UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish` | Post-harvest timing-preserved neural translation (`clients5.google.com` 250-cue batching + SubtitleCat CDN / local cache) | Movies, TV (Zero-gap RTL Urdu fallback) | 99 |
 
 ### `StreamPlayAnime.kt` (anime)
 

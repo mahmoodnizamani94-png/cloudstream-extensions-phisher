@@ -85,6 +85,8 @@ object StreamPlayExtractor : StreamPlay() {
 
     private const val ADDIC7ED_HOST = "https://www.addic7ed.com"
     private const val YIFY_HOST = "https://yifysubtitles.ch"
+    private const val YTS_SUBS_HOST = "https://www.yts-subs.com"
+    private const val YTS_SUBS_ZIP_HOST = "https://subtitles.yts-subs.com"
     private const val SUBTITLECAT_HOST = "https://www.subtitlecat.com"
     private const val SUBTITLE_LOOKUP_TIMEOUT_MS = 6_000L
     private const val SUBTITLE_BROWSER_USER_AGENT =
@@ -2692,6 +2694,7 @@ object StreamPlayExtractor : StreamPlay() {
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
         val cleanId = id?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) } ?: return
+        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         try {
             val url = if (season == null || season == 0) {
                 "$SubtitlesAPI/subtitles/movie/$cleanId.json"
@@ -2702,12 +2705,21 @@ object StreamPlayExtractor : StreamPlay() {
                 "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
             )
             val body = cancellableGetText(url, headers = headers, timeoutSec = 8L) ?: return
-            tryParseJson<SubtitlesAPI>(body)?.subtitles?.forEach { sub ->
-                val subUrl = sub.url.trim()
-                if (subUrl.startsWith("http", ignoreCase = true)) {
-                    val lan = cleanSubtitleLabel(getLanguage(sub.lang))
-                    subtitleCallback.invoke(newSubtitleFile(lan, subUrl))
+            val allSubs = tryParseJson<SubtitlesAPI>(body)?.subtitles.orEmpty()
+                .mapNotNull { sub ->
+                    val subUrl = sub.url.trim()
+                    if (subUrl.startsWith("http", ignoreCase = true)) {
+                        cleanSubtitleLabel(getLanguage(sub.lang)) to subUrl
+                    } else null
                 }
+            val orderedSubs = if (urduMode) {
+                val (urduSubs, otherSubs) = allSubs.partition { (lan, _) -> isUrduSubtitleLabel(lan) }
+                urduSubs + otherSubs
+            } else {
+                allSubs.filterNot { (lan, _) -> isUrduSubtitleLabel(lan) }
+            }
+            orderedSubs.forEach { (lan, subUrl) ->
+                subtitleCallback.invoke(newSubtitleFile(lan, subUrl))
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -2715,7 +2727,7 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * Independent English subtitle harvest from the OpenSubtitles legacy REST catalogue.
+     * Independent English/Urdu subtitle harvest from the OpenSubtitles legacy REST catalogue.
      *
      * This is not a mirror of the Stremio v3 addon: each index misses releases the other still
      * serves, and a missing English sidecar makes an otherwise perfect download unwatchable. The
@@ -2729,14 +2741,41 @@ object StreamPlayExtractor : StreamPlay() {
         title: String? = null,
         titles: List<String> = emptyList(),
         subtitleCallback: (SubtitleFile) -> Unit,
+    ) = coroutineScope {
+        val titleVariants = listOfNotNull(title) + titles
+        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
+        if (urduMode) {
+            val urdCollected = java.util.Collections.synchronizedList(mutableListOf<SubtitleFile>())
+            val engCollected = java.util.Collections.synchronizedList(mutableListOf<SubtitleFile>())
+            val urdJob = async {
+                val urls = buildOpenSubtitlesLegacyUrlsForLanguage(id, season, episode, titleVariants, langId = "urd")
+                harvestOpenSubtitlesLanguage(urls, "urd", "Urdu", season, episode) { urdCollected.add(it) }
+            }
+            val engJob = async {
+                val urls = buildOpenSubtitlesLegacyUrls(id, season, episode, titleVariants)
+                harvestOpenSubtitlesLanguage(urls, "eng", "English", season, episode) { engCollected.add(it) }
+            }
+            urdJob.await()
+            urdCollected.forEach { subtitleCallback(it) }
+            engJob.await()
+            engCollected.forEach { subtitleCallback(it) }
+        } else {
+            val urls = buildOpenSubtitlesLegacyUrls(id, season, episode, titleVariants)
+            harvestOpenSubtitlesLanguage(urls, "eng", "English", season, episode, subtitleCallback)
+        }
+    }
+
+    private suspend fun harvestOpenSubtitlesLanguage(
+        urls: List<String>,
+        langId: String,
+        langName: String,
+        season: Int?,
+        episode: Int?,
+        subtitleCallback: (SubtitleFile) -> Unit,
     ) {
-        val urls = buildOpenSubtitlesLegacyUrls(id, season, episode, listOfNotNull(title) + titles)
         if (urls.isEmpty()) return
         try {
             for (url in urls) {
-                // Hard-cap each catalogue attempt. cancellableGetText internally allows a longer
-                // call timeout, so without this wrapper one stalled IMDb lookup would consume the
-                // whole subtitle task and the title-variant fallbacks would never be tried.
                 val body = withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
                     cancellableGetText(
                         url,
@@ -2745,10 +2784,10 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                 } ?: continue
                 val results = tryParseJson<Array<OpenSubtitlesLegacySubtitle>>(body) ?: continue
-                val english = results.asSequence()
+                val matched = results.asSequence()
                     .filter { sub ->
-                        sub.languageId.equals("eng", ignoreCase = true) ||
-                            sub.languageName.equals("English", ignoreCase = true)
+                        sub.languageId.equals(langId, ignoreCase = true) ||
+                            sub.languageName.equals(langName, ignoreCase = true)
                     }
                     .filter { !it.downloadLink.isNullOrBlank() }
                     .filterNot { it.hearingImpaired == "1" || it.bad == "1" }
@@ -2759,11 +2798,11 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                     .take(5)
                     .toList()
-                if (english.isEmpty()) continue
-                english.forEach { sub ->
+                if (matched.isEmpty()) continue
+                matched.forEach { sub ->
                     val subUrl = sub.downloadLink?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return@forEach
                     subtitleCallback.invoke(
-                        newSubtitleFile("English", subUrl) {
+                        newSubtitleFile(langName, subUrl) {
                             headers = mapOf("User-Agent" to OPENSUBTITLES_USER_AGENT)
                         }
                     )
@@ -2798,7 +2837,22 @@ object StreamPlayExtractor : StreamPlay() {
         season: Int?,
         episode: Int?,
         titles: List<String>,
+    ): List<String> = buildOpenSubtitlesLegacyUrlsForLanguage(
+        id = id,
+        season = season,
+        episode = episode,
+        titles = titles,
+        langId = "eng"
+    )
+
+    internal fun buildOpenSubtitlesLegacyUrlsForLanguage(
+        id: String?,
+        season: Int?,
+        episode: Int?,
+        titles: List<String>,
+        langId: String = "eng",
     ): List<String> {
+        val normalizedLang = langId.trim().lowercase(Locale.ROOT).ifBlank { "eng" }
         val cleanId = id?.trim()?.lowercase()?.takeIf { it.matches(Regex("""tt\d{5,10}""")) }
         val queries = titles
             .asSequence()
@@ -2810,17 +2864,17 @@ object StreamPlayExtractor : StreamPlay() {
         return buildList {
             if (cleanId != null) {
                 if (season != null && season > 0) {
-                    add("$OPENSUBTITLES_REST/search/imdbid-${cleanId.removePrefix("tt")}/season-$season/episode-${episode ?: 1}/sublanguageid-eng")
+                    add("$OPENSUBTITLES_REST/search/imdbid-${cleanId.removePrefix("tt")}/season-$season/episode-${episode ?: 1}/sublanguageid-$normalizedLang")
                 } else {
-                    add("$OPENSUBTITLES_REST/search/imdbid-${cleanId.removePrefix("tt")}/sublanguageid-eng")
+                    add("$OPENSUBTITLES_REST/search/imdbid-${cleanId.removePrefix("tt")}/sublanguageid-$normalizedLang")
                 }
             }
             queries.forEach { query ->
                 val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
                 if (season != null && season > 0 && episode != null && episode > 0) {
-                    add("$OPENSUBTITLES_REST/search/episode-$episode/query-$encoded/season-$season/sublanguageid-eng")
+                    add("$OPENSUBTITLES_REST/search/episode-$episode/query-$encoded/season-$season/sublanguageid-$normalizedLang")
                 } else {
-                    add("$OPENSUBTITLES_REST/search/query-$encoded/sublanguageid-eng")
+                    add("$OPENSUBTITLES_REST/search/query-$encoded/sublanguageid-$normalizedLang")
                 }
             }
         }
@@ -2940,21 +2994,33 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         val cleanId = id?.trim()?.takeIf { it.isNotBlank() && it != "0" && it != "null" } ?: return
         val key = wyziekey.takeIf { !it.isNullOrBlank() } ?: return
+        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         try {
-            val url = if (season != null && season > 0) {
-                "$WYZIESubsAPI/search?id=$cleanId&season=$season&episode=${episode ?: 1}&source=all&key=$key"
+            val queryPath = if (season != null && season > 0) {
+                "/search?id=$cleanId&season=$season&episode=${episode ?: 1}&source=all&key=$key"
             } else {
-                "$WYZIESubsAPI/search?id=$cleanId&source=all&key=$key"
+                "/search?id=$cleanId&source=all&key=$key"
             }
-            val body = cancellableGetText(url, timeoutSec = 8L) ?: return
+            val body = cancellableGetText("$WYZIESubsAPI$queryPath", timeoutSec = 8L)
+                ?: cancellableGetText("https://sub.wyzie.ru$queryPath", timeoutSec = 8L)
+                ?: return
             val data = tryParseJson<Array<WYZIESubtitle>>(body) ?: return
-            data.forEach { sub ->
-                val lang = sub.language ?: return@forEach
+            val allSubs = data.mapNotNull { sub ->
+                val lang = sub.language ?: return@mapNotNull null
                 val subUrl = sub.url.trim()
                 if (subUrl.startsWith("http", ignoreCase = true)) {
                     val label = cleanSubtitleLabel(sub.display ?: getLanguage(lang))
-                    subtitleCallback.invoke(newSubtitleFile(label, subUrl))
-                }
+                    label to subUrl
+                } else null
+            }
+            val orderedSubs = if (urduMode) {
+                val (urduSubs, otherSubs) = allSubs.partition { (label, _) -> isUrduSubtitleLabel(label) }
+                urduSubs + otherSubs
+            } else {
+                allSubs.filterNot { (label, _) -> isUrduSubtitleLabel(label) }
+            }
+            orderedSubs.forEach { (label, subUrl) ->
+                subtitleCallback.invoke(newSubtitleFile(label, subUrl))
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -2962,25 +3028,60 @@ object StreamPlayExtractor : StreamPlay() {
     }
 
     /**
-     * YIFY Subtitles harvest, used for movies.
+     * YTS-Subs / YIFY Subtitles harvest, used for movies.
      *
-     * YIFY publishes a different set of releases than OpenSubtitles and its IMDb-keyed pages are
-     * stable HTML. Every English row already contains the page slug, and the zip download is
-     * `/subtitle/{slug}.zip`; no detail-page round trip is needed. YIFY rejects the zip without a
-     * referer, so the referer is attached to the emitted [SubtitleFile].
+     * YTS-Subs (`https://www.yts-subs.com`) and YIFY (`https://yifysubtitles.ch`) publish IMDb-keyed
+     * HTML tables where each row contains the language and `/subtitles/{slug}` link.
+     * In Urdu mode, emits `"Urdu"` subtitles first followed by `"English"` donor tracks; in Default mode,
+     * emits `"English"` subtitles only.
      */
     suspend fun invokeYifySubs(
         imdbId: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
         val cleanId = imdbId?.trim()?.lowercase()?.takeIf { it.matches(Regex("""tt\d{5,10}""")) } ?: return
+        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         try {
-            val body = cancellableGetText(
+            val ytsBody = cancellableGetText(
+                "$YTS_SUBS_HOST/movie-imdb/$cleanId",
+                headers = SUBTITLE_BROWSER_HEADERS,
+                timeoutSec = 8L,
+            )
+            if (!ytsBody.isNullOrBlank()) {
+                val enRows = parseYtsSubsRowsForLanguage(ytsBody, "English")
+                val urRows = if (urduMode) parseYtsSubsRowsForLanguage(ytsBody, "Urdu") else emptyList()
+                urRows.forEach { candidate ->
+                    subtitleCallback.invoke(
+                        newSubtitleFile("Urdu", candidate.url) {
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
+                        }
+                    )
+                }
+                enRows.forEach { candidate ->
+                    subtitleCallback.invoke(
+                        newSubtitleFile("English", candidate.url) {
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
+                        }
+                    )
+                }
+                if (enRows.isNotEmpty() || urRows.isNotEmpty()) return
+            }
+
+            val yifyBody = cancellableGetText(
                 "$YIFY_HOST/movie-imdb/$cleanId",
                 headers = SUBTITLE_BROWSER_HEADERS,
                 timeoutSec = 8L,
             ) ?: return
-            parseYifySubtitleRows(body).forEach { candidate ->
+            if (urduMode) {
+                parseYifySubtitleRowsForLanguage(yifyBody, "Urdu").forEach { candidate ->
+                    subtitleCallback.invoke(
+                        newSubtitleFile("Urdu", candidate.url) {
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
+                        }
+                    )
+                }
+            }
+            parseYifySubtitleRows(yifyBody).forEach { candidate ->
                 subtitleCallback.invoke(
                     newSubtitleFile("English", candidate.url) {
                         headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
@@ -3006,12 +3107,54 @@ object StreamPlayExtractor : StreamPlay() {
         return absolute.replaceFirst("/subtitles/", "/subtitle/") + ".zip"
     }
 
-    internal fun parseYifySubtitleRows(body: String): List<YifySubtitle> {
+    internal fun buildYtsSubsZipUrl(pageUrl: String): String? {
+        val value = pageUrl.trim().removeSuffix("/")
+        if (value.isBlank()) return null
+        val slug = when {
+            value.contains("/subtitles/") -> value.substringAfter("/subtitles/").substringBefore('?').substringBefore('#').trim('/')
+            else -> return null
+        }
+        if (slug.isBlank()) return null
+        return "$YTS_SUBS_ZIP_HOST/subtitles/$slug.zip"
+    }
+
+    internal fun parseYtsSubsRowsForLanguage(body: String, language: String = "English"): List<YifySubtitle> {
+        val document = Jsoup.parse(body)
+        val wantedLang = language.trim()
+        return document.select("tr:has(.sub-lang)")
+            .asSequence()
+            .filter { row ->
+                row.selectFirst(".sub-lang")?.text()?.trim().equals(wantedLang, ignoreCase = true)
+            }
+            .filterNot { row -> row.selectFirst(".hi-subtitle, .hi-install") != null }
+            .mapNotNull { row ->
+                val href = row.selectFirst("a[href*=/subtitles/]")
+                    ?.attr("href")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val referer = when {
+                    href.startsWith("http") -> href
+                    href.startsWith("/") -> "$YTS_SUBS_HOST$href"
+                    else -> "$YTS_SUBS_HOST/$href"
+                }
+                val url = buildYtsSubsZipUrl(referer) ?: return@mapNotNull null
+                YifySubtitle(url = url, referer = referer)
+            }
+            .distinctBy { it.url }
+            .take(3)
+            .toList()
+    }
+
+    internal fun parseYifySubtitleRows(body: String): List<YifySubtitle> =
+        parseYifySubtitleRowsForLanguage(body, "English")
+
+    private fun parseYifySubtitleRowsForLanguage(body: String, language: String): List<YifySubtitle> {
         val document = Jsoup.parse(body)
         return document.select("tr:has(.sub-lang)")
             .asSequence()
             .filter { row ->
-                row.selectFirst(".sub-lang")?.text()?.trim().equals("English", ignoreCase = true)
+                row.selectFirst(".sub-lang")?.text()?.trim().equals(language, ignoreCase = true)
             }
             .filterNot { row -> row.selectFirst(".hi-subtitle") != null }
             .mapNotNull { row ->
@@ -3039,13 +3182,7 @@ object StreamPlayExtractor : StreamPlay() {
      * SubtitleCat is the fallback that still answers when every id-keyed catalogue misses a release:
      * it is searched by release text, so an episode-numbering mismatch (a provider exposing season
      * 2 episode 5 while the file is named `S02E05`, or an anime numbered as a bare `- 05`) is not a
-     * dead end. Its English files are stable `.srt` links, unlike the short-lived signed URLs some
-     * mirrors hand out.
-     *
-     * The search page only links to detail pages, and each detail page publishes a separate id per
-     * language, so the English link cannot be guessed - the top candidates are resolved before an
-     * English-only [SubtitleFile] is emitted. Anything that is not an exact title+episode match is
-     * discarded, because a plausible subtitle for a different show is worse than none.
+     * dead end. Its English and Urdu files are stable `.srt` links.
      */
     suspend fun invokeSubtitleCat(
         titles: List<String>,
@@ -3058,6 +3195,7 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         val queries = buildSubtitleCatQueries(titles, season, episode, isMovie, isAnime)
         if (queries.isEmpty()) return
+        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         try {
             for (query in queries) {
                 val searchUrl = "$SUBTITLECAT_HOST/index.php?search=" +
@@ -3082,18 +3220,17 @@ object StreamPlayExtractor : StreamPlay() {
 
                 // Detail pages are independent. Resolve them concurrently so two candidates do not
                 // add two sequential network timeouts to a task that already includes the search.
-                val english = coroutineScope {
+                val resolvedDetails = coroutineScope {
                     candidates.map { candidate ->
                         async {
                             try {
-                                val detail = withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
+                                withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
                                     cancellableGetText(
                                         candidate.pageUrl,
                                         headers = SUBTITLE_BROWSER_HEADERS,
                                         timeoutSec = 6L
                                     )
                                 }
-                                detail?.let { parseSubtitleCatDetail(it) }
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
@@ -3101,9 +3238,39 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                         }
                     }.awaitAll()
-                }.filterNotNull().distinct()
-                if (english.isEmpty()) continue
+                }.filterNotNull()
 
+                val english = resolvedDetails.mapNotNull { parseSubtitleCatDetail(it) }.distinct()
+                val urdu = if (urduMode) {
+                    resolvedDetails.mapNotNull { parseSubtitleCatUrduDetail(it) }.distinct()
+                } else {
+                    emptyList()
+                }
+
+                if (urduMode && urdu.isEmpty()) {
+                    resolvedDetails.forEach { detail ->
+                        val origPair = parseSubtitleCatOrigSrt(detail)
+                        if (origPair != null) {
+                            UrduSubtitleEngine.recordSubtitleCatOrigCandidate(origPair.first, origPair.second)
+                        } else {
+                            val enUrl = parseSubtitleCatDetail(detail)
+                            if (enUrl != null) {
+                                val fileName = enUrl.substringAfterLast('/').substringBefore('?')
+                                UrduSubtitleEngine.recordSubtitleCatOrigCandidate(enUrl, fileName)
+                            }
+                        }
+                    }
+                }
+
+                if (english.isEmpty() && urdu.isEmpty()) continue
+
+                urdu.forEach { url ->
+                    subtitleCallback.invoke(
+                        newSubtitleFile("Urdu", url) {
+                            headers = SUBTITLE_BROWSER_HEADERS
+                        }
+                    )
+                }
                 english.forEach { url ->
                     subtitleCallback.invoke(
                         newSubtitleFile("English", url) {
@@ -3279,6 +3446,50 @@ object StreamPlayExtractor : StreamPlay() {
         // Some English links contain literal spaces; emit a valid URL instead of relying on the
         // consumer to repair it.
         return absolute.replace(" ", "%20")
+    }
+
+    /**
+     * State A: Extracts a pre-cached Urdu `.srt` URL (`a#download_ur[href]` or any `a[href]`
+     * ending in `-ur.srt` / `-urd.srt`) from a SubtitleCat detail page.
+     */
+    internal fun parseSubtitleCatUrduDetail(body: String): String? {
+        val document = Jsoup.parse(body)
+        val directUr = document.selectFirst("a#download_ur[href], a#download_urd[href]")
+            ?.attr("href")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val href = directUr ?: document.select("a[href]")
+            .asSequence()
+            .map { it.attr("href").trim() }
+            .firstOrNull { value ->
+                val path = value.substringBefore('?').lowercase(Locale.ROOT)
+                path.endsWith("-ur.srt") || path.endsWith("-urd.srt")
+            }
+            ?: return null
+        val absolute = when {
+            href.startsWith("http://", ignoreCase = true) || href.startsWith("https://", ignoreCase = true) -> href
+            else -> "$SUBTITLECAT_HOST/${href.removePrefix("/")}"
+        }
+        return absolute.replace(" ", "%20")
+    }
+
+    /**
+     * State B: Extracts the original English `.srt` path from SubtitleCat's client-side
+     * `translate_from_server_folder('ur', 'filename-orig.srt', '/subs/dir/')` hook when no
+     * pre-cached `-ur.srt` exists yet. Returns `Pair(origAbsoluteUrl, origFilename)`.
+     */
+    internal fun parseSubtitleCatOrigSrt(body: String): Pair<String, String>? {
+        val regex = Regex(
+            """translate_from_server_folder\s*\(\s*['"](?:ur|urd)['"]\s*,\s*['"]([^'"]+\.srt)['"]\s*,\s*['"]([^'"]+)['"]\s*\)""",
+            RegexOption.IGNORE_CASE
+        )
+        val match = regex.find(body) ?: return null
+        val filename = match.groupValues[1].trim()
+        val folder = match.groupValues[2].trim()
+        if (filename.isEmpty() || folder.isEmpty()) return null
+        val normalizedFolder = "/" + folder.trim('/') + "/"
+        val absoluteUrl = "$SUBTITLECAT_HOST$normalizedFolder$filename".replace(" ", "%20")
+        return absoluteUrl to filename
     }
 
     internal fun normalizeSubtitleReleaseText(value: String): String =

@@ -1,6 +1,35 @@
 package com.phisher98
 
+import android.content.SharedPreferences
 import com.lagradost.cloudstream3.utils.Qualities
+import java.util.Locale
+
+const val SUBTITLE_MODE_SYS_PROP = "cloudstream.subtitle.mode"
+const val SUBTITLE_MODE_KEY = "subtitle_mode"
+const val MODE_DEFAULT = "default"
+const val MODE_URDU = "urdu"
+
+fun isUrduSubtitleMode(sharedPref: SharedPreferences? = null): Boolean {
+    val sysProp = try {
+        System.getProperty(SUBTITLE_MODE_SYS_PROP)?.trim()?.lowercase(Locale.ROOT)
+    } catch (_: Throwable) {
+        null
+    }
+    if (sysProp == MODE_URDU) return true
+    if (sysProp == MODE_DEFAULT) return false
+    val prefVal = sharedPref?.getString(SUBTITLE_MODE_KEY, null)?.trim()?.lowercase(Locale.ROOT)
+    return prefVal == MODE_URDU
+}
+
+fun isUrduSubtitleCode(lang: String?): Boolean {
+    val normalized = lang?.trim()?.lowercase(Locale.ROOT) ?: return false
+    return normalized == "ur" ||
+        normalized == "urd" ||
+        normalized.startsWith("ur-") ||
+        normalized.startsWith("ur_") ||
+        normalized.contains("urdu") ||
+        normalized.contains("اردو")
+}
 
 fun getLanguage(language: String?): String? {
     language ?: return null
