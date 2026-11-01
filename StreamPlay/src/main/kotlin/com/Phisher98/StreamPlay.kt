@@ -1015,17 +1015,16 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         //
         // `topSourceGraceMs` is how long a 720p/1080p from a lower-ranked source may wait
         // for a higher-ranked source that is still in flight; `top720GraceMs` is how long a
-        // 1080p waits for a 720p of the same source. Both are deliberately short and
-        // bounded because they are paid by the user on every single title: if a source is
-        // down or simply has no 720p variant (VidLink serves 360/480/1080), the buffered
-        // links are flushed in strict comparator order the moment the window closes. They
-        // were previously 15-20s / 4.5-6s, which is what made timings look wrong when
-        // several legacy sources were enabled at once.
+        // 1080p waits for a 720p of the same or higher source. Because `StreamPlay` invokes
+        // `dispatcher.markRankCompleted(rank)` in `finally` the instant a provider finishes,
+        // these windows cost 0ms whenever VidLink finishes normally (~500ms-1.5s), while
+        // preventing slow/mobile networks from prematurely skipping #1 VidLink in favor of
+        // a lower-ranked source while VidLink is still in flight.
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
-            topSourceGraceMs = if (slowInternetMode) 3_000L else 2_000L,
-            top720GraceMs = if (slowInternetMode) 1_600L else 1_100L,
+            topSourceGraceMs = if (slowInternetMode) 10_000L else 6_500L,
+            top720GraceMs = if (slowInternetMode) 4_000L else 2_500L,
             activeTopRanks = activeTopRanks,
             isRankInFlight = { rank -> runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank } }
         )
@@ -1054,11 +1053,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             adaptiveTierEscalation = true,
             softGracePeriodAfterFirstLinkMs = 0L,
             // Every surviving source is a single-round-trip API, so the pipeline should be
-            // done in a few seconds. The ceiling only exists to absorb a genuinely slow
-            // network; it is deliberately well below the old 30s/45s, which left the
-            // player spinning long after the user could already have started watching.
-            maxPipelineTimeoutMs = if (slowInternetMode) 26_000L else 18_000L,
-            postSatisfactionGraceMs = if (slowInternetMode) 11_000L else 7_000L
+            // done in a few seconds. The ceiling absorbs a genuinely slow/mobile network
+            // without cutting off top-tier extractors mid-flight.
+            maxPipelineTimeoutMs = if (slowInternetMode) 30_000L else 22_000L,
+            postSatisfactionGraceMs = if (slowInternetMode) 13_000L else 9_000L
         )
         val earlyController = EarlySatisfactionController(earlySatisfactionConfig)
         // Assumption: PriorityStreamDispatcher uses top720GraceMs and fhdGraceMs to ensure top sources

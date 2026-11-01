@@ -110,15 +110,16 @@ class DualQualityAndSotaHierarchyTest {
 
     @Test
     fun testSourcePriorityRankStrictMonotonicity() {
-        // Priority order: VidLink (100) > Cineby (95) > CineSrc (94) > VidFast (93) >
-        // MegaPlay (92) > MeowTV (91) > Animex (90) > every decommissioned label (0, incl. VidRock, VidSrc, VidSrcSU)
+        // Priority order: VidLink (100) > MeowTV (98) > Cineby (95) > CineSrc (94) > VidFast (93) >
+        // MegaPlay (92) > VidRift (91) > AniZone (89) > AnimePahe (88) > Animex (87) > every decommissioned label (0)
         val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidLink", "VidLink", "https://vidlink.pro/v.m3u8"))
-        val rCineby = StreamLinkOptimizer.getSourcePriorityRank(createLink("Cineby", "Cineby", "https://sun.paleoak.top/v.m3u8"))
+        val rMeowTv = StreamLinkOptimizer.getSourcePriorityRank(createLink("MeowTV", "MeowTV", "https://meowtv.ru/v.m3u8"))
+        val rCineby = StreamLinkOptimizer.getSourcePriorityRank(createLink("Cineby", "Cineby", "https://moon.goldenkite.top/v.m3u8"))
         val rCineSrc = StreamLinkOptimizer.getSourcePriorityRank(createLink("CineSrc", "CineSrc", "https://nebula.bright67.online/hls2/master.txt"))
         val rVidFast = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidFast", "VidFast", "https://vidfast.vc/v.m3u8"))
         val rVidSrcSU = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidSrcSU", "VidSrcSU", "https://vidsrc.su/v.m3u8"))
         val rMegaPlay = StreamLinkOptimizer.getSourcePriorityRank(createLink("MegaPlay", "MegaPlay", "https://fetch.nexabloom.top/v.m3u8"))
-        val rMeowTv = StreamLinkOptimizer.getSourcePriorityRank(createLink("MeowTV", "MeowTV", "https://meowtv.ru/v.m3u8"))
+        val rVidRift = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidRift", "VidRift", "https://embed.vidrift.net/v.m3u8"))
         val rAnimex = StreamLinkOptimizer.getSourcePriorityRank(createLink("Animex", "Animex", "https://animex.one/v.m3u8"))
         val rVidRock = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidRock", "VidRock", "https://vidrock.net/v.m3u8"))
         val rVidSrc = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidSrc", "VidSrc", "https://vidsrc.pm/h/v.m3u8"))
@@ -139,11 +140,12 @@ class DualQualityAndSotaHierarchyTest {
         val rKwikCdn = StreamLinkOptimizer.getSourcePriorityRank(createLink("Unknown", "stream", "https://vault-01.uwucdn.top/stream/abc/uwu.m3u8"))
 
         assertEquals(100, rVidlink)
+        assertEquals(98, rMeowTv)
         assertEquals(95, rCineby)
         assertEquals(94, rCineSrc)
         assertEquals(93, rVidFast)
         assertEquals(92, rMegaPlay)
-        assertEquals(91, rMeowTv)
+        assertEquals(91, rVidRift)
         assertEquals(89, rAniZone)
         assertEquals(88, rAnimepahe)
         assertEquals(88, rKwikCdn)
@@ -165,12 +167,13 @@ class DualQualityAndSotaHierarchyTest {
         assertEquals(0, rVidEm)
 
         // Monotonicity of the curated SOTA providers
-        assertTrue(rVidlink > rCineby)
+        assertTrue(rVidlink > rMeowTv)
+        assertTrue(rMeowTv > rCineby)
         assertTrue(rCineby > rCineSrc)
         assertTrue(rCineSrc > rVidFast)
         assertTrue(rVidFast > rMegaPlay)
-        assertTrue(rMegaPlay > rMeowTv)
-        assertTrue(rMeowTv > rAniZone)
+        assertTrue(rMegaPlay > rVidRift)
+        assertTrue(rVidRift > rAniZone)
         assertTrue(rAniZone > rAnimepahe)
         assertTrue(rAnimepahe > rAnimex)
         assertTrue(rAnimex > rVidSrcSU)
@@ -1797,34 +1800,37 @@ class DualQualityAndSotaHierarchyTest {
 
     @Test
     fun testSotaTopTierMonotonicityModernProviders() {
-        // Strict top-tier SOTA priority: VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
-        // MegaPlay 92 > MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87; all else
+        // Strict top-tier SOTA priority: VidLink 100 > MeowTV 98 > Cineby 95 > CineSrc 94 > VidFast 93 >
+        // MegaPlay 92 > VidRift 91 > AniZone 89 > AnimePahe 88 > Animex 87; all else
         // (including VidRock, VidSrc, and VidSrcSU) 0.
         val rVidlink = StreamLinkOptimizer.getSourcePriorityRank(createLink("VidLink", "VidLink", "https://vidlink.pro/v.m3u8"))
-        val rCineby = StreamLinkOptimizer.getSourcePriorityRank(createLink("cineby", "cineby", "https://sun.paleoak.top/v.m3u8"))
+        val rMeowTv = StreamLinkOptimizer.getSourcePriorityRank(createLink("meowtv", "meowtv", "https://meowtv.ru/v.m3u8"))
+        val rCineby = StreamLinkOptimizer.getSourcePriorityRank(createLink("cineby", "cineby", "https://moon.goldenkite.top/v.m3u8"))
         val rCineSrc = StreamLinkOptimizer.getSourcePriorityRank(createLink("cinesrc", "cinesrc", "https://nebula.bright67.online/hls2/v.m3u8"))
         val rVidFast = StreamLinkOptimizer.getSourcePriorityRank(createLink("vidfast", "vidfast", "https://vidfast.vc/v.m3u8"))
         val rMegaPlay = StreamLinkOptimizer.getSourcePriorityRank(createLink("megaplay", "megaplay", "https://fetch.nexabloom.top/v.m3u8"))
-        val rMeowTv = StreamLinkOptimizer.getSourcePriorityRank(createLink("meowtv", "meowtv", "https://meowtv.ru/v.m3u8"))
+        val rVidRift = StreamLinkOptimizer.getSourcePriorityRank(createLink("vidrift", "vidrift", "https://embed.vidrift.net/v.m3u8"))
         val rAniZone = StreamLinkOptimizer.getSourcePriorityRank(createLink("anizone", "anizone", "https://anizone.to/anime/abc/1"))
         val rAnimePahe = StreamLinkOptimizer.getSourcePriorityRank(createLink("animepahe", "animepahe", "https://animepahe.pw/play/abc/def"))
         val rAnimex = StreamLinkOptimizer.getSourcePriorityRank(createLink("animex", "animex", "https://animex.one/v.m3u8"))
 
         assertEquals(100, rVidlink)
+        assertEquals(98, rMeowTv)
         assertEquals(95, rCineby)
         assertEquals(94, rCineSrc)
         assertEquals(93, rVidFast)
         assertEquals(92, rMegaPlay)
-        assertEquals(91, rMeowTv)
+        assertEquals(91, rVidRift)
         assertEquals(89, rAniZone)
         assertEquals(88, rAnimePahe)
         assertEquals(87, rAnimex)
-        assertTrue("VidLink > cineby", rVidlink > rCineby)
+        assertTrue("VidLink > meowtv", rVidlink > rMeowTv)
+        assertTrue("meowtv > cineby", rMeowTv > rCineby)
         assertTrue("cineby > cinesrc", rCineby > rCineSrc)
         assertTrue("cinesrc > vidfast", rCineSrc > rVidFast)
         assertTrue("vidfast > megaplay", rVidFast > rMegaPlay)
-        assertTrue("megaplay > meowtv", rMegaPlay > rMeowTv)
-        assertTrue("meowtv > anizone", rMeowTv > rAniZone)
+        assertTrue("megaplay > vidrift", rMegaPlay > rVidRift)
+        assertTrue("vidrift > anizone", rVidRift > rAniZone)
         assertTrue("anizone > animepahe", rAniZone > rAnimePahe)
         assertTrue("animepahe > animex", rAnimePahe > rAnimex)
 
@@ -1837,11 +1843,12 @@ class DualQualityAndSotaHierarchyTest {
 
         // Verify FAST_PROVIDER_BOOST (only the curated set has boosts).
         assertEquals(100f, FAST_PROVIDER_BOOST["vidlink"])
+        assertEquals(98f, FAST_PROVIDER_BOOST["meowtv"])
         assertEquals(95f, FAST_PROVIDER_BOOST["cineby"])
         assertEquals(94f, FAST_PROVIDER_BOOST["cinesrc"])
         assertEquals(93f, FAST_PROVIDER_BOOST["vidfast"])
         assertEquals(92f, FAST_PROVIDER_BOOST["megaplay"])
-        assertEquals(91f, FAST_PROVIDER_BOOST["meowtv"])
+        assertEquals(91f, FAST_PROVIDER_BOOST["vidrift"])
         assertEquals(89f, FAST_PROVIDER_BOOST["anizone"])
         assertEquals(88f, FAST_PROVIDER_BOOST["animepahe"])
         assertEquals(87f, FAST_PROVIDER_BOOST["animex"])

@@ -2053,11 +2053,13 @@ object StreamLinkOptimizer {
 
     // ==================== Stream Comparison & Deduplicator ====================
 
+    const val VIDRIFT_SOURCE_RANK = 91
+
     /**
      * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
      * 1. Top-tier source priority rank for the curated v26 registry
-     *    (VidLink 100 > VidRift 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
-     *     MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary)
+     *    (VidLink 100 > MeowTV 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
+     *     VidRift 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary)
      * 2. Quality priority score within the same source (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
      * 3. Genuine non-synthetic streams over synthetic companions
      * 4. Higher bitrate (kbps) (when quality score and source rank are equivalent)
@@ -2070,8 +2072,8 @@ object StreamLinkOptimizer {
      */
     fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
         // 1. Top-Tier Source Priority Rank for the curated v26 registry
-        //    (VidLink 100 > VidRift 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
-        //     MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary).
+        //    (VidLink 100 > MeowTV 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
+        //     VidRift 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary).
         // Source rank is primary so a higher-ranked source can never be replaced by a
         // lower-ranked one that merely exposes a higher resolution ladder.
         val sourceRank1 = getSourcePriorityRank(candidate)
@@ -2091,7 +2093,7 @@ object StreamLinkOptimizer {
             return score1 > score2
         }
 
-        // 2b. Intra-VidRift health tier & lowest-file-size hierarchy within Rank 98:
+        // 2b. Intra-VidRift health tier & lowest-file-size hierarchy within Rank 91:
         //     - First, healthTier strictly isolates healthy primary H.264 MPEG-TS lanes
         //       (Direct, Vexon, Evion, Titan English, Atlas, Titan Multi-audio, Vela, proxied Lyra -> tier 2)
         //       above regional dubs (tier 1) and degraded fMP4 HEVC / IP-locked fallback lanes
@@ -2100,7 +2102,7 @@ object StreamLinkOptimizer {
         //     - Second, within the same health tier, streams with genuine known file sizes outrank
         //       unsized streams and lowest file size wins first (AGENTS.md §1 & §5), with lane
         //       throughput score breaking equal-size or both-unsized ties.
-        if (sourceRank1 == 98) {
+        if (sourceRank1 == VIDRIFT_SOURCE_RANK) {
             val vrCmp = compareVidRiftSameQuality(candidate, current)
             if (vrCmp != 0) {
                 return vrCmp < 0
@@ -2186,7 +2188,7 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Intra-VidRift lane health & CDN throughput score within Rank 98:
+     * Intra-VidRift lane health & CDN throughput score within Rank 91:
      *
      *  - `Direct` (`selfhost`): +60
      *  - `Vexon` / `Evion` (`media.reelvault.click/vexon|evion` — owned Cloudflare R2 H.264 MPEG-TS CDN): +55
@@ -2312,16 +2314,16 @@ object StreamLinkOptimizer {
     /**
      * Definitive source priority ranking for the curated v26 SOTA registry:
      *
-     *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)      -> 100
-     *   2. VidRift   (vidrift.net, embed-meta + /api/source fan-out, reelvault/bigbang HLS) -> 98
-     *   3. Cineby    (api.wecollege.net + dec-videasy, paleoak.top / majorplay.net HLS)   -> 95
-     *   4. CineSrc   (cinesrc.st, CSP4 PoW + Nebula/Wave/Surge bright67.online HLS + subs)-> 94
-     *   5. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)       -> 93
-     *   6. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)   -> 92
-     *   7. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)              -> 91
-     *   8. AniZone   (anizone.to, xin-/vid-cdn HLS ladder + real English SRT/ASS sidecars) -> 89
-     *   9. AnimePahe (animepahe.pw, Cloudflare-gated Kwik HLS, deepest airing/rare catalog) -> 88
-     *  10. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)        -> 87
+     *   1. VidLink   (vidlink.pro, XSalsa20 token API, direct MP4 ladder + captions)          -> 100
+     *   2. MeowTV    (meowtv.ru, single-use tickets, hscow/vidjoy/fcxmb HLS)                  -> 98
+     *   3. Cineby    (api.wecollege.net + mvm1, goldenkite/paleoak/majorplay HLS)             -> 95
+     *   4. CineSrc   (cinesrc.st, CSP4 PoW + Nebula/secret/Wave/Surge bright67/lightspeed HLS)-> 94
+     *   5. VidFast   (vidfast.vc, enc-vidfast stage handshake, moon.zenoak.top HLS)           -> 93
+     *   6. MegaPlay  (megaplay.buzz + dec-megaplay, fetch.nexabloom.top HLS + VTT subs)       -> 92
+     *   7. VidRift   (embed.vidrift.net, 720p-only Movie/TV backup + WebVTT subs)             -> 91
+     *   8. AniZone   (anizone.to, xin-/vid-cdn HLS ladder + real English SRT/ASS sidecars)     -> 89
+     *   9. AnimePahe (animepahe.pw, Cloudflare-gated Kwik HLS, deepest airing/rare catalog)   -> 88
+     *  10. Animex    (animex.one, GraphQL catalog, multi-provider soft-subbed HLS)            -> 87
      *
      * The anime-only sources are ordered by how reliably they carry English subtitles and the
      * original Japanese audio: AniZone ships both as first-class artefacts of the episode pack,
@@ -2353,21 +2355,22 @@ object StreamLinkOptimizer {
                 u.contains("husvu445bey.com") ||
                 r.contains("vidrift.net") ||
                 link.extractorData?.contains("vidrift_lane=", ignoreCase = true) == true ||
-                link.headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) } -> 98
+                link.headers.entries.any { it.key.equals("X-StreamPlay-Source", ignoreCase = true) && it.value.equals("vidrift", ignoreCase = true) } -> VIDRIFT_SOURCE_RANK
+            s.contains("meowtv") || n.contains("meowtv") ||
+                u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
+                u.contains("krico443jez.com") || u.contains("fastcloud.live") -> 98
             s.contains("cineby") || n.contains("cineby") ||
-                u.contains("wecollege.net") || u.contains("paleoak.top") ||
+                u.contains("wecollege.net") || u.contains("goldenkite.top") || u.contains("paleoak.top") ||
                 u.contains("majorplay.net") || u.contains("falseparadise.workers.dev") ||
-                r.contains("player.videasy.to") -> 95
+                r.contains("vidy.st") || r.contains("player.videasy.to") -> 95
             s.contains("cinesrc") || n.contains("cinesrc") ||
-                u.contains("cinesrc.st") || u.contains("bright67.online") || u.contains("api.wing.st") -> 94
+                u.contains("cinesrc.st") || u.contains("bright67.online") ||
+                u.contains("api.wing.st") || u.contains("lightspeed.st") -> 94
             s.contains("vidfast") || n.contains("vidfast") ||
                 u.contains("vidfast.vc") || u.contains("zenoak") -> 93
             s.contains("megaplay") || n.contains("megaplay") ||
                 u.contains("megaplay.buzz") || u.contains("nexabloom.top") ||
                 u.contains("broforgotsave.online") || u.contains("embermeadow.world") -> 92
-            s.contains("meowtv") || n.contains("meowtv") ||
-                u.contains("hscow.com") || u.contains("fcxmb.com") || u.contains("vidjoy.org") ||
-                u.contains("krico443jez.com") || u.contains("fastcloud.live") -> 91
             s.contains("anizone") || n.contains("anizone") ||
                 u.contains("anizone.to") || u.contains("xin-cdn.xyz") ||
                 u.contains("vid-cdn.xyz") -> 89
@@ -2459,10 +2462,10 @@ object StreamLinkOptimizer {
         // Normalized tiebreaker (0.0f .. 9.9f) strictly prevents inverting source or quality tiers:
         val tiebreaker = minOf(9.9f, (minOf(50_000L, bitrate) / 10_000f) + (videoScore * 0.05f) + (audioScore * 0.05f) + (headerScore * 0.02f))
         // Intra-VidRift bonus (-22.5f .. +385.9375f) uses exact IEEE-754 dyadic multiples of
-        // 0.0625f (2^-4, 1 ulp at 989,400f) to order VidRift's lanes within the same resolution
+        // 0.0625f (2^-4, 1 ulp at 919,600f) to order VidRift's lanes within the same resolution
         // tier by healthTier DESC, hasKnownSize DESC, sizeBytes ASC (AGENTS.md §1 & §5), and
         // laneScore DESC without float rounding collisions or crossing any quality bucket (>= 600f gap).
-        val laneBonus = if (sourceRank == 98) {
+        val laneBonus = if (sourceRank == VIDRIFT_SOURCE_RANK) {
             val healthTier = getVidRiftHealthTier(link)
             val laneScore = getVidRiftLaneScore(link)
             val laneOrd = vidRiftLaneOrdinal(laneScore)
@@ -2532,12 +2535,12 @@ object StreamLinkOptimizer {
             }
         }
 
-        val effectiveTiebreaker = if (sourceRank == 98) 0f else tiebreaker
+        val effectiveTiebreaker = if (sourceRank == VIDRIFT_SOURCE_RANK) 0f else tiebreaker
         return baseScore + effectiveTiebreaker
     }
 
     val STREAM_PRIORITY_COMPARATOR = Comparator<ExtractorLink> { a, b ->
-        if (getSourcePriorityRank(a) == 98 && getSourcePriorityRank(b) == 98) {
+        if (getSourcePriorityRank(a) == VIDRIFT_SOURCE_RANK && getSourcePriorityRank(b) == VIDRIFT_SOURCE_RANK) {
             when {
                 isBetterThan(a, b) -> -1
                 isBetterThan(b, a) -> 1
@@ -2562,7 +2565,7 @@ object StreamLinkOptimizer {
      * enforcing the user priority hierarchy (720p > 1080p > 480p > above 1080p > below 480p).
      */
     fun isStreamBetter(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        if (getSourcePriorityRank(candidate) == 98 && getSourcePriorityRank(current) == 98) {
+        if (getSourcePriorityRank(candidate) == VIDRIFT_SOURCE_RANK && getSourcePriorityRank(current) == VIDRIFT_SOURCE_RANK) {
             return isBetterThan(candidate, current)
         }
         val scoreCand = getStreamCompositeScore(candidate)
