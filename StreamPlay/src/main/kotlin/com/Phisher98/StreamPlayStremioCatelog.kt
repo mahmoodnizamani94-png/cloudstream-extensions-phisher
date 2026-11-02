@@ -196,11 +196,45 @@ class StreamPlayStremioCatelog(
                 emitSingleLinkInternal(single)
             }
         }
+        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: StreamPlay.companionSharedPref)
+        val urduSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val englishDonorSubs = java.util.concurrent.CopyOnWriteArrayList<SubtitleFile>()
+
         val trackedSubCallback: (SubtitleFile) -> Unit = { sub ->
-            catalogSubsFound.incrementAndGet()
-            earlyController.onSubtitleEmitted(sub)
-            subtitleCallback(sub)
-            dispatcher.onSubtitleReceived()
+            val cleanedLang = cleanSubtitleLabel(sub.lang)
+            if (!urduMode) {
+                if (isEnglishSubtitleLabel(cleanedLang)) {
+                    @Suppress("DEPRECATION")
+                    val normalizedSub = if (sub.lang == cleanedLang) sub else SubtitleFile(lang = cleanedLang, url = sub.url).apply {
+                        headers = sub.headers
+                    }
+                    catalogSubsFound.incrementAndGet()
+                    earlyController.onSubtitleEmitted(normalizedSub)
+                    subtitleCallback(normalizedSub)
+                    dispatcher.onSubtitleReceived()
+                }
+            } else {
+                when {
+                    isUrduSubtitleLabel(cleanedLang) -> {
+                        @Suppress("DEPRECATION")
+                        val urSub = if (sub.lang == "Urdu") sub else SubtitleFile(lang = "Urdu", url = sub.url).apply {
+                            headers = sub.headers
+                        }
+                        urduSubtitleCount.incrementAndGet()
+                        catalogSubsFound.incrementAndGet()
+                        earlyController.onSubtitleEmitted(urSub)
+                        subtitleCallback(urSub)
+                        dispatcher.onSubtitleReceived()
+                    }
+                    isEnglishSubtitleLabel(cleanedLang) -> {
+                        @Suppress("DEPRECATION")
+                        val enSub = if (sub.lang == cleanedLang) sub else SubtitleFile(lang = cleanedLang, url = sub.url).apply {
+                            headers = sub.headers
+                        }
+                        englishDonorSubs.add(enSub)
+                    }
+                }
+            }
         }
 
         val stremioAddons = StreamPlayStremioAddonSettings.getDynamicStremioMap(
@@ -220,22 +254,36 @@ class StreamPlayStremioCatelog(
             add(PipelinedTask("WyZIESUB", LatencyTier.TIER_1, isVideo = false) {
                 invokeWYZIESubs(imdb, res.season, res.episode, trackedSubCallback)
             })
-            if (!imdb.isNullOrBlank() || !resolved.title.isNullOrBlank()) {
-                add(PipelinedTask("SubDLUrdu", LatencyTier.TIER_1, isVideo = false) {
-                    UrduSubtitleEngine.invokeSubDlUrduKeyless(
-                        imdbId = imdb,
-                        title = resolved.title,
-                        season = resolved.season,
-                        episode = resolved.episode,
-                        year = resolved.year,
-                        subtitleCallback = trackedSubCallback
-                    )
-                })
-            }
-            if (!imdb.isNullOrBlank()) {
-                add(PipelinedTask("SubSenseUrdu", LatencyTier.TIER_1, isVideo = false) {
-                    UrduSubtitleEngine.invokeSubSenseUrdu(imdb, resolved.season, resolved.episode, trackedSubCallback)
-                })
+            if (urduMode) {
+                if (!imdb.isNullOrBlank() || !resolved.title.isNullOrBlank()) {
+                    add(PipelinedTask("SubDLUrdu", LatencyTier.TIER_1, isVideo = false) {
+                        UrduSubtitleEngine.invokeSubDlUrduKeyless(
+                            imdbId = imdb,
+                            title = resolved.title,
+                            season = resolved.season,
+                            episode = resolved.episode,
+                            year = resolved.year,
+                            subtitleCallback = trackedSubCallback
+                        )
+                    })
+                }
+                if (!imdb.isNullOrBlank()) {
+                    add(PipelinedTask("SubSenseUrdu", LatencyTier.TIER_1, isVideo = false) {
+                        UrduSubtitleEngine.invokeSubSenseUrdu(imdb, resolved.season, resolved.episode, trackedSubCallback)
+                    })
+                }
+                if (!resolved.title.isNullOrBlank()) {
+                    add(PipelinedTask("Subf2mUrdu", LatencyTier.TIER_1, isVideo = false) {
+                        UrduSubtitleEngine.invokeSubf2mUrdu(
+                            title = resolved.title,
+                            season = resolved.season,
+                            episode = resolved.episode,
+                            year = resolved.year,
+                            isMovie = resolved.season == null || resolved.season <= 0,
+                            subtitleCallback = trackedSubCallback
+                        )
+                    })
+                }
             }
             providersList.forEach { provider ->
                 add(PipelinedTask(
@@ -268,6 +316,31 @@ class StreamPlayStremioCatelog(
             config = earlySatisfactionConfig,
             controller = earlyController
         )
+
+        if (urduMode && urduSubtitleCount.get() == 0 && englishDonorSubs.isNotEmpty()) {
+            UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
+                imdbId = imdb,
+                season = resolved.season,
+                episode = resolved.episode,
+                candidateEnglishSubs = englishDonorSubs,
+                subtitleCallback = { urSub ->
+                    urduSubtitleCount.incrementAndGet()
+                    catalogSubsFound.incrementAndGet()
+                    earlyController.onSubtitleEmitted(urSub)
+                    subtitleCallback(urSub)
+                    dispatcher.onSubtitleReceived()
+                }
+            )
+            if (urduSubtitleCount.get() == 0) {
+                englishDonorSubs.forEach { enSub ->
+                    catalogSubsFound.incrementAndGet()
+                    earlyController.onSubtitleEmitted(enSub)
+                    subtitleCallback(enSub)
+                    dispatcher.onSubtitleReceived()
+                }
+            }
+        }
+
         dispatcher.flush()
 
         return@coroutineScope true

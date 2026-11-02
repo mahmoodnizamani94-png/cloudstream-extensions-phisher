@@ -45,9 +45,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.phisher98.SuperStreamExtractor.invokeSubSenseUrdu
 import com.phisher98.SuperStreamExtractor.invokeSubtitleAPI
 import com.phisher98.SuperStreamExtractor.invokeSuperstream
 import com.phisher98.SuperStreamExtractor.invokeSuperstreamFeb
+import com.phisher98.SuperStreamExtractor.invokeWyZIESUBAPI
+import com.phisher98.SuperStreamExtractor.synthesizeSuperStreamUrduFallback
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -55,6 +58,7 @@ import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.regex.Pattern
 
 private val STREAM_SOURCE_PATTERN = Pattern.compile("""\{"type":"([^"]+)","file":"([^"]+)","label":"([^"]+)"\}""")
@@ -602,9 +606,29 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         val optimizedCallback: (ExtractorLink) -> Unit = { link ->
             deduplicator.emit(StreamLinkOptimizer.optimize(link))
         }
+        val urduMode = isUrduSubtitleMode(sharedPref)
+        val urduSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val englishDonorSubs = CopyOnWriteArrayList<SubtitleFile>()
+
         val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
-            earlyController.onSubtitleEmitted(sub)
-            subtitleCallback(sub)
+            if (!urduMode) {
+                if (isEnglishSubtitleCode(sub.lang)) {
+                    earlyController.onSubtitleEmitted(sub)
+                    subtitleCallback(sub)
+                }
+            } else {
+                when {
+                    isUrduSubtitleCode(sub.lang) -> {
+                        val normalizedUrdu = if (sub.lang == "Urdu") sub else sub.copy(lang = "Urdu")
+                        urduSubsFound.incrementAndGet()
+                        earlyController.onSubtitleEmitted(normalizedUrdu)
+                        subtitleCallback(normalizedUrdu)
+                    }
+                    isEnglishSubtitleCode(sub.lang) -> {
+                        englishDonorSubs.add(sub)
+                    }
+                }
+            }
         }
 
         if (data.startsWith(febbox)) {
@@ -678,6 +702,32 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                         trackedSubtitleCallback,
                     )
                 })
+                add(PipelinedTask(
+                    providerId = "WyZIESUB",
+                    initialTier = LatencyTier.TIER_1,
+                    isVideo = false
+                ) {
+                    invokeWyZIESUBAPI(
+                        res.imdbId,
+                        res.season,
+                        res.episode,
+                        trackedSubtitleCallback,
+                    )
+                })
+                if (urduMode && !res.imdbId.isNullOrBlank()) {
+                    add(PipelinedTask(
+                        providerId = "SubSenseUrdu",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = false
+                    ) {
+                        invokeSubSenseUrdu(
+                            res.imdbId,
+                            res.season,
+                            res.episode,
+                            trackedSubtitleCallback,
+                        )
+                    })
+                }
                 if (res.imdbId != null) {
                     add(PipelinedTask(
                         providerId = "SuperStream",
@@ -715,6 +765,22 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 config = earlySatisfactionConfig,
                 controller = earlyController
             )
+
+            if (urduMode && urduSubsFound.get() == 0 && englishDonorSubs.isNotEmpty()) {
+                withTimeoutOrNull(8_000L) {
+                    synthesizeSuperStreamUrduFallback(englishDonorSubs) { urSub ->
+                        urduSubsFound.incrementAndGet()
+                        earlyController.onSubtitleEmitted(urSub)
+                        subtitleCallback(urSub)
+                    }
+                }
+                if (urduSubsFound.get() == 0) {
+                    englishDonorSubs.forEach { enSub ->
+                        earlyController.onSubtitleEmitted(enSub)
+                        subtitleCallback(enSub)
+                    }
+                }
+            }
         }
         ProviderTelemetryManager.scheduleSave(sharedPref)
         return true

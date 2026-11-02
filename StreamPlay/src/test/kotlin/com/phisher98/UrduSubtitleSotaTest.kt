@@ -354,6 +354,298 @@ class UrduSubtitleSotaTest {
 
         val ep1Zips = UrduSubtitleEngine.parseSubDlUrduPageZips(subDlUrduHtml, season = 1, episode = 1)
         assertEquals(listOf("https://dl.subdl.com/subtitle/3100001-8200001.zip"), ep1Zips)
+
+        // Fail-closed year matching in parseSubDlAutoSlug
+        val autoJsonWithYears = """
+            {
+              "results": [
+                {
+                  "sd_id": 1001,
+                  "name": "Dune",
+                  "year": 1984,
+                  "type": "movie",
+                  "link": "/subtitle/sd1001/dune-1984"
+                }
+              ]
+            }
+        """.trimIndent()
+        assertNull(
+            "parseSubDlAutoSlug must fail closed when expectedYear does not match any result",
+            UrduSubtitleEngine.parseSubDlAutoSlug(autoJsonWithYears, expectedYear = 2021)
+        )
+        assertEquals(
+            "/subtitle/sd1001/dune-1984",
+            UrduSubtitleEngine.parseSubDlAutoSlug(autoJsonWithYears, expectedYear = 1984)
+        )
+    }
+
+    @Test
+    fun `writeUrduLocalCacheFile returns canonical triple-slash file URI and verifies disk existence`() {
+        val sampleSrt = "1\n00:00:01,000 --> 00:00:03,000\n\u200Fیہ اردو سب ٹائٹل ہے\u200F\n"
+        val uri = UrduSubtitleEngine.writeUrduLocalCacheFile("test-key-p0-1", sampleSrt)
+        assertNotNull("Expected non-null local cache URI", uri)
+        assertTrue(
+            "Local cache URI must start with canonical triple-slash file:/// (actual: $uri)",
+            uri!!.startsWith("file:///")
+        )
+        assertTrue("Cached file must be valid on disk", UrduSubtitleEngine.isCachedSubtitleUriValid(uri))
+
+        val diskFile = java.io.File(uri.removePrefix("file://"))
+        assertTrue("Disk file must exist", diskFile.exists())
+        val rawBytes = diskFile.readBytes()
+        assertTrue(
+            "Disk file must start with UTF-8 BOM (EF BB BF)",
+            rawBytes.size > 3 &&
+                rawBytes[0] == 0xEF.toByte() &&
+                rawBytes[1] == 0xBB.toByte() &&
+                rawBytes[2] == 0xBF.toByte()
+        )
+
+        // Deleting the file on disk must invalidate isCachedSubtitleUriValid
+        assertTrue(diskFile.delete())
+        assertFalse(
+            "Deleted cache file must fail isCachedSubtitleUriValid check",
+            UrduSubtitleEngine.isCachedSubtitleUriValid(uri)
+        )
+    }
+
+    @Test
+    fun `publishToSubtitleCatCdn rejects synthetic folder and never emits 404 synthesized URL`() = runBlocking {
+        val resultSynthetic = UrduSubtitleEngine.publishToSubtitleCatCdn(
+            origFilename = "Movie.2024-orig.srt",
+            urduSrtContent = "1\n00:00:01,000 --> 00:00:02,000\nاردو\n",
+            subFolder = "/subs/synthesized/"
+        )
+        assertNull("publishToSubtitleCatCdn must never upload to /subs/synthesized/", resultSynthetic)
+
+        val resultInvalid = UrduSubtitleEngine.publishToSubtitleCatCdn(
+            origFilename = "Movie.2024-orig.srt",
+            urduSrtContent = "1\n00:00:01,000 --> 00:00:02,000\nاردو\n",
+            subFolder = "/invalid/nested/path/"
+        )
+        assertNull("publishToSubtitleCatCdn must reject non-SubtitleCat folder paths", resultInvalid)
+    }
+
+    @Test
+    fun `extractBestSubtitleFromZip selects exact requested episode and rejects mismatched episodes`() {
+        val ep1Srt = "1\n00:00:01,000 --> 00:00:03,000\nقسط نمبر ایک\n"
+        val ep2Srt = "1\n00:00:01,000 --> 00:00:03,000\nقسط نمبر دو\n"
+        val ep3Srt = "1\n00:00:01,000 --> 00:00:03,000\nقسط نمبر تین\n"
+
+        val zipOut = ByteArrayOutputStream()
+        ZipOutputStream(zipOut).use { zos ->
+            zos.putNextEntry(ZipEntry("Season1/Show.S01E01.1080p.Urdu.srt"))
+            zos.write((ep1Srt + "\n".repeat(200)).toByteArray(Charsets.UTF_8)) // Make E01 larger than E02
+            zos.closeEntry()
+
+            zos.putNextEntry(ZipEntry("Season1/Show.S01E02.1080p.Urdu.srt"))
+            zos.write(ep2Srt.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            zos.putNextEntry(ZipEntry("Season1/Show.S01E03.1080p.Urdu.srt"))
+            zos.write(ep3Srt.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+        }
+        val zipBytes = zipOut.toByteArray()
+
+        // Requesting S01E02 must deterministically pick Show.S01E02 even though S01E01 is larger in bytes
+        val decodedEp2 = UrduSubtitleEngine.decodeAndNormalizeUrduBytes(zipBytes, season = 1, episode = 2)
+        assertTrue("Expected S01E02 content, got: $decodedEp2", decodedEp2.contains("قسط نمبر دو"))
+        assertFalse(decodedEp2.contains("قسط نمبر ایک"))
+
+        // Requesting S01E09 (not in the pack) must reject S01E01..S01E03 and return empty string
+        val decodedEp9 = UrduSubtitleEngine.decodeAndNormalizeUrduBytes(zipBytes, season = 1, episode = 9)
+        assertEquals("", decodedEp9.trim())
+    }
+
+    @Test
+    fun `protectSubtitleTags and restoreSubtitleTags preserve inline tags across Google Translate mutations`() {
+        val raw = "<i>Hello</i> <b>world</b> {\\an8} ♪ music ♫"
+        val (protectedText, tags) = UrduSubtitleEngine.protectSubtitleTags(raw)
+        assertEquals(7, tags.size)
+        assertTrue(protectedText.contains("\u30160\u3017"))
+        assertTrue(protectedText.contains("\u30166\u3017"))
+
+        // Simulate Google Translate mutating fullwidth brackets into 【 】 and [ ] with spaces and RLM marks
+        val mutatedTranslation = "【 0 】ہیلو\u30161\u3017 [ \u200F2\u200F ] دنیا【3】 \u30164\u3017 \u30165\u3017 تصویر \u30166\u3017 \u301699\u3017"
+        val restored = UrduSubtitleEngine.restoreSubtitleTags(mutatedTranslation, tags)
+        assertEquals("<i>ہیلو</i> <b> دنیا</b> {\\an8} ♪ تصویر ♫", restored)
+    }
+
+    @Test
+    fun `translateEnglishSrtToUrdu bisects failed 250-cue batches into 50-cue sub-batches`() = runBlocking {
+        val sb = StringBuilder()
+        for (i in 1..260) {
+            val secStart = i
+            val secEnd = i + 1
+            sb.append("$i\n")
+            sb.append("00:00:%02d,000 --> 00:00:%02d,500\n".format(secStart % 60, secEnd % 60))
+            sb.append("Line number $i\n\n")
+        }
+
+        // Mock translator that fails when batch size == 250, but succeeds on sub-batches of <= 50
+        val urduSrt = UrduSubtitleEngine.translateEnglishSrtToUrdu(sb.toString()) { batch ->
+            if (batch.size > 50) {
+                null
+            } else {
+                batch.map { "اردو ترجمہ: $it" }
+            }
+        }
+        assertNotNull("Expected sub-batch retry to recover failed 250-cue batch", urduSrt)
+        val parsedTranslatedCues = UrduSubtitleEngine.parseSubtitleCues(urduSrt!!)
+        assertEquals(260, parsedTranslatedCues.size)
+        assertTrue(parsedTranslatedCues.first().text.contains("اردو ترجمہ"))
+    }
+
+    @Test
+    fun `parseGoogleBatchTranslateResponse handles single-cue multi-sentence nested JSONArray`() {
+        // When expectedCount == 1 and a single cue has multiple sentences, Google returns:
+        // [[["ہم کہاں ہیں؟","Where are we?"],["مجھے نہیں معلوم۔","I don't know."]],null,"en"]
+        val multiSentenceSingleCueJson = """
+            [[["ہم کہاں ہیں؟","Where are we?"],["مجھے نہیں معلوم۔","I don't know."]],null,"en"]
+        """.trimIndent()
+
+        val parsed = UrduSubtitleEngine.parseGoogleBatchTranslateResponse(multiSentenceSingleCueJson, expectedCount = 1)
+        assertNotNull("Expected non-null parsed list for single-cue multi-sentence response", parsed)
+        assertEquals(1, parsed!!.size)
+        assertEquals("ہم کہاں ہیں؟ مجھے نہیں معلوم۔", parsed[0])
+    }
+
+    @Test
+    fun `parseSubtitleCues skips multi-line VTT NOTE and STYLE blocks and parses flexible timestamps`() {
+        val vttWithNotesAndStyles = """
+            WEBVTT
+
+            STYLE
+            ::cue {
+              color: yellow;
+              /* 00:00:01.000 --> 00:00:02.000 fake arrow inside STYLE block */
+            }
+
+            NOTE This is a multi-line comment
+            that even contains 00:00:02.000 --> 00:00:03.000
+            and must be completely ignored!
+
+            1
+            01:23.45 --> 01:26.5
+            <v Speaker><c.yellow>First flexible timestamp cue &amp; entities &#39;quoted&#39;</c></v>
+
+            2
+            00:02:10,5 --> 00:02:14
+            Karaoke <00:02:11.200>timing tag stripped
+        """.trimIndent()
+
+        val cues = UrduSubtitleEngine.parseSubtitleCues(vttWithNotesAndStyles)
+        assertEquals("Expected exactly 2 real cues after skipping STYLE and NOTE blocks", 2, cues.size)
+        assertEquals("00:01:23,450 --> 00:01:26,500", cues[0].timestamp)
+        assertEquals("First flexible timestamp cue & entities 'quoted'", cues[0].text)
+        assertEquals("00:02:10,500 --> 00:02:14,000", cues[1].timestamp)
+        assertEquals("Karaoke timing tag stripped", cues[1].text)
+    }
+
+    @Test
+    fun `Windows-1252 English subtitles with smart quotes and Latin accents are not misdetected as Windows-1256`() {
+        val englishWithSmartQuotesAndAccents = """
+            1
+            00:00:01,000 --> 00:00:04,000
+            It’s a “naïve” café in Paris — don’t worry about the résumé!
+        """.trimIndent()
+        val cp1252Bytes = englishWithSmartQuotesAndAccents.toByteArray(Charset.forName("windows-1252"))
+
+        assertFalse(
+            "English CP1252 bytes with smart quotes/accents must NOT trigger looksLikeWindows1256",
+            UrduSubtitleEngine.looksLikeWindows1256(cp1252Bytes)
+        )
+        val decoded = UrduSubtitleEngine.decodeAndNormalizeUrduBytes(cp1252Bytes)
+        assertTrue("Decoded CP1252 text must preserve 'café' and 'naïve', got: $decoded", decoded.contains("café") && decoded.contains("naïve"))
+    }
+
+    @Test
+    fun `normalizeUrduTypography decomposes presentation forms and maps Goal Heh and Yeh Barree`() {
+        // Contains Arabic Heh (\u0647), Ae (\u06D5), Yeh Barree with Hamza (\u06D3), and presentation form \uFB56 (\u067E)
+        val raw = "\uFB56\u0627\u0643\u0633\u062A\u0627\u0646 \u064A\u0647 \u06D5 \u0628\u0691\u06D3"
+        val normalized = UrduSubtitleEngine.normalizeUrduTypography(raw)
+        assertEquals("\u067E\u0627\u06A9\u0633\u062A\u0627\u0646 \u06CC\u06C1 \u06C1 \u0628\u0691\u06D2", normalized)
+    }
+
+    @Test
+    fun `SubSource and SubDL API v1 parsers and bounded NEXT_DATA context window`() {
+        // 1. SubSource movie search parser
+        val subSourceSearchJson = """
+            {
+              "success": true,
+              "data": [
+                {"movieId": "9911", "title": "Dune", "releaseYear": 1984, "imdbId": "tt0087182"},
+                {"movieId": "9922", "title": "Dune: Part Two", "releaseYear": 2024, "imdbId": "tt15239678"}
+              ]
+            }
+        """.trimIndent()
+        assertEquals(
+            "9922",
+            UrduSubtitleEngine.parseSubSourceSearchMovieId(
+                subSourceSearchJson,
+                imdbId = "tt15239678",
+                title = "Dune: Part Two",
+                expectedYear = 2024
+            )
+        )
+
+        // 2. SubSource subtitles list parser
+        val subSourceSubsJson = """
+            {
+              "data": [
+                {"subtitleId": "501", "language": "Urdu", "releaseInfo": "Show.S01E01.1080p"},
+                {"subtitleId": "502", "language": "Urdu", "releaseInfo": "Show.S01E02.1080p"},
+                {"subtitleId": "503", "language": "English", "releaseInfo": "Show.S01E02.1080p"}
+              ]
+            }
+        """.trimIndent()
+        assertEquals(
+            listOf("https://api.subsource.net/api/v1/subtitles/502/download"),
+            UrduSubtitleEngine.parseSubSourceSubtitlesList(subSourceSubsJson, season = 1, episode = 2)
+        )
+
+        // 3. SubDL API v1 parser
+        val subDlApiV1Json = """
+            {
+              "status": true,
+              "subtitles": [
+                {"url": "/subtitle/111-222.zip", "lang": "urdu", "season": 1, "episode": 1, "release_name": "Show.S01E01"},
+                {"url": "/subtitle/333-444.zip", "lang": "urdu", "season": 1, "episode": 2, "release_name": "Show.S01E02"}
+              ]
+            }
+        """.trimIndent()
+        assertEquals(
+            listOf("https://dl.subdl.com/subtitle/333-444.zip"),
+            UrduSubtitleEngine.parseSubDlApiV1Zips(subDlApiV1Json, season = 1, episode = 2)
+        )
+
+        // 4. Bounded __NEXT_DATA__ JSON context window prevents sibling episode bleed
+        val nextDataHtml = """
+            <html><body><script id="__NEXT_DATA__" type="application/json">
+            {"props":{"subtitles":[
+              {"name":"Show.S01E01.720p.Urdu","link":"https://dl.subdl.com/subtitle/1001-1001.zip"},
+              {"name":"Show.S01E02.720p.Urdu","link":"https://dl.subdl.com/subtitle/1002-1002.zip"}
+            ]}}
+            </script></body></html>
+        """.trimIndent()
+        assertEquals(
+            listOf("https://dl.subdl.com/subtitle/1002-1002.zip"),
+            UrduSubtitleEngine.parseSubDlUrduPageZips(nextDataHtml, season = 1, episode = 2)
+        )
+
+        // 5. Subf2m fail-closed movie year matching
+        val subf2mSearchHtml = """
+            <div class="title"><a href="/subtitles/the-batman">The Batman</a></div>
+            <div class="title"><a href="/subtitles/the-batman-2022">The Batman (2022)</a></div>
+        """.trimIndent()
+        assertEquals(
+            "the-batman-2022",
+            UrduSubtitleEngine.parseSubf2mSearchSlug(subf2mSearchHtml, "The Batman", expectedYear = 2022, isMovie = true)
+        )
+        assertNull(
+            UrduSubtitleEngine.parseSubf2mSearchSlug(subf2mSearchHtml, "The Batman", expectedYear = 1989, isMovie = true)
+        )
     }
 
     @Test

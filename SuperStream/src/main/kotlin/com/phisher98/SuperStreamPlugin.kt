@@ -12,6 +12,7 @@ class SuperStreamPlugin: Plugin() {
         NetworkOptimizer.initialize(context)
         DeviceProfiler.initialize(context)
         val sharedPref = context.getSharedPreferences("SuperStream", Context.MODE_PRIVATE)
+        initializeSubtitleMode(context, sharedPref)
         try {
             ProviderTelemetryManager.loadPersistedStats(sharedPref)
         } catch (_: Exception) {}

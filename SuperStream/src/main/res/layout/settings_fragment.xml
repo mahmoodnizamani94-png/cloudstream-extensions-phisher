@@ -31,6 +31,43 @@
             android:paddingBottom="24dp"
             tools:ignore="WebViewLayout">
 
+            <!-- Card 0: Subtitle Mode (Default English <-> Urdu) -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:backgroundTint="#1E1E1E"
+                android:elevation="4dp">
+
+                <LinearLayout
+                    android:id="@+id/subtitle_mode_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?android:attr/selectableItemBackground">
+
+                    <TextView
+                        android:id="@+id/subtitle_mode_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Subtitle Mode: Default (English)"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:textColor="#FFFFFF" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Switch between Default (English) and Urdu (اردو) subtitles for streams &amp; downloads (takes effect immediately)"
+                        android:textSize="14sp"
+                        android:textColor="#AAAAAA"
+                        android:layout_marginTop="4dp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
             <!-- Card 1: Google Login -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"

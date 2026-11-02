@@ -2709,14 +2709,22 @@ object StreamPlayExtractor : StreamPlay() {
                 .mapNotNull { sub ->
                     val subUrl = sub.url.trim()
                     if (subUrl.startsWith("http", ignoreCase = true)) {
-                        cleanSubtitleLabel(getLanguage(sub.lang)) to subUrl
+                        val isUr = isUrduSubtitleLabel(sub.lang) || isUrduSubtitleLabel(getLanguage(sub.lang))
+                        val isEn = isEnglishSubtitleLabel(sub.lang) || isEnglishSubtitleLabel(getLanguage(sub.lang))
+                        val label = when {
+                            isUr -> "Urdu"
+                            isEn -> "English"
+                            else -> cleanSubtitleLabel(getLanguage(sub.lang))
+                        }
+                        Triple(label, subUrl, isUr to isEn)
                     } else null
                 }
             val orderedSubs = if (urduMode) {
-                val (urduSubs, otherSubs) = allSubs.partition { (lan, _) -> isUrduSubtitleLabel(lan) }
-                urduSubs + otherSubs
+                val urduSubs = allSubs.filter { it.third.first }.map { it.first to it.second }
+                val englishSubs = allSubs.filter { !it.third.first && it.third.second }.map { it.first to it.second }
+                urduSubs + englishSubs
             } else {
-                allSubs.filterNot { (lan, _) -> isUrduSubtitleLabel(lan) }
+                allSubs.filter { it.third.second && !it.third.first }.map { it.first to it.second }
             }
             orderedSubs.forEach { (lan, subUrl) ->
                 subtitleCallback.invoke(newSubtitleFile(lan, subUrl))
@@ -3006,18 +3014,27 @@ object StreamPlayExtractor : StreamPlay() {
                 ?: return
             val data = tryParseJson<Array<WYZIESubtitle>>(body) ?: return
             val allSubs = data.mapNotNull { sub ->
-                val lang = sub.language ?: return@mapNotNull null
+                val lang = sub.language
+                val display = sub.display
+                if (lang == null && display == null) return@mapNotNull null
                 val subUrl = sub.url.trim()
                 if (subUrl.startsWith("http", ignoreCase = true)) {
-                    val label = cleanSubtitleLabel(sub.display ?: getLanguage(lang))
-                    label to subUrl
+                    val isUr = UrduSubtitleEngine.isUrduLanguageTag(display) || UrduSubtitleEngine.isUrduLanguageTag(lang)
+                    val isEn = isEnglishSubtitleLabel(display) || isEnglishSubtitleLabel(lang)
+                    val label = when {
+                        isUr -> "Urdu"
+                        isEn -> "English"
+                        else -> cleanSubtitleLabel(display ?: getLanguage(lang.orEmpty()))
+                    }
+                    Triple(label, subUrl, isUr to isEn)
                 } else null
             }
             val orderedSubs = if (urduMode) {
-                val (urduSubs, otherSubs) = allSubs.partition { (label, _) -> isUrduSubtitleLabel(label) }
-                urduSubs + otherSubs
+                val urduSubs = allSubs.filter { it.third.first }.map { it.first to it.second }
+                val englishSubs = allSubs.filter { !it.third.first && it.third.second }.map { it.first to it.second }
+                urduSubs + englishSubs
             } else {
-                allSubs.filterNot { (label, _) -> isUrduSubtitleLabel(label) }
+                allSubs.filter { it.third.second && !it.third.first }.map { it.first to it.second }
             }
             orderedSubs.forEach { (label, subUrl) ->
                 subtitleCallback.invoke(newSubtitleFile(label, subUrl))
@@ -3240,7 +3257,22 @@ object StreamPlayExtractor : StreamPlay() {
                     }.awaitAll()
                 }.filterNotNull()
 
-                val english = resolvedDetails.mapNotNull { parseSubtitleCatDetail(it) }.distinct()
+                val englishEntries = resolvedDetails.mapNotNull { detail ->
+                    val enUrl = parseSubtitleCatDetail(detail)
+                    val origPair = parseSubtitleCatOrigSrt(detail)
+                    when {
+                        enUrl != null -> {
+                            val origUrl = origPair?.first ?: enUrl
+                            val origName = origPair?.second ?: enUrl.substringAfterLast('/').substringBefore('?')
+                            Triple(enUrl, origUrl, origName)
+                        }
+                        origPair != null -> {
+                            Triple(origPair.first, origPair.first, origPair.second)
+                        }
+                        else -> null
+                    }
+                }.distinctBy { it.first }
+                val english = englishEntries.map { it.first }
                 val urdu = if (urduMode) {
                     resolvedDetails.mapNotNull { parseSubtitleCatUrduDetail(it) }.distinct()
                 } else {
@@ -3248,17 +3280,8 @@ object StreamPlayExtractor : StreamPlay() {
                 }
 
                 if (urduMode && urdu.isEmpty()) {
-                    resolvedDetails.forEach { detail ->
-                        val origPair = parseSubtitleCatOrigSrt(detail)
-                        if (origPair != null) {
-                            UrduSubtitleEngine.recordSubtitleCatOrigCandidate(origPair.first, origPair.second)
-                        } else {
-                            val enUrl = parseSubtitleCatDetail(detail)
-                            if (enUrl != null) {
-                                val fileName = enUrl.substringAfterLast('/').substringBefore('?')
-                                UrduSubtitleEngine.recordSubtitleCatOrigCandidate(enUrl, fileName)
-                            }
-                        }
+                    englishEntries.forEach { (_, origUrl, origFilename) ->
+                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(origUrl, origFilename)
                     }
                 }
 
@@ -3271,10 +3294,13 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     )
                 }
-                english.forEach { url ->
+                englishEntries.forEach { (url, origUrl, origFilename) ->
                     subtitleCallback.invoke(
                         newSubtitleFile("English", url) {
-                            headers = SUBTITLE_BROWSER_HEADERS
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                                "X-SubtitleCat-Orig-Url" to origUrl,
+                                "X-SubtitleCat-Orig-Name" to origFilename
+                            )
                         }
                     )
                 }

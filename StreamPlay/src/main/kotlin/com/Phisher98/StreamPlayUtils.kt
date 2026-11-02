@@ -686,6 +686,11 @@ fun cleanSubtitleLabel(raw: String?): String {
 
     text = Normalizer.normalize(text, Normalizer.Form.NFC).trim()
 
+    text = text.replace(
+        Regex("""(\[(?:ai\s+translated|neural\s+ai)\]|\((?:ai\s+translated|neural\s+ai)\))""", RegexOption.IGNORE_CASE),
+        ""
+    ).trim()
+
     val modifierMatch = Regex("""(\[(?:forced|sdh|cc|hi|hearing\s+impaired)\]|\((?:forced|sdh|cc|hi|hearing\s+impaired)\))""", RegexOption.IGNORE_CASE).find(text)
     val modifier = modifierMatch?.groupValues?.get(1)?.replace("(", "[")?.replace(")", "]")?.let {
         when {
@@ -754,6 +759,35 @@ fun isUrduSubtitleLabel(raw: String?): Boolean {
         .substringBefore('_')
         .trim()
     return code == "ur" || code == "urd"
+}
+
+@Suppress("EXTENSION_SHADOWED_BY_MEMBER")
+fun UrduSubtitleEngine.isUrduLanguageTag(raw: String?): Boolean = isUrduSubtitleLabel(raw)
+
+@Suppress("EXTENSION_SHADOWED_BY_MEMBER", "UNUSED_PARAMETER")
+suspend fun UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
+    imdbId: String? = null,
+    season: Int? = null,
+    episode: Int? = null,
+    candidateEnglishSubs: Collection<SubtitleFile>,
+    subtitleCallback: (SubtitleFile) -> Unit
+): Boolean {
+    for (sub in candidateEnglishSubs) {
+        val origUrl = sub.headers?.entries
+            ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Url", ignoreCase = true) }
+            ?.value?.trim()?.takeIf { it.isNotBlank() }
+        val origName = sub.headers?.entries
+            ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Name", ignoreCase = true) }
+            ?.value?.trim()?.takeIf { it.isNotBlank() }
+        if (origUrl != null && origName != null) {
+            recordSubtitleCatOrigCandidate(origUrl, origName)
+        }
+    }
+    val urls = candidateEnglishSubs.mapNotNull { it.url.trim().takeIf { u -> u.isNotBlank() } }
+    return synthesizeUrduFallbackFromEnglish(
+        englishUrls = urls,
+        subtitleCallback = subtitleCallback
+    )
 }
 
 
