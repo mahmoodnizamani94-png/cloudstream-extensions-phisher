@@ -202,9 +202,10 @@ class ChallengerM2EmpiricalAdversarialTest {
             Qualities.P480.value to 7000,
             576 to 6500,
             Qualities.P360.value to 5360,
+            Qualities.Unknown.value to 4500,
             Qualities.P1440.value to 3640,
             Qualities.P2160.value to 2920,
-            Qualities.Unknown.value to 0
+            -1 to 0
         )
 
         for (i in 0 until qualities.size - 1) {

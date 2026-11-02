@@ -707,7 +707,7 @@ class StreamPlayV24SourceProtocolTest {
             StreamLinkOptimizer.getVidRiftLaneScore(evion720)
         )
 
-        // Resolution hierarchy (720p > 1080p > 480p > 576p > 360p > 1440p > 2160p > Unknown) must strictly
+        // Resolution hierarchy (720p > 1080p > 480p > 576p > 360p > Unknown > 1440p > 2160p) must strictly
         // dominate within VidRift even when comparing worst laneBonus (-22.5f, unproxied Lyra) against
         // best laneBonus (+385.9375f, Direct [1 MB]).
         val qualityBucketsDesc = listOf(
@@ -716,9 +716,9 @@ class StreamPlayV24SourceProtocolTest {
             Qualities.P480.value to "480p",
             576 to "576p",
             Qualities.P360.value to "360p",
+            Qualities.Unknown.value to "Auto",
             Qualities.P1440.value to "1440p",
-            Qualities.P2160.value to "2160p",
-            Qualities.Unknown.value to "Auto"
+            Qualities.P2160.value to "2160p"
         )
         for (i in 0 until qualityBucketsDesc.size - 1) {
             val (hiQ, hiLabel) = qualityBucketsDesc[i]

@@ -161,11 +161,14 @@ class Milestone1QualityHierarchyTest {
         assertTrue("480p must be better than 360p", StreamLinkOptimizer.isBetterThan(link480, link360))
         assertFalse("360p must NOT be better than 480p", StreamLinkOptimizer.isBetterThan(link360, link480))
 
+        assertTrue("360p must be better than Unknown", StreamLinkOptimizer.isBetterThan(link360, linkUnknown))
+        assertFalse("Unknown must NOT be better than 360p", StreamLinkOptimizer.isBetterThan(linkUnknown, link360))
+
         assertTrue("360p must be better than 2160p (playable SD over stuttering 4K)", StreamLinkOptimizer.isBetterThan(link360, link2160))
         assertFalse("2160p must NOT be better than 360p", StreamLinkOptimizer.isBetterThan(link2160, link360))
 
-        assertTrue("2160p must be better than Unknown", StreamLinkOptimizer.isBetterThan(link2160, linkUnknown))
-        assertFalse("Unknown must NOT be better than 2160p", StreamLinkOptimizer.isBetterThan(linkUnknown, link2160))
+        assertTrue("Unknown must be better than 2160p (480p -> 360p -> Unknown -> 2160p)", StreamLinkOptimizer.isBetterThan(linkUnknown, link2160))
+        assertFalse("2160p must NOT be better than Unknown", StreamLinkOptimizer.isBetterThan(link2160, linkUnknown))
     }
 
     @Test
@@ -217,22 +220,23 @@ class Milestone1QualityHierarchyTest {
         assertEquals(6500, score576)
         assertEquals(5360, score360)
         assertEquals(5240, score240)
+        assertEquals(4500, scoreUnknown)
         assertEquals(3640, score1440)
         assertEquals(2920, score2160)
         assertEquals(1000, score4320)
-        assertEquals(0, scoreUnknown)
         assertEquals(0, scoreInvalid)
 
-        // Strict inequalities: 720p > 1080p > 480p > (4K or 360p)
+        // Strict inequalities: 720p > 1080p > 480p > 360p > Unknown > 2160p
         assertTrue("720p (10000) > 1080p (9000)", score720 > score1080)
         assertTrue("1080p (9000) > 480p (7000)", score1080 > score480)
         assertTrue("480p (7000) > 576p (6500)", score480 > score576)
         assertTrue("576p (6500) > 360p (5360)", score576 > score360)
         assertTrue("360p (5360) > 240p (5240)", score360 > score240)
-        assertTrue("240p (5240) > 1440p (3640)", score240 > score1440)
+        assertTrue("240p (5240) > Unknown (4500)", score240 > scoreUnknown)
+        assertTrue("Unknown (4500) > 1440p (3640)", scoreUnknown > score1440)
         assertTrue("1440p (3640) > 2160p (2920)", score1440 > score2160)
         assertTrue("2160p (2920) > 4320p (1000)", score2160 > score4320)
-        assertTrue("4320p (1000) > Unknown (0)", score4320 > scoreUnknown)
+        assertTrue("4320p (1000) > Invalid (0)", score4320 > scoreInvalid)
 
         // AC3 explicit comparison: 480p higher than 4K or 360p
         assertTrue("480p must score higher than 4K/2160p", score480 > score2160)

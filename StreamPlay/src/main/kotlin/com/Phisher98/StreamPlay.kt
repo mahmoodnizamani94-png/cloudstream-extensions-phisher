@@ -1026,11 +1026,13 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             topSourceGraceMs = if (slowInternetMode) 10_000L else 6_500L,
             top720GraceMs = if (slowInternetMode) 4_000L else 2_500L,
             activeTopRanks = activeTopRanks,
-            isRankInFlight = { rank -> runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank } }
+            isRankInFlight = { rank -> runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank } },
+            isAnime = res.isAnime
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
-            onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) }
+            onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) },
+            isAnime = res.isAnime
         )
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 

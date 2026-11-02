@@ -462,11 +462,13 @@ class StreamPlayAnime : MainAPI() {
             topSourceGraceMs = 2_000L,
             top720GraceMs = 1_100L,
             activeTopRanks = animeTopRanks,
-            isRankInFlight = { rank -> runningTopRanks.contains(rank) }
+            isRankInFlight = { rank -> runningTopRanks.contains(rank) },
+            isAnime = true
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
-            onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) }
+            onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) },
+            isAnime = true
         )
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
