@@ -63,4 +63,5 @@ dependencies {
     implementation("com.google.android.material:material:1.13.0")
     implementation("androidx.leanback:leanback:1.2.0")
     cloudstream("com.lagradost:cloudstream3:pre-release")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 }

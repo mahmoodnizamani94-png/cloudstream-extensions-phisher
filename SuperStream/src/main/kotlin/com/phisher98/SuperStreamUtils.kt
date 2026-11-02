@@ -1,6 +1,184 @@
 package com.phisher98
 
+import android.content.Context
+import android.content.SharedPreferences
 import com.lagradost.cloudstream3.utils.Qualities
+import java.util.Locale
+
+const val SUBTITLE_MODE_PREFS_NAME = "cloudstream_subtitle_mode_prefs"
+const val HOST_SUBTITLE_AUTO_SELECT_KEY = "subtitles_auto_select"
+const val SUBTITLE_MODE_SYS_PROP = "cloudstream.subtitle.mode"
+const val SUBTITLE_MODE_KEY = "subtitle_mode"
+const val MODE_DEFAULT = "default"
+const val MODE_URDU = "urdu"
+
+@Volatile
+internal var superStreamAppContextRef: Context? = null
+
+private fun normalizeSubtitleModeValue(raw: String?): String? {
+    return when (raw?.trim()?.lowercase(Locale.ROOT)) {
+        MODE_URDU, "ur", "urd", "ur-pk", "ur-in" -> MODE_URDU
+        MODE_DEFAULT, "en", "eng", "english", "en-us", "en-gb" -> MODE_DEFAULT
+        else -> null
+    }
+}
+
+fun isUrduSubtitleMode(
+    sharedPref: SharedPreferences? = null,
+    context: Context? = null
+): Boolean {
+    if (context != null) {
+        superStreamAppContextRef = context.applicationContext ?: context
+    }
+    val sysProp = try {
+        System.getProperty(SUBTITLE_MODE_SYS_PROP)
+    } catch (_: Throwable) {
+        null
+    }
+    normalizeSubtitleModeValue(sysProp)?.let { return it == MODE_URDU }
+
+    val ctx = context?.applicationContext ?: context ?: superStreamAppContextRef
+    if (ctx != null) {
+        val sharedVal = try {
+            ctx.getSharedPreferences(SUBTITLE_MODE_PREFS_NAME, Context.MODE_PRIVATE)
+                ?.getString(SUBTITLE_MODE_KEY, null)
+        } catch (_: Throwable) {
+            null
+        }
+        normalizeSubtitleModeValue(sharedVal)?.let { return it == MODE_URDU }
+    }
+
+    val prefVal = try {
+        sharedPref?.getString(SUBTITLE_MODE_KEY, null)
+    } catch (_: Throwable) {
+        null
+    }
+    normalizeSubtitleModeValue(prefVal)?.let { return it == MODE_URDU }
+
+    if (ctx != null) {
+        val superStreamVal = try {
+            ctx.getSharedPreferences("SuperStream", Context.MODE_PRIVATE)
+                ?.getString(SUBTITLE_MODE_KEY, null)
+        } catch (_: Throwable) {
+            null
+        }
+        normalizeSubtitleModeValue(superStreamVal)?.let { return it == MODE_URDU }
+
+        val streamPlayVal = try {
+            ctx.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE)
+                ?.getString(SUBTITLE_MODE_KEY, null)
+        } catch (_: Throwable) {
+            null
+        }
+        normalizeSubtitleModeValue(streamPlayVal)?.let { return it == MODE_URDU }
+    }
+
+    return false
+}
+
+fun initializeSubtitleMode(context: Context?, sharedPref: SharedPreferences?) {
+    if (context != null) {
+        superStreamAppContextRef = context.applicationContext ?: context
+    }
+    val urdu = isUrduSubtitleMode(sharedPref, context)
+    val resolvedMode = if (urdu) MODE_URDU else MODE_DEFAULT
+    val currentSysProp = try {
+        System.getProperty(SUBTITLE_MODE_SYS_PROP)
+    } catch (_: Throwable) {
+        null
+    }
+    if (normalizeSubtitleModeValue(currentSysProp) == null) {
+        try {
+            System.setProperty(SUBTITLE_MODE_SYS_PROP, resolvedMode)
+        } catch (_: Throwable) {
+        }
+    }
+}
+
+@Suppress("DEPRECATION")
+fun setSubtitleMode(mode: String, context: Context?, sharedPref: SharedPreferences?) {
+    if (context != null) {
+        superStreamAppContextRef = context.applicationContext ?: context
+    }
+    val normalizedMode = normalizeSubtitleModeValue(mode) ?: MODE_DEFAULT
+    try {
+        System.setProperty(SUBTITLE_MODE_SYS_PROP, normalizedMode)
+    } catch (_: Throwable) {
+    }
+
+    try {
+        sharedPref?.edit()?.putString(SUBTITLE_MODE_KEY, normalizedMode)?.apply()
+    } catch (_: Throwable) {
+    }
+
+    val ctx = context?.applicationContext ?: context ?: superStreamAppContextRef
+    if (ctx != null) {
+        try {
+            ctx.getSharedPreferences(SUBTITLE_MODE_PREFS_NAME, Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
+                ?.apply()
+        } catch (_: Throwable) {
+        }
+        try {
+            ctx.getSharedPreferences("SuperStream", Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
+                ?.apply()
+        } catch (_: Throwable) {
+        }
+        try {
+            ctx.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
+                ?.apply()
+        } catch (_: Throwable) {
+        }
+        val targetAutoSelect = if (normalizedMode == MODE_URDU) "ur" else "en"
+        try {
+            android.preference.PreferenceManager.getDefaultSharedPreferences(ctx)
+                ?.edit()
+                ?.putString(HOST_SUBTITLE_AUTO_SELECT_KEY, targetAutoSelect)
+                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
+                ?.apply()
+        } catch (_: Throwable) {
+        }
+        try {
+            ctx.getSharedPreferences("${ctx.packageName}_preferences", Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putString(HOST_SUBTITLE_AUTO_SELECT_KEY, targetAutoSelect)
+                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
+                ?.apply()
+        } catch (_: Throwable) {
+        }
+    }
+}
+
+fun isUrduSubtitleCode(lang: String?): Boolean {
+    val normalized = lang?.trim()?.lowercase(Locale.ROOT) ?: return false
+    return normalized == "ur" ||
+        normalized == "urd" ||
+        normalized.startsWith("ur-") ||
+        normalized.startsWith("ur_") ||
+        normalized.contains("urdu") ||
+        normalized.contains("اردو")
+}
+
+fun isEnglishSubtitleCode(lang: String?): Boolean {
+    val normalized = lang?.trim()?.lowercase(Locale.ROOT) ?: return false
+    if (normalized == "en" ||
+        normalized == "eng" ||
+        normalized == "en-us" ||
+        normalized == "en-gb" ||
+        normalized == "english" ||
+        normalized.startsWith("en-") ||
+        normalized.startsWith("en_") ||
+        normalized.contains("english")
+    ) {
+        return true
+    }
+    return false
+}
 
 fun getLanguage(language: String?): String? {
     language ?: return null

@@ -67,6 +67,10 @@ class MainSettingsFragment(
             view.background = res.getDrawable(drawableId, null)
         }
 
+        val subtitleModeRow: View = view.findView("subtitle_mode_button")
+        val subtitleModeLabel: android.widget.TextView = view.findView("subtitle_mode_label")
+        val subtitleModeIcon: ImageView = view.findView("subtitle_mode_icon")
+
         val loginCard: ImageView = view.findView("loginCard")
         val wyzieCard: ImageView = view.findView("wyzieCard")
         val featureCard: ImageView = view.findView("featureCard")
@@ -87,6 +91,7 @@ class MainSettingsFragment(
 
         val saveIcon: ImageView = view.findView("saveIcon")
 
+        subtitleModeIcon.setImageDrawable(getDrawable("settings_icon"))
         loginCard.setImageDrawable(getDrawable("settings_icon"))
         wyzieCard.setImageDrawable(getDrawable("settings_icon"))
         languagechange.setImageDrawable(getDrawable("settings_icon"))
@@ -97,6 +102,7 @@ class MainSettingsFragment(
         performance.setImageDrawable(getDrawable("settings_icon"))
         saveIcon.setImageDrawable(getDrawable("save_icon"))
 
+        subtitleModeRow.background = getDrawable("settings_item_background")
         loginRow.background = getDrawable("settings_item_background")
         wyzieRow.background = getDrawable("settings_item_background")
         featureRow.background = getDrawable("settings_item_background")
@@ -105,6 +111,41 @@ class MainSettingsFragment(
         stremioaddonsRow.background = getDrawable("settings_item_background")
         stremioaddonstreamsRow.background = getDrawable("settings_item_background")
         performanceRow.background = getDrawable("settings_item_background")
+
+        fun refreshSubtitleModeLabel() {
+            val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
+            subtitleModeLabel.text = "Subtitle Mode: ${currentMode.displayLabel}"
+        }
+        refreshSubtitleModeLabel()
+
+        subtitleModeRow.setOnClickListener {
+            val ctx = this.context ?: return@setOnClickListener
+            val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
+            val checkedItem = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) 1 else 0
+            val options = arrayOf(
+                "Default (English Subtitles — Streams & Downloads)",
+                "Urdu / اردو (Urdu Subtitles — Streams & Downloads)"
+            )
+            AlertDialog.Builder(ctx)
+                .setTitle("Subtitle Mode (Streams & Downloads)")
+                .setSingleChoiceItems(options, checkedItem) { dialogInterface, which ->
+                    val selectedMode = if (which == 1) {
+                        UrduSubtitleEngine.SubtitleMode.URDU
+                    } else {
+                        UrduSubtitleEngine.SubtitleMode.DEFAULT
+                    }
+                    UrduSubtitleEngine.setSubtitleMode(selectedMode, ctx, sharedPref)
+                    refreshSubtitleModeLabel()
+                    android.widget.Toast.makeText(
+                        ctx,
+                        "Subtitle Mode: ${selectedMode.displayLabel} — Active immediately for all streams & downloads",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    dialogInterface.dismiss()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
 
         saveIcon.makeTvCompatible()
         val showSubFragment = { fragmentCreator: (() -> Unit) -> DialogFragment, tag: String ->

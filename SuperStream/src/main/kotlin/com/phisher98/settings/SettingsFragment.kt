@@ -17,6 +17,10 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.phisher98.BuildConfig
+import com.phisher98.MODE_DEFAULT
+import com.phisher98.MODE_URDU
+import com.phisher98.isUrduSubtitleMode
+import com.phisher98.setSubtitleMode
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.lagradost.cloudstream3.utils.AppContextUtils.setDefaultFocus
 import com.phisher98.SuperStreamPlugin
@@ -55,11 +59,47 @@ class SettingsFragment(
     @SuppressLint("SetJavaScriptEnabled", "SetTextI18n")
     @RequiresApi(Build.VERSION_CODES.M)
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        val subtitleModeRow = view.findView<View>("subtitle_mode_button")
+        val subtitleModeLabel = view.findView<android.widget.TextView>("subtitle_mode_label")
         val tokenInput = view.findView<EditText>("tokenInput")
         val addButton = view.findView<Button>("addButton")
         val resetButton = view.findView<Button>("resetButton")
         val loginButton = view.findView<Button>("loginButton")
         val webView = view.findView<WebView>("authWebView")
+
+        fun refreshSubtitleModeLabel() {
+            val urduActive = isUrduSubtitleMode(sharedPref, context)
+            val displayLabel = if (urduActive) "Urdu (اردو)" else "Default (English)"
+            subtitleModeLabel.text = "Subtitle Mode: $displayLabel"
+        }
+        refreshSubtitleModeLabel()
+
+        subtitleModeRow.setOnClickListener {
+            val ctx = this.context ?: return@setOnClickListener
+            val urduActive = isUrduSubtitleMode(sharedPref, ctx)
+            val checkedItem = if (urduActive) 1 else 0
+            val options = arrayOf(
+                "Default (English Subtitles — Streams & Downloads)",
+                "Urdu / اردو (Urdu Subtitles — Streams & Downloads)"
+            )
+            AlertDialog.Builder(ctx)
+                .setTitle("Subtitle Mode (Streams & Downloads)")
+                .setSingleChoiceItems(options, checkedItem) { dialogInterface, which ->
+                    val selectedMode = if (which == 1) MODE_URDU else MODE_DEFAULT
+                    val displayLabel = if (which == 1) "Urdu (اردو)" else "Default (English)"
+                    setSubtitleMode(selectedMode, ctx, sharedPref)
+                    refreshSubtitleModeLabel()
+                    android.widget.Toast.makeText(
+                        ctx,
+                        "Subtitle Mode: $displayLabel — Active immediately for all streams & downloads",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    dialogInterface.dismiss()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
         val savedToken = sharedPref.getString("token", null)
         if (!savedToken.isNullOrEmpty()) {
             tokenInput.setText(savedToken)

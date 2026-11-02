@@ -47,6 +47,7 @@ class StreamPlayPlugin: Plugin() {
         // Idempotently configure unified network engine across all plugins
         NetworkOptimizer.initialize(context)
         DeviceProfiler.initialize(context)
+        UrduSubtitleEngine.initializeMode(context, sharedPref)
 
         // Load provider stats from SharedPreferences
         StreamPlayCache.loadProviderStatsOnce(sharedPref)
