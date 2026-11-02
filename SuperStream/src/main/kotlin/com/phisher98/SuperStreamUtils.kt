@@ -13,7 +13,7 @@ const val MODE_DEFAULT = "default"
 const val MODE_URDU = "urdu"
 
 @Volatile
-private var superStreamAppContextRef: Context? = null
+internal var superStreamAppContextRef: Context? = null
 
 private fun normalizeSubtitleModeValue(raw: String?): String? {
     return when (raw?.trim()?.lowercase(Locale.ROOT)) {
@@ -56,6 +56,14 @@ fun isUrduSubtitleMode(
     normalizeSubtitleModeValue(prefVal)?.let { return it == MODE_URDU }
 
     if (ctx != null) {
+        val superStreamVal = try {
+            ctx.getSharedPreferences("SuperStream", Context.MODE_PRIVATE)
+                ?.getString(SUBTITLE_MODE_KEY, null)
+        } catch (_: Throwable) {
+            null
+        }
+        normalizeSubtitleModeValue(superStreamVal)?.let { return it == MODE_URDU }
+
         val streamPlayVal = try {
             ctx.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE)
                 ?.getString(SUBTITLE_MODE_KEY, null)

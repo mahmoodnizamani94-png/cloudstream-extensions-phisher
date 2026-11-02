@@ -45,6 +45,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.phisher98.SuperStreamExtractor.invokeSubDlUrduKeyless
 import com.phisher98.SuperStreamExtractor.invokeSubSenseUrdu
 import com.phisher98.SuperStreamExtractor.invokeSubtitleAPI
 import com.phisher98.SuperStreamExtractor.invokeSuperstream
@@ -584,7 +585,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             highBitrateThresholdKbps = 2500,
             minSubtitles = 1,
             satisfyWithOneLinkIfSubsFound = true,
-            requireSubtitles = false,
+            requireSubtitles = true,
             adaptiveTierEscalation = true,
             softGracePeriodAfterFirstLinkMs = 3500L,
             maxPipelineTimeoutMs = 18_000L
@@ -728,6 +729,22 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                         )
                     })
                 }
+                if (urduMode && (!res.imdbId.isNullOrBlank() || !res.title.isNullOrBlank() || !res.orgTitle.isNullOrBlank())) {
+                    add(PipelinedTask(
+                        providerId = "SubDlUrdu",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = false
+                    ) {
+                        invokeSubDlUrduKeyless(
+                            imdbId = res.imdbId,
+                            title = res.title ?: res.orgTitle,
+                            season = res.season,
+                            episode = res.episode,
+                            expectedYear = res.airedYear ?: res.year,
+                            subtitleCallback = trackedSubtitleCallback,
+                        )
+                    })
+                }
                 if (res.imdbId != null) {
                     add(PipelinedTask(
                         providerId = "SuperStream",
@@ -768,7 +785,11 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
 
             if (urduMode && urduSubsFound.get() == 0 && englishDonorSubs.isNotEmpty()) {
                 withTimeoutOrNull(8_000L) {
-                    synthesizeSuperStreamUrduFallback(englishDonorSubs) { urSub ->
+                    synthesizeSuperStreamUrduFallback(
+                        englishSubs = englishDonorSubs,
+                        season = res.season,
+                        episode = res.episode
+                    ) { urSub ->
                         urduSubsFound.incrementAndGet()
                         earlyController.onSubtitleEmitted(urSub)
                         subtitleCallback(urSub)

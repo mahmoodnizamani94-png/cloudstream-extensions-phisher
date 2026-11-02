@@ -157,13 +157,13 @@ class UrduSubtitleSotaTest {
     }
 
     @Test
-    fun `sanitizeAndApplyRtlBidi strips ASS and HTML tags drops watermarks and wraps Urdu in RLM`() {
+    fun `sanitizeAndApplyRtlBidi strips unsupported ASS and HTML tags preserves inline tags drops watermarks and wraps Urdu in RLM`() {
         val dirtyCue = "{\\an8}{\\pos(192,220)}<font color=\"#ffff00\"><i>کیا حال ہے؟</i></font>\nSecond English line"
         val sanitized = UrduSubtitleEngine.sanitizeAndApplyRtlBidi(dirtyCue)
         val lines = sanitized.split("\n")
 
         assertEquals(2, lines.size)
-        assertEquals("\u200Fکیا حال ہے؟\u200F", lines[0])
+        assertEquals("\u200F{\\an8}<i>کیا حال ہے؟</i>\u200F", lines[0])
         assertEquals("Second English line", lines[1])
 
         // Watermark / credit cues must be stripped completely
@@ -173,7 +173,7 @@ class UrduSubtitleSotaTest {
     }
 
     @Test
-    fun `parseSubtitleCues and formatCuesAsUrduSrt normalize VTT timestamps and apply RTL wrapping`() {
+    fun `parseSubtitleCues and formatCuesAsUrduSrt normalize VTT timestamps preserve inline tags and apply RTL wrapping`() {
         val rawVtt = """
             WEBVTT
 
@@ -193,15 +193,66 @@ class UrduSubtitleSotaTest {
         assertEquals("00:00:01,250 --> 00:00:03,500", cues[0].timestamp)
         assertEquals("Hello world!", cues[0].text)
         assertEquals("00:00:07,000 --> 00:00:09,900", cues[1].timestamp)
-        assertEquals("How are you?", cues[1].text)
+        assertEquals("<i>How are you?</i>", cues[1].text)
 
         val translatedCues = listOf(
             UrduSubtitleEngine.SrtCue(1, cues[0].timestamp, "ہیلو دنیا!"),
-            UrduSubtitleEngine.SrtCue(2, cues[1].timestamp, "آپ کیسے ہیں؟")
+            UrduSubtitleEngine.SrtCue(2, cues[1].timestamp, "<i>آپ کیسے ہیں؟</i>")
         )
         val formattedSrt = UrduSubtitleEngine.formatCuesAsUrduSrt(translatedCues)
         assertTrue(formattedSrt.contains("00:00:01,250 --> 00:00:03,500\n\u200Fہیلو دنیا!\u200F"))
-        assertTrue(formattedSrt.contains("00:00:07,000 --> 00:00:09,900\n\u200Fآپ کیسے ہیں؟\u200F"))
+        assertTrue(formattedSrt.contains("00:00:07,000 --> 00:00:09,900\n\u200F<i>آپ کیسے ہیں؟</i>\u200F"))
+    }
+
+    @Test
+    fun `end-to-end inline tag preservation through parseSubtitleCues translateEnglishSrtToUrdu and normalizeUrduSubtitleText`() = runBlocking {
+        val rawEnglishSrt = """
+            1
+            00:00:01,000 --> 00:00:04,000
+            {\an8}{\pos(100,200)}<font color="#ffff00"><i>Where are we?</i></font>
+            <b>Stay close!</b> ♪
+        """.trimIndent()
+
+        val parsedCues = UrduSubtitleEngine.parseSubtitleCues(rawEnglishSrt)
+        assertEquals(1, parsedCues.size)
+        assertEquals("{\\an8}<i>Where are we?</i>\n<b>Stay close!</b> ♪", parsedCues[0].text)
+
+        // Verify formatCuesAsUrduSrt(parseSubtitleCues(...)) and normalizeUrduSubtitleText preserve <i>, <b>, {\an8}, ♪
+        val rawUrduSrt = """
+            1
+            00:00:01,000 --> 00:00:04,000
+            {\an8}{\pos(100,200)}<font color="#ffff00"><i>ہم کہاں ہیں؟</i></font>
+            <b>قریب رہو!</b> ♪
+        """.trimIndent()
+        val formattedFromParsed = UrduSubtitleEngine.formatCuesAsUrduSrt(UrduSubtitleEngine.parseSubtitleCues(rawUrduSrt))
+        val normalizedUrdu = UrduSubtitleEngine.normalizeUrduSubtitleText(rawUrduSrt)
+        assertEquals(formattedFromParsed, normalizedUrdu)
+        assertTrue(normalizedUrdu.contains("\u200F{\\an8}<i>ہم کہاں ہیں؟</i>\u200F"))
+        assertTrue(normalizedUrdu.contains("\u200F<b>قریب رہو!</b> ♪\u200F"))
+        assertFalse(normalizedUrdu.contains("<font"))
+        assertFalse(normalizedUrdu.contains("\\pos("))
+
+        // Verify translateEnglishSrtToUrdu end-to-end preserves inline tags through placeholder protection & restoration
+        val translatedSrt = UrduSubtitleEngine.translateEnglishSrtToUrdu(rawEnglishSrt) { batch ->
+            batch.map { text ->
+                text.replace("Where are we?", "ہم کہاں ہیں؟")
+                    .replace("Stay close!", "قریب رہو!")
+            }
+        }
+        assertNotNull(translatedSrt)
+        assertTrue(translatedSrt!!.contains("\u200F{\\an8}<i>ہم کہاں ہیں؟</i>\u200F"))
+        assertTrue(translatedSrt.contains("\u200F<b>قریب رہو!</b> ♪\u200F"))
+
+        // Verify materializeNormalizedUrduSubtitle normalizes single-slash file:/ URI and fails closed on missing files
+        val validUri = UrduSubtitleEngine.writeUrduLocalCacheFile("inline-tag-e2e", translatedSrt)
+        assertNotNull(validUri)
+        val singleSlashFileUri = "file:/" + validUri!!.removePrefix("file:///")
+        val materializedValid = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(singleSlashFileUri)
+        assertEquals(validUri, materializedValid)
+        assertNull(
+            "materializeNormalizedUrduSubtitle must fail closed on non-existent file URI",
+            UrduSubtitleEngine.materializeNormalizedUrduSubtitle("file:/nonexistent/path/missing_urdu.srt")
+        )
     }
 
     @Test
@@ -760,7 +811,7 @@ class UrduSubtitleSotaTest {
                 }.map { it.url }.distinct()
 
                 if (urduSubs.isEmpty() && englishUrls.isNotEmpty()) {
-                    UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(englishUrls) { synth ->
+                    UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(englishUrls = englishUrls) { synth ->
                         urduSubs.add(synth)
                     }
                 }

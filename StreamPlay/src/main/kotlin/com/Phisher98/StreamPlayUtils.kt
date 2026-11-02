@@ -761,35 +761,6 @@ fun isUrduSubtitleLabel(raw: String?): Boolean {
     return code == "ur" || code == "urd"
 }
 
-@Suppress("EXTENSION_SHADOWED_BY_MEMBER")
-fun UrduSubtitleEngine.isUrduLanguageTag(raw: String?): Boolean = isUrduSubtitleLabel(raw)
-
-@Suppress("EXTENSION_SHADOWED_BY_MEMBER", "UNUSED_PARAMETER")
-suspend fun UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
-    imdbId: String? = null,
-    season: Int? = null,
-    episode: Int? = null,
-    candidateEnglishSubs: Collection<SubtitleFile>,
-    subtitleCallback: (SubtitleFile) -> Unit
-): Boolean {
-    for (sub in candidateEnglishSubs) {
-        val origUrl = sub.headers?.entries
-            ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Url", ignoreCase = true) }
-            ?.value?.trim()?.takeIf { it.isNotBlank() }
-        val origName = sub.headers?.entries
-            ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Name", ignoreCase = true) }
-            ?.value?.trim()?.takeIf { it.isNotBlank() }
-        if (origUrl != null && origName != null) {
-            recordSubtitleCatOrigCandidate(origUrl, origName)
-        }
-    }
-    val urls = candidateEnglishSubs.mapNotNull { it.url.trim().takeIf { u -> u.isNotBlank() } }
-    return synthesizeUrduFallbackFromEnglish(
-        englishUrls = urls,
-        subtitleCallback = subtitleCallback
-    )
-}
-
 
 fun getAnidbEid(jsonString: String, episodeNumber: Int?): Int? {
     if (episodeNumber == null) return null

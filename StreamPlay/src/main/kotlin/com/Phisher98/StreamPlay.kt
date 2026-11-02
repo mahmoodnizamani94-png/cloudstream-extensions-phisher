@@ -1176,7 +1176,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     // for the source tag in the sidecar file name.
                     headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
                 }
-                if (urduMode && !res.isAnime && !isUrdu) {
+                if (urduMode && !isUrdu) {
                     deferredNonUrduSubtitles.add(cleanedSubtitle)
                 } else {
                     earlyController.onSubtitleEmitted(cleanedSubtitle)
@@ -1385,9 +1385,30 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                     title = primarySubTitle,
                                     season = res.season,
                                     episode = res.episode,
-                                    year = res.year ?: res.airedYear
+                                    year = res.year ?: res.airedYear,
+                                    sharedPref = sharedPref ?: companionSharedPref
                                 ) { sub ->
                                     emitSubtitle(sub, "subdl")
+                                }
+                            }
+                        )
+                        add(
+                            PipelinedTask(
+                                providerId = "subsource",
+                                isVideo = false,
+                                taskTimeoutMs = SUBTITLE_COMPLETION_TASK_TIMEOUT_MS,
+                                priorityBoost = 96f
+                            ) {
+                                UrduSubtitleEngine.invokeSubSourceUrdu(
+                                    imdbId = res.imdbId,
+                                    title = primarySubTitle,
+                                    season = res.season,
+                                    episode = res.episode,
+                                    year = res.year ?: res.airedYear,
+                                    isMovie = res.isMovie == true,
+                                    sharedPref = sharedPref ?: companionSharedPref
+                                ) { sub ->
+                                    emitSubtitle(sub, "subsource")
                                 }
                             }
                         )
@@ -1644,10 +1665,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             // When Urdu mode is active and fewer than TARGET_URDU_SUBTITLE_SOURCES human Urdu subtitle
             // sources were found, translate the top English subtitle into timing-preserved RTL Urdu
             // within a strict timeout so every movie and episode is guaranteed Urdu subtitles.
-            if (urduMode && !res.isAnime && urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
+            if (urduMode && urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
                 withTimeoutOrNull(8_000L) {
                     UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
-                        englishUrls = bestEnglishSubtitleUrls.toList()
+                        imdbId = res.imdbId,
+                        season = res.season,
+                        episode = res.episode,
+                        englishUrls = bestEnglishSubtitleUrls.toList(),
+                        englishSubtitleFiles = deferredNonUrduSubtitles.toList()
                     ) { sub ->
                         emitSubtitle(sub, "urdu-neural-fallback")
                     }
