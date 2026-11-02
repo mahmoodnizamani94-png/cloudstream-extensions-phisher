@@ -86,17 +86,20 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
             headers = maxHeaders
         )
         val maxScore1080 = StreamLinkOptimizer.getStreamCompositeScore(maxVidLink1080)
-        // rank 100 x 10,000 + 8,000 (1080p) + 9.9 tiebreaker (delta widened for the ~1e6 float grid)
-        assertEquals("Maximal top-tier 1080p score must be exactly 1,008,009.9f", 1_008_009.9f, maxScore1080, 0.1f)
+        // VidLink 1080p tier multiplier 98 x 10,000 + 8,000 (1080p) + 9.9 tiebreaker = 988,009.9f
+        // (VidLink 720p = 1,009,600f > MeowTV 720p = 999,600f > VidLink 1080p = 988,009.9f > Other Top 720p <= 959,609.9f)
+        assertEquals("Maximal VidLink 1080p score must be exactly 988,009.9f", 988_009.9f, maxScore1080, 0.1f)
 
-        // SOURCE RANK IS PRIMARY: the top-tier 1080p always outranks the secondary 720p
+        // Top-tier 1080p always outranks secondary 720p
         assertTrue(StreamLinkOptimizer.isStreamBetter(maxVidLink1080, minMovieBox720))
         assertFalse(StreamLinkOptimizer.isStreamBetter(minMovieBox720, maxVidLink1080))
 
         // Permute all providers across 720p vs 1080p with randomized or edge-case badge sets.
-        // Ranks: VidLink 100 > Animex 87 > every other (decommissioned) label at 0.
+        // Order: VidLink 720p > MeowTV 720p > VidLink 1080p > Other Top 720p > Non-VidLink Top 1080p > Secondary.
         val providers = listOf(
             "VidLink" to 100,
+            "MeowTV" to 98,
+            "Cineby" to 95,
             "Animex" to 87,
             "RiveStream" to 0,
             "VidNest" to 0,
@@ -135,17 +138,20 @@ class ChallengerR2DualQualityAndDispatcherStressTest {
                             )
                             val score1080 = StreamLinkOptimizer.getStreamCompositeScore(link1080)
                             val rank1080 = StreamLinkOptimizer.getSourcePriorityRank(link1080)
-                            if (rank720 >= rank1080) {
-                                // Same source rank (or a higher-ranked 720p): quality decides, 720p wins
+                            val should720Win = when {
+                                rank720 >= 98 -> true // VidLink 720p (100) and MeowTV 720p (98) beat EVERY 1080p including VidLink 1080p
+                                rank720 >= 85 -> rank1080 < 100 // Other top-tier 720p beat all non-VidLink 1080p, yield only to VidLink 1080p
+                                else -> rank1080 < 85 // Secondary 720p beats secondary 1080p, yields to top-tier 1080p
+                            }
+                            if (should720Win) {
                                 assertTrue(
-                                    "720p ($p720Name: $score720) must strictly beat same-rank 1080p ($p1080Name: $score1080)",
+                                    "720p ($p720Name: $score720) must strictly beat 1080p ($p1080Name: $score1080)",
                                     score720 > score1080
                                 )
                                 assertTrue(StreamLinkOptimizer.isStreamBetter(link720, link1080))
                             } else {
-                                // Cross-source: the higher-ranked 1080p always wins
                                 assertTrue(
-                                    "Higher-ranked 1080p ($p1080Name: $score1080) must beat 720p ($p720Name: $score720)",
+                                    "1080p ($p1080Name: $score1080) must beat 720p ($p720Name: $score720)",
                                     score1080 > score720
                                 )
                                 assertTrue(StreamLinkOptimizer.isStreamBetter(link1080, link720))

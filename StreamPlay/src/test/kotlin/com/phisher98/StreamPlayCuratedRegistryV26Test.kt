@@ -628,22 +628,58 @@ class StreamPlayCuratedRegistryV26Test {
     fun testPlaybackOrderingIsStrictlyRankDominatedAcrossTheV26Registry() {
         boostByProvider.keys.toList().let { hierarchy ->
             for (i in 0 until hierarchy.size - 1) {
-                val higher = createLink(
+                val higher720 = createLink(
                     hierarchy[i],
-                    "${hierarchy[i]} 360p",
-                    "https://cdn.example/sd$i.m3u8",
-                    Qualities.P360.value
+                    "${hierarchy[i]} 720p",
+                    "https://cdn.example/hd_high_$i.m3u8",
+                    Qualities.P720.value
                 )
-                val lower = createLink(
+                val lower720 = createLink(
                     hierarchy[i + 1],
                     "${hierarchy[i + 1]} 720p",
-                    "https://cdn.example/hd$i.m3u8",
+                    "https://cdn.example/hd_low_$i.m3u8",
                     Qualities.P720.value
                 )
                 assertTrue(
-                    "${hierarchy[i]} 360p must outrank ${hierarchy[i + 1]} 720p",
-                    StreamLinkOptimizer.getStreamCompositeScore(higher) >
-                        StreamLinkOptimizer.getStreamCompositeScore(lower)
+                    "${hierarchy[i]} 720p must outrank ${hierarchy[i + 1]} 720p",
+                    StreamLinkOptimizer.getStreamCompositeScore(higher720) >
+                        StreamLinkOptimizer.getStreamCompositeScore(lower720)
+                )
+
+                val higher1080 = createLink(
+                    hierarchy[i],
+                    "${hierarchy[i]} 1080p",
+                    "https://cdn.example/fhd_high_$i.m3u8",
+                    Qualities.P1080.value
+                )
+                val lower1080 = createLink(
+                    hierarchy[i + 1],
+                    "${hierarchy[i + 1]} 1080p",
+                    "https://cdn.example/fhd_low_$i.m3u8",
+                    Qualities.P1080.value
+                )
+                assertTrue(
+                    "${hierarchy[i]} 1080p must outrank ${hierarchy[i + 1]} 1080p",
+                    StreamLinkOptimizer.getStreamCompositeScore(higher1080) >
+                        StreamLinkOptimizer.getStreamCompositeScore(lower1080)
+                )
+
+                val higher360 = createLink(
+                    hierarchy[i],
+                    "${hierarchy[i]} 360p",
+                    "https://cdn.example/sd_high_$i.m3u8",
+                    Qualities.P360.value
+                )
+                val lower360 = createLink(
+                    hierarchy[i + 1],
+                    "${hierarchy[i + 1]} 360p",
+                    "https://cdn.example/sd_low_$i.m3u8",
+                    Qualities.P360.value
+                )
+                assertTrue(
+                    "${hierarchy[i]} 360p must outrank ${hierarchy[i + 1]} 360p",
+                    StreamLinkOptimizer.getStreamCompositeScore(higher360) >
+                        StreamLinkOptimizer.getStreamCompositeScore(lower360)
                 )
             }
         }
@@ -720,20 +756,29 @@ class StreamPlayCuratedRegistryV26Test {
 
     @Test
     fun testVidLinkOutranksEveryOtherSourceInCompositeScore() {
-        val vidlink360 = createLink("Vidlink", "Vidlink 360p", "https://bcdn.hakunaymatata.com/bt/360.mp4", Qualities.P360.value)
+        val vidlink720 = createLink("Vidlink", "Vidlink 720p", "https://bcdn.hakunaymatata.com/bt/720.mp4", Qualities.P720.value)
+        val meow720 = createLink("MeowTV", "MeowTV 720p", "https://img1.hscow.com/v4/720/index.m3u8", Qualities.P720.value)
+        val vidlink1080 = createLink("Vidlink", "Vidlink 1080p", "https://bcdn.hakunaymatata.com/bt/1080.mp4", Qualities.P1080.value)
+        val cineby720 = createLink("Cineby", "Cineby 720p", "https://sun.paleoak.top/file2/720.m3u8", Qualities.P720.value)
         val cineby1080 = createLink("Cineby", "Cineby 1080p", "https://sun.paleoak.top/file2/1080.m3u8", Qualities.P1080.value)
         val cinesrc1080 = createLink("CineSrc", "CineSrc 1080p", "https://nebula.bright67.online/hls2/1080/master.txt", Qualities.P1080.value)
         val animex1080 = createLink("Animex", "Animex 1080p", "https://animex.one/e/1080.m3u8", Qualities.P1080.value)
 
-        val scoreVidlink360 = StreamLinkOptimizer.getStreamCompositeScore(vidlink360)
+        val scoreVidlink720 = StreamLinkOptimizer.getStreamCompositeScore(vidlink720)
+        val scoreMeow720 = StreamLinkOptimizer.getStreamCompositeScore(meow720)
+        val scoreVidlink1080 = StreamLinkOptimizer.getStreamCompositeScore(vidlink1080)
+        val scoreCineby720 = StreamLinkOptimizer.getStreamCompositeScore(cineby720)
         val scoreCineby1080 = StreamLinkOptimizer.getStreamCompositeScore(cineby1080)
         val scoreCineSrc1080 = StreamLinkOptimizer.getStreamCompositeScore(cinesrc1080)
         val scoreAnimex1080 = StreamLinkOptimizer.getStreamCompositeScore(animex1080)
 
-        assertTrue("VidLink composite score must dominate Cineby", scoreVidlink360 > scoreCineby1080)
-        assertTrue("Cineby composite score must dominate CineSrc", scoreCineby1080 > scoreCineSrc1080)
-        assertTrue("VidLink composite score must dominate Animex", scoreVidlink360 > scoreAnimex1080)
-        assertTrue("VidLink must score >= 1,000,000", scoreVidlink360 >= 1_000_000f)
+        assertTrue("VidLink 720p must dominate MeowTV 720p", scoreVidlink720 > scoreMeow720)
+        assertTrue("MeowTV 720p must dominate VidLink 1080p", scoreMeow720 > scoreVidlink1080)
+        assertTrue("VidLink 1080p must dominate Cineby 720p", scoreVidlink1080 > scoreCineby720)
+        assertTrue("Cineby 720p must dominate Cineby 1080p", scoreCineby720 > scoreCineby1080)
+        assertTrue("Cineby 1080p must dominate CineSrc 1080p", scoreCineby1080 > scoreCineSrc1080)
+        assertTrue("CineSrc 1080p must dominate Animex 1080p", scoreCineSrc1080 > scoreAnimex1080)
+        assertTrue("VidLink 720p must score >= 1,000,000", scoreVidlink720 >= 1_000_000f)
     }
 
     @Test

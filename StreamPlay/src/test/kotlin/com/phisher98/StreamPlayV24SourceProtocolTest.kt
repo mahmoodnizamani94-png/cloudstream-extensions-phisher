@@ -982,14 +982,14 @@ class StreamPlayV24SourceProtocolTest {
 
         val expectedHierarchy = listOf(
             vidlink720,
-            vidlink1080,
             meow720,
-            meow1080,
+            vidlink1080,
             cineby720,
-            cineby1080,
             cinesrc720,
-            cinesrc1080,
-            vidrift720Backup
+            vidrift720Backup,
+            meow1080,
+            cineby1080,
+            cinesrc1080
         )
 
         val shuffled = expectedHierarchy.reversed()

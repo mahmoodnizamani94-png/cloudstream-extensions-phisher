@@ -123,17 +123,37 @@ class Milestone1ChallengerEmpiricalTest {
         // 2. Permutation separation across adjacent quality tiers.
         //    a) Within ONE source rank the 720p > 1080p > 480p > other SD > 4K ordering must
         //       hold with wide, tiebreaker-proof margins.
-        //    b) Across source ranks the higher-ranked source always wins, at ANY resolution.
-        //       (Ranks are compared first, so a rank gap is never bridged by badges.)
-        fun assertRankFirstOutcome(linkA: ExtractorLink, linkB: ExtractorLink, context: String) {
+        //    b) Across source ranks:
+        //       VidLink 720p (#1) > MeowTV 720p (#2) > VidLink 1080p (#3) >
+        //       Other Top-Tier 720p (#4) > Non-VidLink Top-Tier 1080p (#5) >
+        //       Top-Tier SD/UHD (#6) > Secondary (#7).
+        fun assertPriorityOutcome(linkA: ExtractorLink, linkB: ExtractorLink, context: String) {
             val scoreA = StreamLinkOptimizer.getStreamCompositeScore(linkA)
             val scoreB = StreamLinkOptimizer.getStreamCompositeScore(linkB)
             val rankA = StreamLinkOptimizer.getSourcePriorityRank(linkA)
             val rankB = StreamLinkOptimizer.getSourcePriorityRank(linkB)
-            if (rankA > rankB) {
-                assertTrue("$context: higher-ranked $rankA ($scoreA) must beat lower-ranked $rankB ($scoreB)", scoreA > scoreB)
+            val is720A = StreamLinkOptimizer.is720p(linkA)
+            val is720B = StreamLinkOptimizer.is720p(linkB)
+            val is1080A = StreamLinkOptimizer.is1080p(linkA)
+            val is1080B = StreamLinkOptimizer.is1080p(linkB)
+            fun tierMult(rank: Int, is720: Boolean, is1080: Boolean): Int {
+                if (rank < 85) return 0
+                return when {
+                    rank == 100 && is720 -> 100
+                    rank == 98 && is720 -> 99
+                    rank == 100 && is1080 -> 98
+                    is720 -> rank
+                    is1080 -> rank - 15
+                    else -> rank - 31
+                }
+            }
+            val multA = tierMult(rankA, is720A, is1080A)
+            val multB = tierMult(rankB, is720B, is1080B)
+            val aWins = if (multA != multB) multA > multB else rankA > rankB
+            if (aWins) {
+                assertTrue("$context: A ($scoreA) must beat B ($scoreB)", scoreA > scoreB)
             } else {
-                assertTrue("$context: higher-ranked $rankB ($scoreB) must beat lower-ranked $rankA ($scoreA)", scoreB > scoreA)
+                assertTrue("$context: B ($scoreB) must beat A ($scoreA)", scoreB > scoreA)
             }
         }
 
@@ -202,11 +222,11 @@ class Milestone1ChallengerEmpiricalTest {
                     minSep[bucket][3] = minOf(minSep[bucket][3], sepOtherSdto4K)
                     assertTrue("Other SD min (360p) must strictly beat 4K max ($pA vs $pB)", sepOtherSdto4K > 0)
                 } else {
-                    // Cross-rank: the higher-ranked source wins every adjacent-tier pairing.
-                    assertRankFirstOutcome(link720Min, link1080Max, "720p min vs 1080p max ($pA vs $pB)")
-                    assertRankFirstOutcome(link1080Min, link480Max, "1080p min vs 480p max ($pA vs $pB)")
-                    assertRankFirstOutcome(link480Min, linkOtherSdMax, "480p min vs other SD max ($pA vs $pB)")
-                    assertRankFirstOutcome(linkOtherSdMin, link4kMax, "other SD min vs 4K max ($pA vs $pB)")
+                    // Cross-rank: validate against canonical priority hierarchy.
+                    assertPriorityOutcome(link720Min, link1080Max, "720p min vs 1080p max ($pA vs $pB)")
+                    assertPriorityOutcome(link1080Min, link480Max, "1080p min vs 480p max ($pA vs $pB)")
+                    assertPriorityOutcome(link480Min, linkOtherSdMax, "480p min vs other SD max ($pA vs $pB)")
+                    assertPriorityOutcome(linkOtherSdMin, link4kMax, "other SD min vs 4K max ($pA vs $pB)")
                 }
             }
         }

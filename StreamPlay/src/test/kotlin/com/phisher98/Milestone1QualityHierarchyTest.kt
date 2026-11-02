@@ -307,15 +307,20 @@ class Milestone1QualityHierarchyTest {
                         (score720 - score1080) >= 190f
                     )
                 } else {
-                    // Cross-source: the higher-ranked source always wins, whatever resolution it offers.
-                    val higherIs720 = rank720 > rank1080
+                    // Cross-source: VidLink 720p (100) > MeowTV 720p (98) > VidLink 1080p (100) >
+                    // Other Top-Tier 720p (85..95) > Non-VidLink Top-Tier 1080p > Secondary.
+                    val higherIs720 = when {
+                        rank720 >= 98 -> true
+                        rank720 >= 85 -> rank1080 < 100
+                        else -> rank1080 < 85
+                    }
                     assertEquals(
-                        "Source rank must decide $p720 720p ($score720) vs $p1080 1080p ($score1080)",
+                        "Priority hierarchy must decide $p720 720p ($score720) vs $p1080 1080p ($score1080)",
                         higherIs720,
                         score720 > score1080
                     )
                     assertTrue(
-                        "isStreamBetter must agree with the rank-first ordering for $p720 vs $p1080",
+                        "isStreamBetter must agree with the priority ordering for $p720 vs $p1080",
                         StreamLinkOptimizer.isStreamBetter(if (higherIs720) link720 else link1080, if (higherIs720) link1080 else link720)
                     )
                 }
