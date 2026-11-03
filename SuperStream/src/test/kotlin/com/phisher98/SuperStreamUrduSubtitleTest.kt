@@ -309,4 +309,31 @@ class SuperStreamUrduSubtitleTest {
             SuperStreamExtractor.parseSubDlUrduPageZips(subDlHtml, season = 1, episode = 2)
         )
     }
+
+    @Test
+    fun `SuperStream Urdu source labels cs_urdu cache filename and containsVerifiedUrduScript`() {
+        assertEquals("Urdu [SubDL]", formatSuperStreamUrduSourceLabel("subdl"))
+        assertEquals("Urdu [Wyzie]", formatSuperStreamUrduSourceLabel("wyziesub"))
+        assertEquals("Urdu [SubSense]", formatSuperStreamUrduSourceLabel("subsense"))
+        assertEquals("Urdu [OpenSubtitles]", formatSuperStreamUrduSourceLabel("subtitles"))
+        assertEquals("Urdu [Neural AI]", formatSuperStreamUrduSourceLabel("urdu-neural-fallback"))
+        assertNull(canonicalSuperStreamUrduSourceKey("vidlink"))
+        assertNull(canonicalSuperStreamUrduSourceKey("addic7ed"))
+
+        // Verify local cache filename uses cs_urdu_ and never contains "superstream" (which DownloadSubtitlePolicy bans)
+        val sampleSrt = "1\n00:00:01,000 --> 00:00:03,000\n\u200Fیہ اردو سب ٹائٹل ہے\u200F\n"
+        val uri = SuperStreamExtractor.writeLocalUrduSrtFile("filename-check", sampleSrt)
+        assertNotNull(uri)
+        assertFalse(
+            "Local Urdu cache URI must never contain 'superstream' so DownloadSubtitlePolicy does not ban it: $uri",
+            uri!!.lowercase().contains("superstream")
+        )
+        assertTrue(uri.contains("cs_urdu_"))
+        File(uri.removePrefix("file://")).delete()
+
+        // Verify containsVerifiedUrduScript rejects English-only files
+        val englishOnly = "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n2\n00:00:04,000 --> 00:00:06,000\nEnglish text\n"
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(englishOnly))
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(sampleSrt))
+    }
 }

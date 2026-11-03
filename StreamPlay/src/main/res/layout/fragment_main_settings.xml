@@ -61,6 +61,7 @@
             android:gravity="center_vertical"
             android:clickable="true"
             android:focusable="true"
+            android:foreground="?android:attr/selectableItemBackground"
             android:nextFocusUp="@id/saveIcon">
 
             <LinearLayout
@@ -79,9 +80,10 @@
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/subtitle_mode_desc"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Switch between Default (English) and Urdu (اردو) subtitles for streams &amp; downloads (takes effect immediately)"
+                    android:text="8 SOTA Urdu Sources (SubDL, SubSource, Wyzie, SubSense, YTS-Subs, Subf2m, SubtitleCat, OpenSubtitles) + Neural AI Fallback"
                     android:textColor="#AAAAAA"
                     android:textSize="12sp"
                     android:layout_marginTop="4dp" />

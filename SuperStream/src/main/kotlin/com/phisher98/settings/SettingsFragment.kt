@@ -61,6 +61,7 @@ class SettingsFragment(
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         val subtitleModeRow = view.findView<View>("subtitle_mode_button")
         val subtitleModeLabel = view.findView<android.widget.TextView>("subtitle_mode_label")
+        val subtitleModeDesc = runCatching { view.findView<android.widget.TextView>("subtitle_mode_desc") }.getOrNull()
         val tokenInput = view.findView<EditText>("tokenInput")
         val addButton = view.findView<Button>("addButton")
         val resetButton = view.findView<Button>("resetButton")
@@ -69,35 +70,65 @@ class SettingsFragment(
 
         fun refreshSubtitleModeLabel() {
             val urduActive = isUrduSubtitleMode(sharedPref, context)
-            val displayLabel = if (urduActive) "Urdu (اردو)" else "Default (English)"
-            subtitleModeLabel.text = "Subtitle Mode: $displayLabel"
+            if (urduActive) {
+                subtitleModeLabel.text = "Subtitle Mode: Urdu (اردو) • 4 SOTA Sources + Neural AI"
+                subtitleModeDesc?.text = "Active Urdu Sources (4 + AI): SubDL, Wyzie, SubSense, OpenSubtitles + Neural AI • Tap to configure or long-press for 1-tap switch"
+            } else {
+                subtitleModeLabel.text = "Subtitle Mode: Default (English)"
+                subtitleModeDesc?.text = "Active: English Subtitles (OpenSubtitles, Wyzie) • Tap to switch to Urdu (4 SOTA Sources + AI) or long-press for 1-tap toggle"
+            }
         }
         refreshSubtitleModeLabel()
 
-        subtitleModeRow.setOnClickListener {
+        subtitleModeRow.setOnClickListener { clickedView ->
+            clickedView.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
             val ctx = this.context ?: return@setOnClickListener
             val urduActive = isUrduSubtitleMode(sharedPref, ctx)
             val checkedItem = if (urduActive) 1 else 0
             val options = arrayOf(
-                "Default (English Subtitles — Streams & Downloads)",
-                "Urdu / اردو (Urdu Subtitles — Streams & Downloads)"
+                "Default — English Subtitles (Streams & Downloads)",
+                "Urdu / اردو — 4 SOTA Sources + Neural AI (SubDL, Wyzie, SubSense, OpenSubtitles)"
             )
             AlertDialog.Builder(ctx)
-                .setTitle("Subtitle Mode (Streams & Downloads)")
+                .setTitle("Subtitle Mode • 4 Urdu SOTA Sources + Neural AI")
                 .setSingleChoiceItems(options, checkedItem) { dialogInterface, which ->
                     val selectedMode = if (which == 1) MODE_URDU else MODE_DEFAULT
-                    val displayLabel = if (which == 1) "Urdu (اردو)" else "Default (English)"
+                    val displayLabel = if (which == 1) {
+                        "Urdu (اردو) • 4 SOTA Sources + Neural AI"
+                    } else {
+                        "Default (English)"
+                    }
                     setSubtitleMode(selectedMode, ctx, sharedPref)
                     refreshSubtitleModeLabel()
+                    dialogInterface.dismiss()
                     android.widget.Toast.makeText(
                         ctx,
-                        "Subtitle Mode: $displayLabel — Active immediately for all streams & downloads",
+                        "Subtitle Mode: $displayLabel",
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
-                    dialogInterface.dismiss()
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
+        }
+
+        subtitleModeRow.setOnLongClickListener { clickedView ->
+            clickedView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            val ctx = this.context ?: return@setOnLongClickListener false
+            val urduActive = isUrduSubtitleMode(sharedPref, ctx)
+            val nextMode = if (urduActive) MODE_DEFAULT else MODE_URDU
+            val displayLabel = if (!urduActive) {
+                "Urdu (اردو) • 4 SOTA Sources + Neural AI"
+            } else {
+                "Default (English)"
+            }
+            setSubtitleMode(nextMode, ctx, sharedPref)
+            refreshSubtitleModeLabel()
+            android.widget.Toast.makeText(
+                ctx,
+                "Subtitle Mode: $displayLabel",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            true
         }
 
         val savedToken = sharedPref.getString("token", null)

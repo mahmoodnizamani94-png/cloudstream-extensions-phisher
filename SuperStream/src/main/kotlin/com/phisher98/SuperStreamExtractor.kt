@@ -299,10 +299,10 @@ object SuperStreamExtractor : SuperStream() {
             emptyList()
         }
         val orderedSubs = if (urduMode) {
-            val urduSubs = allSubs.filter { isUrduSubtitleCode(it.lang) || isUrduSubtitleCode(getLanguage(it.lang)) }
+            val urduSubs = allSubs.filter { isUrduSubtitleCode(it.lang) || isUrduSubtitleCode(getLanguage(it.lang)) }.take(2)
             val englishSubs = allSubs.filter {
                 !isUrduSubtitleCode(it.lang) && (isEnglishSubtitleCode(it.lang) || isEnglishSubtitleCode(getLanguage(it.lang)))
-            }
+            }.take(3)
             urduSubs + englishSubs
         } else {
             allSubs.filter { isEnglishSubtitleCode(it.lang) || isEnglishSubtitleCode(getLanguage(it.lang)) }
@@ -319,7 +319,11 @@ object SuperStreamExtractor : SuperStream() {
                         episode = episode,
                         sourceTag = "opensubtitles-v3"
                     ) ?: return@amap
-                    subtitleCallback.invoke(newSubtitleFile("Urdu", materializedUri))
+                    subtitleCallback.invoke(
+                        newSubtitleFile(formatSuperStreamUrduSourceLabel("subtitles"), materializedUri) {
+                            this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subtitles")
+                        }
+                    )
                 } else {
                     val lan = if (isEnglishSubtitleCode(it.lang) || isEnglishSubtitleCode(getLanguage(it.lang))) {
                         "English"
@@ -330,7 +334,9 @@ object SuperStreamExtractor : SuperStream() {
                         newSubtitleFile(
                             lan.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.titlecase(Locale.getDefault()) else ch.toString() },
                             subUrl
-                        )
+                        ) {
+                            this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subtitles")
+                        }
                     )
                 }
             }
@@ -353,11 +359,13 @@ object SuperStreamExtractor : SuperStream() {
                 } else {
                     "$base/search?id=$cleanId&season=$season&episode=$episode"
                 }
+                var emittedUrdu = 0
                 if (urduMode) {
                     try {
-                        val urText = app.get("$baseQuery&language=ur", timeout = 8L).text
+                        val urText = app.get("$baseQuery&language=ur&sort=downloads", timeout = 8L).text
                         val urSubs: List<WyZIESUB> = GSON.fromJson(urText, WYZIESUB_LIST_TYPE) ?: emptyList()
                         for (it in urSubs) {
+                            if (emittedUrdu >= 2) break
                             val suburl = it.url.trim()
                             if (suburl.startsWith("http", ignoreCase = true) &&
                                 (isUrduSubtitleCode(it.display) || isUrduSubtitleCode(it.language))
@@ -369,7 +377,12 @@ object SuperStreamExtractor : SuperStream() {
                                     episode = episode,
                                     sourceTag = "wyzie-ur"
                                 ) ?: continue
-                                subtitleCallback.invoke(newSubtitleFile("Urdu", materializedUri))
+                                subtitleCallback.invoke(
+                                    newSubtitleFile(formatSuperStreamUrduSourceLabel("wyziesub"), materializedUri) {
+                                        this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "wyziesub")
+                                    }
+                                )
+                                emittedUrdu++
                             }
                         }
                     } catch (e: CancellationException) {
@@ -384,11 +397,11 @@ object SuperStreamExtractor : SuperStream() {
                 val ordered = if (urduMode) {
                     val urList = subtitles.filter {
                         isUrduSubtitleCode(it.display) || isUrduSubtitleCode(it.language)
-                    }
+                    }.take(2)
                     val enList = subtitles.filter {
                         !(isUrduSubtitleCode(it.display) || isUrduSubtitleCode(it.language)) &&
                             (isEnglishSubtitleCode(it.display) || isEnglishSubtitleCode(it.language))
-                    }
+                    }.take(3)
                     urList + enList
                 } else {
                     subtitles.filter {
@@ -401,6 +414,7 @@ object SuperStreamExtractor : SuperStream() {
                     if (suburl.startsWith("http", ignoreCase = true)) {
                         val isUr = isUrduSubtitleCode(it.display) || isUrduSubtitleCode(it.language)
                         if (isUr) {
+                            if (emittedUrdu >= 2) continue
                             val materializedUri = materializeNormalizedUrduSubtitle(
                                 url = suburl,
                                 headers = SUBTITLE_HEADERS,
@@ -408,9 +422,18 @@ object SuperStreamExtractor : SuperStream() {
                                 episode = episode,
                                 sourceTag = "wyzie"
                             ) ?: continue
-                            subtitleCallback.invoke(newSubtitleFile("Urdu", materializedUri))
+                            subtitleCallback.invoke(
+                                newSubtitleFile(formatSuperStreamUrduSourceLabel("wyziesub"), materializedUri) {
+                                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "wyziesub")
+                                }
+                            )
+                            emittedUrdu++
                         } else {
-                            subtitleCallback.invoke(newSubtitleFile("English", suburl))
+                            subtitleCallback.invoke(
+                                newSubtitleFile("English", suburl) {
+                                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "wyziesub")
+                                }
+                            )
                         }
                     }
                 }
@@ -445,8 +468,9 @@ object SuperStreamExtractor : SuperStream() {
                 if (body.isBlank()) continue
                 val root = JSONObject(body)
                 val arr = root.optJSONArray("subtitles") ?: continue
-                var emitted = false
+                var emittedCount = 0
                 for (i in 0 until arr.length()) {
+                    if (emittedCount >= 2) break
                     val obj = arr.optJSONObject(i) ?: continue
                     val lang = obj.optString("lang").trim()
                     val subUrl = obj.optString("url").trim()
@@ -460,11 +484,15 @@ object SuperStreamExtractor : SuperStream() {
                             episode = episode,
                             sourceTag = "subsense"
                         ) ?: continue
-                        subtitleCallback.invoke(newSubtitleFile("Urdu", materializedUri))
-                        emitted = true
+                        subtitleCallback.invoke(
+                            newSubtitleFile(formatSuperStreamUrduSourceLabel("subsense"), materializedUri) {
+                                this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subsense")
+                            }
+                        )
+                        emittedCount++
                     }
                 }
-                if (emitted) return
+                if (emittedCount > 0) return
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -524,7 +552,9 @@ object SuperStreamExtractor : SuperStream() {
             }.getOrNull() ?: return
 
             val zipUrls = parseSubDlUrduPageZips(html, season, episode)
+            var emittedCount = 0
             for (zipUrl in zipUrls) {
+                if (emittedCount >= 2) break
                 val dlHeaders = mapOf(
                     "User-Agent" to (SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0"),
                     "Referer" to "$SUBDL_WEB_HOST/"
@@ -536,7 +566,12 @@ object SuperStreamExtractor : SuperStream() {
                     episode = episode,
                     sourceTag = "subdl"
                 ) ?: continue
-                subtitleCallback.invoke(newSubtitleFile("Urdu", materializedUri))
+                subtitleCallback.invoke(
+                    newSubtitleFile(formatSuperStreamUrduSourceLabel("subdl"), materializedUri) {
+                        this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subdl")
+                    }
+                )
+                emittedCount++
             }
         } catch (e: CancellationException) {
             throw e
@@ -711,7 +746,11 @@ object SuperStreamExtractor : SuperStream() {
             val cacheKey = "$enUrl|S${season ?: 0}E${episode ?: 0}"
             synthesizedUrduCache[cacheKey]?.let { cachedUri ->
                 if (isCachedSubtitleUriValid(cachedUri)) {
-                    subtitleCallback(newSubtitleFile("Urdu", cachedUri))
+                    subtitleCallback(
+                        newSubtitleFile(formatSuperStreamUrduSourceLabel("urdu-neural-fallback"), cachedUri) {
+                            this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "urdu-neural-fallback")
+                        }
+                    )
                     return@withContext true
                 } else {
                     synthesizedUrduCache.remove(cacheKey)
@@ -729,16 +768,33 @@ object SuperStreamExtractor : SuperStream() {
             val urduSrt = translateEnglishSrtToUrdu(decodedEnglish) ?: continue
             val fileUri = writeLocalUrduSrtFile(cacheKey, urduSrt) ?: continue
             synthesizedUrduCache[cacheKey] = fileUri
-            subtitleCallback(newSubtitleFile("Urdu", fileUri))
+            subtitleCallback(
+                newSubtitleFile(formatSuperStreamUrduSourceLabel("urdu-neural-fallback"), fileUri) {
+                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "urdu-neural-fallback")
+                }
+            )
             return@withContext true
         }
         false
     }
 
+    internal fun containsVerifiedUrduScript(content: String, minUrduCues: Int = 2): Boolean {
+        val cues = parseSuperStreamCues(content)
+        if (cues.isEmpty()) return false
+        var urduCueCount = 0
+        for (cue in cues) {
+            if (SUPERSTREAM_URDU_SCRIPT_REGEX.containsMatchIn(cue.text)) {
+                urduCueCount++
+            }
+        }
+        val required = minOf(minUrduCues, cues.size)
+        return urduCueCount >= required && (urduCueCount * 10 >= cues.size)
+    }
+
     /**
      * Downloads, unpacks (GZIP/episode-aware ZIP), decodes (`Windows-1256`, `UTF-16LE/BE`, `UTF-8`),
-     * normalizes Urdu typography + RTL BiDi, validates cues, and materializes a human Urdu subtitle URL
-     * into a UTF-8-BOM local `.srt` file (`file:///...`). Fails closed (`null`) if download or cue validation fails.
+     * normalizes Urdu typography + RTL BiDi, validates cues and genuine Urdu script, and materializes a human Urdu subtitle URL
+     * into a UTF-8-BOM local `.srt` file (`file:///...`). Fails closed (`null`) if download, cue validation, or Urdu script check fails.
      */
     internal suspend fun materializeNormalizedUrduSubtitle(
         url: String,
@@ -774,7 +830,7 @@ object SuperStreamExtractor : SuperStream() {
         val decoded = decodeAndNormalizeSubtitleBytes(rawBytes, season = season, episode = episode)
         if (decoded.isBlank()) return@withContext null
         val normalized = normalizeUrduSubtitleText(decoded)
-        if (parseSuperStreamCues(normalized).isEmpty()) return@withContext null
+        if (!containsVerifiedUrduScript(normalized)) return@withContext null
         val localUri = writeLocalUrduSrtFile("$sourceTag|$cacheKey", normalized) ?: return@withContext null
         materializedUrduCache[cacheKey] = localUri
         localUri
@@ -1429,7 +1485,7 @@ object SuperStreamExtractor : SuperStream() {
             val baseDir = superStreamAppContextRef?.cacheDir
                 ?: File(System.getProperty("java.io.tmpdir") ?: "/tmp")
             if (!baseDir.exists()) baseDir.mkdirs()
-            val file = File(baseDir, "superstream_urdu_$digest.srt")
+            val file = File(baseDir, "cs_urdu_$digest.srt")
             val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
             file.writeBytes(bom + urduSrtContent.toByteArray(StandardCharsets.UTF_8))
             "file:///" + file.absolutePath.trimStart('/')

@@ -34,6 +34,7 @@ import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.amap
@@ -620,7 +621,23 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             } else {
                 when {
                     isUrduSubtitleCode(sub.lang) -> {
-                        val normalizedUrdu = if (sub.lang == "Urdu") sub else sub.copy(lang = "Urdu")
+                        val badge = extractSuperStreamUrduSourceBadge(sub.lang)
+                            ?: sub.headers?.get(SUPERSTREAM_SOURCE_HEADER)
+                        val canonicalKey = canonicalSuperStreamUrduSourceKey(badge) ?: "subdl"
+                        val formattedLabel = formatSuperStreamUrduSourceLabel(canonicalKey)
+                        val mergedHeaders = if (sub.headers?.get(SUPERSTREAM_SOURCE_HEADER) == canonicalKey) {
+                            sub.headers
+                        } else {
+                            (sub.headers.orEmpty() + (SUPERSTREAM_SOURCE_HEADER to canonicalKey))
+                        }
+                        @Suppress("DEPRECATION")
+                        val normalizedUrdu = if (sub.lang == formattedLabel && sub.headers == mergedHeaders) {
+                            sub
+                        } else {
+                            SubtitleFile(lang = formattedLabel, url = sub.url).apply {
+                                headers = mergedHeaders
+                            }
+                        }
                         urduSubsFound.incrementAndGet()
                         earlyController.onSubtitleEmitted(normalizedUrdu)
                         subtitleCallback(normalizedUrdu)
@@ -790,15 +807,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                         season = res.season,
                         episode = res.episode
                     ) { urSub ->
-                        urduSubsFound.incrementAndGet()
-                        earlyController.onSubtitleEmitted(urSub)
-                        subtitleCallback(urSub)
-                    }
-                }
-                if (urduSubsFound.get() == 0) {
-                    englishDonorSubs.forEach { enSub ->
-                        earlyController.onSubtitleEmitted(enSub)
-                        subtitleCallback(enSub)
+                        trackedSubtitleCallback(urSub)
                     }
                 }
             }

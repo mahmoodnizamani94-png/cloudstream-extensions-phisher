@@ -23,6 +23,13 @@ private fun normalizeSubtitleModeValue(raw: String?): String? {
     }
 }
 
+private fun cacheSubtitleModeProperty(mode: String) {
+    try {
+        System.setProperty(SUBTITLE_MODE_SYS_PROP, mode)
+    } catch (_: Throwable) {
+    }
+}
+
 fun isUrduSubtitleMode(
     sharedPref: SharedPreferences? = null,
     context: Context? = null
@@ -45,7 +52,10 @@ fun isUrduSubtitleMode(
         } catch (_: Throwable) {
             null
         }
-        normalizeSubtitleModeValue(sharedVal)?.let { return it == MODE_URDU }
+        normalizeSubtitleModeValue(sharedVal)?.let {
+            cacheSubtitleModeProperty(it)
+            return it == MODE_URDU
+        }
     }
 
     val prefVal = try {
@@ -53,7 +63,10 @@ fun isUrduSubtitleMode(
     } catch (_: Throwable) {
         null
     }
-    normalizeSubtitleModeValue(prefVal)?.let { return it == MODE_URDU }
+    normalizeSubtitleModeValue(prefVal)?.let {
+        cacheSubtitleModeProperty(it)
+        return it == MODE_URDU
+    }
 
     if (ctx != null) {
         val superStreamVal = try {
@@ -62,7 +75,10 @@ fun isUrduSubtitleMode(
         } catch (_: Throwable) {
             null
         }
-        normalizeSubtitleModeValue(superStreamVal)?.let { return it == MODE_URDU }
+        normalizeSubtitleModeValue(superStreamVal)?.let {
+            cacheSubtitleModeProperty(it)
+            return it == MODE_URDU
+        }
 
         val streamPlayVal = try {
             ctx.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE)
@@ -70,7 +86,10 @@ fun isUrduSubtitleMode(
         } catch (_: Throwable) {
             null
         }
-        normalizeSubtitleModeValue(streamPlayVal)?.let { return it == MODE_URDU }
+        normalizeSubtitleModeValue(streamPlayVal)?.let {
+            cacheSubtitleModeProperty(it)
+            return it == MODE_URDU
+        }
     }
 
     return false
@@ -152,6 +171,55 @@ fun setSubtitleMode(mode: String, context: Context?, sharedPref: SharedPreferenc
         } catch (_: Throwable) {
         }
     }
+}
+
+const val SUPERSTREAM_SOURCE_HEADER = "X-StreamPlay-Source"
+
+private val URDU_SOURCE_BADGE_REGEX = Regex("""\[\s*([^\[\]]+?)\s*\]""")
+
+fun canonicalSuperStreamUrduSourceKey(raw: String?): String? {
+    val norm = raw?.trim()?.lowercase(Locale.ROOT) ?: return null
+    return when {
+        norm.contains("subdl") -> "subdl"
+        norm.contains("subsource") -> "subsource"
+        norm.contains("wyzie") -> "wyziesub"
+        norm.contains("subsense") -> "subsense"
+        norm.contains("yts") || norm.contains("yify") -> "yify"
+        norm.contains("subf2m") -> "subf2m"
+        norm.contains("subtitlecat") -> "subtitlecat"
+        norm.contains("opensubtitles") -> "opensubtitles"
+        norm == "subtitles" || norm.contains("strem.io") || norm.contains("subtitleapi") -> "subtitles"
+        norm.contains("neural") || norm.contains("ai") || norm.contains("fallback") -> "urdu-neural-fallback"
+        else -> null
+    }
+}
+
+fun superStreamUrduSourceDisplayName(sourceKeyOrBadge: String?): String? {
+    val canonical = canonicalSuperStreamUrduSourceKey(sourceKeyOrBadge) ?: return null
+    return when (canonical) {
+        "subdl" -> "SubDL"
+        "subsource" -> "SubSource"
+        "wyziesub" -> "Wyzie"
+        "subsense" -> "SubSense"
+        "yify" -> "YTS-Subs"
+        "subf2m" -> "Subf2m"
+        "subtitlecat" -> "SubtitleCat"
+        "opensubtitles", "subtitles" -> "OpenSubtitles"
+        "urdu-neural-fallback" -> "Neural AI"
+        else -> null
+    }
+}
+
+fun extractSuperStreamUrduSourceBadge(label: String?): String? {
+    if (label.isNullOrBlank()) return null
+    val match = URDU_SOURCE_BADGE_REGEX.find(label) ?: return null
+    val rawInside = match.groupValues.getOrNull(1)?.trim().orEmpty()
+    return superStreamUrduSourceDisplayName(rawInside)
+}
+
+fun formatSuperStreamUrduSourceLabel(sourceKeyOrBadge: String?): String {
+    val display = superStreamUrduSourceDisplayName(sourceKeyOrBadge)
+    return if (display != null) "Urdu [$display]" else "Urdu"
 }
 
 fun isUrduSubtitleCode(lang: String?): Boolean {

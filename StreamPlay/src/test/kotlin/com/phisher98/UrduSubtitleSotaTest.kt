@@ -825,5 +825,85 @@ class UrduSubtitleSotaTest {
             }
         }
     }
+
+    @Test
+    fun `8 SOTA Urdu sources registry and canonical source badges reject video and English-only providers`() {
+        assertEquals(8, UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES)
+        assertEquals(8, UrduSubtitleEngine.URDU_SOTA_SOURCES.size)
+        val summary = UrduSubtitleEngine.sotaSourcesSummary()
+        assertTrue(summary.contains("8 SOTA Sources"))
+        assertTrue(summary.contains("Neural AI"))
+        assertTrue(summary.contains("SubDL"))
+        assertTrue(summary.contains("SubSource"))
+        assertTrue(summary.contains("Wyzie"))
+        assertTrue(summary.contains("SubSense"))
+        assertTrue(summary.contains("YTS-Subs"))
+        assertTrue(summary.contains("Subf2m"))
+        assertTrue(summary.contains("SubtitleCat"))
+        assertTrue(summary.contains("OpenSubtitles"))
+
+        // Verify all 8 SOTA sources + Neural AI format cleanly and survive cleanSubtitleLabel
+        val expectedLabels = mapOf(
+            "subdl" to "Urdu [SubDL]",
+            "subsource" to "Urdu [SubSource]",
+            "wyziesub" to "Urdu [Wyzie]",
+            "subsense" to "Urdu [SubSense]",
+            "yify" to "Urdu [YTS-Subs]",
+            "subf2m" to "Urdu [Subf2m]",
+            "subtitlecat" to "Urdu [SubtitleCat]",
+            "opensubtitles" to "Urdu [OpenSubtitles]",
+            "subtitles" to "Urdu [OpenSubtitles]",
+            "urdu-neural-fallback" to "Urdu [Neural AI]"
+        )
+        for ((key, expectedLabel) in expectedLabels) {
+            val formatted = UrduSubtitleEngine.formatUrduSourceLabel(key)
+            assertEquals(expectedLabel, formatted)
+            assertEquals(expectedLabel, cleanSubtitleLabel(formatted))
+            assertNotNull(UrduSubtitleEngine.extractUrduSourceBadge(formatted))
+        }
+
+        // Video providers and English-only providers must NEVER be accepted as Urdu sources
+        val rejectedSources = listOf(
+            "vidlink", "cinesrc", "meowtv", "vidfast", "vidrift", "cineby",
+            "addic7ed", "ridoo", "lookmovie", "vidsrc", "superstream", ""
+        )
+        for (rejected in rejectedSources) {
+            assertNull(
+                "Provider '$rejected' does not host verified Urdu subtitles and must be rejected",
+                UrduSubtitleEngine.canonicalUrduSourceKey(rejected)
+            )
+        }
+    }
+
+    @Test
+    fun `containsVerifiedUrduScript accepts genuine Urdu subtitles and rejects mislabeled English subtitles`() {
+        val mislabeledEnglishSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            This is actually an English subtitle file mislabeled as Urdu by an upstream scraper.
+
+            2
+            00:00:04,000 --> 00:00:06,000
+            It contains zero Arabic or Urdu script characters!
+        """.trimIndent()
+        assertFalse(
+            "Mislabeled English subtitle must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(mislabeledEnglishSrt)
+        )
+
+        val genuineUrduSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            یہ ایک اصلی اردو سب ٹائٹل فائل ہے۔
+
+            2
+            00:00:04,000 --> 00:00:06,000
+            ہم کہاں جا رہے ہیں؟
+        """.trimIndent()
+        assertTrue(
+            "Genuine Urdu subtitle must be accepted by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(genuineUrduSrt)
+        )
+    }
 }
 

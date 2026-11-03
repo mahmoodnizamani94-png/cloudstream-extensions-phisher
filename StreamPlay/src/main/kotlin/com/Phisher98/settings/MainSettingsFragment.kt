@@ -69,6 +69,9 @@ class MainSettingsFragment(
 
         val subtitleModeRow: View = view.findView("subtitle_mode_button")
         val subtitleModeLabel: android.widget.TextView = view.findView("subtitle_mode_label")
+        val subtitleModeDesc: android.widget.TextView? = runCatching {
+            view.findView<android.widget.TextView>("subtitle_mode_desc")
+        }.getOrNull()
         val subtitleModeIcon: ImageView = view.findView("subtitle_mode_icon")
 
         val loginCard: ImageView = view.findView("loginCard")
@@ -114,17 +117,55 @@ class MainSettingsFragment(
 
         fun refreshSubtitleModeLabel() {
             val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
-            subtitleModeLabel.text = "Subtitle Mode: ${currentMode.displayLabel}"
+            if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) {
+                subtitleModeLabel.text =
+                    "Subtitle Mode: ${currentMode.displayLabel} • ${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Sources"
+                subtitleModeDesc?.text =
+                    "Active: ${UrduSubtitleEngine.sotaSourcesSummary()}. Every track is labeled Urdu [Source] in the player."
+            } else {
+                subtitleModeLabel.text = "Subtitle Mode: ${currentMode.displayLabel} • 7 English Sources"
+                subtitleModeDesc?.text =
+                    "Tap to switch to Urdu (\u0627\u0631\u062f\u0648) — ${UrduSubtitleEngine.sotaSourcesSummary()} (long-press for instant 1-tap toggle)"
+            }
         }
         refreshSubtitleModeLabel()
 
-        subtitleModeRow.setOnClickListener {
+        fun applySubtitleModeChoice(ctx: android.content.Context, selectedMode: UrduSubtitleEngine.SubtitleMode) {
+            UrduSubtitleEngine.setSubtitleMode(selectedMode, ctx, sharedPref)
+            refreshSubtitleModeLabel()
+            val detail = if (selectedMode == UrduSubtitleEngine.SubtitleMode.URDU) {
+                "${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Urdu Sources + Neural AI active immediately"
+            } else {
+                "Default English subtitles active immediately"
+            }
+            android.widget.Toast.makeText(
+                ctx,
+                "Subtitle Mode: ${selectedMode.displayLabel} — $detail",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        subtitleModeRow.setOnLongClickListener { rowView ->
+            val ctx = this.context ?: return@setOnLongClickListener false
+            rowView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
+            val nextMode = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) {
+                UrduSubtitleEngine.SubtitleMode.DEFAULT
+            } else {
+                UrduSubtitleEngine.SubtitleMode.URDU
+            }
+            applySubtitleModeChoice(ctx, nextMode)
+            true
+        }
+
+        subtitleModeRow.setOnClickListener { rowView ->
             val ctx = this.context ?: return@setOnClickListener
+            rowView.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
             val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
             val checkedItem = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) 1 else 0
             val options = arrayOf(
-                "Default (English Subtitles — Streams & Downloads)",
-                "Urdu / اردو (Urdu Subtitles — Streams & Downloads)"
+                "Default (English — 7 Verified English Sources)",
+                "Urdu / \u0627\u0631\u062f\u0648 (${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Sources: SubDL, SubSource, Wyzie, SubSense, YTS-Subs, Subf2m, SubtitleCat, OpenSubtitles + Neural AI)"
             )
             AlertDialog.Builder(ctx)
                 .setTitle("Subtitle Mode (Streams & Downloads)")
@@ -134,13 +175,7 @@ class MainSettingsFragment(
                     } else {
                         UrduSubtitleEngine.SubtitleMode.DEFAULT
                     }
-                    UrduSubtitleEngine.setSubtitleMode(selectedMode, ctx, sharedPref)
-                    refreshSubtitleModeLabel()
-                    android.widget.Toast.makeText(
-                        ctx,
-                        "Subtitle Mode: ${selectedMode.displayLabel} — Active immediately for all streams & downloads",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    applySubtitleModeChoice(ctx, selectedMode)
                     dialogInterface.dismiss()
                 }
                 .setNegativeButton("Cancel", null)

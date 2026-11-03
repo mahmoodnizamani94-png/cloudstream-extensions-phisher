@@ -246,15 +246,24 @@ class StreamPlayStremioCatelog(
             } else {
                 when {
                     isUrduSubtitleLabel(cleanedLang) -> {
-                        @Suppress("DEPRECATION")
-                        val urSub = if (sub.lang == "Urdu") sub else SubtitleFile(lang = "Urdu", url = sub.url).apply {
-                            headers = sub.headers
+                        val headerSource = sub.headers?.entries
+                            ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
+                            ?.value?.trim()?.takeIf { it.isNotBlank() }
+                        val canonicalSource = UrduSubtitleEngine.canonicalUrduSourceKey(headerSource)
+                            ?: UrduSubtitleEngine.canonicalUrduSourceKey(cleanedLang)
+                            ?: UrduSubtitleEngine.canonicalUrduSourceKey(StreamPlayShield.hostOf(sub.url))
+                        if (canonicalSource != null) {
+                            val formattedLang = UrduSubtitleEngine.formatUrduSourceLabel(canonicalSource)
+                            @Suppress("DEPRECATION")
+                            val urSub = SubtitleFile(lang = formattedLang, url = sub.url).apply {
+                                headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to canonicalSource)
+                            }
+                            urduSubtitleCount.incrementAndGet()
+                            catalogSubsFound.incrementAndGet()
+                            earlyController.onSubtitleEmitted(urSub)
+                            subtitleCallback(urSub)
+                            dispatcher.onSubtitleReceived()
                         }
-                        urduSubtitleCount.incrementAndGet()
-                        catalogSubsFound.incrementAndGet()
-                        earlyController.onSubtitleEmitted(urSub)
-                        subtitleCallback(urSub)
-                        dispatcher.onSubtitleReceived()
                     }
                     isEnglishSubtitleLabel(cleanedLang) -> {
                         @Suppress("DEPRECATION")
@@ -411,15 +420,8 @@ class StreamPlayStremioCatelog(
                     }
                 )
             }
-            if (urduSubtitleCount.get() == 0) {
-                englishDonorSubs.forEach { enSub ->
-                    catalogSubsFound.incrementAndGet()
-                    earlyController.onSubtitleEmitted(enSub)
-                    subtitleCallback(enSub)
-                    dispatcher.onSubtitleReceived()
-                }
-            }
         }
+        englishDonorSubs.clear()
 
         dispatcher.flush()
 
