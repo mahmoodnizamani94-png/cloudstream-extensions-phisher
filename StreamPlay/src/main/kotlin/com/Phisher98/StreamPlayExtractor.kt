@@ -5295,7 +5295,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 val displayServer = wingServer.replaceFirstChar {
                                     if (it.isLowerCase()) it.titlecase() else it.toString()
                                 }
-                                val langTag = if (isAnime || wingPayload.subtitles.isNotEmpty() || emittedTracks.isNotEmpty()) {
+                                val langTag = if (isAnime) {
                                     " [Sub] [Original]"
                                 } else {
                                     ""
@@ -5390,7 +5390,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 val displayServer = serverId.replaceFirstChar {
                                     if (it.isLowerCase()) it.titlecase() else it.toString()
                                 }
-                                val langTag = if (isAnime || payload.subtitles.isNotEmpty() || emittedTracks.isNotEmpty()) {
+                                val langTag = if (isAnime) {
                                     " [Sub] [Original]"
                                 } else {
                                     ""
@@ -5715,8 +5715,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 val displayServer = server.replaceFirstChar {
                                     if (it.isLowerCase()) it.titlecase() else it.toString()
                                 }
-                                val hasSubs = payload.subtitles.isNotEmpty()
-                                val langTag = if (isAnime || hasSubs) " [Sub] [Original]" else ""
+                                val langTag = if (isAnime) " [Sub] [Original]" else ""
                                 val baseName = "Cineby $displayServer$langTag"
 
                                 val discreteSources = payload.sources.filter { src ->

@@ -503,7 +503,22 @@ class StreamPlayAnime : MainAPI() {
 
         val animeLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
         fun emitSingleOptimized(link: ExtractorLink) {
-            val optimized = StreamLinkOptimizer.optimize(link)
+            val taggedLink = if (link.headers["X-StreamPlay-Anime"]?.equals("true", ignoreCase = true) != true) {
+                @Suppress("DEPRECATION")
+                ExtractorLink(
+                    source = link.source,
+                    name = link.name,
+                    url = link.url,
+                    referer = link.referer,
+                    quality = link.quality,
+                    type = link.type,
+                    headers = link.headers + ("X-StreamPlay-Anime" to "true"),
+                    extractorData = link.extractorData
+                )
+            } else {
+                link
+            }
+            val optimized = StreamLinkOptimizer.optimize(taggedLink)
             earlyController.onCandidateLink(optimized)
             when (deduplicator.emitDetailed(optimized)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {

@@ -1073,7 +1073,22 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         fun emitSingleLinkInternal(link: ExtractorLink): Boolean {
-            val optimizedLink = StreamLinkOptimizer.optimize(link)
+            val taggedLink = if (res.isAnime && link.headers["X-StreamPlay-Anime"]?.equals("true", ignoreCase = true) != true) {
+                @Suppress("DEPRECATION")
+                ExtractorLink(
+                    source = link.source,
+                    name = link.name,
+                    url = link.url,
+                    referer = link.referer,
+                    quality = link.quality,
+                    type = link.type,
+                    headers = link.headers + ("X-StreamPlay-Anime" to "true"),
+                    extractorData = link.extractorData
+                )
+            } else {
+                link
+            }
+            val optimizedLink = StreamLinkOptimizer.optimize(taggedLink)
             earlyController.onCandidateLink(optimizedLink)
             return when (deduplicator.emitDetailed(optimizedLink)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {

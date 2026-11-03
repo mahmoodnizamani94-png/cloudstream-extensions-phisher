@@ -2863,9 +2863,185 @@ class DualQualityAndSotaHierarchyTest {
         assertTrue("Lower-priority non-top-tier fallback task must be cancelled on early satisfaction", lowerTaskCancelled)
         assertEquals("Both Cineby and VidLink links must be emitted", 2, controller.getLinksCount())
     }
+
+    @Test
+    fun testRound2NonAnimeCinebyCineSrcWithSubOriginalNotMisclassifiedAndNoCondorcetCycle() = runBlocking {
+        // Round 2 Finding 1:
+        // 1) Non-anime Cineby / CineSrc links carrying "[Sub] [Original]" are NOT misclassified as Anime
+        //    in PriorityStreamDispatcher(isAnime = false), StreamDeduplicator(isAnime = false),
+        //    isBetterThan, or getStreamCompositeScore.
+        // 2) Strict weak ordering transitivity across mixed "[Sub] [Original]" and non-badged links:
+        //    A = VidLink 1080p [400 MB], B = Cineby [Sub] [Original] 720p [350 MB], C = VidLink [Sub] [Original] 1080p [300 MB]
+        //    must have C > A > B (and C > B) in Movie/TV mode with zero Condorcet cycles!
+        val linkA = createLink("VidLink", "VidLink [1080p] [400 MB]", "https://vidlink.pro/a_1080.mp4", Qualities.P1080.value, ExtractorLinkType.VIDEO)
+        val linkB = createLink("Cineby", "Cineby [Sub] [Original] [720p] [350 MB]", "https://wellsrobertsonkmlt.workers.dev/b_720.m3u8", Qualities.P720.value, ExtractorLinkType.M3U8)
+        val linkC = createLink("VidLink", "VidLink [Sub] [Original] [1080p] [300 MB]", "https://vidlink.pro/c_1080.mp4", Qualities.P1080.value, ExtractorLinkType.VIDEO)
+        val cinesrcSub = createLink("CineSrc", "CineSrc [Sub] [Original] [720p] [340 MB]", "https://nebula.bright67.online/cinesrc_720.m3u8", Qualities.P720.value, ExtractorLinkType.M3U8)
+
+        assertFalse("Cineby [Sub] [Original] without anime marker must not be classified as anime stream", StreamLinkOptimizer.isAnimeStream(linkB))
+        assertFalse("CineSrc [Sub] [Original] without anime marker must not be classified as anime stream", StreamLinkOptimizer.isAnimeStream(cinesrcSub))
+        assertFalse("VidLink [Sub] [Original] without anime marker must not be classified as anime stream", StreamLinkOptimizer.isAnimeStream(linkC))
+
+        // In Movie/TV mode (default isAnime = false), VidLink 1080p (mult 98) beats Cineby 720p (mult 95)
+        // and smaller VidLink 1080p [300 MB] (C) beats larger VidLink 1080p [400 MB] (A): C > A > B and C > B.
+        assertTrue("C (VidLink 1080p 300MB) must beat A (VidLink 1080p 400MB)", StreamLinkOptimizer.isBetterThan(linkC, linkA))
+        assertTrue("A (VidLink 1080p 400MB, mult 98) must beat B (Cineby 720p, mult 95) in Movie/TV mode", StreamLinkOptimizer.isBetterThan(linkA, linkB))
+        assertTrue("Transitivity: C (VidLink 1080p 300MB) must beat B (Cineby 720p) in Movie/TV mode", StreamLinkOptimizer.isBetterThan(linkC, linkB))
+        assertFalse("Asymmetry: B must NOT beat C in Movie/TV mode", StreamLinkOptimizer.isBetterThan(linkB, linkC))
+        assertTrue("Composite score must also satisfy score(C) > score(A) > score(B)",
+            StreamLinkOptimizer.getStreamCompositeScore(linkC) > StreamLinkOptimizer.getStreamCompositeScore(linkA) &&
+                StreamLinkOptimizer.getStreamCompositeScore(linkA) > StreamLinkOptimizer.getStreamCompositeScore(linkB)
+        )
+
+        // Verify StreamDeduplicator(isAnime = false) uses Movie/TV ordering even when both links have [Sub] [Original]
+        val dedupEmitted = mutableListOf<ExtractorLink>()
+        val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
+            upstreamCallback = { dedupEmitted.add(it) },
+            isAnime = false
+        )
+        assertEquals(StreamLinkOptimizer.DeduplicationResult.NEW, deduplicator.emitDetailed(linkB))
+        // Same canonical key upgrade test with [Sub] [Original]
+        val vidlinkSub720Large = createLink("VidLink", "VidLink [Sub] [Original] [720p] [500 MB]", "https://vidlink.pro/same_720.mp4", Qualities.P720.value, ExtractorLinkType.VIDEO)
+        val vidlinkSub720Small = createLink("VidLink", "VidLink [Sub] [Original] [720p] [300 MB]", "https://vidlink.pro/same_720.mp4", Qualities.P720.value, ExtractorLinkType.VIDEO)
+        assertEquals(StreamLinkOptimizer.DeduplicationResult.NEW, deduplicator.emitDetailed(vidlinkSub720Large))
+        assertEquals(StreamLinkOptimizer.DeduplicationResult.UPGRADED, deduplicator.emitDetailed(vidlinkSub720Small))
+
+        // Verify PriorityStreamDispatcher(isAnime = false) emits VidLink 1080p BEFORE Cineby [Sub] [Original] 720p and CineSrc [Sub] [Original] 720p
+        val emitted = mutableListOf<ExtractorLink>()
+        val activeRanks = setOf(100, 95, 94)
+        val inFlight = activeRanks.toMutableSet()
+        val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
+            upstreamCallback = { emitted.add(it) },
+            scope = this,
+            stageWindowMs = 40L,
+            subtitleGraceMs = 40L,
+            topSourceGraceMs = 300L,
+            top720GraceMs = 300L,
+            fhdGraceMs = 300L,
+            activeTopRanks = activeRanks,
+            isRankInFlight = { r -> inFlight.contains(r) },
+            isAnime = false
+        )
+        dispatcher.onSubtitleReceived()
+
+        dispatcher.onLinkAccepted(linkB)
+        inFlight.remove(95)
+        dispatcher.markRankCompleted(95)
+
+        dispatcher.onLinkAccepted(cinesrcSub)
+        inFlight.remove(94)
+        dispatcher.markRankCompleted(94)
+
+        dispatcher.onLinkAccepted(linkC)
+        inFlight.remove(100)
+        dispatcher.markRankCompleted(100)
+
+        assertEquals(
+            "Non-anime PriorityStreamDispatcher must emit VidLink 1080p ahead of Cineby/CineSrc [Sub] [Original] 720p",
+            listOf(linkC, linkB, cinesrcSub),
+            emitted
+        )
+        dispatcher.flush()
+    }
+
+    @Test
+    fun testRound2TopSourceGraceExpiryWithout1080pFlushesBelowFhdAbove1080AndSecondaryWhileSlowProviderHangs() = runBlocking {
+        // Round 2 Finding 2:
+        // When VidLink 720p (100) emits at t=0, MeowTV (98) hangs in flight indefinitely,
+        // and Cineby 720p (95), Cineby 480p (95), VidLink 4K (100), and Secondary 720p (0) arrive with ZERO 1080p links,
+        // topSourceGraceTimer expiry must drain Cineby 720p AND cascade through fhdGraceTimer -> sdGraceTimer
+        // to flush Cineby 480p, VidLink 4K, and Secondary 720p without deadlocking!
+        val emitted = mutableListOf<ExtractorLink>()
+        val inFlight = mutableSetOf(100, 98, 95)
+        val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
+            upstreamCallback = { emitted.add(it) },
+            scope = this,
+            stageWindowMs = 30L,
+            subtitleGraceMs = 30L,
+            topSourceGraceMs = 150L,
+            top720GraceMs = 120L,
+            fhdGraceMs = 60L,
+            sdGraceMs = 60L,
+            activeTopRanks = setOf(100, 98, 95),
+            isRankInFlight = { r -> inFlight.contains(r) },
+            isAnime = false
+        )
+        dispatcher.onSubtitleReceived()
+
+        val vidlink720 = createLink("VidLink", "VidLink [720p] [310 MB]", "https://vidlink.pro/720.mp4", Qualities.P720.value, ExtractorLinkType.VIDEO)
+        val cineby720 = createLink("Cineby", "Cineby [720p] [330 MB]", "https://wellsrobertsonkmlt.workers.dev/720.m3u8", Qualities.P720.value, ExtractorLinkType.M3U8)
+        val cineby480 = createLink("Cineby", "Cineby [480p] [190 MB]", "https://wellsrobertsonkmlt.workers.dev/480.m3u8", Qualities.P480.value, ExtractorLinkType.M3U8)
+        val vidlink4k = createLink("VidLink", "VidLink [2160p] [1800 MB]", "https://vidlink.pro/2160.mp4", Qualities.P2160.value, ExtractorLinkType.VIDEO)
+        val secondary720 = createLink("FallbackHost", "FallbackHost [720p]", "https://unknown-fallback.example/720.m3u8", Qualities.P720.value, ExtractorLinkType.M3U8)
+
+        // 1. VidLink 720p arrives at t=0
+        dispatcher.onLinkAccepted(vidlink720)
+        assertEquals(listOf(vidlink720), emitted)
+
+        // 2. Cineby 720p, Cineby 480p, VidLink 4K, and Secondary 720p arrive at t=10ms while MeowTV (98) hangs in flight
+        delay(10L)
+        dispatcher.onLinkAccepted(cineby720)
+        dispatcher.onLinkAccepted(cineby480)
+        dispatcher.onLinkAccepted(vidlink4k)
+        dispatcher.onLinkAccepted(secondary720)
+        inFlight.remove(100)
+        dispatcher.markRankCompleted(100)
+        inFlight.remove(95)
+        dispatcher.markRankCompleted(95)
+
+        // MeowTV (98) is still in flight; Wait past topSourceGraceMs (150ms) + fhdGraceMs (60ms) + sdGraceMs (60ms)
+        delay(350L)
+
+        assertEquals(
+            "All pending 720p, 480p, 4K, and Secondary links must flush after topSourceGraceMs + fhdGraceMs even when 98 hangs and no 1080p arrived",
+            listOf(vidlink720, cineby720, cineby480, vidlink4k, secondary720),
+            emitted
+        )
+        dispatcher.flush()
+    }
+
+    @Test
+    fun testRound2SpeculativePipelinerRecognizesMeowTv720pInFlightOverEmittedVidLink1080p() {
+        // Round 2 Finding 5:
+        // When VidLink has only emitted 1080p (effective tier multiplier = 98, not 100),
+        // EarlySatisfactionController.getMaxEmittedPriority() must be 98f, and
+        // SpeculativePipeliner.hasHigherPriorityInFlight() must return TRUE when MeowTV (baseBoost = 98f,
+        // capable of 720p with effective tier multiplier = 99) is still in flight!
+        val controller = EarlySatisfactionController(
+            EarlySatisfactionConfig(
+                minVerifiedLinks = 1,
+                minQualityStreams = 1,
+                requireSubtitles = false
+            )
+        )
+        val vidlink1080 = createLink("VidLink", "VidLink [1080p] [600 MB]", "https://vidlink.pro/1080.mp4", Qualities.P1080.value, ExtractorLinkType.VIDEO)
+        controller.onLinkEmitted(vidlink1080)
+
+        assertEquals(
+            "Emitting VidLink 1080p must record effective tier multiplier 98f (not raw source rank 100f)",
+            98f,
+            controller.getMaxEmittedPriority(),
+            0.01f
+        )
+
+        assertTrue(
+            "MeowTV in flight (priorityScore = 9800f, capable of 720p mult 99) must be recognized as higher priority than emitted VidLink 1080p (98f)",
+            SpeculativePipeliner.hasHigherPriorityInFlight(
+                activeTaskPriorityScores = listOf(9800f),
+                maxEmittedPriority = controller.getMaxEmittedPriority()
+            )
+        )
+
+        // Once VidLink 720p (mult 100) is emitted, maxEmittedPriority becomes 100f and MeowTV (9800f -> 9900f) is no longer higher
+        val vidlink720 = createLink("VidLink", "VidLink [720p] [310 MB]", "https://vidlink.pro/720.mp4", Qualities.P720.value, ExtractorLinkType.VIDEO)
+        controller.onLinkEmitted(vidlink720)
+        assertEquals(100f, controller.getMaxEmittedPriority(), 0.01f)
+        assertFalse(
+            SpeculativePipeliner.hasHigherPriorityInFlight(
+                activeTaskPriorityScores = listOf(9800f),
+                maxEmittedPriority = controller.getMaxEmittedPriority()
+            )
+        )
+    }
 }
-
-
-
-
 

@@ -119,9 +119,20 @@ class EarlySatisfactionController(
         }
     }
 
+    private fun computeEffectiveLinkPriority(link: ExtractorLink): Float {
+        val sourceRank = StreamLinkOptimizer.getSourcePriorityRank(link)
+        val effectiveQuality = StreamLinkOptimizer.resolveEffectiveQuality(link)
+        val tierMultiplier = StreamLinkOptimizer.getPrimaryStreamTierMultiplier(
+            link = link,
+            sourceRank = sourceRank,
+            effectiveQuality = effectiveQuality
+        )
+        return if (tierMultiplier > 0) tierMultiplier.toFloat() else sourceRank.toFloat()
+    }
+
     fun onLinkEmitted(link: ExtractorLink): Boolean {
         linksFound.incrementAndGet()
-        val priority = StreamLinkOptimizer.getSourcePriorityRank(link).toFloat()
+        val priority = computeEffectiveLinkPriority(link)
         maxEmittedPriority.accumulateAndGet(priority) { prev, cur -> maxOf(prev, cur) }
         trackLinkQuality(link)
         if (isHighQualityVerifiedStream(link)) {
@@ -132,7 +143,7 @@ class EarlySatisfactionController(
     }
 
     fun onLinkUpgraded(link: ExtractorLink): Boolean {
-        val priority = StreamLinkOptimizer.getSourcePriorityRank(link).toFloat()
+        val priority = computeEffectiveLinkPriority(link)
         maxEmittedPriority.accumulateAndGet(priority) { prev, cur -> maxOf(prev, cur) }
         trackLinkQuality(link)
         if (isHighQualityVerifiedStream(link)) {
@@ -372,8 +383,16 @@ object SpeculativePipeliner {
         val thresholdBoost = normalizePriorityBoost(maxEmittedPriority)
         val thresholdScore = thresholdBoost * 100f
         return activeTaskPriorityScores.any { rawScore ->
-            val scaledScore = if (rawScore in 1f..200f) rawScore * 100f else rawScore
-            scaledScore > thresholdScore
+            val baseBoost = normalizePriorityBoost(rawScore)
+            val effectiveBoost = if (kotlin.math.abs(baseBoost - 98f) < 0.01f) 99f else baseBoost
+            val scaledScore = if (rawScore in 1f..200f) {
+                effectiveBoost * 100f
+            } else if (kotlin.math.abs(baseBoost - 98f) < 0.01f) {
+                rawScore + 100f
+            } else {
+                rawScore
+            }
+            effectiveBoost > thresholdBoost && scaledScore > thresholdScore
         }
     }
 
@@ -436,7 +455,13 @@ object SpeculativePipeliner {
             val threshold = getMaxPriorityThreshold()
             val scaledThreshold = threshold * 100f
             return trackedTasks.any {
-                it.job.isActive && it.task.isVideo && it.baseBoost > threshold && it.priorityScore > scaledThreshold
+                val effectiveTaskMaxMultiplier = if (kotlin.math.abs(it.baseBoost - 98f) < 0.01f) 99f else it.baseBoost
+                val effectivePriorityScore = if (kotlin.math.abs(it.baseBoost - 98f) < 0.01f && it.priorityScore > -500f) {
+                    it.priorityScore + 100f
+                } else {
+                    it.priorityScore
+                }
+                it.job.isActive && it.task.isVideo && effectiveTaskMaxMultiplier > threshold && effectivePriorityScore > scaledThreshold
             }
         }
 
@@ -462,8 +487,14 @@ object SpeculativePipeliner {
             val threshold = getMaxPriorityThreshold()
             val scaledThreshold = threshold * 100f
             for (info in trackedTasks) {
+                val effectiveTaskMaxMultiplier = if (kotlin.math.abs(info.baseBoost - 98f) < 0.01f) 99f else info.baseBoost
+                val effectivePriorityScore = if (kotlin.math.abs(info.baseBoost - 98f) < 0.01f && info.priorityScore > -500f) {
+                    info.priorityScore + 100f
+                } else {
+                    info.priorityScore
+                }
                 if (info.job.isActive && info.task.isVideo && !isTopTierTask(info) &&
-                    (info.baseBoost <= threshold || info.priorityScore <= scaledThreshold)
+                    (effectiveTaskMaxMultiplier <= threshold || effectivePriorityScore <= scaledThreshold)
                 ) {
                     info.job.cancel(CancellationException("Early satisfaction achieved by higher tier source"))
                 }
@@ -537,7 +568,9 @@ object SpeculativePipeliner {
                             val emittedQuality = controller.getQualityLinksCount() > beforeQuality
                             success = if (task.isVideo) emittedLinks else controller.getSubtitlesCount() > beforeSubs
                             if (isVideo && (emittedQuality || emittedLinks)) {
-                                maxEmittedPriority.accumulateAndGet(taskBaseBoost) { prev, cur -> maxOf(prev, cur) }
+                                val controllerMax = controller.getMaxEmittedPriority()
+                                val effectiveEmittedPriority = if (controllerMax > 0f) controllerMax else taskBaseBoost
+                                maxEmittedPriority.accumulateAndGet(effectiveEmittedPriority) { prev, cur -> maxOf(prev, cur) }
                             }
                         }
                     } catch (e: CancellationException) {
