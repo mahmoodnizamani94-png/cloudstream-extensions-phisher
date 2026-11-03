@@ -139,19 +139,30 @@ class StreamPlayStremioCatelog(
             title = cinemeta?.title
         )
 
+        val disabledProviderIds = getOrInitializeDisabledProviders(sharedPref)
+        val providersList = buildProviders().filter { it.id !in disabledProviderIds }
+        val activeTopRanks = providersList.mapNotNull {
+            val boost = FAST_PROVIDER_BOOST[it.id] ?: 0f
+            if (boost >= 85f) boost.toInt() else null
+        }.toSet().ifEmpty { setOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87) }
+        val inFlightTopRanks = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>().apply {
+            addAll(activeTopRanks)
+        }
+        val runningTopProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>().apply {
+            addAll(providersList.filter { (FAST_PROVIDER_BOOST[it.id] ?: 0f) >= 85f }.map { it.id })
+        }
+
         val dispatcher = StreamLinkOptimizer.PriorityStreamDispatcher(
             upstreamCallback = callback,
             scope = this,
             top720GraceMs = 350L,
-            activeTopRanks = setOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87)
+            activeTopRanks = activeTopRanks,
+            isRankInFlight = { rank -> inFlightTopRanks.contains(rank) }
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
             onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) }
         )
-
-        val disabledProviderIds = getOrInitializeDisabledProviders(sharedPref)
-        val providersList = buildProviders().filter { it.id !in disabledProviderIds }
         val earlySatisfactionConfig = EarlySatisfactionConfig(
             minVerifiedLinks = 2,
             minQualityStreams = 2,
@@ -344,18 +355,31 @@ class StreamPlayStremioCatelog(
                 }
             }
             providersList.forEach { provider ->
+                val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
                 add(PipelinedTask(
                     providerId = provider.id,
                     isVideo = true,
-                    priorityBoost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
+                    priorityBoost = boost
                 ) {
-                    provider.invoke(
-                        resolved.toLinkData(),
-                        trackedSubCallback,
-                        trackedLinkCallback,
-                        authToken ?: "",
-                        dahmerMoviesAPI
-                    )
+                    try {
+                        provider.invoke(
+                            resolved.toLinkData(),
+                            trackedSubCallback,
+                            trackedLinkCallback,
+                            authToken ?: "",
+                            dahmerMoviesAPI
+                        )
+                    } finally {
+                        if (boost >= 85f) {
+                            runningTopProviders.remove(provider.id)
+                            val rank = boost.toInt()
+                            val hasRemainingWithRank = runningTopProviders.any { (FAST_PROVIDER_BOOST[it] ?: 0f).toInt() == rank }
+                            if (!hasRemainingWithRank) {
+                                inFlightTopRanks.remove(rank)
+                                dispatcher.markRankCompleted(rank)
+                            }
+                        }
+                    }
                 })
             }
             stremioAddons.forEach { (addonId, addon) ->

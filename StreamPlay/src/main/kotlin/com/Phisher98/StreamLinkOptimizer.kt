@@ -2238,39 +2238,176 @@ object StreamLinkOptimizer {
     // ==================== Stream Comparison & Deduplicator ====================
 
     const val VIDRIFT_SOURCE_RANK = 91
+    const val VIDRIFT_MAX_720P_BACKUP_BYTES = 650L * 1024L * 1024L
+    const val MAX_REASONABLE_STREAM_BYTES = 2_500L * 1024L * 1024L
+
+    private val REGEX_EXPLICIT_400P = Regex("""\b400p\b|\b\d{3,4}\s*[xX×]\s*400\b""", RegexOption.IGNORE_CASE)
+
+    fun getEffectiveQuality(link: ExtractorLink): Int {
+        return if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
+            link.quality
+        } else {
+            extractQualityFromText(link.name, link.url)
+        }
+    }
+
+    fun resolveEffectiveQuality(link: ExtractorLink): Int = getEffectiveQuality(link)
+
+    fun isUnknownQuality(link: ExtractorLink, q: Int = getEffectiveQuality(link)): Boolean {
+        return q <= 0 || (q == Qualities.Unknown.value && !REGEX_EXPLICIT_400P.containsMatchIn(link.name))
+    }
+
+    fun isAnimeStream(link: ExtractorLink): Boolean {
+        val ext = link.extractorData.orEmpty()
+        val hdr = link.headers["X-StreamPlay-Anime"]
+        return ext.contains("is_anime=true", ignoreCase = true) ||
+            hdr.equals("true", ignoreCase = true)
+    }
+
+    fun isDirectMp4Stream(link: ExtractorLink): Boolean {
+        val u = link.url.lowercase(Locale.ROOT)
+        val cleanPath = u.substringBefore('?').substringBefore('#')
+        if (link.type == ExtractorLinkType.M3U8 || link.type == ExtractorLinkType.DASH) return false
+        if (u.contains(".m3u8") || u.contains(".mpd") || u.contains("master.txt")) return false
+        if (cleanPath.endsWith(".mp4") || cleanPath.endsWith(".mkv") || cleanPath.endsWith(".webm")) return true
+        if (u.contains("/hls/") || u.contains("/hls2/")) return false
+        return link.type == ExtractorLinkType.VIDEO ||
+            u.contains(".mp4") ||
+            u.contains(".mkv") ||
+            u.contains(".webm")
+    }
 
     /**
-     * Determines whether candidate ExtractorLink is strictly superior to existing ExtractorLink:
-     * 1. Top-tier source priority rank for the curated v26 registry
-     *    (VidLink 100 > MeowTV 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
-     *     VidRift 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary)
-     * 2. Quality priority score within the same source (720p > 1080p > 480p > intermediate SD > 360p/240p > 1440p/4K > Unknown)
-     * 3. Genuine non-synthetic streams over synthetic companions
-     * 4. Higher bitrate (kbps) (when quality score and source rank are equivalent)
-     * 5. Direct endpoint rewrites (?download / &stream=1)
-     * 6. Video source and HDR/codec score (REMUX > BluRay > WEB-DL; DV > HDR10+ > HDR)
-     * 7. Direct byte stream over HLS for equal tier sources
-     * 8. Audio format and channel score (Atmos > TrueHD > DTS-HD > DTS > 7.1 > 5.1)
-     * 9. Anti-throttling header completeness
-     * 10. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
+     * Canonical v27 SOTA stream priority tier multiplier (higher is strictly better):
+     *
+     * Movie & TV (`isAnime == false`):
+     * - `100`    -> #1: `VidLink 720p` (Rank 100, 720p)
+     * - `99`     -> #2: `MeowTV 720p` (Rank 98, 720p)
+     * - `98`     -> #3: `VidLink 1080p` (Rank 100, 1080p)
+     * - `87..95` -> #4: Other top-tier `720p` (`Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 > VidRift 91 (<= 650 MB) > AniZone 89 > AnimePahe 88 > Animex 87`)
+     * - `72..83` -> #5: Non-VidLink curated top-tier `1080p` (`MeowTV 1080p = 83 > Cineby 1080p = 80 > CineSrc 1080p = 79 > VidFast 1080p = 78 > MegaPlay 1080p = 77 > AniZone 1080p = 74 > AnimePahe 1080p = 73 > Animex 1080p = 72`)
+     * - `71`     -> Demoted oversized `VidRift 720p` (`> 650 MB`)
+     * - `70`     -> Demoted `VidRift 1080p` (excluded from curated 1080p chain)
+     * - `56..69` -> #6: Top-tier sub-720p / Unknown / above-1080p (`sourceRank - 31`)
+     * - `0`      -> #7: Secondary / unranked (`sourceRank == 0`) fallback sources (`tierMultiplier = 0`, sorted `720p -> 1080p -> 480p -> 360p -> Unknown -> 2160p`)
+     *
+     * Anime (`isAnime == true`):
+     * - `87..100` -> #1: All top-tier `720p` across `ANIME_DOWNLOAD_CHAIN` (`VidLink 100 > Cineby 95 > CineSrc 94 > MegaPlay 92 > AniZone 89 > AnimePahe 88 > Animex 87`)
+     * - `72..85`  -> #2: All top-tier `1080p` across `ANIME_DOWNLOAD_CHAIN` (`VidLink 85 > Cineby 80 > CineSrc 79 > MegaPlay 77 > AniZone 74 > AnimePahe 73 > Animex 72`)
      */
-    fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        // 1. Top-Tier Source Priority Rank for the curated v26 registry
-        //    (VidLink 100 > MeowTV 98 > Cineby 95 > CineSrc 94 > VidFast 93 > MegaPlay 92 >
-        //     VidRift 91 > AniZone 89 > AnimePahe 88 > Animex 87 > Secondary).
-        // Source rank is primary so a higher-ranked source can never be replaced by a
-        // lower-ranked one that merely exposes a higher resolution ladder.
+    fun getPrimaryStreamTierMultiplier(
+        link: ExtractorLink,
+        sourceRank: Int = getSourcePriorityRank(link),
+        effectiveQuality: Int = getEffectiveQuality(link),
+        isAnime: Boolean = isAnimeStream(link)
+    ): Int {
+        val isUnknown = isUnknownQuality(link, effectiveQuality)
+        val q = if (isUnknown) (if (link.quality < 0) -1 else 0) else effectiveQuality
+        val is720 = is720p(link) || q == Qualities.P720.value || q in 700..749
+        val is1080 = !is720 && (is1080p(link) || q == Qualities.P1080.value || (q in 750..1088 && q !in 700..749))
+        val isBelow720 = !is720 && !is1080 && !isUnknown && isBelow720p(link)
+        val isAbove1080 = !is720 && !is1080 && !isUnknown && isAbove1080p(link)
+        return getPrimaryStreamTierMultiplier(
+            sourceRank = sourceRank,
+            isTopTier = isTopTierSource(link),
+            is720 = is720,
+            is1080 = is1080,
+            isBelow720 = isBelow720,
+            isAbove1080 = isAbove1080,
+            link = link,
+            isAnime = isAnime
+        )
+    }
+
+    fun getPrimaryStreamTierMultiplier(
+        sourceRank: Int,
+        isTopTier: Boolean = sourceRank >= 85,
+        is720: Boolean,
+        is1080: Boolean,
+        isBelow720: Boolean = false,
+        isAbove1080: Boolean = false,
+        link: ExtractorLink? = null,
+        isAnime: Boolean = false
+    ): Int {
+        if (!isTopTier || sourceRank < 85) return 0
+        if (sourceRank == VIDRIFT_SOURCE_RANK) {
+            val sizeBytes = link?.let { parseSizeBytes(it.name) } ?: 0L
+            val isOversizedVidRift = sizeBytes > VIDRIFT_MAX_720P_BACKUP_BYTES
+            return when {
+                is720 && !isOversizedVidRift -> VIDRIFT_SOURCE_RANK // 91: healthy <= 650 MB 720p backup
+                is720 && isOversizedVidRift -> 71                   // Demoted below curated 720p (87..100) and curated 1080p (72..83)
+                is1080 -> 70                                        // Excluded from curated 1080p chain (72..83)
+                else -> sourceRank - 31                             // 60: SD / Unknown / above-1080p
+            }
+        }
+        if (isAnime) {
+            return when {
+                is720 -> sourceRank        // Anime 720p across ANIME_DOWNLOAD_CHAIN (100, 95, 94, 92, 89, 88, 87)
+                is1080 -> sourceRank - 15  // Anime 1080p across ANIME_DOWNLOAD_CHAIN (85, 80, 79, 77, 74, 73, 72)
+                else -> sourceRank - 31    // Anime SD / Unknown / above-1080p (69 .. 56)
+            }
+        }
+        return when {
+            sourceRank == 100 && is720 -> 100 // #1: VidLink 720p
+            sourceRank == 98 && is720 -> 99   // #2: MeowTV 720p
+            sourceRank == 100 && is1080 -> 98 // #3: VidLink 1080p
+            is720 -> sourceRank               // #4: Other top-tier 720p (Cineby 95 .. Animex 87)
+            is1080 -> sourceRank - 15         // #5: Non-VidLink top-tier 1080p (MeowTV 83 .. Animex 72)
+            else -> sourceRank - 31           // #6: Top-tier SD / Unknown / above-1080p (69 .. 56)
+        }
+    }
+
+    @JvmOverloads
+    fun isBetterThan(
+        candidate: ExtractorLink,
+        current: ExtractorLink,
+        isAnime: Boolean = false
+    ): Boolean {
         val sourceRank1 = getSourcePriorityRank(candidate)
         val sourceRank2 = getSourcePriorityRank(current)
+        val rawQ1 = getEffectiveQuality(candidate)
+        val rawQ2 = getEffectiveQuality(current)
+        val isUnknown1 = isUnknownQuality(candidate, rawQ1)
+        val isUnknown2 = isUnknownQuality(current, rawQ2)
+        val q1 = if (isUnknown1) (if (candidate.quality < 0) -1 else 0) else rawQ1
+        val q2 = if (isUnknown2) (if (current.quality < 0) -1 else 0) else rawQ2
+        val is720_1 = is720p(candidate) || q1 == Qualities.P720.value || q1 in 700..749
+        val is720_2 = is720p(current) || q2 == Qualities.P720.value || q2 in 700..749
+        val is1080_1 = !is720_1 && (is1080p(candidate) || q1 == Qualities.P1080.value || (q1 in 750..1088 && q1 !in 700..749))
+        val is1080_2 = !is720_2 && (is1080p(current) || q2 == Qualities.P1080.value || (q2 in 750..1088 && q2 !in 700..749))
+        val isBelow720_1 = !is720_1 && !is1080_1 && !isUnknown1 && isBelow720p(candidate)
+        val isBelow720_2 = !is720_2 && !is1080_2 && !isUnknown2 && isBelow720p(current)
+        val isAbove1080_1 = !is720_1 && !is1080_1 && !isUnknown1 && isAbove1080p(candidate)
+        val isAbove1080_2 = !is720_2 && !is1080_2 && !isUnknown2 && isAbove1080p(current)
+
+        val tierMult1 = getPrimaryStreamTierMultiplier(
+            sourceRank = sourceRank1,
+            isTopTier = isTopTierSource(candidate),
+            is720 = is720_1,
+            is1080 = is1080_1,
+            isBelow720 = isBelow720_1,
+            isAbove1080 = isAbove1080_1,
+            link = candidate,
+            isAnime = isAnime
+        )
+        val tierMult2 = getPrimaryStreamTierMultiplier(
+            sourceRank = sourceRank2,
+            isTopTier = isTopTierSource(current),
+            is720 = is720_2,
+            is1080 = is1080_2,
+            isBelow720 = isBelow720_2,
+            isAbove1080 = isAbove1080_2,
+            link = current,
+            isAnime = isAnime
+        )
+        if (tierMult1 != tierMult2) {
+            return tierMult1 > tierMult2
+        }
         if (sourceRank1 != sourceRank2) {
             return sourceRank1 > sourceRank2
         }
 
-        // 2. Resolution Quality comparison within the same source (720p > 1080p > 480p > SD > UHD > Unknown)
-        val rawQ1 = if (candidate.quality > 0 && candidate.quality != Qualities.Unknown.value) candidate.quality else extractQualityFromText(candidate.name, candidate.url)
-        val rawQ2 = if (current.quality > 0 && current.quality != Qualities.Unknown.value) current.quality else extractQualityFromText(current.name, current.url)
-        val q1 = if (rawQ1 == Qualities.Unknown.value) 0 else rawQ1
-        val q2 = if (rawQ2 == Qualities.Unknown.value) 0 else rawQ2
+        // 2. Resolution Quality comparison within the same tier bucket (720p > 1080p > 480p > 360p > Unknown > 1440p > 2160p)
         val score1 = getQualityPriorityScore(q1)
         val score2 = getQualityPriorityScore(q2)
         if (score1 != score2) {
@@ -2278,18 +2415,29 @@ object StreamLinkOptimizer {
         }
 
         // 2b. Intra-VidRift health tier & lowest-file-size hierarchy within Rank 91:
-        //     - First, healthTier strictly isolates healthy primary H.264 MPEG-TS lanes
-        //       (Direct, Vexon, Evion, Titan English, Atlas, Titan Multi-audio, Vela, proxied Lyra -> tier 2)
-        //       above regional dubs (tier 1) and degraded fMP4 HEVC / IP-locked fallback lanes
-        //       (Orion -30/-40, BigBang -35, unproxied Lyra -45) so corrupted B-frame CTS streams
-        //       can never outrank healthy H.264 playback regardless of size labels.
-        //     - Second, within the same health tier, streams with genuine known file sizes outrank
-        //       unsized streams and lowest file size wins first (AGENTS.md §1 & §5), with lane
-        //       throughput score breaking equal-size or both-unsized ties.
         if (sourceRank1 == VIDRIFT_SOURCE_RANK) {
             val vrCmp = compareVidRiftSameQuality(candidate, current)
             if (vrCmp != 0) {
                 return vrCmp < 0
+            }
+        } else {
+            // 2c. Intra-tier lowest verified file size (hasKnownSize DESC, sizeBytes ASC) across all providers:
+            val size1 = parseSizeBytes(candidate.name)?.takeIf { it in 1L..MAX_REASONABLE_STREAM_BYTES }
+            val size2 = parseSizeBytes(current.name)?.takeIf { it in 1L..MAX_REASONABLE_STREAM_BYTES }
+            val hasSize1 = size1 != null
+            val hasSize2 = size2 != null
+            if (hasSize1 != hasSize2) {
+                return hasSize1
+            }
+            if (size1 != null && size2 != null && size1 != size2) {
+                return size1 < size2
+            }
+
+            // 2d. Direct MP4 (ExtractorLinkType.VIDEO) strictly beats HLS (ExtractorLinkType.M3U8):
+            val isDirect1 = isDirectMp4Stream(candidate)
+            val isDirect2 = isDirectMp4Stream(current)
+            if (isDirect1 != isDirect2) {
+                return isDirect1
             }
         }
 
@@ -2327,30 +2475,30 @@ object StreamLinkOptimizer {
             return videoScore1 > videoScore2
         }
 
-        // 7. Direct byte stream over HLS for equal tier sources (Range request chunking for downloads)
-        val isDirect1 = candidate.type == ExtractorLinkType.VIDEO || candidate.url.endsWith(".mp4", ignoreCase = true)
-        val isDirect2 = current.type == ExtractorLinkType.VIDEO || current.url.endsWith(".mp4", ignoreCase = true)
-        if (isDirect1 != isDirect2) {
-            return isDirect1
-        }
-
-        // 8. Audio score comparison
+        // 7. Audio score comparison
         val audioScore1 = calculateAudioScore(candidate)
         val audioScore2 = calculateAudioScore(current)
         if (audioScore1 != audioScore2) {
             return audioScore1 > audioScore2
         }
 
-        // 9. Header score comparison
+        // 8. Header score comparison
         val hScore1 = calculateHeaderScore(candidate)
         val hScore2 = calculateHeaderScore(current)
         if (hScore1 != hScore2) {
             return hScore1 > hScore2
         }
 
-        // 10. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
+        // 9. Intra-bucket resolution tiebreaker (e.g. 720p vs 718p widescreen when all other metrics are equal)
         if (q1 != q2) {
             return q1 > q2
+        }
+
+        // 10. Final composite score tiebreaker
+        val comp1 = getStreamCompositeScore(candidate, isAnime = isAnime)
+        val comp2 = getStreamCompositeScore(current, isAnime = isAnime)
+        if (comp1 != comp2) {
+            return comp1 > comp2
         }
 
         return false
@@ -2612,7 +2760,8 @@ object StreamLinkOptimizer {
      */
     fun getQualityPriorityScore(quality: Int): Int {
         return when {
-            quality <= 0 || quality == Qualities.Unknown.value -> 0
+            quality < 0 -> 0
+            quality == 0 || quality == Qualities.Unknown.value -> 4500
             quality == Qualities.P720.value || (quality in 700..749) -> 10000
             quality == Qualities.P1080.value -> 9000
             quality in 750..1088 -> 8500 + minOf(499, quality - 750)
@@ -2632,34 +2781,38 @@ object StreamLinkOptimizer {
     }
 
     /**
-     * Computes the overall stream score as a strict two-level ordering:
+     * Computes the overall stream score as a strict hierarchy:
      *
-     * 1. SOURCE RANK IS PRIMARY. A higher-ranked source always wins, whatever resolution
-     *    it offers. VidLink (100) x 1080p therefore always outranks any secondary source
-     *    x 720p, which is what makes VidLink the #1 result instead of being skipped in
-     *    favour of a lower-ranked source that happens to expose a 720p ladder. The source
-     *    term is scaled by 10,000 while quality + laneBonus + tiebreaker is strictly < 10,000
-     *    (at most 9,786.0), so adjacent integer source ranks (a gap of >=1 -> 10,000) can
-     *    never be crossed by quality, size, lane, or bitrate tiebreakers.
+     * 1. TIER MULTIPLIER IS PRIMARY (`tierMultiplier * 10,000f`).
+     *    Movie/TV (`isAnime == false`):
+     *      VidLink 720p (100) > MeowTV 720p (99) > VidLink 1080p (98) >
+     *      Other Top-Tier 720p (95..87) > Non-VidLink Top-Tier 1080p (83..72) >
+     *      Demoted VidRift (71/70) > Top-Tier SD/Unknown/UHD (69..56) > Secondary (0).
+     *    Anime (`isAnime == true`):
+     *      Top-Tier 720p (100..87) > Top-Tier 1080p (85..72) > Top-Tier SD/Unknown/UHD (69..56) > Secondary (0).
      *
-     * 2. QUALITY IS SECONDARY, and only orders variants of the same source:
-     *    720p > 1080p > 480p > other SD > 1440p/4K > Unknown.
+     * 2. QUALITY IS SECONDARY (`qualityTerm`):
+     *    720p (9,600f) > 1080p (8,000f) > 480p (6,000f) > 576p (4,200f) > 360p (3,612.73f) >
+     *    Unknown (3,000f) > 1440p (2,600f) > 2160p/4K (2,100f) > 8K (1,600f) > Invalid (1,000f).
      *
-     * Micro-tiebreakers (bitrate, codecs, audio badges, headers) stay bounded below 10.0f
-     * so they only ever break ties between otherwise identical streams.
+     * 3. INTRA-TIER FILE SIZE & DIRECT MP4 BONUS (`laneBonus`):
+     *    Verified file size (`1..2500 MB`) outranks unsized streams and rewards smaller files first;
+     *    Direct MP4 (`ExtractorLinkType.VIDEO`) outranks HLS (`ExtractorLinkType.M3U8`).
      */
-    fun getStreamCompositeScore(link: ExtractorLink): Float {
+    @JvmOverloads
+    fun getStreamCompositeScore(
+        link: ExtractorLink,
+        isAnime: Boolean = false
+    ): Float {
         val sourceRank = getSourcePriorityRank(link)
-        val quality = if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
-            link.quality
-        } else {
-            extractQualityFromText(link.name, link.url)
-        }
+        val rawQuality = getEffectiveQuality(link)
+        val isUnknown = isUnknownQuality(link, rawQuality)
+        val quality = if (isUnknown) (if (link.quality < 0) -1 else 0) else rawQuality
         val isTopTier = isTopTierSource(link)
         val is720 = is720p(link) || quality == Qualities.P720.value || quality in 700..749
         val is1080 = !is720 && (is1080p(link) || quality == Qualities.P1080.value || (quality in 750..1088 && quality !in 700..749))
-        val isBelow720 = !is720 && !is1080 && isBelow720p(link)
-        val isAbove1080 = !is720 && !is1080 && isAbove1080p(link)
+        val isBelow720 = !is720 && !is1080 && !isUnknown && isBelow720p(link)
+        val isAbove1080 = !is720 && !is1080 && !isUnknown && isAbove1080p(link)
 
         val bitrate = parseBitrateKbpsFromText(link.name) ?: 0L
         val videoScore = calculateVideoScore(link)
@@ -2667,10 +2820,20 @@ object StreamLinkOptimizer {
         val headerScore = calculateHeaderScore(link)
         // Normalized tiebreaker (0.0f .. 9.9f) strictly prevents inverting source or quality tiers:
         val tiebreaker = minOf(9.9f, (minOf(50_000L, bitrate) / 10_000f) + (videoScore * 0.05f) + (audioScore * 0.05f) + (headerScore * 0.02f))
-        // Intra-VidRift bonus (-22.5f .. +385.9375f) uses exact IEEE-754 dyadic multiples of
-        // 0.0625f (2^-4, 1 ulp at 919,600f) to order VidRift's lanes within the same resolution
-        // tier by healthTier DESC, hasKnownSize DESC, sizeBytes ASC (AGENTS.md §1 & §5), and
-        // laneScore DESC without float rounding collisions or crossing any quality bucket (>= 600f gap).
+
+        val tierMultiplier = getPrimaryStreamTierMultiplier(
+            sourceRank = sourceRank,
+            isTopTier = isTopTier,
+            is720 = is720,
+            is1080 = is1080,
+            isBelow720 = isBelow720,
+            isAbove1080 = isAbove1080,
+            link = link,
+            isAnime = isAnime
+        )
+        val verifiedSizeBytes = parseSizeBytes(link.name)?.takeIf { it in 1L..MAX_REASONABLE_STREAM_BYTES }
+        val isDirect = isDirectMp4Stream(link)
+
         val laneBonus = if (sourceRank == VIDRIFT_SOURCE_RANK) {
             val healthTier = getVidRiftHealthTier(link)
             val laneScore = getVidRiftLaneScore(link)
@@ -2697,16 +2860,29 @@ object StreamLinkOptimizer {
                 healthTier == 0 -> 0.0f
                 else -> laneScore * 0.5f
             }
+        } else if (verifiedSizeBytes != null) {
+            val clampedMb = ((verifiedSizeBytes + (512L * 1024L)) / (1024L * 1024L)).toInt().coerceIn(1, 2500)
+            if (tierMultiplier > 0) {
+                // Exact IEEE-754 dyadic multiples of 0.0625f (32.0f .. 344.4375f):
+                // strictly above unsized Direct MP4 (16.0f + 9.9f = 25.9f) and unsized HLS (9.9f),
+                // and strictly below any quality bucket gap (>= 400f).
+                (512 + ((2500 - clampedMb) * 2) + (if (isDirect) 1 else 0)) * 0.0625f
+            } else {
+                // Scaled (* 0.1f, max 4.1f) for secondary links so a sized 240p never outscores an unsized 360p:
+                1.6f + ((2500 - clampedMb) * 0.001f) + (if (isDirect) 0.0005f else 0.0f)
+            }
+        } else if (isDirect) {
+            if (tierMultiplier > 0) 16.0f else 0.4f
         } else {
             0f
         }
 
-        // Quality term, deliberately source-independent: 9,600 (720p) down to 1,000 (Unknown) with
-        // >= 500f separation between every quality bucket (exceeding the 408.4375f max laneBonus
-        // spread), >= 1,500f across major user tiers, and qualityTerm + laneBonus <= 9,985.9375f < 10,000f.
         val qualityTerm = when {
             is720 -> 9_600f
-            is1080 -> 8_000f
+            is1080 -> {
+                val subFhd = (quality.coerceIn(721, 1080) - 1080) * 1.5f
+                8_000f + subFhd
+            }
             quality == Qualities.P480.value -> 6_000f
             isBelow720 -> {
                 if (quality in (Qualities.P480.value + 1) until 700) {
@@ -2716,70 +2892,64 @@ object StreamLinkOptimizer {
                     3_500f + (clampedSd / 4.79f * 1.5f)
                 }
             }
+            isUnknown && quality >= 0 -> 3_000f
             isAbove1080 -> {
                 when {
-                    quality == Qualities.P1440.value || (quality in 1089..1800) -> 2_600f
-                    quality == Qualities.P2160.value || (quality in 1801..3000) -> 2_100f
+                    quality == Qualities.P1440.value || (quality in 1089..1800) -> 2_600f - ((quality.coerceIn(1089, 1800) - 1089) * 0.2f)
+                    quality == Qualities.P2160.value || (quality in 1801..3000) -> 2_100f - ((quality.coerceIn(1801, 3000) - 2160).coerceAtLeast(0) * 0.1f)
                     else -> 1_600f
                 }
             }
             else -> 1_000f
         }
 
-        val baseScore = if (isTopTier) {
-            // Primary term: source rank dominates. VidLink(100) -> 1,000,000+; Cineby(95) -> 950,000+; Animex(87) -> 870,000+.
-            (sourceRank * 10_000f) + qualityTerm + laneBonus
+        val baseScore = if (tierMultiplier > 0) {
+            (tierMultiplier * 10_000f) + qualityTerm + laneBonus
         } else {
             // Secondary / fallback sources stay strictly below every top-tier stream.
-            when {
+            val secQualityTerm = when {
                 is720 -> 800f
-                is1080 -> 600f
+                is1080 -> 600f + ((quality.coerceIn(721, 1080) - 1080) * 0.5f)
                 quality == Qualities.P480.value -> 400f
                 isBelow720 -> 200f + (minOf(479, maxOf(1, quality)) / 4.79f * 0.5f)
-                isAbove1080 -> 100f
+                isUnknown && quality >= 0 -> 150f
+                isAbove1080 -> {
+                    when {
+                        quality == Qualities.P1440.value || (quality in 1089..1800) -> 120f
+                        quality == Qualities.P2160.value || (quality in 1801..3000) -> 100f
+                        else -> 80f
+                    }
+                }
                 else -> 0f
             }
+            secQualityTerm + laneBonus
         }
 
-        val effectiveTiebreaker = if (sourceRank == VIDRIFT_SOURCE_RANK) 0f else tiebreaker
+        val effectiveTiebreaker = if (sourceRank == VIDRIFT_SOURCE_RANK || verifiedSizeBytes != null) 0f else tiebreaker
         return baseScore + effectiveTiebreaker
     }
 
-    val STREAM_PRIORITY_COMPARATOR = Comparator<ExtractorLink> { a, b ->
-        if (getSourcePriorityRank(a) == VIDRIFT_SOURCE_RANK && getSourcePriorityRank(b) == VIDRIFT_SOURCE_RANK) {
-            when {
-                isBetterThan(a, b) -> -1
-                isBetterThan(b, a) -> 1
-                else -> 0
-            }
-        } else {
-            val scoreCmp = getStreamCompositeScore(b).compareTo(getStreamCompositeScore(a))
-            if (scoreCmp != 0) {
-                scoreCmp
-            } else {
-                when {
-                    isBetterThan(a, b) -> -1
-                    isBetterThan(b, a) -> 1
-                    else -> 0
-                }
-            }
+    fun streamPriorityComparator(isAnime: Boolean = false): Comparator<ExtractorLink> = Comparator { a, b ->
+        when {
+            isBetterThan(a, b, isAnime) -> -1
+            isBetterThan(b, a, isAnime) -> 1
+            else -> 0
         }
     }
 
+    val STREAM_PRIORITY_COMPARATOR: Comparator<ExtractorLink> = streamPriorityComparator(isAnime = false)
+
     /**
      * Determines whether candidate stream is strictly higher priority for user playback than current stream,
-     * enforcing the user priority hierarchy (720p > 1080p > 480p > above 1080p > below 480p).
+     * enforcing the user priority hierarchy (720p > 1080p > 480p > 360p > Unknown > 2160p).
      */
-    fun isStreamBetter(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        if (getSourcePriorityRank(candidate) == VIDRIFT_SOURCE_RANK && getSourcePriorityRank(current) == VIDRIFT_SOURCE_RANK) {
-            return isBetterThan(candidate, current)
-        }
-        val scoreCand = getStreamCompositeScore(candidate)
-        val scoreCurr = getStreamCompositeScore(current)
-        if (scoreCand != scoreCurr) {
-            return scoreCand > scoreCurr
-        }
-        return isBetterThan(candidate, current)
+    @JvmOverloads
+    fun isStreamBetter(
+        candidate: ExtractorLink,
+        current: ExtractorLink,
+        isAnime: Boolean = false
+    ): Boolean {
+        return isBetterThan(candidate, current, isAnime)
     }
 
     private fun calculateVideoScore(link: ExtractorLink): Int {
@@ -2795,7 +2965,7 @@ object StreamLinkOptimizer {
         else if (name.contains("[HDR]", ignoreCase = true)) score += 15
 
         if (name.contains("[HEVC]", ignoreCase = true)) score += 10
-        if (name.contains("[AV1]", ignoreCase = true)) score += 10
+        else if (name.contains("[AV1]", ignoreCase = true)) score += 10
         if (name.contains("[10-bit]", ignoreCase = true)) score += 5
         return score
     }
@@ -2859,9 +3029,14 @@ object StreamLinkOptimizer {
      */
     class StreamDeduplicator(
         private val upstreamCallback: (ExtractorLink) -> Unit,
-        private val onUpgradeCallback: ((ExtractorLink) -> Unit)? = null
+        private val onUpgradeCallback: ((ExtractorLink) -> Unit)? = null,
+        private val isAnime: Boolean = false
     ) {
-        constructor(upstreamCallback: (ExtractorLink) -> Unit) : this(upstreamCallback, null)
+        constructor(upstreamCallback: (ExtractorLink) -> Unit) : this(upstreamCallback, null, false)
+        constructor(
+            upstreamCallback: (ExtractorLink) -> Unit,
+            onUpgradeCallback: ((ExtractorLink) -> Unit)?
+        ) : this(upstreamCallback, onUpgradeCallback, false)
 
         private val emittedStreams = ConcurrentHashMap<String, ExtractorLink>()
 
@@ -2887,7 +3062,7 @@ object StreamLinkOptimizer {
                         return DeduplicationResult.NEW
                     }
                 } else {
-                    if (isBetterThan(link, existing)) {
+                    if (isBetterThan(link, existing, isAnime)) {
                         if (emittedStreams.replace(key, existing, link)) {
                             if (onUpgradeCallback != null) {
                                 onUpgradeCallback.invoke(link)
@@ -2932,9 +3107,11 @@ object StreamLinkOptimizer {
         private val fhdGraceMs: Long = 250L,
         private val sdGraceMs: Long = 200L,
         private val activeTopRanks: Set<Int>? = null,
-        private val isRankInFlight: ((Int) -> Boolean)? = null
+        private val isRankInFlight: ((Int) -> Boolean)? = null,
+        private val isAnime: Boolean = false
     ) {
         private val lock = Any()
+        private val comparator: Comparator<ExtractorLink> = streamPriorityComparator(isAnime)
         private val stagedLinks = mutableListOf<ExtractorLink>()
         private val pendingTop720Links = mutableListOf<ExtractorLink>()
         private val pending1080Links = mutableListOf<ExtractorLink>()
@@ -2953,6 +3130,8 @@ object StreamLinkOptimizer {
         private var hasEmitted1080p = false
         @Volatile
         private var hasEmittedBelow720p = false
+        @Volatile
+        private var subtitleGraceElapsed = false
         @Volatile
         private var topSourceGraceExpired = false
         @Volatile
@@ -2978,10 +3157,9 @@ object StreamLinkOptimizer {
          * highest-ranked source's best available variant.
          */
         private fun bestUnemittedCandidate(): ExtractorLink? {
-            // STREAM_PRIORITY_COMPARATOR sorts highest-score-first, so .firstOrNull() is the best.
             return (stagedLinks + pendingTop720Links + pending1080Links)
                 .filter { canonicalStreamKey(it) !in emittedKeys }
-                .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                .sortedWith(comparator)
                 .firstOrNull()
         }
 
@@ -2990,34 +3168,144 @@ object StreamLinkOptimizer {
             stagedLinks.remove(link)
             pendingTop720Links.remove(link)
             pending1080Links.remove(link)
+            pendingBelowFhdLinks.remove(link)
+            pendingAbove1080Links.remove(link)
+            pendingSecondaryLinks.remove(link)
+        }
+
+        private fun getLinkTierMultiplier(link: ExtractorLink): Int {
+            val rank = getSourcePriorityRank(link)
+            return getPrimaryStreamTierMultiplier(
+                sourceRank = rank,
+                isTopTier = isTopTierSource(link),
+                is720 = is720p(link),
+                is1080 = is1080p(link),
+                isBelow720 = isBelow720p(link),
+                isAbove1080 = isAbove1080p(link),
+                link = link,
+                isAnime = isAnime
+            )
+        }
+
+        private fun rehomeStagedLinksToPendingBuckets() {
+            if (stagedLinks.isEmpty()) return
+            val remaining = stagedLinks.filter { canonicalStreamKey(it) !in emittedKeys }
+                .sortedWith(comparator)
+            stagedLinks.clear()
+            for (link in remaining) {
+                when {
+                    hasEmittedTopStream && !isTopTierSource(link) && linkRankIsSecondary(link) -> pendingSecondaryLinks.add(link)
+                    is720p(link) -> pendingTop720Links.add(link)
+                    is1080p(link) -> pending1080Links.add(link)
+                    !isTopTierSource(link) && linkRankIsSecondary(link) -> pendingSecondaryLinks.add(link)
+                    isBelow720p(link) || isUnknownQuality(link) -> pendingBelowFhdLinks.add(link)
+                    else -> pendingAbove1080Links.add(link)
+                }
+            }
         }
 
         /**
-         * True when a top-tier rank `r` has satisfied its source-first (`720p -> 1080p`)
-         * ordering window so lower-ranked sources are allowed to emit behind it.
+         * True when a higher top-tier rank [higherRank] has satisfied its ordering window relative
+         * to a `720p` candidate of [candidate720Rank]:
+         * - Every `higherRank > candidate720Rank` must complete its `720p` first.
+         * - In Movie/TV mode (`!isAnime`), `VidLink` (`100`) also has a `1080p` (Tier #3, mult `98`)
+         *   that outranks lower-tier (`< 98`) `720p` sources (`VidLink 720p -> MeowTV 720p -> VidLink 1080p -> Other Top 720p`).
+         * - For a non-top-tier (`< 85`) `720p` candidate (`tierMultiplier = 0`), every top-tier rank (`>= 85`)
+         *   has both `720p` (`85..100`) and `1080p` (`70..98`) above `tierMultiplier = 0`, so top-tier ranks
+         *   must complete both their `720p` and `1080p` before a non-top-tier `720p` candidate can drain.
+         * - In Anime mode (`isAnime`), ALL top-tier `720p` sources precede `VidLink 1080p`.
          */
+        private fun isRankSatisfiedFor720Candidate(higherRank: Int, candidate720Rank: Int): Boolean {
+            if (higherRank in completedProviderRanks) return true
+            if (candidate720Rank < 85 && higherRank >= 85 &&
+                !(activeTopRanks != null && candidate720Rank in activeTopRanks)
+            ) {
+                return isRankOrderingSatisfied(higherRank)
+            }
+            val has720 = higherRank in completedTop720Ranks ||
+                (isRankInFlight == null && higherRank in completedTop1080Ranks)
+            if (!has720) return false
+            if (!isAnime && higherRank == 100 && candidate720Rank < 98) {
+                if (100 in completedTop1080Ranks) return true
+                return isRankInFlight != null && !isRankInFlight.invoke(100) &&
+                    pending1080Links.none { getSourcePriorityRank(it) == 100 && canonicalStreamKey(it) !in emittedKeys }
+            }
+            return true
+        }
+
         private fun isRankOrderingSatisfied(rank: Int): Boolean {
             if (rank in completedProviderRanks) return true
             if (rank !in completedTop720Ranks) return false
             if (rank in completedTop1080Ranks || rank == VIDRIFT_SOURCE_RANK) return true
-            return (isRankInFlight == null || !isRankInFlight.invoke(rank)) && pending1080Links.isEmpty()
+            if (isRankInFlight != null) {
+                return !isRankInFlight.invoke(rank) && pending1080Links.isEmpty()
+            }
+            return (top720GraceMs <= 0L || top720GraceExpired || top720WindowElapsed) && pending1080Links.isEmpty()
+        }
+
+        private fun hasRemainingTopTierHdOrFhdWork(): Boolean {
+            if (pendingTop720Links.any { canonicalStreamKey(it) !in emittedKeys } ||
+                pending1080Links.any { canonicalStreamKey(it) !in emittedKeys }
+            ) {
+                return true
+            }
+            if (isRankInFlight != null && isCrossSourceGraceStillActive()) {
+                val ranksToCheck = if (activeTopRanks != null) {
+                    (TOP_TIER_RANKS.filter { it in activeTopRanks } + activeTopRanks).distinct()
+                } else {
+                    val seenRanks = (completedTop720Ranks + completedTop1080Ranks +
+                        (pendingTop720Links + pending1080Links + stagedLinks).map { getSourcePriorityRank(it) }).toSet()
+                    TOP_TIER_RANKS.filter { r -> r in LEGACY_TOP_TIER_RANKS || r in seenRanks }
+                }
+                return ranksToCheck.any { r ->
+                    (r >= 85 || (activeTopRanks != null && r in activeTopRanks)) &&
+                        !isRankOrderingSatisfied(r) &&
+                        isRankInFlight.invoke(r)
+                }
+            }
+            if (isRankInFlight == null && activeTopRanks != null && top720GraceMs > 0L && !top720GraceExpired) {
+                return activeTopRanks.any { r ->
+                    r >= 85 && !isRankOrderingSatisfied(r)
+                }
+            }
+            if (isRankInFlight == null && activeTopRanks == null && top720GraceMs > 0L && !top720GraceExpired) {
+                val seenTopRanks = (completedTop720Ranks + completedTop1080Ranks +
+                    (pendingTop720Links + pending1080Links + stagedLinks).map { getSourcePriorityRank(it) })
+                    .filter { it >= 85 }.toSet()
+                val ranksToCheck = (LEGACY_TOP_TIER_RANKS + seenTopRanks).distinct()
+                return ranksToCheck.any { r -> !isRankOrderingSatisfied(r) }
+            }
+            return false
         }
 
         private fun hasAnyHigherInFlightRankThanBestReady(): Boolean {
             val inFlightCheck = isRankInFlight ?: return false
             if (topSourceGraceExpired) return false
-            val bestBufferedRank = listOfNotNull(
-                pendingTop720Links.maxOfOrNull { getSourcePriorityRank(it) },
-                pending1080Links.maxOfOrNull { getSourcePriorityRank(it) },
-                stagedLinks.filter { is720p(it) || is1080p(it) }.maxOfOrNull { getSourcePriorityRank(it) }
-            ).maxOrNull() ?: 0
+            val readyHdOrFhd = (pendingTop720Links + pending1080Links + stagedLinks)
+                .filter { canonicalStreamKey(it) !in emittedKeys && (is720p(it) || is1080p(it)) }
+            val bestReadyMult = readyHdOrFhd.maxOfOrNull { getLinkTierMultiplier(it) } ?: 0
+            val bestBuffered720Rank = (pendingTop720Links + stagedLinks.filter { is720p(it) })
+                .filter { canonicalStreamKey(it) !in emittedKeys }
+                .maxOfOrNull { getSourcePriorityRank(it) } ?: 0
             val candidateRanks = if (activeTopRanks != null) {
                 (TOP_TIER_RANKS.filter { it in activeTopRanks } + activeTopRanks).distinct()
             } else {
                 TOP_TIER_RANKS
             }
             return candidateRanks.any { rank ->
-                rank > bestBufferedRank && !isRankOrderingSatisfied(rank) && inFlightCheck(rank)
+                val potential720Mult = getPrimaryStreamTierMultiplier(
+                    sourceRank = rank,
+                    isTopTier = rank >= 85 || (activeTopRanks != null && rank in activeTopRanks),
+                    is720 = true,
+                    is1080 = false,
+                    isAnime = isAnime
+                )
+                val canBeatReadyMult = if (bestReadyMult > 0) {
+                    potential720Mult > bestReadyMult
+                } else {
+                    rank > bestBuffered720Rank
+                }
+                canBeatReadyMult && !isRankSatisfiedFor720Candidate(rank, bestBuffered720Rank) && inFlightCheck(rank)
             }
         }
 
@@ -3032,21 +3320,80 @@ object StreamLinkOptimizer {
 
         /**
          * Determines whether a `1080p` candidate from [linkRank] must be held in [pending1080Links]:
-         * - Holds if any higher-ranked source (`> linkRank`) still has pending or in-flight `720p`/`1080p`
-         *   within the active cross-source grace window.
-         * - Holds if the same source (`== linkRank`) still has a queued `720p` or has not yet emitted its `720p`
-         *   while that source is still in flight within `top720GraceMs`.
-         * - Never holds a completed higher-ranked source's `1080p` behind a lower-ranked source (`< linkRank`).
+         * - In Movie/TV mode (`!isAnime`), for `VidLink 1080p` (`linkRank >= 100`, #3 overall, tierMultiplier 98):
+         *   holds only for `VidLink 720p` (`100`) and `MeowTV 720p` (`98`), never for lower-ranked `720p` sources (`< 98`).
+         * - In Anime mode (`isAnime`), or for non-VidLink `1080p` (`linkRank < 100`): holds while ANY top-tier `720p`
+         *   (`>= 85`) or higher-ranked `1080p` (`> linkRank`) is queued or in flight within the grace window.
          */
-        private fun shouldHold1080ForRank(linkRank: Int): Boolean {
-            val hasSameRankQueued720 = (pendingTop720Links + stagedLinks).any {
-                is720p(it) && getSourcePriorityRank(it) == linkRank && canonicalStreamKey(it) !in emittedKeys
+        private fun shouldHold1080ForRank(linkRank: Int, link: ExtractorLink? = null): Boolean {
+            val candidateMult = getPrimaryStreamTierMultiplier(
+                sourceRank = linkRank,
+                isTopTier = linkRank >= 85,
+                is720 = false,
+                is1080 = true,
+                link = link,
+                isAnime = isAnime
+            )
+            val hasBetterQueued = (pendingTop720Links + pending1080Links + stagedLinks).any {
+                canonicalStreamKey(it) !in emittedKeys && (
+                    getLinkTierMultiplier(it) > candidateMult ||
+                        (candidateMult == 0 && getLinkTierMultiplier(it) == 0 && is720p(it))
+                )
             }
-            if (hasSameRankQueued720) return true
-            if (hasHigherPendingTop720Rank(linkRank)) {
-                if (isRankInFlight != null) {
-                    if (isCrossSourceGraceStillActive()) return true
-                } else if (top720GraceMs > 0L && !top720GraceExpired) {
+            if (hasBetterQueued) return true
+
+            if (!isAnime && linkRank >= 100) {
+                val meowPending720 = 98 !in completedTop720Ranks && 98 !in completedProviderRanks && (
+                    if (isRankInFlight != null) {
+                        (activeTopRanks == null || 98 in activeTopRanks) && isRankInFlight.invoke(98)
+                    } else {
+                        activeTopRanks != null && 98 in activeTopRanks
+                    }
+                )
+                if (meowPending720) {
+                    if (isRankInFlight != null) {
+                        if (isCrossSourceGraceStillActive()) return true
+                    } else if (top720GraceMs > 0L && !top720GraceExpired) {
+                        return true
+                    }
+                }
+                if (100 in completedTop720Ranks || 100 in completedProviderRanks) return false
+                if (isRankInFlight == null && !hasEmittedTopStream &&
+                    (stageTimerJob?.isActive == true || (top720TimerJob?.isActive == true && !top720WindowElapsed))
+                ) {
+                    return true
+                }
+                if (isRankInFlight != null && isRankInFlight.invoke(100)) {
+                    if (top720GraceMs > 0L && !top720GraceExpired && !top720WindowElapsed) return true
+                    if (top720GraceMs <= 0L && topSourceGraceMs > 0L && !topSourceGraceExpired) return true
+                }
+                return false
+            }
+
+            // Anime 1080p (including VidLink 1080p) and Non-VidLink 1080p (linkRank < 100):
+            // yields to ALL top-tier 720p sources and higher-ranked 1080p sources.
+            if (isRankInFlight != null && isCrossSourceGraceStillActive()) {
+                val ranksToCheck = if (activeTopRanks != null) {
+                    (TOP_TIER_RANKS.filter { it in activeTopRanks } + activeTopRanks).distinct()
+                } else {
+                    val seenRanks = (completedTop720Ranks + completedTop1080Ranks + (pendingTop720Links + pending1080Links + stagedLinks).map { getSourcePriorityRank(it) }).toSet()
+                    TOP_TIER_RANKS.filter { r -> r in LEGACY_TOP_TIER_RANKS || r in seenRanks }
+                }
+                if (ranksToCheck.any { it > linkRank && !isRankOrderingSatisfied(it) && isRankInFlight.invoke(it) }) {
+                    return true
+                }
+                if (ranksToCheck.any { (it >= 85 || (activeTopRanks != null && it in activeTopRanks)) && it !in completedTop720Ranks && it !in completedProviderRanks && isRankInFlight.invoke(it) }) {
+                    return true
+                }
+            } else if (isRankInFlight == null && activeTopRanks != null && top720GraceMs > 0L && !top720GraceExpired) {
+                if (activeTopRanks.any { it > linkRank && !isRankOrderingSatisfied(it) }) {
+                    return true
+                }
+                if (activeTopRanks.any { it >= 85 && it !in completedTop720Ranks && it !in completedProviderRanks }) {
+                    return true
+                }
+            } else if (isRankInFlight == null && activeTopRanks == null && top720GraceMs > 0L && !top720GraceExpired) {
+                if (LEGACY_TOP_TIER_RANKS.any { it !in completedTop720Ranks && it !in completedProviderRanks } || hasHigherPendingTop720Rank(0)) {
                     return true
                 }
             }
@@ -3055,33 +3402,33 @@ object StreamLinkOptimizer {
                 if (linkRank in completedTop720Ranks || linkRank in completedProviderRanks) return false
                 return isRankInFlight == null || isRankInFlight.invoke(linkRank)
             }
-            return if (isRankInFlight != null) {
-                hasHigherPendingTop720Rank(0) && isCrossSourceGraceStillActive()
-            } else {
-                true
-            }
+            return isRankInFlight == null
         }
 
         private fun scheduleTimersForPendingTopTier() {
-            if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) return
+            val hasAnyPendingWork = pendingTop720Links.isNotEmpty() ||
+                pending1080Links.isNotEmpty() ||
+                ((pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty() || pendingSecondaryLinks.isNotEmpty()) && hasRemainingTopTierHdOrFhdWork())
+            if (!hasAnyPendingWork) return
             val hasCrossSourceWait = isRankInFlight != null && (
                 hasAnyHigherInFlightRankThanBestReady() ||
-                    pendingTop720Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) } ||
-                    pending1080Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) }
+                    pendingTop720Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it), it) } ||
+                    pending1080Links.any { shouldHold1080ForRank(getSourcePriorityRank(it), it) } ||
+                    ((pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty() || pendingSecondaryLinks.isNotEmpty()) && hasRemainingTopTierHdOrFhdWork())
                 )
             if (hasCrossSourceWait &&
                 topSourceGraceMs > 0L &&
                 !topSourceGraceExpired &&
-                (topSourceGraceMs > top720GraceMs || pendingTop720Links.isNotEmpty())
+                (topSourceGraceMs > top720GraceMs || pendingTop720Links.isNotEmpty() || (pending1080Links.isNotEmpty() && topSourceGraceMs >= top720GraceMs) || pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty() || pendingSecondaryLinks.isNotEmpty())
             ) {
                 startTopSourceGraceTimer()
             }
             val hasFrontier1080WaitingForSameRank720 = pending1080Links.any {
                 val r = getSourcePriorityRank(it)
-                !hasHigherPendingTop720Rank(r) || isRankInFlight == null || topSourceGraceMs <= top720GraceMs
+                !hasHigherPendingTop720Rank(r, it) || isRankInFlight == null || topSourceGraceMs <= top720GraceMs
             }
             val needs720TimerForStandalone = (isRankInFlight == null || topSourceGraceMs <= top720GraceMs) &&
-                (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty())
+                hasAnyPendingWork
             if ((hasFrontier1080WaitingForSameRank720 || needs720TimerForStandalone) &&
                 top720GraceMs > 0L &&
                 !top720GraceExpired &&
@@ -3096,7 +3443,7 @@ object StreamLinkOptimizer {
                 hasSubtitles = true
                 if (!hasEmittedTopStream) {
                     val best = bestUnemittedCandidate()
-                    if (best != null) {
+                    if (best != null && is720p(best)) {
                         dispatchOrStageBest(best)
                     }
                 }
@@ -3107,23 +3454,43 @@ object StreamLinkOptimizer {
             val rank = getSourcePriorityRank(best)
             val maxRank = activeTopRanks?.maxOrNull() ?: 100
             detachFromBuckets(best)
-            if (rank >= maxRank || !hasHigherPendingTop720Rank(rank) || topSourceGraceMs <= 0L || topSourceGraceExpired) {
+            val canDispatchNow = when {
+                is1080p(best) -> !shouldHold1080ForRank(rank, best) || topSourceGraceMs <= 0L || topSourceGraceExpired
+                is720p(best) -> rank >= maxRank || !hasHigherPendingTop720Rank(rank, best) || topSourceGraceMs <= 0L || topSourceGraceExpired
+                else -> !hasRemainingTopTierHdOrFhdWork() && (topSourceGraceMs <= 0L || topSourceGraceExpired)
+            }
+            if (canDispatchNow) {
                 // Highest-ranked source (or nothing better is running) -> dispatch IMMEDIATELY as #1!
                 stageTimerJob?.cancel()
                 stageTimerJob = null
                 emitTopStreamAndAdvance(best)
             } else {
-                // A higher-ranked source is still in flight: hold this link in
-                // pendingTop720Links and wait (bounded) for it.
-                if (is1080p(best)) {
-                    pending1080Links.add(best)
-                } else if (isBelow720p(best)) {
-                    pendingBelowFhdLinks.add(best)
-                } else if (isAbove1080p(best)) {
-                    pendingAbove1080Links.add(best)
-                } else {
-                    pendingTop720Links.add(best)
+                // A higher-ranked source is still in flight: hold this link in the appropriate bucket.
+                when {
+                    !isTopTierSource(best) && linkRankIsSecondary(best) && !is720p(best) && !is1080p(best) -> pendingSecondaryLinks.add(best)
+                    is1080p(best) -> pending1080Links.add(best)
+                    isBelow720p(best) || isUnknownQuality(best) -> pendingBelowFhdLinks.add(best)
+                    isAbove1080p(best) -> pendingAbove1080Links.add(best)
+                    else -> pendingTop720Links.add(best)
                 }
+                rehomeStagedLinksToPendingBuckets()
+                if (!hasEmittedTopStream && is1080p(best)) {
+                    val ready720 = pendingTop720Links
+                        .filter { canonicalStreamKey(it) !in emittedKeys }
+                        .sortedWith(comparator)
+                        .firstOrNull { cand ->
+                            val cRank = getSourcePriorityRank(cand)
+                            cRank >= maxRank || !hasHigherPendingTop720Rank(cRank, cand) || topSourceGraceMs <= 0L || topSourceGraceExpired
+                        }
+                    if (ready720 != null) {
+                        stageTimerJob?.cancel()
+                        stageTimerJob = null
+                        pendingTop720Links.remove(ready720)
+                        emitTopStreamAndAdvance(ready720)
+                        return
+                    }
+                }
+                scheduleTimersForPendingTopTier()
                 startTopSourceGraceTimer()
             }
         }
@@ -3136,12 +3503,14 @@ object StreamLinkOptimizer {
                 val linkIs720 = is720p(link)
                 val linkIs1080 = is1080p(link)
                 val linkIsBelow720 = isBelow720p(link)
+                val linkIsUnknown = isUnknownQuality(link)
                 val linkIsTopTier = isTopTierSource(link)
 
                 if (hasEmittedTopStream) {
                     // Secondary sources (< 85 rank) buffered while top tier streams are active/pending
                     if (!linkIsTopTier && linkRankIsSecondary(link)) {
-                        val topTierPendingOrInFlight = (!top720GraceExpired && top720GraceMs > 0L && hasHigherPendingTop720Rank(0)) ||
+                        val topTierPendingOrInFlight = hasRemainingTopTierHdOrFhdWork() ||
+                            (!top720GraceExpired && top720GraceMs > 0L && hasHigherPendingTop720Rank(0)) ||
                             (isRankInFlight != null && !topSourceGraceExpired && topSourceGraceMs > 0L && hasHigherPendingTop720Rank(0))
                         if (!hasEmitted1080p || topTierPendingOrInFlight || !sdGraceExpired || pendingSecondaryLinks.isNotEmpty() || pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty() || pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty()) {
                             pendingSecondaryLinks.add(link)
@@ -3164,7 +3533,7 @@ object StreamLinkOptimizer {
                     // Tier 1: 720p from top-tier sources
                     if (linkIs720) {
                         val linkRank = getSourcePriorityRank(link)
-                        val shouldHoldLower720 = hasHigherPendingTop720Rank(linkRank) && (
+                        val shouldHoldLower720 = hasHigherPendingTop720Rank(linkRank, link) && (
                             (isRankInFlight != null && isCrossSourceGraceStillActive()) ||
                                 (isRankInFlight == null && top720GraceMs > 0L && !top720GraceExpired)
                             )
@@ -3176,6 +3545,9 @@ object StreamLinkOptimizer {
                             emitSingleLink(link)
                             completedTop720Ranks.add(linkRank)
                             drainPendingTop720()
+                            if (hasRemainingTopTierHdOrFhdWork()) {
+                                scheduleTimersForPendingTopTier()
+                            }
                             return
                         }
                     }
@@ -3183,41 +3555,45 @@ object StreamLinkOptimizer {
                     // Tier 2: 1080p from top-tier sources (or when 1080p arrives in standalone mode)
                     if (linkIs1080) {
                         val linkRank = getSourcePriorityRank(link)
-                        if (shouldHold1080ForRank(linkRank)) {
+                        if (shouldHold1080ForRank(linkRank, link)) {
                             pending1080Links.add(link)
                             scheduleTimersForPendingTopTier()
                             return
                         }
                         emitSingleLink(link)
                         completedTop1080Ranks.add(linkRank)
-                        hasEmitted1080p = true
-                        fhdTimerJob?.cancel()
-                        fhdTimerJob = null
+                        if (isAnime || linkRank < 100 || !hasRemainingTopTierHdOrFhdWork()) {
+                            hasEmitted1080p = true
+                            fhdTimerJob?.cancel()
+                            fhdTimerJob = null
+                        }
                         drainPendingTop720()
-                        if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                        if (!hasRemainingTopTierHdOrFhdWork() && (hasEmitted1080p || fhdGraceExpired)) {
                             flushPendingBelowFhd()
+                        } else if (hasRemainingTopTierHdOrFhdWork()) {
+                            scheduleTimersForPendingTopTier()
                         }
                         return
                     }
 
-                    // 1080p has not arrived/emitted yet: stage waiting for 1080p
-                    if (!hasEmitted1080p && !fhdGraceExpired) {
-                        if (linkIsBelow720) {
+                    // Top-tier HD/FHD work is still in flight or post-720p 1080p has not emitted yet: stage sub-FHD/4K
+                    if (hasRemainingTopTierHdOrFhdWork() || (!hasEmitted1080p && !fhdGraceExpired)) {
+                        if (linkIsBelow720 || linkIsUnknown) {
                             pendingBelowFhdLinks.add(link)
                         } else {
                             pendingAbove1080Links.add(link)
                         }
-                        startFhdGraceTimer()
+                        if (hasRemainingTopTierHdOrFhdWork()) {
+                            scheduleTimersForPendingTopTier()
+                        } else {
+                            startFhdGraceTimer()
+                        }
                         return
                     }
 
-                    // Tier 3: below 720p (480p, SD) links emit immediately as priority #3
-                    if (linkIsBelow720) {
-                        // ...unless a 1080p or 720p of this same ordering window is already buffered.
-                        // 720 > 1080 > 480 in the SOTA hierarchy, so the SD entry must never jump
-                        // ahead of them; queue it and let flushPending1080() release both in
-                        // comparator order.
-                        if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
+                    // Tier 3: below 720p (480p, 360p, Unknown) links emit after HD/FHD tiers
+                    if (linkIsBelow720 || linkIsUnknown) {
+                        if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty() || hasRemainingTopTierHdOrFhdWork()) {
                             pendingBelowFhdLinks.add(link)
                             scheduleTimersForPendingTopTier()
                             return
@@ -3245,7 +3621,7 @@ object StreamLinkOptimizer {
                 val linkRank = getSourcePriorityRank(link)
                 val shouldHoldInitial1080 = !hasEmittedTopStream && linkIs1080 && (
                     pending1080Links.isNotEmpty() ||
-                    (isRankInFlight != null && shouldHold1080ForRank(linkRank)) ||
+                    (isRankInFlight != null && shouldHold1080ForRank(linkRank, link)) ||
                     (isRankInFlight == null && top720TimerJob?.isActive == true)
                 )
                 if (shouldHoldInitial1080) {
@@ -3254,11 +3630,29 @@ object StreamLinkOptimizer {
                     return
                 }
 
+                if (!hasEmittedTopStream && !linkIs720 && !linkIs1080) {
+                    val hasHdOrFhdWork = pendingTop720Links.isNotEmpty() ||
+                        pending1080Links.isNotEmpty() ||
+                        stagedLinks.any { is720p(it) || is1080p(it) } ||
+                        hasRemainingTopTierHdOrFhdWork()
+                    if (hasHdOrFhdWork) {
+                        if (!linkIsTopTier && linkRankIsSecondary(link)) {
+                            pendingSecondaryLinks.add(link)
+                        } else if (linkIsBelow720 || linkIsUnknown) {
+                            pendingBelowFhdLinks.add(link)
+                        } else {
+                            pendingAbove1080Links.add(link)
+                        }
+                        scheduleTimersForPendingTopTier()
+                        return
+                    }
+                }
+
                 stagedLinks.add(link)
 
-                // If a link arrived and subtitles are ready, dispatch the composite-best
-                // candidate (source-dominant), falling back to the link itself.
-                if (linkIs720 && hasSubtitles) {
+                // If a link arrived and subtitles are ready (or subtitleGraceMs already elapsed),
+                // dispatch the composite-best candidate, falling back to the link itself.
+                if (linkIs720 && (hasSubtitles || subtitleGraceElapsed || subtitleGraceMs <= 0L)) {
                     val best = bestUnemittedCandidate() ?: link
                     dispatchOrStageBest(best)
                     return
@@ -3271,23 +3665,58 @@ object StreamLinkOptimizer {
                             delay(subtitleGraceMs)
                             synchronized(lock) {
                                 stageTimerJob = null
+                                subtitleGraceElapsed = true
                                 if (!hasEmittedTopStream) {
                                     val best = bestUnemittedCandidate()
                                     if (best != null) {
                                         val rank = getSourcePriorityRank(best)
                                         val maxRank = activeTopRanks?.maxOrNull() ?: 100
-                                        val shouldHoldForHigherInFlight = isRankInFlight != null &&
-                                            rank < maxRank &&
-                                            hasHigherPendingTop720Rank(rank) &&
-                                            topSourceGraceMs > 0L &&
-                                            !topSourceGraceExpired
-                                        if (shouldHoldForHigherInFlight) {
-                                            detachFromBuckets(best)
-                                            pendingTop720Links.add(best)
-                                            startTopSourceGraceTimer()
+                                        if (is1080p(best)) {
+                                            val hold1080 = pending1080Links.any { it != best && canonicalStreamKey(it) !in emittedKeys } ||
+                                                (isRankInFlight != null && shouldHold1080ForRank(rank, best)) ||
+                                                (isRankInFlight == null && (top720TimerJob?.isActive == true || shouldHold1080ForRank(rank, best)))
+                                            if (hold1080) {
+                                                detachFromBuckets(best)
+                                                pending1080Links.add(best)
+                                                rehomeStagedLinksToPendingBuckets()
+                                                val ready720 = pendingTop720Links
+                                                    .filter { canonicalStreamKey(it) !in emittedKeys }
+                                                    .sortedWith(comparator)
+                                                    .firstOrNull { cand ->
+                                                        val cRank = getSourcePriorityRank(cand)
+                                                        cRank >= maxRank || !hasHigherPendingTop720Rank(cRank, cand) || topSourceGraceMs <= 0L || topSourceGraceExpired
+                                                    }
+                                                if (ready720 != null) {
+                                                    pendingTop720Links.remove(ready720)
+                                                    emitTopStreamAndAdvance(ready720)
+                                                } else {
+                                                    scheduleTimersForPendingTopTier()
+                                                }
+                                            } else {
+                                                detachFromBuckets(best)
+                                                emitTopStreamAndAdvance(best)
+                                            }
                                         } else {
-                                            detachFromBuckets(best)
-                                            emitTopStreamAndAdvance(best)
+                                            val shouldHoldForHigherInFlight = isRankInFlight != null &&
+                                                rank < maxRank &&
+                                                hasHigherPendingTop720Rank(rank, best) &&
+                                                topSourceGraceMs > 0L &&
+                                                !topSourceGraceExpired
+                                            if (shouldHoldForHigherInFlight) {
+                                                detachFromBuckets(best)
+                                                when {
+                                                    !isTopTierSource(best) && linkRankIsSecondary(best) && !is720p(best) && !is1080p(best) -> pendingSecondaryLinks.add(best)
+                                                    is720p(best) -> pendingTop720Links.add(best)
+                                                    isBelow720p(best) || isUnknownQuality(best) -> pendingBelowFhdLinks.add(best)
+                                                    else -> pendingAbove1080Links.add(best)
+                                                }
+                                                rehomeStagedLinksToPendingBuckets()
+                                                scheduleTimersForPendingTopTier()
+                                                startTopSourceGraceTimer()
+                                            } else {
+                                                detachFromBuckets(best)
+                                                emitTopStreamAndAdvance(best)
+                                            }
                                         }
                                     }
                                 }
@@ -3310,84 +3739,47 @@ object StreamLinkOptimizer {
                                     val maxRank = activeTopRanks?.maxOrNull() ?: 100
                                     val shouldHoldBestForHigherInFlight = isRankInFlight != null &&
                                         bestRank < maxRank &&
-                                        hasHigherPendingTop720Rank(bestRank) &&
+                                        hasHigherPendingTop720Rank(bestRank, best) &&
                                         isCrossSourceGraceStillActive()
                                     if (shouldHoldBestForHigherInFlight) {
-                                        val staged720 = stagedLinks.filter { is720p(it) }
-                                        val staged1080 = stagedLinks.filter { is1080p(it) }
-                                        val stagedBelow = stagedLinks.filter { isBelow720p(it) }
-                                        val stagedOther = stagedLinks.filter { !is720p(it) && !is1080p(it) && !isBelow720p(it) }
-                                        stagedLinks.clear()
-                                        pendingTop720Links.addAll(staged720)
-                                        pending1080Links.addAll(staged1080)
-                                        pendingBelowFhdLinks.addAll(stagedBelow)
-                                        pendingAbove1080Links.addAll(stagedOther)
+                                        rehomeStagedLinksToPendingBuckets()
                                         scheduleTimersForPendingTopTier()
                                     } else if (is1080p(best) && (
                                         pending1080Links.isNotEmpty() ||
-                                        (isRankInFlight != null && shouldHold1080ForRank(bestRank)) ||
+                                        (isRankInFlight != null && shouldHold1080ForRank(bestRank, best)) ||
                                         (isRankInFlight == null && top720TimerJob?.isActive == true)
                                     )) {
                                         detachFromBuckets(best)
                                         pending1080Links.add(best)
-                                        val other1080 = stagedLinks.filter { is1080p(it) }
-                                        stagedLinks.removeAll(other1080)
-                                        pending1080Links.addAll(other1080)
-                                        val stagedNonHd = stagedLinks.filter { !is720p(it) }
-                                        stagedLinks.removeAll(stagedNonHd)
-                                        pendingBelowFhdLinks.addAll(stagedNonHd)
+                                        rehomeStagedLinksToPendingBuckets()
                                         scheduleTimersForPendingTopTier()
                                     } else if ((pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) && !is720p(best) && !is1080p(best)) {
-                                        val stagedBelow = stagedLinks.filter { isBelow720p(it) }
-                                        val stagedOther = stagedLinks.filter { !is720p(it) && !is1080p(it) && !isBelow720p(it) }
-                                        stagedLinks.removeAll(stagedBelow + stagedOther)
-                                        pendingBelowFhdLinks.addAll(stagedBelow)
-                                        pendingAbove1080Links.addAll(stagedOther)
+                                        rehomeStagedLinksToPendingBuckets()
                                         scheduleTimersForPendingTopTier()
                                     } else {
                                         dispatchOrStageBest(best)
                                     }
                                 } else if (pending1080Links.isNotEmpty()) {
-                                    // A buffered 1080p outranks everything below 720p, so move
-                                    // the staged SD links behind it instead of letting them
-                                    // take the #1 slot; the 1080p grace timer will flush both
-                                    // in comparator order.
-                                    val stagedNonHd = stagedLinks.filter { !is720p(it) }
-                                    stagedLinks.removeAll(stagedNonHd)
-                                    pendingBelowFhdLinks.addAll(stagedNonHd)
+                                    rehomeStagedLinksToPendingBuckets()
                                     scheduleTimersForPendingTopTier()
                                 } else {
-                                    val bestStream = stagedLinks.sortedWith(STREAM_PRIORITY_COMPARATOR).firstOrNull()
+                                    val bestStream = stagedLinks.sortedWith(comparator).firstOrNull()
                                     if (bestStream != null) {
                                         val rank = getSourcePriorityRank(bestStream)
                                         val maxRank = activeTopRanks?.maxOrNull() ?: 100
-                                        val hasHigherRankInFlight = rank < maxRank && hasHigherPendingTop720Rank(rank) && topSourceGraceMs > 0L && !topSourceGraceExpired
+                                        val hasHigherRankInFlight = rank < maxRank && hasHigherPendingTop720Rank(rank, bestStream) && topSourceGraceMs > 0L && !topSourceGraceExpired
                                         if (hasHigherRankInFlight) {
-                                            if (is1080p(bestStream)) {
-                                                stagedLinks.remove(bestStream)
-                                                pending1080Links.add(bestStream)
-                                                scheduleTimersForPendingTopTier()
-                                            } else if (isBelow720p(bestStream)) {
-                                                stagedLinks.remove(bestStream)
-                                                pendingBelowFhdLinks.add(bestStream)
-                                                startTopSourceGraceTimer()
-                                            } else {
-                                                stagedLinks.remove(bestStream)
-                                                pendingAbove1080Links.add(bestStream)
-                                                startTopSourceGraceTimer()
-                                            }
+                                            rehomeStagedLinksToPendingBuckets()
+                                            scheduleTimersForPendingTopTier()
+                                            startTopSourceGraceTimer()
                                         } else {
                                             val shouldHold1080 = is1080p(bestStream) && (
                                                 pending1080Links.isNotEmpty() ||
-                                                (isRankInFlight != null && shouldHold1080ForRank(rank)) ||
+                                                (isRankInFlight != null && shouldHold1080ForRank(rank, bestStream)) ||
                                                 (isRankInFlight == null && top720TimerJob?.isActive == true)
                                             )
                                             if (shouldHold1080) {
-                                                stagedLinks.remove(bestStream)
-                                                pending1080Links.add(bestStream)
-                                                val other1080 = stagedLinks.filter { is1080p(it) }
-                                                stagedLinks.removeAll(other1080)
-                                                pending1080Links.addAll(other1080)
+                                                rehomeStagedLinksToPendingBuckets()
                                                 scheduleTimersForPendingTopTier()
                                             } else {
                                                 stagedLinks.remove(bestStream)
@@ -3407,9 +3799,21 @@ object StreamLinkOptimizer {
             return !isTopTierSource(link) && !(is1080p(link) && isRankInFlight != null && activeTopRanks != null && activeTopRanks.none { it >= 85 })
         }
 
-        private fun hasHigherPendingTop720Rank(rank: Int): Boolean {
+        private fun hasHigherPendingTop720Rank(rank: Int, link: ExtractorLink? = null): Boolean {
+            val candidateMult = if (rank >= 85) {
+                getPrimaryStreamTierMultiplier(
+                    sourceRank = rank,
+                    isTopTier = true,
+                    is720 = true,
+                    is1080 = false,
+                    link = link,
+                    isAnime = isAnime
+                )
+            } else {
+                0
+            }
             val hasHigherQueued = (pendingTop720Links + pending1080Links + stagedLinks).any {
-                (is720p(it) || is1080p(it)) && isTopTierSource(it) && getSourcePriorityRank(it) > rank && canonicalStreamKey(it) !in emittedKeys
+                canonicalStreamKey(it) !in emittedKeys && getLinkTierMultiplier(it) > candidateMult
             }
             if (hasHigherQueued) return true
 
@@ -3420,11 +3824,15 @@ object StreamLinkOptimizer {
                     val seenRanks = (completedTop720Ranks + completedTop1080Ranks + (pendingTop720Links + pending1080Links + stagedLinks).map { getSourcePriorityRank(it) }).toSet()
                     TOP_TIER_RANKS.filter { r -> r in LEGACY_TOP_TIER_RANKS || r in seenRanks }
                 }
-                return ranksToCheck.any { it > rank && !isRankOrderingSatisfied(it) && isRankInFlight.invoke(it) }
+                return ranksToCheck.any { r ->
+                    r > rank && !isRankSatisfiedFor720Candidate(r, rank) && isRankInFlight.invoke(r)
+                }
             }
 
             if (activeTopRanks != null) {
-                return activeTopRanks.any { it > rank && !isRankOrderingSatisfied(it) }
+                return activeTopRanks.any { r ->
+                    r > rank && !isRankSatisfiedFor720Candidate(r, rank)
+                }
             }
 
             // Standalone without activeTopRanks and without isRankInFlight:
@@ -3434,7 +3842,9 @@ object StreamLinkOptimizer {
             if (isGraceActive) {
                 val seenRanks = (completedTop720Ranks + completedTop1080Ranks + (pendingTop720Links + pending1080Links + stagedLinks).map { getSourcePriorityRank(it) }).toSet()
                 val ranksToWait = TOP_TIER_RANKS.filter { r -> r in LEGACY_TOP_TIER_RANKS || r in seenRanks }
-                return ranksToWait.any { it > rank && !isRankOrderingSatisfied(it) }
+                return ranksToWait.any { r ->
+                    r > rank && !isRankSatisfiedFor720Candidate(r, rank)
+                }
             }
 
             return false
@@ -3451,6 +3861,9 @@ object StreamLinkOptimizer {
         }
 
         private fun drainPendingTop720() {
+            if (hasEmittedTopStream || topSourceGraceExpired || top720GraceExpired || top720WindowElapsed) {
+                rehomeStagedLinksToPendingBuckets()
+            }
             pendingTop720Links.removeAll { canonicalStreamKey(it) in emittedKeys }
             pending1080Links.removeAll { canonicalStreamKey(it) in emittedKeys }
             var emittedAny = true
@@ -3458,12 +3871,12 @@ object StreamLinkOptimizer {
                 emittedAny = false
                 val nextCandidate = (pendingTop720Links + pending1080Links)
                     .filter { canonicalStreamKey(it) !in emittedKeys }
-                    .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                    .sortedWith(comparator)
                     .firstOrNull() ?: break
 
                 val candRank = getSourcePriorityRank(nextCandidate)
                 if (is720p(nextCandidate)) {
-                    val higherInFlight = hasHigherPendingTop720Rank(candRank)
+                    val higherInFlight = hasHigherPendingTop720Rank(candRank, nextCandidate)
                     val canDrain = if (!hasEmittedTopStream) {
                         !higherInFlight || topSourceGraceExpired
                     } else if (isRankInFlight != null && topSourceGraceMs > top720GraceMs) {
@@ -3473,18 +3886,25 @@ object StreamLinkOptimizer {
                     }
                     if (canDrain) {
                         pendingTop720Links.remove(nextCandidate)
-                        if (!hasEmittedTopStream) {
-                            emitTopStreamAndAdvance(nextCandidate)
+                        if (hasEmittedTopStream && !isTopTierSource(nextCandidate) && linkRankIsSecondary(nextCandidate) &&
+                            (pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty())
+                        ) {
+                            pendingSecondaryLinks.add(nextCandidate)
+                            emittedAny = true
                         } else {
-                            emitSingleLink(nextCandidate)
-                            completedTop720Ranks.add(candRank)
+                            if (!hasEmittedTopStream) {
+                                emitTopStreamAndAdvance(nextCandidate)
+                            } else {
+                                emitSingleLink(nextCandidate)
+                                completedTop720Ranks.add(candRank)
+                            }
+                            emittedAny = true
                         }
-                        emittedAny = true
                     } else {
                         break
                     }
                 } else if (is1080p(nextCandidate)) {
-                    val canDrain1080 = !shouldHold1080ForRank(candRank)
+                    val canDrain1080 = !shouldHold1080ForRank(candRank, nextCandidate)
                     if (canDrain1080) {
                         pending1080Links.remove(nextCandidate)
                         if (!hasEmittedTopStream) {
@@ -3492,9 +3912,11 @@ object StreamLinkOptimizer {
                         } else {
                             emitSingleLink(nextCandidate)
                             completedTop1080Ranks.add(candRank)
-                            hasEmitted1080p = true
-                            fhdTimerJob?.cancel()
-                            fhdTimerJob = null
+                            if (isAnime || candRank < 100 || !hasRemainingTopTierHdOrFhdWork()) {
+                                hasEmitted1080p = true
+                                fhdTimerJob?.cancel()
+                                fhdTimerJob = null
+                            }
                         }
                         emittedAny = true
                     } else {
@@ -3507,15 +3929,30 @@ object StreamLinkOptimizer {
                     emittedAny = true
                 }
             }
+            if (!hasRemainingTopTierHdOrFhdWork() && completedTop1080Ranks.isNotEmpty()) {
+                hasEmitted1080p = true
+                fhdTimerJob?.cancel()
+                fhdTimerJob = null
+            }
             val canFlush1080Early = if (isRankInFlight != null) {
-                !hasHigherPendingTop720Rank(0)
+                val ranksToCheck = if (activeTopRanks != null) {
+                    (TOP_TIER_RANKS.filter { it in activeTopRanks } + activeTopRanks).distinct()
+                } else {
+                    TOP_TIER_RANKS
+                }
+                ranksToCheck.none { isRankInFlight.invoke(it) } ||
+                    (topSourceGraceExpired && (top720GraceExpired || top720WindowElapsed || topSourceGraceMs >= top720GraceMs || top720GraceMs <= 0L))
             } else {
                 top720GraceMs <= 0L || top720GraceExpired
             }
             if (pendingTop720Links.isEmpty() && canFlush1080Early) {
                 flushPending1080()
-            } else if ((hasEmitted1080p || fhdGraceExpired) && pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
-                flushPendingBelowFhd()
+            } else if (!hasRemainingTopTierHdOrFhdWork() && pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                if (hasEmitted1080p || fhdGraceExpired) {
+                    flushPendingBelowFhd()
+                } else if (pendingBelowFhdLinks.isNotEmpty() || pendingAbove1080Links.isNotEmpty() || pendingSecondaryLinks.isNotEmpty()) {
+                    startFhdGraceTimer()
+                }
             }
         }
 
@@ -3530,7 +3967,7 @@ object StreamLinkOptimizer {
                             top720WindowElapsed = true
                         }
                         drainPendingTop720()
-                        if (topSourceGraceMs >= top720GraceMs && (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty())) {
+                        if (topSourceGraceMs >= top720GraceMs || top720WindowElapsed || top720GraceExpired || top720GraceMs <= 0L) {
                             flushPending1080()
                         } else {
                             scheduleTimersForPendingTopTier()
@@ -3551,8 +3988,8 @@ object StreamLinkOptimizer {
                             topSourceGraceMs > top720GraceMs &&
                             !topSourceGraceExpired &&
                             (hasAnyHigherInFlightRankThanBestReady() ||
-                                pendingTop720Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) } ||
-                                pending1080Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it)) })
+                                pendingTop720Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it), it) } ||
+                                pending1080Links.any { hasHigherPendingTop720Rank(getSourcePriorityRank(it), it) })
                         if (hasHigherInFlight) {
                             drainPendingTop720()
                             scheduleTimersForPendingTopTier()
@@ -3565,8 +4002,12 @@ object StreamLinkOptimizer {
         }
 
         private fun startFhdGraceTimer() {
+            if (hasRemainingTopTierHdOrFhdWork()) {
+                scheduleTimersForPendingTopTier()
+                return
+            }
             if (fhdGraceMs <= 0L) {
-                if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty() && !hasRemainingTopTierHdOrFhdWork()) {
                     flushPendingBelowFhd()
                 }
                 return
@@ -3576,8 +4017,10 @@ object StreamLinkOptimizer {
                     delay(fhdGraceMs)
                     synchronized(lock) {
                         fhdTimerJob = null
-                        if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty()) {
+                        if (pendingTop720Links.isEmpty() && pending1080Links.isEmpty() && !hasRemainingTopTierHdOrFhdWork()) {
                             flushPendingBelowFhd()
+                        } else if (hasRemainingTopTierHdOrFhdWork()) {
+                            scheduleTimersForPendingTopTier()
                         }
                     }
                 }
@@ -3604,35 +4047,21 @@ object StreamLinkOptimizer {
             emitSingleLink(topStream)
             hasEmittedTopStream = true
             val topRank = getSourcePriorityRank(topStream)
-            completedTop720Ranks.add(topRank)
+            if (is720p(topStream)) {
+                completedTop720Ranks.add(topRank)
+            }
             if (is1080p(topStream)) {
                 completedTop1080Ranks.add(topRank)
-                hasEmitted1080p = true
+                if (isAnime || topRank < 100 || !hasRemainingTopTierHdOrFhdWork()) {
+                    hasEmitted1080p = true
+                }
             }
 
             // Partition remaining staged links
-            val remaining = stagedLinks.filter { canonicalStreamKey(it) !in emittedKeys }
-                .sortedWith(STREAM_PRIORITY_COMPARATOR)
-            stagedLinks.clear()
-
-            val (remainingTopTier, remainingSecondary) = remaining.partition { isTopTierSource(it) }
-
-            val remaining720 = remainingTopTier.filter { is720p(it) }
-            val remaining1080 = remainingTopTier.filter { is1080p(it) }
-            val remainingBelow720 = remainingTopTier.filter { isBelow720p(it) }
-            val remainingAbove1080 = remainingTopTier.filter { isAbove1080p(it) }
-            val remainingOther = remainingTopTier.filter { !is720p(it) && !is1080p(it) && !isBelow720p(it) && !isAbove1080p(it) }
-
-            // #1 & #2: Top-tier 720p and 1080p links drained in strict source-first comparator order
-            pendingTop720Links.addAll(remaining720)
-            pending1080Links.addAll(remaining1080)
-            pendingBelowFhdLinks.addAll(remainingBelow720)
-            pendingAbove1080Links.addAll(remainingAbove1080)
-            pendingSecondaryLinks.addAll(remainingSecondary)
-            pendingAbove1080Links.addAll(remainingOther)
+            rehomeStagedLinksToPendingBuckets()
 
             drainPendingTop720()
-            if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
+            if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty() || hasRemainingTopTierHdOrFhdWork()) {
                 scheduleTimersForPendingTopTier()
             } else if (hasEmitted1080p || fhdGraceExpired) {
                 flushPendingBelowFhd()
@@ -3643,17 +4072,20 @@ object StreamLinkOptimizer {
 
         private fun flushPendingTop720() {
             top720GraceExpired = true
+            rehomeStagedLinksToPendingBuckets()
             if (pendingTop720Links.isNotEmpty() || pending1080Links.isNotEmpty()) {
                 val sorted = (pendingTop720Links + pending1080Links)
                     .filter { canonicalStreamKey(it) !in emittedKeys }
-                    .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                    .sortedWith(comparator)
                 pendingTop720Links.clear()
                 pending1080Links.clear()
                 for (link in sorted) {
                     hasEmittedTopStream = true
                     emitSingleLink(link)
                     val linkRank = getSourcePriorityRank(link)
-                    completedTop720Ranks.add(linkRank)
+                    if (is720p(link)) {
+                        completedTop720Ranks.add(linkRank)
+                    }
                     if (is1080p(link)) {
                         completedTop1080Ranks.add(linkRank)
                         hasEmitted1080p = true
@@ -3667,9 +4099,16 @@ object StreamLinkOptimizer {
             top720TimerJob?.cancel()
             top720TimerJob = null
             flushPendingTop720()
+            if (!hasRemainingTopTierHdOrFhdWork() && completedTop1080Ranks.isNotEmpty()) {
+                hasEmitted1080p = true
+                fhdTimerJob?.cancel()
+                fhdTimerJob = null
+            }
 
-            if (hasEmitted1080p || fhdGraceExpired) {
+            if (!hasRemainingTopTierHdOrFhdWork() && (hasEmitted1080p || fhdGraceExpired)) {
                 flushPendingBelowFhd()
+            } else if (hasRemainingTopTierHdOrFhdWork()) {
+                scheduleTimersForPendingTopTier()
             } else {
                 startFhdGraceTimer()
             }
@@ -3681,7 +4120,7 @@ object StreamLinkOptimizer {
             fhdTimerJob = null
             if (pendingBelowFhdLinks.isNotEmpty()) {
                 val sorted = pendingBelowFhdLinks.filter { canonicalStreamKey(it) !in emittedKeys }
-                    .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                    .sortedWith(comparator)
                 pendingBelowFhdLinks.clear()
 
                 for (link in sorted) {
@@ -3717,7 +4156,7 @@ object StreamLinkOptimizer {
             sdTimerJob = null
             if (pendingAbove1080Links.isNotEmpty()) {
                 val sorted = pendingAbove1080Links.filter { canonicalStreamKey(it) !in emittedKeys }
-                    .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                    .sortedWith(comparator)
                 pendingAbove1080Links.clear()
                 for (link in sorted) {
                     emitSingleLink(link)
@@ -3729,7 +4168,7 @@ object StreamLinkOptimizer {
         private fun flushPendingSecondary() {
             if (pendingSecondaryLinks.isNotEmpty()) {
                 val sorted = pendingSecondaryLinks.filter { canonicalStreamKey(it) !in emittedKeys }
-                    .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                    .sortedWith(comparator)
                 pendingSecondaryLinks.clear()
                 for (link in sorted) {
                     emitSingleLink(link)
@@ -3759,7 +4198,7 @@ object StreamLinkOptimizer {
 
                 val allRemaining = (stagedLinks + pendingTop720Links + pending1080Links + pendingBelowFhdLinks + pendingAbove1080Links + pendingSecondaryLinks)
                     .filter { canonicalStreamKey(it) !in emittedKeys }
-                    .sortedWith(STREAM_PRIORITY_COMPARATOR)
+                    .sortedWith(comparator)
 
                 for (link in allRemaining) {
                     emitSingleLink(link)
@@ -3803,6 +4242,9 @@ object StreamLinkOptimizer {
              * without having to know any provider names.
              */
             private val TOP_TIER_RANKS = listOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87)
+
+            fun isUnknownQuality(link: ExtractorLink): Boolean = StreamLinkOptimizer.isUnknownQuality(link)
+
             fun is720p(link: ExtractorLink): Boolean {
                 val hasExplicit = link.quality > 0 && link.quality != Qualities.Unknown.value
                 val q = if (hasExplicit) {
@@ -3832,20 +4274,13 @@ object StreamLinkOptimizer {
             }
 
             fun isBelow720p(link: ExtractorLink): Boolean {
-                val q = if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
-                    link.quality
-                } else {
-                    extractQualityFromText(link.name, link.url)
-                }
-                return q > 0 && q < 700 && q != Qualities.Unknown.value && !is720p(link)
+                val q = getEffectiveQuality(link)
+                if (StreamLinkOptimizer.isUnknownQuality(link, q)) return false
+                return q in 1..699 && !is720p(link)
             }
 
             fun isAbove1080p(link: ExtractorLink): Boolean {
-                val q = if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
-                    link.quality
-                } else {
-                    extractQualityFromText(link.name, link.url)
-                }
+                val q = getEffectiveQuality(link)
                 return q > 1088 && !is1080p(link)
             }
         }

@@ -462,11 +462,13 @@ class StreamPlayAnime : MainAPI() {
             topSourceGraceMs = 2_000L,
             top720GraceMs = 1_100L,
             activeTopRanks = animeTopRanks,
-            isRankInFlight = { rank -> runningTopRanks.contains(rank) }
+            isRankInFlight = { rank -> runningTopRanks.contains(rank) },
+            isAnime = true
         )
         val deduplicator = StreamLinkOptimizer.StreamDeduplicator(
             upstreamCallback = { link -> dispatcher.onLinkAccepted(link) },
-            onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) }
+            onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) },
+            isAnime = true
         )
         val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -501,7 +503,22 @@ class StreamPlayAnime : MainAPI() {
 
         val animeLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
         fun emitSingleOptimized(link: ExtractorLink) {
-            val optimized = StreamLinkOptimizer.optimize(link)
+            val taggedLink = if (link.headers["X-StreamPlay-Anime"]?.equals("true", ignoreCase = true) != true) {
+                @Suppress("DEPRECATION")
+                ExtractorLink(
+                    source = link.source,
+                    name = link.name,
+                    url = link.url,
+                    referer = link.referer,
+                    quality = link.quality,
+                    type = link.type,
+                    headers = link.headers + ("X-StreamPlay-Anime" to "true"),
+                    extractorData = link.extractorData
+                )
+            } else {
+                link
+            }
+            val optimized = StreamLinkOptimizer.optimize(taggedLink)
             earlyController.onCandidateLink(optimized)
             when (deduplicator.emitDetailed(optimized)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {

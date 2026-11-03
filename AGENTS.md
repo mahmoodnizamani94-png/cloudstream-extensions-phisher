@@ -3,13 +3,21 @@
 This document defines the non-negotiable architectural invariants and priorities across `cloudstream-extensions-phisher` and the sibling host app `cloudstream`. Read and enforce these rules whenever modifying providers, extractors, rankings, playback dispatch, or download selection.
 
 ## 1. Core Quality & File-Size Priority (Non-Negotiable)
-1. **720p with the Lowest File Size Possible is Priority #1**:
-   - Both playback and downloads prioritize **720p HD** (`getQualityPriorityScore(720) = 10_000`) above all other resolutions.
-   - Within 720p, downloads and streams **must** select the candidate with the **lowest file size possible** (derived from HTTP `Content-Length`, explicit `[XXX MB]` metadata, or HLS `#EXT-X-STREAM-INF` `AVERAGE-BANDWIDTH`/`BANDWIDTH` estimation) among healthy streams of the same health tier (with lane throughput breaking equal-size ties, while degraded fallback lanes such as unpatched fMP4 HEVC `Orion`/`BigBang` remain isolated below healthy H.264 lanes and omit misleading video-only size tags).
-2. **1080p with the Lowest File Size Possible is Priority #2**:
-   - When 720p is unavailable, **1080p Full HD** (`getQualityPriorityScore(1080) = 9_000`) is the immediate next tier, strictly preferring the **lowest file size possible** first.
+1. **Exact Top-Tier Stream & Download Priority Hierarchy**:
+   - For Movies & TV (`isAnime == false`), both playback (`StreamLinkOptimizer` / `PriorityStreamDispatcher`) and downloads (`DownloadSelectionPolicy.getDownloadWalkStage`, `DownloadManager`, `StreamPlayDynamicBridge.invokeRecoveryChain`) enforce this exact priority order:
+     1. **`VidLink 720p`** (lowest file size first; direct MP4 before HLS)
+     2. **`MeowTV 720p`** (lowest file size first; direct MP4 before HLS)
+     3. **`VidLink 1080p`** (lowest file size first; direct MP4 before HLS)
+     4. **Other top-tier `720p` sources (NOT `1080p`)**:
+        - `Cineby 720p` -> `CineSrc 720p` -> `VidFast 720p` (playback-only) -> `MegaPlay 720p` -> `VidRift 720p` (`<= 650 MB`) -> `AniZone 720p` -> `AnimePahe 720p` -> `Animex 720p` (multiplier `87..95`)
+     5. **Non-VidLink top-tier `1080p` sources** (`MeowTV 1080p` -> `Cineby 1080p` -> `CineSrc 1080p` -> `VidFast 1080p` -> `MegaPlay 1080p` -> `AniZone 1080p` -> `AnimePahe 1080p` -> `Animex 1080p`, multiplier `72..83`), strictly **after** all top-tier `720p` sources.
+     6. **Top-tier sub-`720p` / `Unknown` / above-`1080p` sources** (`480p` -> `360p` -> `Unknown` -> `2160p`, multiplier `56..69`), followed by **secondary / unranked fallback sources** (`sourceRank == 0`, `tierMultiplier = 0`, sorted `720p -> 1080p -> 480p -> 360p -> Unknown -> 2160p`).
+   - For Anime (`isAnime == true`), resolution-first ordering is preserved across the anime chain (`720p` across `VidLink` -> `Cineby` -> `CineSrc` -> `MegaPlay` -> `AniZone` -> `AnimePahe` -> `Animex`, followed by `1080p` across the same chain) while maintaining `[Sub] [Original]` original-language priority.
+   - Within each tier, downloads and streams **must** select the candidate with the **lowest file size possible** (derived from HTTP `Content-Length`, explicit `[XXX MB]` metadata, or HLS `#EXT-X-STREAM-INF` `AVERAGE-BANDWIDTH`/`BANDWIDTH` estimation) among healthy streams of the same health tier (with direct MP4 (`ExtractorLinkType.VIDEO`) prioritized ahead of HLS (`M3U8`), while degraded fallback lanes such as unpatched fMP4 HEVC `Orion`/`BigBang` remain isolated below healthy H.264 lanes and omit misleading video-only size tags).
+2. **Runtime Resolution Truth & Dynamic Re-Staging**:
+   - When an adaptive stream (`[Auto]`) claimed as `720p` resolves at runtime to `1080p`, `DownloadManager` refuses it while higher-priority `720p` sources remain and dynamically inserts a `#vid=1080p`-pinned `1080p` candidate at its true `1080p` walk stage (`VidLink 1080p` at stage 3 right after `MeowTV 720p`; non-VidLink `1080p` at stages `21..26` after all `720p` sources).
 3. **Fallback Ladder**:
-   - `720p (lowest size)` > `1080p (lowest size)` > `480p` > `360p` > `2160p`.
+   - `VidLink 720p` > `MeowTV 720p` > `VidLink 1080p` > `Other Top 720p` > `Non-VidLink Top 1080p` > `480p` > `360p` > `Unknown` > `2160p` > `Secondary Fallback (720p -> 1080p -> 480p -> 360p -> Unknown -> 2160p)`.
 
 ## 2. Curated v27 State-of-the-Art (SOTA) Source Registry (10 Sources)
 All streams and downloads for Movies, TV Series, and Anime **must** come exclusively from the vetted SOTA registry (`TOP_TIER_RANKS = listOf(100, 98, 95, 94, 93, 92, 91, 89, 88, 87)` in `StreamLinkOptimizer`):
@@ -28,7 +36,7 @@ All streams and downloads for Movies, TV Series, and Anime **must** come exclusi
 | **87** | `animex` | **Animex** | Anime | Yes | `animex.one` GraphQL (`plyr.animex.one` SSR fallback) + plaintext `pp.animex.one/rest/api/sources` (`nero`, `yuki`, `zuna`, `loli`, `sora`) + direct `kaa.lt` (`krussdomi.com/cat-player/player`) -> `s-91.megavid.se` / `hls.dramahot.top` / `hls.krussdomi.com` / `fetch.nexabloom.top` HLS + `.vtt`/`.srt` subtitles |
 
 ## 3. Anime Playback & Download Contract
-- When playing or downloading Anime (both in `StreamPlay` when `isAnime == true` and in `StreamPlay-Anime` / `StreamPlayAnime.kt`), streams and downloads **must** come from the v26 SOTA Anime chain, subtitles-first:
+- When playing or downloading Anime (both in `StreamPlay` when `isAnime == true` and in `StreamPlay-Anime` / `StreamPlayAnime.kt`), streams and downloads **must** come from the v27 SOTA Anime chain in resolution-first order (`720p` across `ANIME_DOWNLOAD_CHAIN` -> `1080p` across `ANIME_DOWNLOAD_CHAIN`), subtitles-first:
   - **`VidLink` (100)** -> **`Cineby` (95)** -> **`CineSrc` (94)** -> **`MegaPlay` (92)** -> **`AniZone` (89)** -> **`AnimePahe` (88)** -> **`Animex` (87)**
 - The host enforces an anime-only download restriction that mirrors this chain: `DownloadSelectionPolicy.ANIME_DOWNLOAD_CHAIN`, `animeDownloadPool`, `isAnimeContent`, `sortCandidates(..., anime = true)` and `orderDownloadAttempts(..., anime = true)`. When an anime pool contains no chain source the host returns no download (an explicit refusal) instead of silently downgrading to a legacy mirror. Non-anime downloads keep the universal ranking unchanged.
 - Anime streams and downloads **must** preserve **original language (Japanese / Original Audio)** and **subtitles**:
