@@ -360,6 +360,7 @@ class StreamPlayStremioCatelog(
                             year = resolved.year,
                             isMovie = isMovieMedia,
                             isAnime = false,
+                            imdbId = imdb,
                             subtitleCallback = trackedSubCallback
                         )
                     })
@@ -404,13 +405,50 @@ class StreamPlayStremioCatelog(
             }
         }
 
+        fun countVerifiedHumanUrduSources(): Int =
+            urduSubtitleSources.count { it != "urdu-neural-fallback" && it != "subtitlecat" }
+
         SpeculativePipeliner.executePipelined(
             tasks = tasks,
             config = earlySatisfactionConfig,
             controller = earlyController
         )
 
-        if (urduMode && urduSubtitleSources.isEmpty() && (englishDonorSubs.isNotEmpty() || !resolved.title.isNullOrBlank())) {
+        if (urduMode && countVerifiedHumanUrduSources() < 2) {
+            val retryUrduTasks = tasks.filter { task ->
+                !task.isVideo &&
+                    task.providerId != "SubtitleCat" &&
+                    !urduSubtitleSources.contains(task.providerId.lowercase())
+            }.map { it.copy(taskTimeoutMs = 4_500L) }
+            if (retryUrduTasks.isNotEmpty()) {
+                val urduCompletionConfig = EarlySatisfactionConfig(
+                    minVerifiedLinks = Int.MAX_VALUE,
+                    minQualityStreams = Int.MAX_VALUE,
+                    minSubtitles = 1,
+                    requireSubtitles = false,
+                    require720p = false,
+                    requireDualQualities = false,
+                    satisfyWithOneLinkIfSubsFound = false,
+                    tier1DelayMs = 0L,
+                    tier2DelayMs = 150L,
+                    tier3DelayMs = 500L,
+                    adaptiveTierEscalation = false,
+                    maxPipelineTimeoutMs = 4_500L,
+                    postSatisfactionGraceMs = 0L
+                )
+                val urduCompletionController = EarlySatisfactionController(
+                    urduCompletionConfig,
+                    extraCondition = { countVerifiedHumanUrduSources() >= 2 }
+                )
+                SpeculativePipeliner.executePipelined(
+                    tasks = retryUrduTasks,
+                    config = urduCompletionConfig,
+                    controller = urduCompletionController
+                )
+            }
+        }
+
+        if (urduMode && countVerifiedHumanUrduSources() == 0 && (englishDonorSubs.isNotEmpty() || !resolved.title.isNullOrBlank())) {
             withTimeoutOrNull(8_000L) {
                 UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
                     imdbId = imdb,
@@ -421,6 +459,14 @@ class StreamPlayStremioCatelog(
                         trackedSubCallback(urSub)
                     }
                 )
+            }
+        }
+        if (urduMode && urduSubtitleSources.isEmpty() && englishDonorSubs.isNotEmpty()) {
+            for (donor in englishDonorSubs.take(2)) {
+                catalogSubsFound.incrementAndGet()
+                earlyController.onSubtitleEmitted(donor)
+                subtitleCallback(donor)
+                dispatcher.onSubtitleReceived()
             }
         }
         englishDonorSubs.clear()
@@ -539,19 +585,45 @@ class StreamPlayStremioCatelog(
         }
 
         suspend fun toLoadResponse(provider: StreamPlayStremioCatelog, imdbId: String?): LoadResponse {
-            if (videos.isNullOrEmpty()) {
+            val urduMode = UrduSubtitleEngine.isUrduMode(
+                context = null,
+                sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref
+            )
+            val subtitleModeBadge = if (urduMode) {
+                "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
+            } else {
+                "🇬🇧 Subtitles: English (Default)"
+            }
+            val parsedYear = yearNum?.split("–", "-")?.firstOrNull()?.trim()?.toIntOrNull()
+            val isMovieEntry = videos.isNullOrEmpty()
+            if (urduMode) {
+                UrduSubtitleEngine.prewarmUrduSubtitlesAsync(
+                    imdbId = imdbId,
+                    title = name,
+                    season = if (isMovieEntry) null else 1,
+                    episode = if (isMovieEntry) null else 1,
+                    year = parsedYear,
+                    isMovie = isMovieEntry,
+                    sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref
+                )
+            }
+            val enrichedTags = buildList {
+                add(subtitleModeBadge)
+                addAll(genre ?: genres)
+            }
+            if (isMovieEntry) {
                 return provider.newMovieLoadResponse(
                     name,
                     "${provider.mainUrl}/meta/${type}/${id}.json",
                     TvType.Movie,
-                    LoadData(type, id, imdbId = imdbId, year = yearNum?.toIntOrNull())
+                    LoadData(type, id, imdbId = imdbId, year = parsedYear, title = name)
                 ) {
                     posterUrl = poster
                     backgroundPosterUrl = background
                     score = Score.from10(imdbRating)
                     plot = description
-                    year = yearNum?.toIntOrNull()
-                    tags = genre ?: genres
+                    year = parsedYear
+                    tags = enrichedTags
                     addActors(cast)
                     addTrailer(trailersSources.map { "https://www.youtube.com/watch?v=${it.source}" })
                     addImdbId(imdbId)
@@ -569,8 +641,8 @@ class StreamPlayStremioCatelog(
                     backgroundPosterUrl = background
                     score = Score.from10(imdbRating)
                     plot = description
-                    year = yearNum?.toIntOrNull()
-                    tags = genre ?: genres
+                    year = parsedYear
+                    tags = enrichedTags
                     addActors(cast)
                     addTrailer(trailersSources.map { "https://www.youtube.com/watch?v=${it.source}" }.randomOrNull())
                     addImdbId(imdbId)

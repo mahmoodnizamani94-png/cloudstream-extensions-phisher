@@ -3126,7 +3126,7 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         val cleanId = id?.trim()?.takeIf { it.isNotBlank() && it != "0" && it != "null" } ?: return
         val key = wyziekey.takeIf { !it.isNullOrBlank() }?.trim()
-            ?: runCatching { System.getProperty("cloudstream.wyzie.key") }.getOrNull()?.takeIf { it.isNotBlank() }?.trim()
+            ?: UrduSubtitleEngine.resolveWyzieApiKey(sharedPref = sharedPref ?: companionSharedPref)
         val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         // sub.wyzie.io/search and sub.wyzie.ru/search always return HTTP 401 Unauthorized when key is unset
         if (key == null) return
@@ -3415,6 +3415,7 @@ object StreamPlayExtractor : StreamPlay() {
         year: Int? = null,
         isMovie: Boolean = false,
         isAnime: Boolean = false,
+        imdbId: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
         val queries = buildSubtitleCatQueries(titles, season, episode, isMovie, isAnime)
@@ -3503,6 +3504,7 @@ object StreamPlayExtractor : StreamPlay() {
                         UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
                             origUrl = origUrl,
                             origFilename = origFilename,
+                            imdbId = imdbId,
                             season = season,
                             episode = episode
                         )
@@ -3510,6 +3512,7 @@ object StreamPlayExtractor : StreamPlay() {
                     preCachedUrduUrls.forEach { urUrl ->
                         UrduSubtitleEngine.recordSubtitleCatPreCachedUrduCandidate(
                             urduUrl = urUrl,
+                            imdbId = imdbId,
                             season = season,
                             episode = episode
                         )

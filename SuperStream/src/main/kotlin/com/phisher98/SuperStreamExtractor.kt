@@ -68,8 +68,12 @@ private val SUBTITLE_HEADERS = mapOf(
 )
 
 private const val SUBDL_AUTO_API = "https://api3.subdl.com/auto"
+private const val SUBDL_API_V1 = "https://api.subdl.com/api/v1/subtitles"
 private const val SUBDL_WEB_HOST = "https://subdl.com"
 private const val SUBDL_DL_HOST = "https://dl.subdl.com"
+private const val SUBSOURCE_API_HOST = "https://api.subsource.net"
+private const val SUBSOURCE_API_V1 = "$SUBSOURCE_API_HOST/api/v1"
+private const val SUBF2M_HOST = "https://subf2m.co"
 
 private const val SUBSENSE_URDU_BASE =
     "https://subsense.nepiraw.com/n2s6143949c45/subtitles"
@@ -90,10 +94,10 @@ private val SUPERSTREAM_URDU_SCRIPT_REGEX =
 private val SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX =
     Regex("""[\u0679\u0688\u0691\u06BA\u06BE\u06C1\u06D2]""")
 private val SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E"،۔؟!…])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|ہم|تم|آپ|کا|کی|کے|کو|سے|پر|اور|یا|بھی|تو|جو|یہ|وہ|اس|ان|کیا|کیوں|کیسے|کہاں|جب|اب|پھر|ساتھ|لیے|بعد|پہلے|اگر|مگر|لیکن|کچھ|سب|کوئی|اپنے|اپنی|اپنا|گیا|گئی|گئے|رہا|رہی|رہے|ہو|ہوا|ہوئی|کر|کیا|کریں|کرو|جا|آ|دے|لے)(?=$|[\s\u200F\u200E"،۔؟!…])"""
+    """(?:^|[\s\u200F\u200E"،۔؟!…])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|ہم|تم|آپ|کا|کے|کو|سے|پر|اور|یا|بھی|تو|جو|یہ|وہ|اس|ان|کیا|کیوں|کیسے|کہاں|جب|اب|پھر|ساتھ|لیے|بعد|پہلے|اگر|مگر|لیکن|کچھ|سب|کوئی|اپنے|اپنی|اپنا|گیا|گئی|گئے|رہا|رہی|رہے|ہو|ہوا|ہوئی|کریں|کرو|جاؤ|آؤ)(?=$|[\s\u200F\u200E"،۔؟!…])"""
 )
 private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E"،۔؟!…])(است|نیست|هست|هستم|هستی|هستند|می\u200C|نمی\u200C|های|هایی|برای|خیلی|چون|چرا|کجا|اینجا|آنجا|شما|آنها|ایشان|دیگه|همین|الان|باید|شاید|دارم|داری|دارد|داریم|دارند|کردم|کردی|کردیم|کردند|شود|شدند|بشه|میشه|نمیشه|نمیدونم|میدونم|میخوام|میخوای|میخواد|هذا|هذه|ذلك|تلك|الذي|التي|الذين|ربما|لماذا|كيف|أين|نحن|أنتم|هم|ليس|ليست|كان|كانت|يكون|تكون)(?=$|[\s\u200F\u200E"،۔؟!…])"""
+    """(?:^|[\s\u200F\u200E"،۔؟!…])(است|نیست|هست|هستم|هستی|هستند|می\u200C|نمی\u200C|های|هایی|برای|خیلی|چون|چرا|کجا|اینجا|آنجا|شما|آنها|ایشان|دیگه|همین|الان|باید|شاید|دارم|داری|دارد|داریم|دارند|کردم|کردی|کردیم|کردند|شود|شدند|بشه|میشه|نمیشه|نمیدونم|میدونم|میخوام|میخوای|میخواد|منم|توی|روی|چیه|چیزی|وقتی|اون|اونا|اینو|اونو|بابا|مامان|آقا|خانم|بله|آره|نه|چشم|مرسی|ممنون|بفرمایید|پدر|مادر|برادر|خواهر|پسرم|دخترم|کنم|کنی|کند|کنیم|کنند|گفتم|گفتی|گفتند|رفتم|رفتی|آمدم|آمدی|دیدم|دیدی|بدون|همه|هیچ|کدام|چطور|چقدر|هرگز|البته|حتما|واقعا|درست|بزرگ|کوچک|قشنگ|خوشگل|امروز|دیروز|فردا|شب|روز|ساعت|دقیقه|سال|ماه|هفته|زندگی|مرگ|عشق|دوست|دشمن|جنگ|صلح|خانه|اتاق|ماشین|خیابان|شهر|کشور|دنیا|جهان|خدا|مردم|بچه|پسر|دختر|زن|مرد|پیر|جوان|آب|نان|غذا|کار|پول|دست|پا|سر|چشم|دل|قلب|نام|اسم|حرف|سخن|صدا|نگاه|راه|در|دیوار|پنجره|آسمان|زمین|دریا|کوه|جنگل|درخت|گل|باران|برف|باد|آفتاب|مهتاب|ستاره|آتش|خاک|سنگ|آهن|طلا|نقره|رنگ|سفید|سیاه|سرخ|قرمز|آبی|سبز|زرد|هذا|هذه|ذلك|تلك|الذي|التي|الذين|ربما|لماذا|كيف|أين|نحن|أنتم|هم|ليس|ليست|كان|كانت|يكون|تكون|على|إلى|عن|مع|في|من|أن|إن|قد|لم|لن|لا|ما|هو|هي|هم|هن|أنت|أنا|عند|تحت|فوق|بين|قبل|بعد|حتى|منذ|خلال|حول|ضد|نحو|دون|سوف|كل|بعض|غير|أي|مثل|كذلك|أيضا|فقط|رب|إله|ناس|رجل|امرأة|ولد|بنت|طفل|بيت|منزل|سيارة|طريق|مدينة|بلد|عالم|حياة|موت|حب|حرب|سلام|ماء|طعام|عمل|مال|يد|رجل|رأس|عين|قلب|اسم|كلمة|صوت|يوم|ليلة|ساعة|سنة|شهر|أسبوع|أمس|غدا|الآن|هنا|هناك|جدا|كثيرا|قليلا|طبعا|فعلا|حقا|أبدا|دائما|أحيانا)(?=$|[\s\u200F\u200E"،۔؟!…])"""
 )
 private val SUPERSTREAM_ARABIC_PRESENTATION_FORMS_REGEX =
     Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
@@ -369,25 +373,97 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
-    private fun resolveWyzieApiKey(): String? {
-        val sysKey = System.getProperty("cloudstream.wyzie.key")?.trim()?.takeIf { it.isNotBlank() }
-        if (sysKey != null) return sysKey
-        val prefKey = runCatching {
-            sharedPref?.getString("wyzie_api_key", null)?.trim()?.takeIf { it.isNotBlank() }
-                ?: sharedPref?.getString("wyziekey", null)?.trim()?.takeIf { it.isNotBlank() }
-        }.getOrNull()
-        if (prefKey != null) return prefKey
+    private const val PREWARM_COOLDOWN_MS = 10 * 60 * 1000L // 10 minutes
+    private val prewarmCooldownMap = ConcurrentHashMap<String, Long>()
+    private val prewarmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun readCrossModuleSharedPref(vararg keys: String): String? {
+        for (k in keys) {
+            val v = runCatching { sharedPref?.getString(k, null) }.getOrNull()?.trim()
+            if (!v.isNullOrBlank()) return v
+        }
         val ctx = superStreamAppContextRef ?: return null
         val prefNames = listOf("StreamPlay", "SuperStream", "cloudstream_subtitle_mode_prefs")
         for (name in prefNames) {
-            val valFromPref = runCatching {
-                val sp = ctx.getSharedPreferences(name, android.content.Context.MODE_PRIVATE)
-                sp.getString("wyzie_api_key", null)?.trim()?.takeIf { it.isNotBlank() }
-                    ?: sp.getString("wyziekey", null)?.trim()?.takeIf { it.isNotBlank() }
-            }.getOrNull()
-            if (valFromPref != null) return valFromPref
+            for (k in keys) {
+                val valFromPref = runCatching {
+                    val sp = ctx.getSharedPreferences(name, android.content.Context.MODE_PRIVATE)
+                    sp.getString(k, null)?.trim()
+                }.getOrNull()
+                if (!valFromPref.isNullOrBlank()) return valFromPref
+            }
         }
         return null
+    }
+
+    internal fun resolveWyzieApiKey(): String? {
+        val sysKey = System.getProperty("cloudstream.wyzie.key")?.trim()?.takeIf { it.isNotBlank() }
+            ?: System.getProperty("wyzie.api.key")?.trim()?.takeIf { it.isNotBlank() }
+            ?: runCatching { System.getenv("WYZIE_API_KEY") }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
+        if (sysKey != null) return sysKey
+        return readCrossModuleSharedPref("wyzie_key", "wyzie_api_key", "wyziekey")
+    }
+
+    internal fun resolveSubDlApiKey(): String? {
+        val sysKey = System.getProperty("subdl.api.key")?.trim()?.takeIf { it.isNotBlank() }
+            ?: runCatching { System.getenv("SUBDL_API_KEY") }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
+        if (sysKey != null) return sysKey
+        return readCrossModuleSharedPref("subdl_api_key")
+    }
+
+    internal fun resolveSubSourceApiKey(): String? {
+        val sysKey = System.getProperty("subsource.api.key")?.trim()?.takeIf { it.isNotBlank() }
+            ?: runCatching { System.getenv("SUBSOURCE_API_KEY") }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
+        if (sysKey != null) return sysKey
+        return readCrossModuleSharedPref("subsource_api_key")
+    }
+
+    fun prewarmSuperStreamUrduSubtitlesAsync(
+        imdbId: String? = null,
+        title: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        expectedYear: Int? = null
+    ) {
+        if (!isUrduSubtitleMode(sharedPref)) return
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
+        if (cleanImdb == null && cleanTitle == null) return
+        val prewarmKey = "${cleanImdb ?: ""}|${cleanTitle?.lowercase(Locale.ROOT) ?: ""}|S${season ?: 0}E${episode ?: 0}"
+        val now = System.currentTimeMillis()
+        val prev = prewarmCooldownMap[prewarmKey]
+        if (prev != null && (now - prev) < PREWARM_COOLDOWN_MS) return
+        prewarmCooldownMap[prewarmKey] = now
+
+        prewarmScope.launch {
+            try {
+                withTimeoutOrNull(5_000L) {
+                    coroutineScope {
+                        launch {
+                            invokeSubDlUrduKeyless(
+                                imdbId = cleanImdb,
+                                title = cleanTitle,
+                                season = season,
+                                episode = episode,
+                                expectedYear = expectedYear,
+                                subtitleCallback = {}
+                            )
+                        }
+                        if (cleanImdb != null) {
+                            launch {
+                                invokeSubSenseUrdu(
+                                    imdbId = cleanImdb,
+                                    season = season,
+                                    episode = episode,
+                                    subtitleCallback = {}
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     suspend fun invokeWyZIESUBAPI(
@@ -568,10 +644,11 @@ object SuperStreamExtractor : SuperStream() {
     }
 
     /**
-     * Keyless SubDL Urdu Harvester (`invokeSubDlUrduKeyless`):
-     * Queries `api3.subdl.com/auto` (with fail-closed year check when `expectedYear != null`),
-     * fetches `subdl.com/subtitle/{sd_id}/{slug}/urdu`, extracts episode-matched `.zip` URLs,
-     * and materializes them via [materializeNormalizedUrduSubtitle].
+     * SubDL Urdu Harvester (`invokeSubDlUrduKeyless`):
+     * 1. Queries Official SubDL API v1 (`https://api.subdl.com/api/v1/subtitles`) when `subdl_api_key` is configured.
+     * 2. Seamlessly falls back to `api3.subdl.com/auto` (with fail-closed year check when `expectedYear != null`),
+     *    fetches `subdl.com/subtitle/{sd_id}/{slug}/urdu`, extracts episode-matched `.zip` URLs ranked by
+     *    Verified Spoken-Human Uploader Quality, and materializes them via [materializeNormalizedUrduSubtitle].
      */
     suspend fun invokeSubDlUrduKeyless(
         imdbId: String? = null,
@@ -587,6 +664,61 @@ object SuperStreamExtractor : SuperStream() {
         val query = cleanImdb ?: cleanTitle ?: return
 
         try {
+            // 1. Official SubDL API v1 when subdl_api_key is configured
+            val apiKey = resolveSubDlApiKey()
+            if (!apiKey.isNullOrBlank()) {
+                val type = if (season != null && season > 0) "tv" else "movie"
+                val apiUrl = buildString {
+                    append("$SUBDL_API_V1?api_key=${URLEncoder.encode(apiKey, "UTF-8")}")
+                    append("&languages=UR&subs_per_page=10&unpack=1&type=$type")
+                    if (cleanImdb != null) {
+                        append("&imdb_id=${URLEncoder.encode(cleanImdb, "UTF-8")}")
+                    } else if (cleanTitle != null) {
+                        append("&film_name=${URLEncoder.encode(cleanTitle, "UTF-8")}")
+                    }
+                    if (season != null && season > 0) append("&season_number=$season")
+                    if (episode != null && episode > 0) append("&episode_number=$episode")
+                    if (expectedYear != null && expectedYear > 0) append("&year=$expectedYear")
+                }
+                val apiJson = runCatching {
+                    app.get(apiUrl, headers = SUBTITLE_HEADERS, timeout = 5L).text
+                }.getOrNull()
+                if (!apiJson.isNullOrBlank()) {
+                    val apiRoot = runCatching { JSONObject(apiJson) }.getOrNull()
+                    val subsArr = apiRoot?.optJSONArray("subtitles") ?: apiRoot?.optJSONArray("data")
+                    if (subsArr != null && subsArr.length() > 0) {
+                        var apiEmitted = 0
+                        for (i in 0 until subsArr.length()) {
+                            if (apiEmitted >= 2) break
+                            val item = subsArr.optJSONObject(i) ?: continue
+                            if (item.optBoolean("ai_translated", false) || item.optBoolean("machine_translated", false)) continue
+                            val rawUrl = item.optString("url").ifBlank { item.optString("download_url") }.trim()
+                            if (rawUrl.isBlank()) continue
+                            val fullUrl = if (rawUrl.startsWith("http", ignoreCase = true)) rawUrl else "$SUBDL_DL_HOST/${rawUrl.trimStart('/')}"
+                            val dlHeaders = mapOf(
+                                "User-Agent" to (SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0"),
+                                "Referer" to "$SUBDL_WEB_HOST/"
+                            )
+                            val materializedUri = materializeNormalizedUrduSubtitle(
+                                url = fullUrl,
+                                headers = dlHeaders,
+                                season = season,
+                                episode = episode,
+                                sourceTag = "subdl"
+                            ) ?: continue
+                            subtitleCallback.invoke(
+                                newSubtitleFile(formatSuperStreamUrduSourceLabel("subdl"), materializedUri) {
+                                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subdl")
+                                }
+                            )
+                            apiEmitted++
+                        }
+                        if (apiEmitted > 0) return
+                    }
+                }
+            }
+
+            // 2. Keyless fallback via api3.subdl.com/auto + HTML/__NEXT_DATA__
             val headers = mapOf(
                 "User-Agent" to (SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0"),
                 "Accept" to "application/json, text/plain, */*",
@@ -649,6 +781,264 @@ object SuperStreamExtractor : SuperStream() {
                 )
                 emittedCount++
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun invokeSuperStreamSubSourceUrdu(
+        imdbId: String? = null,
+        title: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        expectedYear: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        if (!isUrduSubtitleMode(sharedPref)) return
+        val apiKey = resolveSubSourceApiKey() ?: return
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
+        val query = cleanImdb ?: cleanTitle ?: return
+        val headers = mapOf(
+            "User-Agent" to (SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0"),
+            "Accept" to "application/json",
+            "X-API-Key" to apiKey,
+            "api-key" to apiKey
+        )
+        try {
+            val searchType = if (cleanImdb != null) "imdb" else "text"
+            val paramName = if (cleanImdb != null) "imdb" else "q"
+            val searchUrl = buildString {
+                append("$SUBSOURCE_API_V1/movies/search?searchType=$searchType&$paramName=${URLEncoder.encode(query, "UTF-8")}")
+                if (expectedYear != null && expectedYear > 0 && season == null) append("&year=$expectedYear")
+            }
+            val searchJson = app.get(searchUrl, headers = headers, timeout = 5L).text
+            val root = JSONObject(searchJson)
+            val dataArr = root.optJSONArray("data") ?: root.optJSONArray("results") ?: return
+            var movieId: String? = null
+            for (i in 0 until dataArr.length()) {
+                val item = dataArr.optJSONObject(i) ?: continue
+                val id = item.optString("movieId").ifBlank { item.optString("id") }.trim()
+                if (id.isBlank()) continue
+                val itemSeason = item.optInt("season", 0)
+                if (season != null && season > 0 && itemSeason > 0 && itemSeason != season) continue
+                movieId = id
+                break
+            }
+            if (movieId.isNullOrBlank()) return
+            val subsUrl = buildString {
+                append("$SUBSOURCE_API_V1/subtitles?movieId=${URLEncoder.encode(movieId, "UTF-8")}&language=urdu")
+                if (season != null && season > 0) append("&season=$season")
+                if (episode != null && episode > 0) append("&episode=$episode")
+            }
+            val subsJson = app.get(subsUrl, headers = headers, timeout = 5L).text
+            val subsArr = JSONObject(subsJson).let { it.optJSONArray("data") ?: it.optJSONArray("subtitles") } ?: return
+            var emitted = 0
+            for (i in 0 until subsArr.length()) {
+                if (emitted >= 2) break
+                val item = subsArr.optJSONObject(i) ?: continue
+                val subId = item.optString("subtitleId").ifBlank { item.optString("id") }.trim()
+                val directDl = item.optString("downloadUrl").ifBlank { item.optString("url") }.trim()
+                val dlUrl = when {
+                    directDl.startsWith("http", ignoreCase = true) -> directDl
+                    directDl.startsWith("/") -> "$SUBSOURCE_API_HOST$directDl"
+                    subId.isNotBlank() -> "$SUBSOURCE_API_V1/subtitles/$subId/download"
+                    else -> continue
+                }
+                val materializedUri = materializeNormalizedUrduSubtitle(
+                    url = dlUrl,
+                    headers = headers,
+                    season = season,
+                    episode = episode,
+                    sourceTag = "subsource"
+                ) ?: continue
+                subtitleCallback.invoke(
+                    newSubtitleFile(formatSuperStreamUrduSourceLabel("subsource"), materializedUri) {
+                        this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subsource")
+                    }
+                )
+                emitted++
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun invokeSuperStreamSubf2mUrdu(
+        title: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        expectedYear: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        if (!isUrduSubtitleMode(sharedPref)) return
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return
+        try {
+            val searchUrl = "$SUBF2M_HOST/subtitles/searchbytitle?query=${URLEncoder.encode(cleanTitle, "UTF-8")}&l="
+            val searchDoc = app.get(searchUrl, headers = SUBTITLE_HEADERS, timeout = 5L).document
+            val slugHref = searchDoc.select("div.title a[href*=/subtitles/], li a[href*=/subtitles/]")
+                .firstNotNullOfOrNull { a ->
+                    val href = a.attr("href").trim().removeSuffix("/")
+                    val text = a.text().trim()
+                    if (!href.startsWith("/subtitles/")) return@firstNotNullOfOrNull null
+                    if (expectedYear != null && season == null && !text.contains(expectedYear.toString())) return@firstNotNullOfOrNull null
+                    href
+                } ?: return
+            val detailDoc = app.get("$SUBF2M_HOST$slugHref/urdu", headers = SUBTITLE_HEADERS, timeout = 5L).document
+            val detailLinks = detailDoc.select("a.download[href*=/subtitles/], li.item a[href*=/urdu/]")
+                .mapNotNull { a -> a.attr("href").trim().takeIf { it.startsWith("/subtitles/") } }
+                .distinct()
+                .take(3)
+            var emitted = 0
+            for (detailPath in detailLinks) {
+                if (emitted >= 2) break
+                val dlDoc = app.get("$SUBF2M_HOST$detailPath", headers = SUBTITLE_HEADERS, timeout = 5L).document
+                val zipHref = dlDoc.selectFirst("a#downloadButton[href], a[href*=/ Hint/], a.download[href]")
+                    ?.attr("href")?.trim() ?: continue
+                val fullZipUrl = if (zipHref.startsWith("http", ignoreCase = true)) zipHref else "$SUBF2M_HOST$zipHref"
+                val materializedUri = materializeNormalizedUrduSubtitle(
+                    url = fullZipUrl,
+                    headers = SUBTITLE_HEADERS + ("Referer" to "$SUBF2M_HOST$detailPath"),
+                    season = season,
+                    episode = episode,
+                    sourceTag = "subf2m"
+                ) ?: continue
+                subtitleCallback.invoke(
+                    newSubtitleFile(formatSuperStreamUrduSourceLabel("subf2m"), materializedUri) {
+                        this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subf2m")
+                    }
+                )
+                emitted++
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun invokeSuperStreamYifyUrdu(
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        if (!isUrduSubtitleMode(sharedPref) || (season != null && season > 0)) return
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) } ?: return
+        val hosts = listOf("https://yts-subs.com", "https://yifysubtitles.ch")
+        for (host in hosts) {
+            try {
+                val doc = app.get("$host/movie-imdb/$cleanImdb", headers = SUBTITLE_HEADERS, timeout = 5L).document
+                val rows = doc.select("tr.high-rating, table.other-subs tbody tr, tbody tr")
+                var emitted = 0
+                for (row in rows) {
+                    if (emitted >= 2) break
+                    val langText = row.select("span.sub-lang, td.flag-cell").text().trim()
+                    if (!isUrduSubtitleCode(langText)) continue
+                    val href = row.selectFirst("a[href*=/subtitles/]")?.attr("href")?.trim() ?: continue
+                    val zipUrl = if (href.startsWith("/subtitles/")) {
+                        "https://yifysubtitles.ch/subtitle/${href.removePrefix("/subtitles/").removeSuffix("/")}.zip"
+                    } else continue
+                    val materializedUri = materializeNormalizedUrduSubtitle(
+                        url = zipUrl,
+                        headers = SUBTITLE_HEADERS,
+                        sourceTag = "yify"
+                    ) ?: continue
+                    subtitleCallback.invoke(
+                        newSubtitleFile(formatSuperStreamUrduSourceLabel("yify"), materializedUri) {
+                            this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "yify")
+                        }
+                    )
+                    emitted++
+                }
+                if (emitted > 0) return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    suspend fun invokeSuperStreamOpenSubtitlesUrdu(
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        if (!isUrduSubtitleMode(sharedPref)) return
+        val cleanImdb = imdbId?.trim()?.removePrefix("tt")?.takeIf { it.all(Char::isDigit) } ?: return
+        val url = buildString {
+            append("https://rest.opensubtitles.org/search")
+            if (episode != null && episode > 0) append("/episode-$episode")
+            append("/imdbid-$cleanImdb")
+            if (season != null && season > 0) append("/season-$season")
+            append("/sublanguageid-urd")
+        }
+        try {
+            val headers = SUBTITLE_HEADERS + ("X-User-Agent" to "trailers.to-UA")
+            val json = app.get(url, headers = headers, timeout = 6L).text
+            if (!json.trim().startsWith("[")) return
+            val arr = JSONArray(json)
+            var emitted = 0
+            for (i in 0 until arr.length()) {
+                if (emitted >= 2) break
+                val item = arr.optJSONObject(i) ?: continue
+                if (item.optInt("SubAutoTranslation", 0) == 1) continue
+                val dlUrl = item.optString("SubDownloadLink").trim()
+                if (!dlUrl.startsWith("http", ignoreCase = true)) continue
+                val materializedUri = materializeNormalizedUrduSubtitle(
+                    url = dlUrl,
+                    headers = headers,
+                    season = season,
+                    episode = episode,
+                    sourceTag = "opensubtitles"
+                ) ?: continue
+                subtitleCallback.invoke(
+                    newSubtitleFile(formatSuperStreamUrduSourceLabel("opensubtitles"), materializedUri) {
+                        this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "opensubtitles")
+                    }
+                )
+                emitted++
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun invokeSuperStreamSubtitleCatDonor(
+        title: String? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        expectedYear: Int? = null,
+        subtitleCallback: (SubtitleFile) -> Unit,
+    ) {
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return
+        try {
+            val query = if (season != null && season > 0 && episode != null && episode > 0) {
+                "$cleanTitle S${"%02d".format(season)}E${"%02d".format(episode)}"
+            } else {
+                cleanTitle
+            }
+            val searchUrl = "https://www.subtitlecat.com/index.php?search=${URLEncoder.encode(query, "UTF-8")}"
+            val doc = app.get(searchUrl, headers = SUBTITLE_HEADERS, timeout = 5L).document
+            val detailPath = doc.select("table.sub-table tbody tr a[href^=subs/], a[href^=/subs/]")
+                .firstOrNull { a -> subtitleEpisodeMatches(a.text(), season, episode) }
+                ?.attr("href")?.trim()?.trimStart('/') ?: return
+            val detailDoc = app.get("https://www.subtitlecat.com/$detailPath", headers = SUBTITLE_HEADERS, timeout = 5L).document
+            val origHref = detailDoc.selectFirst("a[id=download_orig][href], a[href$=-orig.srt]")
+                ?.attr("href")?.trim() ?: return
+            val fullOrigUrl = if (origHref.startsWith("http", ignoreCase = true)) {
+                origHref
+            } else {
+                "https://www.subtitlecat.com/${origHref.trimStart('/')}"
+            }
+            subtitleCallback.invoke(
+                newSubtitleFile("English [SubtitleCat]", fullOrigUrl) {
+                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subtitlecat")
+                }
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -974,14 +1364,15 @@ object SuperStreamExtractor : SuperStream() {
         val urduFunctionMatches = SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX.findAll(normalizedSample).count()
         val persianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(normalizedSample).count()
 
-        if (persianArabicMatches >= 2 && persianArabicMatches > urduFunctionMatches * 2) {
+        // Deterministically reject Persian (fa) and Arabic (ar) across all cue counts
+        if (distinctiveCharCueCount == 0 && urduFunctionMatches == 0) {
             return false
         }
-        if (cues.size >= 4) {
-            if (distinctiveCharCueCount == 0 && urduFunctionMatches == 0) return false
-            if (urduFunctionMatches == 0 && persianArabicMatches >= 1) return false
-        } else {
-            if (distinctiveCharCueCount == 0 && urduFunctionMatches == 0 && persianArabicMatches > 0) return false
+        if (persianArabicMatches >= 1 && urduFunctionMatches == 0 && distinctiveCharCueCount == 0) {
+            return false
+        }
+        if (persianArabicMatches >= 2 && persianArabicMatches > urduFunctionMatches * 2) {
+            return false
         }
         return true
     }
@@ -1449,27 +1840,41 @@ object SuperStreamExtractor : SuperStream() {
     }
 
     internal fun isBrokenSmtUrdu(cues: List<SuperStreamSrtCue>): Boolean {
-        if (cues.size < 10) return false
+        if (cues.isEmpty()) return false
         val sampleSize = minOf(cues.size, 80)
         var ungrammaticalTerminalCount = 0
         var danglingPrepositionEndCount = 0
         var isolatedLatinLeakCount = 0
+        var severeSmtCueCount = 0
 
-        val ungrammaticalPattern = Regex("""(کے\s*ہے|کی\s*ہیں|کا\s*ہیں|میں\s*سے\s*ہے\s*کہ\s*میں|کرنے\s*کا\s*ہے\s*کی)""")
+        val ungrammaticalPattern = Regex("""(کے\s*ہے|کی\s*ہیں|کا\s*ہیں|میں\s*سے\s*ہے\s*کہ\s*میں|کرنے\s*کا\s*ہے\s*کی|کا\s*کے\s*لیے\s*ہے)""")
         val danglingEndPattern = Regex("""(?:^|\s)(کا|کی|کے|کو|سے|پر|میں)\s*[۔.؟!]?\s*$""")
         val latinLeakPattern = Regex("""[A-Za-z]{4,}""")
+        val embeddedSmtLeakPattern = Regex("""([\u0600-\u06FF]+\s+[A-Za-z]{4,}\s+[\u0600-\u06FF]+|__+|\[\s*\d+\s*\]|\{\s*\d+\s*\})""")
 
         for (i in 0 until sampleSize) {
             val raw = cues[i].text.trim().trim(SUPERSTREAM_RLM, '\u200E')
-            if (ungrammaticalPattern.containsMatchIn(raw)) ungrammaticalTerminalCount++
-            if (danglingEndPattern.containsMatchIn(raw)) danglingPrepositionEndCount++
-            if (latinLeakPattern.containsMatchIn(raw.replace(SUPERSTREAM_INLINE_TAG_ONLY_REGEX, ""))) {
-                isolatedLatinLeakCount++
+            val strippedTags = raw.replace(SUPERSTREAM_INLINE_TAG_ONLY_REGEX, "")
+            val hasUngrammatical = ungrammaticalPattern.containsMatchIn(strippedTags)
+            val hasDangling = danglingEndPattern.containsMatchIn(strippedTags)
+            val hasLatin = latinLeakPattern.containsMatchIn(strippedTags)
+            val hasEmbeddedLeak = embeddedSmtLeakPattern.containsMatchIn(strippedTags)
+            if (hasUngrammatical) ungrammaticalTerminalCount++
+            if (hasDangling) danglingPrepositionEndCount++
+            if (hasLatin) isolatedLatinLeakCount++
+            if (hasUngrammatical || hasEmbeddedLeak || (hasDangling && hasLatin)) {
+                severeSmtCueCount++
             }
+        }
+        if (sampleSize < 10) {
+            return severeSmtCueCount * 2 >= sampleSize ||
+                ungrammaticalTerminalCount >= 1 ||
+                (danglingPrepositionEndCount >= 2 && isolatedLatinLeakCount >= 1)
         }
         return (ungrammaticalTerminalCount * 100 / sampleSize >= 15) ||
             (danglingPrepositionEndCount * 100 / sampleSize >= 35) ||
-            (isolatedLatinLeakCount * 100 / sampleSize >= 45)
+            (isolatedLatinLeakCount * 100 / sampleSize >= 45) ||
+            (severeSmtCueCount * 100 / sampleSize >= 25)
     }
 
     internal fun scoreUrduSubtitleNaturalness(cues: List<SuperStreamSrtCue>): Int {
@@ -1722,6 +2127,47 @@ object SuperStreamExtractor : SuperStream() {
         return adapted
     }
 
+    private fun parseCueEndMs(timestamp: String): Long? {
+        val parts = timestamp.split("-->")
+        if (parts.size < 2) return null
+        return parseSrtTimeMs(parts[1].trim())
+    }
+
+    private fun parseCueStartMs(timestamp: String): Long? {
+        val parts = timestamp.split("-->")
+        if (parts.isEmpty()) return null
+        return parseSrtTimeMs(parts[0].trim())
+    }
+
+    private fun parseSrtTimeMs(ts: String): Long? {
+        return try {
+            val mainAndMs = ts.replace('.', ',').split(',')
+            val hms = mainAndMs[0].split(':')
+            if (hms.size != 3) return null
+            val h = hms[0].toLong()
+            val m = hms[1].toLong()
+            val s = hms[2].toLong()
+            val ms = mainAndMs.getOrNull(1)?.padEnd(3, '0')?.take(3)?.toLong() ?: 0L
+            ((h * 3600L + m * 60L + s) * 1000L) + ms
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private val CONTINUATION_STARTER_WORD_REGEX = Regex(
+        """^(?:I|I'm|I've|I'd|I'll|and|but|or|so|because|that|which|who|whom|whose|where|when|while|if|unless|until|since|though|although|even|as|than|to|for|with|from|into|onto|upon|about|after|before|without|within|between|through|during)\b"""
+    )
+
+    internal fun shouldMergeContinuationCues(firstCue: SuperStreamSrtCue, secondCue: SuperStreamSrtCue): Boolean {
+        val aEnd = parseCueEndMs(firstCue.timestamp)
+        val bStart = parseCueStartMs(secondCue.timestamp)
+        if (aEnd != null && bStart != null) {
+            val gap = bStart - aEnd
+            if (gap < 0L || gap > 1500L) return false
+        }
+        return shouldMergeContinuationCues(firstCue.text, secondCue.text)
+    }
+
     internal fun shouldMergeContinuationCues(firstCueText: String, secondCueText: String): Boolean {
         val a = firstCueText.replace(SUPERSTREAM_INLINE_TAG_ONLY_REGEX, "").trim()
         val b = secondCueText.replace(SUPERSTREAM_INLINE_TAG_ONLY_REGEX, "").trim()
@@ -1731,33 +2177,48 @@ object SuperStreamExtractor : SuperStream() {
         val lastChar = a.last()
         if (lastChar == '.' && !a.endsWith("...")) return false
         if (lastChar == '!' || lastChar == '?' || lastChar == ':' || lastChar == ';' || lastChar == '"') return false
-        val firstAlpha = b.firstOrNull { it.isLetter() } ?: return false
-        val aEndsContinuation = a.endsWith("...") || a.endsWith(",") || lastChar.isLetterOrDigit()
-        return aEndsContinuation && (firstAlpha.isLowerCase() || a.endsWith("..."))
+        val bClean = b.removePrefix("...").trimStart()
+        val firstAlpha = bClean.firstOrNull { it.isLetter() } ?: return false
+        val aEndsContinuation = a.endsWith("...") || a.endsWith("…") || a.endsWith(",") || lastChar.isLetterOrDigit()
+        val bStartsContinuation = firstAlpha.isLowerCase() ||
+            a.endsWith("...") ||
+            a.endsWith("…") ||
+            CONTINUATION_STARTER_WORD_REGEX.containsMatchIn(bClean)
+        return aEndsContinuation && bStartsContinuation
     }
 
     internal fun splitTranslatedUrduProportionally(translated: String, parts: Int, weights: List<Int>): List<String> {
         if (parts <= 1) return listOf(translated)
         val clean = translated.trim()
-        val words = clean.split(Regex("""\s+""")).filter { it.isNotBlank() }
+        val outerTagMatch = Regex("""^(<[biu]>)(.*)(</[biu]>)$""", RegexOption.DOT_MATCHES_ALL).matchEntire(clean)
+        val openTag = outerTagMatch?.groupValues?.get(1) ?: ""
+        val closeTag = outerTagMatch?.groupValues?.get(3) ?: ""
+        val innerClean = outerTagMatch?.groupValues?.get(2)?.trim() ?: clean
+
+        val words = innerClean.split(Regex("""\s+""")).filter { it.isNotBlank() }
         if (words.size < parts) {
-            return List(parts) { idx -> if (idx == 0) clean else words.lastOrNull() ?: clean }
+            return List(parts) { idx ->
+                val body = if (idx == 0) innerClean else words.lastOrNull() ?: innerClean
+                if (openTag.isNotEmpty()) "$openTag$body$closeTag" else body
+            }
         }
         val totalWeight = weights.sum().coerceAtLeast(1)
         val result = ArrayList<String>(parts)
         var wordCursor = 0
         var accumulatedWeight = 0
         for (i in 0 until parts) {
-            if (i == parts - 1) {
+            val segment = if (i == parts - 1) {
                 val tail = words.subList(wordCursor, words.size).joinToString(" ")
-                result.add(tail.ifBlank { words.last() })
+                tail.ifBlank { words.last() }
             } else {
                 accumulatedWeight += weights.getOrElse(i) { 1 }
                 val targetEnd = ((words.size.toDouble() * accumulatedWeight / totalWeight).toInt())
                     .coerceIn(wordCursor + 1, words.size - (parts - 1 - i))
-                result.add(words.subList(wordCursor, targetEnd).joinToString(" "))
+                val slice = words.subList(wordCursor, targetEnd).joinToString(" ")
                 wordCursor = targetEnd
+                slice
             }
+            result.add(if (openTag.isNotEmpty()) "$openTag$segment$closeTag" else segment)
         }
         return result
     }
@@ -1781,10 +2242,17 @@ object SuperStreamExtractor : SuperStream() {
             val units = ArrayList<TranslationUnit>(chunkCues.size)
             var i = 0
             while (i < chunkCues.size) {
-                if (i + 1 < chunkCues.size && shouldMergeContinuationCues(chunkCues[i].text, chunkCues[i + 1].text)) {
+                if (i + 1 < chunkCues.size && shouldMergeContinuationCues(chunkCues[i], chunkCues[i + 1])) {
                     val indices = mutableListOf(i, i + 1)
                     val texts = mutableListOf(chunkCues[i].text, chunkCues[i + 1].text)
-                    if (i + 2 < chunkCues.size && shouldMergeContinuationCues(chunkCues[i + 1].text, chunkCues[i + 2].text)) {
+                    val combined12 = SuperStreamSrtCue(
+                        timestamp = "${chunkCues[i].timestamp.substringBefore("-->").trim()} --> ${chunkCues[i + 1].timestamp.substringAfter("-->").trim()}",
+                        text = "${chunkCues[i].text.trim().removeSuffix("...")} ${chunkCues[i + 1].text.trim().removePrefix("...")}"
+                    )
+                    if (i + 2 < chunkCues.size &&
+                        shouldMergeContinuationCues(combined12, chunkCues[i + 2]) &&
+                        (texts[0].length + texts[1].length + chunkCues[i + 2].text.length) <= 240
+                    ) {
                         indices.add(i + 2)
                         texts.add(chunkCues[i + 2].text)
                         i += 3
@@ -1792,9 +2260,11 @@ object SuperStreamExtractor : SuperStream() {
                         i += 2
                     }
                     val combined = texts.joinToString(" ") {
-                        it.trim().removeSuffix("...").trim()
+                        it.trim().removeSuffix("...").removePrefix("...").trim()
                     }.replace(Regex("""\s+"""), " ")
-                    val weights = texts.map { it.length.coerceAtLeast(1) }
+                    val weights = texts.map {
+                        it.replace(SUPERSTREAM_INLINE_TAG_ONLY_REGEX, "").trim().length.coerceAtLeast(1)
+                    }
                     units.add(TranslationUnit(indices, adaptEnglishForSpokenUrduTranslation(combined), weights))
                 } else {
                     val adapted = adaptEnglishForSpokenUrduTranslation(chunkCues[i].text)
@@ -1974,27 +2444,64 @@ object SuperStreamExtractor : SuperStream() {
         return uri.startsWith("http://", ignoreCase = true) || uri.startsWith("https://", ignoreCase = true)
     }
 
+    private const val MAX_DISK_CACHE_FILES = 64
+    private const val MAX_DISK_CACHE_BYTES = 16L * 1024L * 1024L
+
+    internal fun evictStaleAndExcessCacheFiles(baseDir: File) {
+        try {
+            val now = System.currentTimeMillis()
+            val files = baseDir.listFiles { f ->
+                f.isFile && f.name.startsWith("cs_urdu_") && f.name.endsWith(".srt")
+            }?.toMutableList() ?: return
+
+            val iterator = files.iterator()
+            while (iterator.hasNext()) {
+                val f = iterator.next()
+                if (now - f.lastModified() > SUPERSTREAM_PERSISTENT_URL_CACHE_TTL_MS) {
+                    runCatching { f.delete() }
+                    iterator.remove()
+                }
+            }
+
+            var totalBytes = files.sumOf { it.length() }
+            if (files.size > MAX_DISK_CACHE_FILES || totalBytes > MAX_DISK_CACHE_BYTES) {
+                files.sortBy { it.lastModified() }
+                for (f in files) {
+                    if (files.size <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) break
+                    val len = f.length()
+                    if (runCatching { f.delete() }.getOrDefault(false)) {
+                        totalBytes -= len
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     internal fun writeLocalUrduSrtFile(urduSrtContent: String, urlCacheKey: String? = null): String? {
         if (urduSrtContent.isBlank()) return null
         return try {
             val digest = MessageDigest.getInstance("SHA-256")
                 .digest(urduSrtContent.toByteArray(StandardCharsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
-                .take(16)
+                .take(24)
             val baseDir = superStreamAppContextRef?.cacheDir
                 ?: File(System.getProperty("java.io.tmpdir") ?: "/tmp")
             if (!baseDir.exists()) baseDir.mkdirs()
-            val file = File(baseDir, "cs_urdu_$digest.srt")
+            val file = File(baseDir, "cs_urdu_cas_$digest.srt")
             val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
             val payloadBytes = bom + urduSrtContent.toByteArray(StandardCharsets.UTF_8)
             if (!file.exists() || file.length() <= 64L) {
                 file.writeBytes(payloadBytes)
+            } else {
+                runCatching { file.setLastModified(System.currentTimeMillis()) }
             }
             if (!urlCacheKey.isNullOrBlank()) {
                 resolvePersistentUrlCacheFile(urlCacheKey)?.let { urlFile ->
                     runCatching { urlFile.writeBytes(payloadBytes) }
                 }
             }
+            evictStaleAndExcessCacheFiles(baseDir)
             "file:///" + file.absolutePath.trimStart('/')
         } catch (_: Exception) {
             null

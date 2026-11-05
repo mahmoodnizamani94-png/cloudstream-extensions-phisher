@@ -1218,6 +1218,99 @@ class UrduSubtitleSotaTest {
         assertTrue(outputCues[0].text.contains("جیسا کہ ہم آغاز کر رہے ہیں"))
         assertTrue(outputCues[1].text.contains("ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"))
     }
+
+    @Test
+    fun `2-cue Persian and Arabic files are deterministically rejected and 3-cue SVO to SOV continuation chains merge cleanly`() = runBlocking {
+        // 1. 2-cue Persian (Farsi) with کی (which in Persian means 'when/who') must NOT pass as Urdu
+        val twoCuePersian = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            کی اومدی؟ من اینجا منتظرت بودم
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            بگو چرا نرفتی خونه
+        """.trimIndent()
+        assertFalse(
+            "2-cue Persian file must be deterministically rejected even with Persian 'کی'",
+            UrduSubtitleEngine.containsVerifiedUrduScript(twoCuePersian)
+        )
+
+        // 2. 2-cue Arabic without exclusive regex words must still be rejected because it lacks Urdu distinctive chars and function words
+        val twoCueArabic = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            نحن ننتظر في البيت منذ الصباح
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            هل سمعت الخبر الجديد اليوم
+        """.trimIndent()
+        assertFalse(
+            "2-cue Arabic file without Urdu distinctive characters or Urdu function words must be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(twoCueArabic)
+        )
+
+        // 3. 3-cue continuation chain with 'I' pronoun on cue 2 and lowercase continuation on cue 3
+        val threeCueEnglishSrt = """
+            1
+            00:02:00,000 --> 00:02:02,000
+            When the storm finally arrived,
+            
+            2
+            00:02:02,200 --> 00:02:04,200
+            I realized that the old bridge
+            
+            3
+            00:02:04,400 --> 00:02:06,500
+            had already collapsed into the river.
+        """.trimIndent()
+
+        var capturedBatch: List<String> = emptyList()
+        val fullThreeCueUrdu = "جب طوفان بالآخر پہنچا تو مجھے احساس ہوا کہ پرانا پل پہلے ہی دریا میں گر چکا تھا۔"
+        val translatedThreeCue = UrduSubtitleEngine.translateEnglishSrtToUrdu(threeCueEnglishSrt) { batch ->
+            capturedBatch = batch
+            listOf(fullThreeCueUrdu)
+        }
+        assertEquals("3 continuation cues must merge into 1 contextual SVO->SOV unit", 1, capturedBatch.size)
+        assertEquals(
+            "When the storm finally arrived, I realized that the old bridge had already collapsed into the river.",
+            capturedBatch[0]
+        )
+        assertNotNull(translatedThreeCue)
+        val splitCues = UrduSubtitleEngine.parseSubtitleCues(translatedThreeCue!!)
+        assertEquals(3, splitCues.size)
+        assertEquals("00:02:00,000 --> 00:02:02,000", splitCues[0].timestamp)
+        assertEquals("00:02:02,200 --> 00:02:04,200", splitCues[1].timestamp)
+        assertEquals("00:02:04,400 --> 00:02:06,500", splitCues[2].timestamp)
+
+        // 4. Content-Addressed Storage (cs_urdu_cas_) deduplicates identical Urdu SRT content across different URLs
+        val uriA = UrduSubtitleEngine.writeUrduLocalCacheFile("https://mirror1.example.com/sub.srt|S1E1", translatedThreeCue)
+        val uriB = UrduSubtitleEngine.writeUrduLocalCacheFile("https://mirror2.example.com/sub.srt|S1E1", translatedThreeCue)
+        assertNotNull(uriA)
+        assertEquals("Identical Urdu SRT content from two different URLs must resolve to the same content-addressed cs_urdu_cas_ file", uriA, uriB)
+        assertTrue(uriA!!.contains("cs_urdu_cas_"))
+
+        // 5. SubtitleCat candidates are scoped by (imdbId, season, episode)
+        UrduSubtitleEngine.consumeSubtitleCatOrigCandidates()
+        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
+            origUrl = "https://www.subtitlecat.com/subs/111/Show.S01E01-orig.srt",
+            origFilename = "Show.S01E01-orig.srt",
+            imdbId = "tt1111111",
+            season = 1,
+            episode = 1
+        )
+        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
+            origUrl = "https://www.subtitlecat.com/subs/222/Show.S01E02-orig.srt",
+            origFilename = "Show.S01E02-orig.srt",
+            imdbId = "tt1111111",
+            season = 1,
+            episode = 2
+        )
+        val ep2Candidates = UrduSubtitleEngine.consumeSubtitleCatOrigCandidates(imdbId = "tt1111111", season = 1, episode = 2)
+        assertEquals(1, ep2Candidates.size)
+        assertEquals("Show.S01E02-orig.srt", ep2Candidates[0].second)
+    }
 }
 
 

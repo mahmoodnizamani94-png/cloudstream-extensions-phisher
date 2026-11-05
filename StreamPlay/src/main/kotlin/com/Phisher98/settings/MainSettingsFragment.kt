@@ -267,6 +267,65 @@ class MainSettingsFragment(
             ).show()
         }
 
+        fun showSubtitleApiKeysDialog(ctx: Context) {
+            val container = android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                val pad = dpToPx(18f).roundToInt()
+                setPadding(pad, pad / 2, pad, 0)
+            }
+            val subDlInput = android.widget.EditText(ctx).apply {
+                hint = "Optional SubDL API Key (api.subdl.com)"
+                setText(UrduSubtitleEngine.resolveSubDlApiKey(ctx, sharedPref).orEmpty())
+                setSingleLine()
+            }
+            val subSourceInput = android.widget.EditText(ctx).apply {
+                hint = "Optional SubSource API Key (api.subsource.net)"
+                setText(UrduSubtitleEngine.resolveSubSourceApiKey(ctx, sharedPref).orEmpty())
+                setSingleLine()
+            }
+            val wyzieInput = android.widget.EditText(ctx).apply {
+                hint = "Optional Wyzie API Key (sub.wyzie.ru)"
+                setText(UrduSubtitleEngine.resolveWyzieApiKey(ctx, sharedPref).orEmpty())
+                setSingleLine()
+            }
+            container.addView(subDlInput)
+            container.addView(subSourceInput)
+            container.addView(wyzieInput)
+
+            AlertDialog.Builder(ctx)
+                .setTitle("Optional Subtitle API Keys (Cross-Module)")
+                .setMessage("All 8 Urdu sources work out-of-the-box without keys. Adding optional SubDL, SubSource, or Wyzie API keys unlocks direct JSON API tiers across both StreamPlay and SuperStream.")
+                .setView(container)
+                .setPositiveButton("Save Keys") { _, _ ->
+                    val dlKey = subDlInput.text?.toString()?.trim().orEmpty()
+                    val ssKey = subSourceInput.text?.toString()?.trim().orEmpty()
+                    val wyKey = wyzieInput.text?.toString()?.trim().orEmpty()
+                    val prefStores = listOfNotNull(
+                        sharedPref,
+                        runCatching { ctx.applicationContext.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE) }.getOrNull(),
+                        runCatching { ctx.applicationContext.getSharedPreferences("SuperStream", Context.MODE_PRIVATE) }.getOrNull(),
+                        runCatching { ctx.applicationContext.getSharedPreferences("cloudstream_subtitle_mode_prefs", Context.MODE_PRIVATE) }.getOrNull()
+                    )
+                    for (store in prefStores) {
+                        store.edit().apply {
+                            putString("subdl_api_key", dlKey)
+                            putString("subsource_api_key", ssKey)
+                            if (wyKey.isNotEmpty()) {
+                                putString("wyzie_key", wyKey)
+                                putString("wyzie_api_key", wyKey)
+                            }
+                            apply()
+                        }
+                    }
+                    if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey)
+                    if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey)
+                    if (wyKey.isNotEmpty()) System.setProperty("cloudstream.wyzie.key", wyKey)
+                    Toast.makeText(ctx, "Subtitle API keys saved across StreamPlay & SuperStream", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
         fun showSubtitleModeDialog(ctx: Context) {
             val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
             val checkedItem = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) 1 else 0
@@ -284,6 +343,9 @@ class MainSettingsFragment(
                     }
                     applyModeSelection(ctx, selectedMode)
                     dialogInterface.dismiss()
+                }
+                .setNeutralButton("API Keys (Optional)") { _, _ ->
+                    showSubtitleApiKeysDialog(ctx)
                 }
                 .setNegativeButton("Cancel", null)
                 .show()

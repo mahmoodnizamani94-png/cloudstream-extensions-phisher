@@ -560,5 +560,71 @@ class SuperStreamUrduSubtitleTest {
         assertEquals("00:01:12,700 --> 00:01:15,200", outCues[1].timestamp)
         assertEquals("00:01:18,000 --> 00:01:20,000", outCues[2].timestamp)
     }
+
+    @Test
+    fun `2-cue Persian and Arabic files are deterministically rejected and 3-cue continuation chains and content-addressed cache work in SuperStream`() = runBlocking {
+        val twoCuePersian = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            کی اومدی؟ من اینجا منتظرت بودم
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            بگو چرا نرفتی خونه
+        """.trimIndent()
+        assertFalse(
+            "2-cue Persian file must be rejected by SuperStreamExtractor.containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(twoCuePersian)
+        )
+
+        val twoCueArabic = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            نحن ننتظر في البيت منذ الصباح
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            هل سمعت الخبر الجديد اليوم
+        """.trimIndent()
+        assertFalse(
+            "2-cue Arabic file must be rejected by SuperStreamExtractor.containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(twoCueArabic)
+        )
+
+        val threeCueEnglishSrt = """
+            1
+            00:02:00,000 --> 00:02:02,000
+            When the storm finally arrived,
+            
+            2
+            00:02:02,200 --> 00:02:04,200
+            I realized that the old bridge
+            
+            3
+            00:02:04,400 --> 00:02:06,500
+            had already collapsed into the river.
+        """.trimIndent()
+
+        var capturedBatch: List<String> = emptyList()
+        val fullThreeCueUrdu = "جب طوفان بالآخر پہنچا تو مجھے احساس ہوا کہ پرانا پل پہلے ہی دریا میں گر چکا تھا۔"
+        val translatedThreeCue = SuperStreamExtractor.translateEnglishSrtToUrdu(threeCueEnglishSrt) { batch ->
+            capturedBatch = batch
+            listOf(fullThreeCueUrdu)
+        }
+        assertEquals(1, capturedBatch.size)
+        assertEquals(
+            "When the storm finally arrived, I realized that the old bridge had already collapsed into the river.",
+            capturedBatch[0]
+        )
+        assertNotNull(translatedThreeCue)
+        val splitCues = SuperStreamExtractor.parseSuperStreamCues(translatedThreeCue!!)
+        assertEquals(3, splitCues.size)
+
+        val uriA = SuperStreamExtractor.writeLocalUrduSrtFile(translatedThreeCue, "https://mirror1.example.com/sub.srt|S1E1")
+        val uriB = SuperStreamExtractor.writeLocalUrduSrtFile(translatedThreeCue, "https://mirror2.example.com/sub.srt|S1E1")
+        assertNotNull(uriA)
+        assertEquals(uriA, uriB)
+        assertTrue(uriA!!.contains("cs_urdu_cas_"))
+    }
 }
 

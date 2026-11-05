@@ -253,12 +253,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
         }
 
-        private const val PREWARM_COOLDOWN_MS = 10 * 60 * 1000L // 10 minutes
-        private val prewarmCooldownMap = java.util.concurrent.ConcurrentHashMap<String, Long>()
-        private val prewarmScope = kotlinx.coroutines.CoroutineScope(
-            kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
-        )
-
         internal fun scheduleSpeculativeUrduPrewarm(
             imdbId: String?,
             title: String?,
@@ -267,37 +261,15 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             year: Int?,
             sharedPref: SharedPreferences?
         ) {
-            val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
-            val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
-            val prewarmKey = cleanImdb ?: cleanTitle?.lowercase(java.util.Locale.ROOT) ?: return
-            val now = System.currentTimeMillis()
-            val lastWarm = prewarmCooldownMap[prewarmKey] ?: 0L
-            if (now - lastWarm < PREWARM_COOLDOWN_MS) return
-            prewarmCooldownMap[prewarmKey] = now
-
-            prewarmScope.launch {
-                runCatching {
-                    UrduSubtitleEngine.invokeSubDlUrduKeyless(
-                        imdbId = cleanImdb,
-                        title = cleanTitle,
-                        season = season,
-                        episode = episode,
-                        year = year,
-                        sharedPref = sharedPref ?: companionSharedPref,
-                        subtitleCallback = {}
-                    )
-                }
-                if (cleanImdb != null) {
-                    runCatching {
-                        UrduSubtitleEngine.invokeSubSenseUrdu(
-                            imdbId = cleanImdb,
-                            season = season,
-                            episode = episode,
-                            subtitleCallback = {}
-                        )
-                    }
-                }
-            }
+            UrduSubtitleEngine.prewarmUrduSubtitlesAsync(
+                imdbId = imdbId,
+                title = title,
+                season = season,
+                episode = episode,
+                year = year,
+                isMovie = season == null || season <= 0,
+                sharedPref = sharedPref ?: companionSharedPref
+            )
         }
 
         private const val DOMAINS_URL =
@@ -1289,7 +1261,13 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Name", ignoreCase = true) }
                         ?.value?.trim()?.takeIf { it.isNotBlank() }
                     if (origUrlHeader != null && origNameHeader != null) {
-                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(origUrlHeader, origNameHeader)
+                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
+                            origUrlHeader,
+                            origNameHeader,
+                            imdbId = res.imdbId,
+                            season = res.season,
+                            episode = res.episode
+                        )
                     }
                     if (shieldedUrl.startsWith("http", ignoreCase = true)) {
                         bestEnglishSubtitleUrls.add(shieldedUrl)
@@ -1322,6 +1300,19 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         fun flushDeferredSubtitles() {
             if (urduMode) {
+                // Guaranteed non-zero subtitle floor: if both human Urdu harvesting and Phase 4
+                // neural translation failed completely (e.g. Google Translate endpoints unreachable),
+                // release up to 2 deferred English donor tracks so the user is never left with zero subtitles.
+                if (urduSubtitleSources.isEmpty()) {
+                    var emittedEmergencyEnglish = 0
+                    while (emittedEmergencyEnglish < 2) {
+                        val deferred = deferredNonUrduSubtitles.poll() ?: break
+                        earlyController.onSubtitleEmitted(deferred)
+                        subtitleCallback(deferred)
+                        dispatcher.onSubtitleReceived()
+                        emittedEmergencyEnglish++
+                    }
+                }
                 deferredNonUrduSubtitles.clear()
                 return
             }
@@ -1461,7 +1452,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                 episode = res.episode,
                                 year = res.year,
                                 isMovie = res.isMovie == true,
-                                isAnime = res.isAnime
+                                isAnime = res.isAnime,
+                                imdbId = res.imdbId
                             ) { sub ->
                                 emitSubtitle(sub, "subtitlecat")
                             }
