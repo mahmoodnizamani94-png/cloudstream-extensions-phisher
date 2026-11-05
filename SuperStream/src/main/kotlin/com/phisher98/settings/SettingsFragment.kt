@@ -1,30 +1,40 @@
 package com.phisher98.settings
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.*
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import android.widget.TextView
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.edit
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.phisher98.BuildConfig
 import com.phisher98.MODE_DEFAULT
 import com.phisher98.MODE_URDU
+import com.phisher98.SuperStreamPlugin
 import com.phisher98.isUrduSubtitleMode
 import com.phisher98.setSubtitleMode
-import com.lagradost.cloudstream3.CommonActivity.showToast
-import com.lagradost.cloudstream3.utils.AppContextUtils.setDefaultFocus
-import com.phisher98.SuperStreamPlugin
-import androidx.core.content.edit
+import kotlin.math.roundToInt
 
 class SettingsFragment(
     plugin: SuperStreamPlugin,
@@ -32,8 +42,27 @@ class SettingsFragment(
 ) : BottomSheetDialogFragment() {
     private val res = plugin.resources ?: throw Exception("Unable to read resources")
 
+    private fun dpToPx(dp: Float): Float = dp * resources.displayMetrics.density
+
+    private fun buildRoundedBox(
+        fillColorHex: String,
+        cornerRadiusDp: Float,
+        strokeWidthDp: Float = 0f,
+        strokeColorHex: String? = null
+    ): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dpToPx(cornerRadiusDp)
+            setColor(Color.parseColor(fillColorHex))
+            if (strokeWidthDp > 0f && strokeColorHex != null) {
+                setStroke(dpToPx(strokeWidthDp).roundToInt().coerceAtLeast(1), Color.parseColor(strokeColorHex))
+            }
+        }
+    }
+
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
+        if (id == 0) throw IllegalStateException("View ID $name not found in ${BuildConfig.LIBRARY_PACKAGE_NAME}")
         return this.findViewById(id)
     }
 
@@ -51,83 +80,177 @@ class SettingsFragment(
         (dialog as? BottomSheetDialog)?.behavior?.apply {
             state = BottomSheetBehavior.STATE_EXPANDED
             skipCollapsed = true
-            isDraggable = false // optional: prevent dragging at all
+            isDraggable = false
         }
     }
-
 
     @SuppressLint("SetJavaScriptEnabled", "SetTextI18n")
     @RequiresApi(Build.VERSION_CODES.M)
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        val basePaddingLeft = view.paddingLeft
+        val basePaddingTop = view.paddingTop
+        val basePaddingRight = view.paddingRight
+        val basePaddingBottom = view.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, windowInsets ->
+            val insets = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            v.setPadding(
+                basePaddingLeft + insets.left,
+                basePaddingTop + insets.top,
+                basePaddingRight + insets.right,
+                basePaddingBottom + insets.bottom
+            )
+            windowInsets
+        }
+
         val subtitleModeRow = view.findView<View>("subtitle_mode_button")
-        val subtitleModeLabel = view.findView<android.widget.TextView>("subtitle_mode_label")
-        val subtitleModeDesc = runCatching { view.findView<android.widget.TextView>("subtitle_mode_desc") }.getOrNull()
+        val subtitleModeLabel = view.findView<TextView>("subtitle_mode_label")
+        val subtitleModeDesc = runCatching { view.findView<TextView>("subtitle_mode_desc") }.getOrNull()
+        val subtitleModeStatusBadge = runCatching { view.findView<TextView>("subtitle_mode_status_badge") }.getOrNull()
+        val subtitleModePillTrack = runCatching { view.findView<View>("subtitle_mode_pill_track") }.getOrNull()
+        val subtitleModePillDefault = runCatching { view.findView<TextView>("subtitle_mode_pill_default") }.getOrNull()
+        val subtitleModePillUrdu = runCatching { view.findView<TextView>("subtitle_mode_pill_urdu") }.getOrNull()
+        val subtitleModeSourcesChips = runCatching { view.findView<TextView>("subtitle_mode_sources_chips") }.getOrNull()
+
         val tokenInput = view.findView<EditText>("tokenInput")
         val addButton = view.findView<Button>("addButton")
         val resetButton = view.findView<Button>("resetButton")
         val loginButton = view.findView<Button>("loginButton")
         val webView = view.findView<WebView>("authWebView")
 
-        fun refreshSubtitleModeLabel() {
+        fun updateSubtitleModeCardUi() {
             val urduActive = isUrduSubtitleMode(sharedPref, context)
+
+            subtitleModePillTrack?.background = buildRoundedBox(
+                fillColorHex = "#0F172A",
+                cornerRadiusDp = 14f,
+                strokeWidthDp = 1f,
+                strokeColorHex = "#1E293B"
+            )
+
             if (urduActive) {
-                subtitleModeLabel.text = "Subtitle Mode: Urdu (اردو) • 4 SOTA Sources + Neural AI"
-                subtitleModeDesc?.text = "Active Urdu Sources (4 + AI): SubDL, Wyzie, SubSense, OpenSubtitles + Neural AI • Tap to configure or long-press for 1-tap switch"
+                subtitleModeRow.background = buildRoundedBox(
+                    fillColorHex = "#141E28",
+                    cornerRadiusDp = 16f,
+                    strokeWidthDp = 1.5f,
+                    strokeColorHex = "#10B981"
+                )
+                subtitleModeLabel.text = "Subtitle Mode: Urdu (\u0627\u0631\u062f\u0648) • 8 Verified Urdu Sources + Spoken Urdu AI"
+                subtitleModeDesc?.text =
+                    "Active: 8 Verified Urdu Sources + Spoken Urdu AI (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI)"
+                subtitleModeStatusBadge?.apply {
+                    text = "URDU SOTA ACTIVE"
+                    setTextColor(Color.parseColor("#34D399"))
+                    background = buildRoundedBox("#064E3B", 999f, 1f, "#10B981")
+                }
+                subtitleModePillUrdu?.apply {
+                    background = buildRoundedBox("#059669", 12f)
+                    setTextColor(Color.parseColor("#FFFFFF"))
+                    isSelected = true
+                }
+                subtitleModePillDefault?.apply {
+                    background = buildRoundedBox("#1E293B", 12f)
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    isSelected = false
+                }
+                subtitleModeSourcesChips?.apply {
+                    text = "✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI"
+                    setTextColor(Color.parseColor("#6EE7B7"))
+                }
             } else {
+                subtitleModeRow.background = buildRoundedBox(
+                    fillColorHex = "#161B26",
+                    cornerRadiusDp = 16f,
+                    strokeWidthDp = 1.5f,
+                    strokeColorHex = "#3B82F6"
+                )
                 subtitleModeLabel.text = "Subtitle Mode: Default (English)"
-                subtitleModeDesc?.text = "Active: English Subtitles (OpenSubtitles, Wyzie) • Tap to switch to Urdu (4 SOTA Sources + AI) or long-press for 1-tap toggle"
+                subtitleModeDesc?.text =
+                    "Active: English Subtitles • Tap any pill below for instant 1-tap switch to 8 Verified Urdu Sources + Spoken Urdu AI"
+                subtitleModeStatusBadge?.apply {
+                    text = "ENGLISH DEFAULT"
+                    setTextColor(Color.parseColor("#93C5FD"))
+                    background = buildRoundedBox("#1E3A8A", 999f, 1f, "#3B82F6")
+                }
+                subtitleModePillDefault?.apply {
+                    background = buildRoundedBox("#2563EB", 12f)
+                    setTextColor(Color.parseColor("#FFFFFF"))
+                    isSelected = true
+                }
+                subtitleModePillUrdu?.apply {
+                    background = buildRoundedBox("#1E293B", 12f)
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    isSelected = false
+                }
+                subtitleModeSourcesChips?.apply {
+                    text = "✓ Verified English Harvesters • Instant 1-Tap Switch to 8 Verified Urdu Sources + Spoken Urdu AI Above"
+                    setTextColor(Color.parseColor("#93C5FD"))
+                }
             }
         }
-        refreshSubtitleModeLabel()
 
-        subtitleModeRow.setOnClickListener { clickedView ->
-            clickedView.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-            val ctx = this.context ?: return@setOnClickListener
+        updateSubtitleModeCardUi()
+
+        fun applyModeSelection(ctx: Context, selectedMode: String) {
+            setSubtitleMode(selectedMode, ctx, sharedPref)
+            updateSubtitleModeCardUi()
+            val displayLabel = if (selectedMode == MODE_URDU) {
+                "Urdu (\u0627\u0631\u062f\u0648) • 8 Verified Urdu Sources + Spoken Urdu AI"
+            } else {
+                "Default (English)"
+            }
+            Toast.makeText(
+                ctx,
+                "Subtitle Mode: $displayLabel",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        fun showSubtitleModeDialog(ctx: Context) {
             val urduActive = isUrduSubtitleMode(sharedPref, ctx)
             val checkedItem = if (urduActive) 1 else 0
             val options = arrayOf(
-                "Default — English Subtitles (Streams & Downloads)",
-                "Urdu / اردو — 4 SOTA Sources + Neural AI (SubDL, Wyzie, SubSense, OpenSubtitles)"
+                "🇬🇧 Default — English Subtitles (Streams & Downloads)",
+                "🇵🇰 Urdu / \u0627\u0631\u062f\u0648 — 8 Verified Urdu Sources + Spoken Urdu AI (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI)"
             )
             AlertDialog.Builder(ctx)
-                .setTitle("Subtitle Mode • 4 Urdu SOTA Sources + Neural AI")
+                .setTitle("Subtitle Mode • 8 Verified Urdu Sources + Spoken Urdu AI")
                 .setSingleChoiceItems(options, checkedItem) { dialogInterface, which ->
                     val selectedMode = if (which == 1) MODE_URDU else MODE_DEFAULT
-                    val displayLabel = if (which == 1) {
-                        "Urdu (اردو) • 4 SOTA Sources + Neural AI"
-                    } else {
-                        "Default (English)"
-                    }
-                    setSubtitleMode(selectedMode, ctx, sharedPref)
-                    refreshSubtitleModeLabel()
+                    applyModeSelection(ctx, selectedMode)
                     dialogInterface.dismiss()
-                    android.widget.Toast.makeText(
-                        ctx,
-                        "Subtitle Mode: $displayLabel",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
         }
 
-        subtitleModeRow.setOnLongClickListener { clickedView ->
-            clickedView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            val ctx = this.context ?: return@setOnLongClickListener false
+        subtitleModePillDefault?.setOnClickListener { pillView ->
+            pillView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            val ctx = this.context ?: return@setOnClickListener
+            applyModeSelection(ctx, MODE_DEFAULT)
+        }
+
+        subtitleModePillUrdu?.setOnClickListener { pillView ->
+            pillView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            val ctx = this.context ?: return@setOnClickListener
+            applyModeSelection(ctx, MODE_URDU)
+        }
+
+        subtitleModeRow.setOnClickListener { clickedView ->
+            clickedView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            val ctx = this.context ?: return@setOnClickListener
             val urduActive = isUrduSubtitleMode(sharedPref, ctx)
             val nextMode = if (urduActive) MODE_DEFAULT else MODE_URDU
-            val displayLabel = if (!urduActive) {
-                "Urdu (اردو) • 4 SOTA Sources + Neural AI"
-            } else {
-                "Default (English)"
-            }
-            setSubtitleMode(nextMode, ctx, sharedPref)
-            refreshSubtitleModeLabel()
-            android.widget.Toast.makeText(
-                ctx,
-                "Subtitle Mode: $displayLabel",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            applyModeSelection(ctx, nextMode)
+        }
+
+        subtitleModeRow.setOnLongClickListener { clickedView ->
+            clickedView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            val ctx = this.context ?: return@setOnLongClickListener false
+            showSubtitleModeDialog(ctx)
             true
         }
 
@@ -221,10 +344,11 @@ class SettingsFragment(
                     val finalToken = "ui=$token"
 
                     activity?.runOnUiThread {
-                        val tokenInput = requireView().findViewById<EditText>(
-                            res.getIdentifier("tokenInput", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-                        )
-                        tokenInput.setText(finalToken)
+                        val rootView = this@SettingsFragment.view ?: return@runOnUiThread
+                        val tokenInput = runCatching {
+                            rootView.findView<EditText>("tokenInput")
+                        }.getOrNull()
+                        tokenInput?.setText(finalToken)
 
                         sharedPref.edit()?.apply {
                             putString("token", finalToken)

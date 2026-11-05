@@ -3,7 +3,10 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
+    android:scrollbars="vertical"
+    android:fadeScrollbars="false"
+    android:fillViewport="true"
     android:layoutDirection="ltr">
 
     <LinearLayout
@@ -50,52 +53,147 @@
             android:background="#2A2A2A"
             android:layout_marginBottom="16dp" />
 
-        <!-- 0. Subtitle Mode Card (Default English <-> Urdu) -->
+        <!-- 0. Flagship SOTA Hero Subtitle Mode Switcher Card (Default English <-> Urdu) -->
         <LinearLayout
             android:id="@+id/subtitle_mode_button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:orientation="horizontal"
+            android:layout_marginBottom="14dp"
+            android:orientation="vertical"
             android:padding="16dp"
-            android:gravity="center_vertical"
             android:clickable="true"
             android:focusable="true"
             android:foreground="?android:attr/selectableItemBackground"
-            android:nextFocusUp="@id/saveIcon">
+            android:nextFocusUp="@id/saveIcon"
+            android:nextFocusDown="@id/subtitle_mode_pill_default">
 
+            <!-- Top Row: Title + Instant Status Badge + Gear Icon -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
-                <TextView
-                    android:id="@+id/subtitle_mode_label"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:text="Subtitle Mode: Default (English)"
-                    android:textColor="#FFFFFF"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
+                    android:layout_weight="1"
+                    android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/subtitle_mode_desc"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="8 SOTA Urdu Sources (SubDL, SubSource, Wyzie, SubSense, YTS-Subs, Subf2m, SubtitleCat, OpenSubtitles) + Neural AI Fallback"
-                    android:textColor="#AAAAAA"
-                    android:textSize="12sp"
-                    android:layout_marginTop="4dp" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:id="@+id/subtitle_mode_label"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Subtitle Mode: Default (English)"
+                            android:textColor="#FFFFFF"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/subtitle_mode_status_badge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:paddingTop="3dp"
+                            android:paddingBottom="3dp"
+                            android:text="INSTANT • 0ms"
+                            android:textColor="#93C5FD"
+                            android:textSize="10sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/subtitle_mode_desc"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="8 Verified Urdu Sources (SubDL, Subf2m, YTS-Subs, OpenSubtitles, SubSource, SubSense, Wyzie, SubtitleCat) + Spoken Urdu AI"
+                        android:textColor="#CBD5E1"
+                        android:textSize="12sp"
+                        android:layout_marginTop="4dp" />
+                </LinearLayout>
+
+                <ImageView
+                    android:id="@+id/subtitle_mode_icon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_marginStart="12dp"
+                    android:focusable="false"
+                    android:clickable="false" />
             </LinearLayout>
 
-            <ImageView
-                android:id="@+id/subtitle_mode_icon"
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:layout_marginStart="16dp"
-                android:focusable="false"
-                android:clickable="false" />
+            <!-- Direct 1-Tap Segmented Pill Bar -->
+            <LinearLayout
+                android:id="@+id/subtitle_mode_pill_track"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal"
+                android:padding="4dp"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/subtitle_mode_pill_default"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="🇬🇧 Default (English)"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:nextFocusUp="@id/subtitle_mode_button"
+                    android:nextFocusRight="@id/subtitle_mode_pill_urdu"
+                    android:nextFocusDown="@id/performanceRow" />
+
+                <Space
+                    android:layout_width="6dp"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/subtitle_mode_pill_urdu"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="🇵🇰 Urdu (اردو • SOTA)"
+                    android:textColor="#94A3B8"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:nextFocusUp="@id/subtitle_mode_button"
+                    android:nextFocusLeft="@id/subtitle_mode_pill_default"
+                    android:nextFocusDown="@id/performanceRow" />
+            </LinearLayout>
+
+            <!-- Live Pipeline Sources Chips Strip -->
+            <TextView
+                android:id="@+id/subtitle_mode_sources_chips"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="✓ 7 Verified English Harvesters • 5-Source Download Diversity • Instant 1-Tap Urdu Switch Above"
+                android:textColor="#94A3B8"
+                android:textSize="11sp" />
         </LinearLayout>
 
         <!-- 1. Performance Setting Card -->
@@ -414,7 +512,7 @@
                 android:clickable="false" />
         </LinearLayout>
 
-        <!-- 8. Change Language Card -->
+        <!-- 8. Change Language & Subtitles Card -->
         <LinearLayout
             android:id="@+id/languageRow"
             android:layout_width="match_parent"
@@ -436,7 +534,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Change Language"
+                    android:text="Change Language &amp; Subtitles"
                     android:textColor="#FFFFFF"
                     android:textSize="16sp"
                     android:textStyle="bold" />
@@ -444,7 +542,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Set your native language for subtitles and titles"
+                    android:text="Switch English / Urdu (اردو) subtitles or set TMDB catalog language"
                     android:textColor="#AAAAAA"
                     android:textSize="12sp"
                     android:layout_marginTop="4dp" />

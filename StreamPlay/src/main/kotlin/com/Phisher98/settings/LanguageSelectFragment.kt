@@ -2,20 +2,27 @@ package com.phisher98
 
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.RadioButton
+import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.edit
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.addTextChangedListener
+import androidx.fragment.app.DialogFragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import androidx.fragment.app.DialogFragment
-import com.phisher98.BuildConfig
-import com.phisher98.StreamPlayPlugin
-import androidx.core.content.edit
-import androidx.core.widget.addTextChangedListener
+import kotlin.math.roundToInt
 
 class LanguageSelectFragment(
     plugin: StreamPlayPlugin,
@@ -31,19 +38,41 @@ class LanguageSelectFragment(
             val width = if (displayMetrics.widthPixels > 0 && displayMetrics.widthPixels > maxDialogWidth) {
                 maxDialogWidth
             } else {
-                (displayMetrics.widthPixels * 0.9f).toInt()
+                (displayMetrics.widthPixels * 0.92f).toInt()
             }
-            setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            val height = (displayMetrics.heightPixels * 0.85f).toInt().coerceAtLeast(1)
+            setGravity(Gravity.CENTER)
+            setLayout(width, height)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         }
     }
 
     private val res = plugin.resources ?: throw Exception("Unable to access plugin resources")
 
+    private fun dpToPx(dp: Float): Float = dp * resources.displayMetrics.density
+
+    private fun buildRoundedBox(
+        fillColorHex: String,
+        cornerRadiusDp: Float,
+        strokeWidthDp: Float = 0f,
+        strokeColorHex: String? = null
+    ): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dpToPx(cornerRadiusDp)
+            setColor(Color.parseColor(fillColorHex))
+            if (strokeWidthDp > 0f && strokeColorHex != null) {
+                setStroke(dpToPx(strokeWidthDp).roundToInt().coerceAtLeast(1), Color.parseColor(strokeColorHex))
+            }
+        }
+    }
+
     @SuppressLint("UseCompatLoadingForDrawables")
     private fun View.makeTvCompatible() {
         val outlineId = res.getIdentifier("outline", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        this.background = res.getDrawable(outlineId, null)
+        if (outlineId != 0) {
+            this.background = res.getDrawable(outlineId, null)
+        }
     }
 
     private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
@@ -54,12 +83,19 @@ class LanguageSelectFragment(
 
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (id == 0) throw Exception("View ID $name not found.")
+        if (id == 0) throw IllegalStateException("View ID $name not found.")
         return this.findViewById(id)
     }
 
-    // Language Display List
-    private val languages = listOf(
+    private val pinnedPriorityLanguages = listOf(
+        "🇵🇰 Urdu — Pakistan (ur-PK)" to "ur-PK",
+        "🇮🇳 Urdu — India (ur-IN)" to "ur-IN",
+        "🇺🇸 English — United States (en-US)" to "en-US",
+        "🇬🇧 English — United Kingdom (en-GB)" to "en-GB"
+    )
+
+    // Alphabetical Catalog Language Display List
+    private val alphabeticalLanguages = listOf(
         "South Africa (Afrikaans)" to "af-ZA",
         "United Arab Emirates (Arabic)" to "ar-AE",
         "Saudi Arabia (Arabic)" to "ar-SA",
@@ -72,8 +108,6 @@ class LanguageSelectFragment(
         "Denmark (Danish)" to "da-DK",
         "Germany (German)" to "de-DE",
         "Greece (Greek)" to "el-GR",
-        "United States (English)" to "en-US",
-        "United Kingdom (English)" to "en-GB",
         "Spain (Spanish)" to "es-ES",
         "Latin America (Spanish)" to "es-419",
         "Estonia (Estonian)" to "et-EE",
@@ -100,8 +134,6 @@ class LanguageSelectFragment(
         "Malaysia (Malay)" to "ms-MY",
         "Norway (Norwegian)" to "no-NO",
         "Netherlands (Dutch)" to "nl-NL",
-        "Pakistan (Urdu)" to "ur-PK",
-        "India (Urdu)" to "ur-IN",
         "Poland (Polish)" to "pl-PL",
         "Brazil (Portuguese)" to "pt-BR",
         "Portugal (Portuguese)" to "pt-PT",
@@ -121,40 +153,157 @@ class LanguageSelectFragment(
         "Taiwan (Chinese Traditional)" to "zh-TW"
     ).sortedBy { it.first.lowercase() }
 
+    private val languageList: List<Pair<String, String>> =
+        pinnedPriorityLanguages + alphabeticalLanguages
 
     private lateinit var adapter: LanguageAdapter
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
-
         val root = getLayout("fragment_language_select", inflater, container)
         val drawableId = res.getIdentifier("dialog_background", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
         if (drawableId != 0) {
             root.background = res.getDrawable(drawableId, null)
         }
 
+        val banner: View? = runCatching { root.findView<View>("lang_subtitle_mode_banner") }.getOrNull()
+        val bannerStatus: TextView? = runCatching { root.findView<TextView>("lang_subtitle_mode_status") }.getOrNull()
+        val pillTrack: View? = runCatching { root.findView<View>("lang_pill_track") }.getOrNull()
+        val pillDefault: TextView? = runCatching { root.findView<TextView>("lang_pill_default") }.getOrNull()
+        val pillUrdu: TextView? = runCatching { root.findView<TextView>("lang_pill_urdu") }.getOrNull()
+
         val recycler: RecyclerView = root.findView("languageRecycler")
         val search: EditText = root.findView("searchLanguage")
         recycler.makeTvCompatible()
-        search.makeTvCompatible()
+
+        // Keep search bar clearly visible on Pixel touch phones (do NOT overwrite with transparent outline.xml)
+        val inputSelectorId = res.getIdentifier("input_text_selector", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
+        if (inputSelectorId != 0) {
+            search.background = res.getDrawable(inputSelectorId, null)
+        } else {
+            search.background = buildRoundedBox("#262626", 10f, 1f, "#475569")
+        }
+
+        fun updateSubtitleBannerUi() {
+            val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
+            val isUrdu = currentMode == UrduSubtitleEngine.SubtitleMode.URDU
+
+            pillTrack?.background = buildRoundedBox("#0F172A", 12f, 1f, "#1E293B")
+
+            if (isUrdu) {
+                banner?.background = buildRoundedBox("#141E28", 14f, 1.5f, "#10B981")
+                bannerStatus?.text =
+                    "Active: Urdu (\u0627\u0631\u062f\u0648) • ${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Sources + Spoken Urdu AI"
+                bannerStatus?.setTextColor(Color.parseColor("#6EE7B7"))
+                pillUrdu?.apply {
+                    background = buildRoundedBox("#059669", 10f)
+                    setTextColor(Color.parseColor("#FFFFFF"))
+                    isSelected = true
+                }
+                pillDefault?.apply {
+                    background = buildRoundedBox("#1E293B", 10f)
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    isSelected = false
+                }
+            } else {
+                banner?.background = buildRoundedBox("#161B26", 14f, 1.5f, "#3B82F6")
+                bannerStatus?.text =
+                    "Active: Default (English) • Tap Urdu (\u0627\u0631\u062f\u0648) below for instant 1-tap switch"
+                bannerStatus?.setTextColor(Color.parseColor("#93C5FD"))
+                pillDefault?.apply {
+                    background = buildRoundedBox("#2563EB", 10f)
+                    setTextColor(Color.parseColor("#FFFFFF"))
+                    isSelected = true
+                }
+                pillUrdu?.apply {
+                    background = buildRoundedBox("#1E293B", 10f)
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    isSelected = false
+                }
+            }
+        }
+
+        updateSubtitleBannerUi()
+
+        fun applySubtitleModeFromBanner(selectedMode: UrduSubtitleEngine.SubtitleMode) {
+            val ctx = context ?: return
+            UrduSubtitleEngine.setSubtitleMode(
+                mode = selectedMode,
+                context = ctx,
+                sharedPref = sharedPref
+            )
+            updateSubtitleBannerUi()
+            val detail = if (selectedMode == UrduSubtitleEngine.SubtitleMode.URDU) {
+                "${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Urdu Sources + Spoken Urdu AI active"
+            } else {
+                "Default English subtitles active"
+            }
+            Toast.makeText(
+                ctx,
+                "Subtitle Mode: ${selectedMode.displayLabel} — $detail",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        pillDefault?.setOnClickListener { v ->
+            v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            applySubtitleModeFromBanner(UrduSubtitleEngine.SubtitleMode.DEFAULT)
+        }
+
+        pillUrdu?.setOnClickListener { v ->
+            v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            applySubtitleModeFromBanner(UrduSubtitleEngine.SubtitleMode.URDU)
+        }
+
+        banner?.setOnClickListener { v ->
+            v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
+            val nextMode = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) {
+                UrduSubtitleEngine.SubtitleMode.DEFAULT
+            } else {
+                UrduSubtitleEngine.SubtitleMode.URDU
+            }
+            applySubtitleModeFromBanner(nextMode)
+        }
 
         recycler.layoutManager = LinearLayoutManager(requireContext())
 
         val savedCode = sharedPref.getString("tmdb_language_code", "en-US") ?: "en-US"
 
         adapter = LanguageAdapter(
-            languages.sortedBy { it.first.lowercase() }, // << SORT HERE
+            languageList,
             savedCode
         ) { code ->
             sharedPref.edit { putString("tmdb_language_code", code) }
+            val ctx = requireContext()
             if (code.startsWith("ur", ignoreCase = true)) {
-                UrduSubtitleEngine.setSubtitleMode(UrduSubtitleEngine.SubtitleMode.URDU, requireContext(), sharedPref)
+                UrduSubtitleEngine.setSubtitleMode(
+                    mode = UrduSubtitleEngine.SubtitleMode.URDU,
+                    context = ctx,
+                    sharedPref = sharedPref
+                )
+                updateSubtitleBannerUi()
+                Toast.makeText(
+                    ctx,
+                    "Language set to $code • Urdu (\u0627\u0631\u062f\u0648) SOTA Subtitles enabled",
+                    Toast.LENGTH_SHORT
+                ).show()
             } else if (code.startsWith("en", ignoreCase = true)) {
-                UrduSubtitleEngine.setSubtitleMode(UrduSubtitleEngine.SubtitleMode.DEFAULT, requireContext(), sharedPref)
+                UrduSubtitleEngine.setSubtitleMode(
+                    mode = UrduSubtitleEngine.SubtitleMode.DEFAULT,
+                    context = ctx,
+                    sharedPref = sharedPref
+                )
+                updateSubtitleBannerUi()
+                Toast.makeText(
+                    ctx,
+                    "Language set to $code • Default (English) Subtitles enabled",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                Toast.makeText(ctx, "Language set to $code", Toast.LENGTH_SHORT).show()
             }
-            Toast.makeText(requireContext(), "Language set to $code", Toast.LENGTH_SHORT).show()
             dismiss()
         }
-
 
         recycler.adapter = adapter
 
@@ -165,6 +314,25 @@ class LanguageSelectFragment(
         return root
     }
 
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        val basePaddingLeft = view.paddingLeft
+        val basePaddingTop = view.paddingTop
+        val basePaddingRight = view.paddingRight
+        val basePaddingBottom = view.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, windowInsets ->
+            val insets = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            v.setPadding(
+                basePaddingLeft + insets.left,
+                basePaddingTop + insets.top,
+                basePaddingRight + insets.right,
+                basePaddingBottom + insets.bottom
+            )
+            windowInsets
+        }
+    }
 
     // ---------------------------------------------------------------------- ADAPTER ------------------ //
 
@@ -197,12 +365,16 @@ class LanguageSelectFragment(
         }
 
         override fun getItemCount() = filteredList.size
+
         @SuppressLint("NotifyDataSetChanged")
         fun filter(query: String) {
             filteredList = if (query.isBlank()) {
                 originalList.toMutableList()
             } else {
-                originalList.filter { it.first.contains(query, ignoreCase = true) }.toMutableList()
+                originalList.filter {
+                    it.first.contains(query, ignoreCase = true) ||
+                        it.second.contains(query, ignoreCase = true)
+                }.toMutableList()
             }
             notifyDataSetChanged()
         }

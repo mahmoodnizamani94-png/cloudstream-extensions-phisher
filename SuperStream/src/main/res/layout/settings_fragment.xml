@@ -1,9 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#121212"
     android:padding="16dp"
+    android:layoutDirection="ltr"
     tools:context=".settings.SettingsFragment">
 
     <ImageView
@@ -17,11 +19,14 @@
         android:background="?android:attr/selectableItemBackgroundBorderless"
         android:layout_marginBottom="8dp" />
 
-    <ScrollView
+    <androidx.core.widget.NestedScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_below="@id/settingsIcon"
-        android:layout_marginTop="8dp">
+        android:layout_marginTop="8dp"
+        android:scrollbars="vertical"
+        android:fadeScrollbars="false"
+        android:fillViewport="true">
 
         <LinearLayout
             android:id="@+id/settings_container"
@@ -31,8 +36,9 @@
             android:paddingBottom="24dp"
             tools:ignore="WebViewLayout">
 
-            <!-- Card 0: Subtitle Mode (Default English <-> Urdu) -->
+            <!-- Card 0: Flagship SOTA Subtitle Mode Switcher (Default English <-> Urdu) -->
             <com.google.android.material.card.MaterialCardView
+                android:id="@+id/subtitle_mode_card"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="16dp"
@@ -50,23 +56,108 @@
                     android:foreground="?android:attr/selectableItemBackground"
                     android:background="?android:attr/selectableItemBackground">
 
-                    <TextView
-                        android:id="@+id/subtitle_mode_label"
-                        android:layout_width="wrap_content"
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Subtitle Mode: Default (English)"
-                        android:textSize="18sp"
-                        android:textStyle="bold"
-                        android:textColor="#FFFFFF" />
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:id="@+id/subtitle_mode_label"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Subtitle Mode: Default (English)"
+                            android:textSize="17sp"
+                            android:textStyle="bold"
+                            android:textColor="#FFFFFF" />
+
+                        <TextView
+                            android:id="@+id/subtitle_mode_status_badge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:paddingTop="3dp"
+                            android:paddingBottom="3dp"
+                            android:text="INSTANT • 0ms"
+                            android:textColor="#93C5FD"
+                            android:textSize="10sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
 
                     <TextView
                         android:id="@+id/subtitle_mode_desc"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Tap to choose or long-press for instant 1-tap toggle • Urdu SOTA sources: SubDL, Wyzie, SubSense, OpenSubtitles + Neural AI"
-                        android:textSize="14sp"
-                        android:textColor="#AAAAAA"
+                        android:text="8 Verified Urdu Sources (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI)"
+                        android:textSize="13sp"
+                        android:textColor="#CBD5E1"
                         android:layout_marginTop="4dp" />
+
+                    <!-- Direct 1-Tap Segmented Pill Bar -->
+                    <LinearLayout
+                        android:id="@+id/subtitle_mode_pill_track"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal"
+                        android:padding="4dp"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:id="@+id/subtitle_mode_pill_default"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:paddingTop="10dp"
+                            android:paddingBottom="10dp"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:text="🇬🇧 Default (English)"
+                            android:textColor="#FFFFFF"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:nextFocusRight="@id/subtitle_mode_pill_urdu"
+                            android:nextFocusDown="@id/loginButton" />
+
+                        <Space
+                            android:layout_width="6dp"
+                            android:layout_height="wrap_content" />
+
+                        <TextView
+                            android:id="@+id/subtitle_mode_pill_urdu"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:paddingTop="10dp"
+                            android:paddingBottom="10dp"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:text="🇵🇰 Urdu (اردو • SOTA)"
+                            android:textColor="#94A3B8"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:nextFocusLeft="@id/subtitle_mode_pill_default"
+                            android:nextFocusDown="@id/loginButton" />
+                    </LinearLayout>
+
+                    <!-- Live Pipeline Sources Chips Strip -->
+                    <TextView
+                        android:id="@+id/subtitle_mode_sources_chips"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI"
+                        android:textColor="#94A3B8"
+                        android:textSize="11sp" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -190,5 +281,5 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
         </LinearLayout>
-    </ScrollView>
+    </androidx.core.widget.NestedScrollView>
 </RelativeLayout>

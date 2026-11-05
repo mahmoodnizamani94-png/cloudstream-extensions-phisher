@@ -88,8 +88,17 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         private const val apiKey = BuildConfig.TMDB_API
         const val febbox="https://www.febbox.com"
 
+        private const val API_BASE_CACHE_TTL_MS = 900_000L
+        @Volatile private var cachedApiBase: String? = null
+        @Volatile private var cachedApiBaseTimestampMs: Long = 0L
+
         suspend fun getApiBase(): String {
-            return if (isOfficialAvailable()) {
+            val now = System.currentTimeMillis()
+            val cached = cachedApiBase
+            if (cached != null && now - cachedApiBaseTimestampMs < API_BASE_CACHE_TTL_MS) {
+                return cached
+            }
+            val resolved = if (isOfficialAvailable()) {
                 OFFICIAL_TMDB_URL
             } else {
                 val proxy = fetchProxyList().randomOrNull()
@@ -100,6 +109,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     OFFICIAL_TMDB_URL
                 }
             }
+            cachedApiBase = resolved
+            cachedApiBaseTimestampMs = System.currentTimeMillis()
+            return resolved
         }
 
         private suspend fun isOfficialAvailable(): Boolean = withTimeoutOrNull(5000) {
@@ -298,6 +310,12 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        val urduMode = isUrduSubtitleMode(context = null, sharedPref = sharedPref)
+        val subtitleModeBadge = if (urduMode) {
+            "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
+        } else {
+            "🇬🇧 Subtitles: English (Default)"
+        }
         if (url.contains("share_file_comment?fid")) {
             val jsonString = app.get(url, headers = mapOf("cookie" to (token ?: ""))).text
             val response = Gson().fromJson(jsonString, PersonalComments::class.java)
@@ -335,6 +353,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 ) {
                     this.posterUrl = media.thumb_big?.ifEmpty { "https://wallpapers.com/images/hd/netflix-background-gs7hjuwvv2g0e9fj.jpg" }
                     this.plot = "Added: ${media.add_time} | Updated: ${media.update_time}"
+                    this.tags = listOf(subtitleModeBadge)
                 }
             }
 
@@ -346,6 +365,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             ) {
                 this.posterUrl = media.thumb_big?.ifEmpty { "https://wallpapers.com/images/hd/netflix-background-gs7hjuwvv2g0e9fj.jpg" }
                 this.plot = "Added: ${media.add_time} | Updated: ${media.update_time} | Size: ${media.file_size}"
+                this.tags = listOf(subtitleModeBadge)
             }
         }
         val tmdbAPI = getApiBase()
@@ -378,6 +398,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
 
         val keywords = res.keywords?.results?.mapNotNull { it.name }.orEmpty()
             .ifEmpty { res.keywords?.keywords?.mapNotNull { it.name } }
+        val baseTags = (keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
+            ?.takeIf { it.isNotEmpty() } ?: genres).orEmpty()
+        val enrichedTags = listOf(subtitleModeBadge) + baseTags
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
             val name = cast.name ?: cast.originalName ?: return@mapNotNull null
@@ -502,8 +525,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
                     this.plot = res.overview
-                    this.tags = keywords?.map { it.replaceFirstChar { it.titlecase() } }
-                        ?.takeIf { it.isNotEmpty() } ?: genres
+                    this.tags = enrichedTags
                     this.score = Score.from10(rating)
                     this.showStatus = getStatus(res.status)
                     this.recommendations = recommendations
@@ -518,8 +540,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
                     this.plot = res.overview
-                    this.tags = keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
-                        ?.takeIf { it.isNotEmpty() } ?: genres
+                    this.tags = enrichedTags
                     this.score = Score.from10(rating)
                     this.showStatus = getStatus(res.status)
                     this.recommendations = recommendations
@@ -557,8 +578,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 this.year = year
                 this.plot = res.overview
                 this.duration = res.runtime
-                this.tags = keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
-                    ?.takeIf { it.isNotEmpty() } ?: genres
+                this.tags = enrichedTags
                 this.score = Score.from10(rating)
                 this.recommendations = recommendations
                 this.actors = actors
@@ -610,6 +630,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         }
         val urduMode = isUrduSubtitleMode(sharedPref)
         val urduSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val englishDonorSubs = CopyOnWriteArrayList<SubtitleFile>()
 
         val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
@@ -623,9 +644,10 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     isUrduSubtitleCode(sub.lang) -> {
                         val badge = extractSuperStreamUrduSourceBadge(sub.lang)
                             ?: sub.headers?.get(SUPERSTREAM_SOURCE_HEADER)
-                        val canonicalKey = canonicalSuperStreamUrduSourceKey(badge) ?: "subdl"
+                        val canonicalKey = canonicalSuperStreamUrduSourceKey(badge)
+                            ?: canonicalSuperStreamUrduSourceKey(sub.lang)
                         val formattedLabel = formatSuperStreamUrduSourceLabel(canonicalKey)
-                        val mergedHeaders = if (sub.headers?.get(SUPERSTREAM_SOURCE_HEADER) == canonicalKey) {
+                        val mergedHeaders = if (canonicalKey == null || sub.headers?.get(SUPERSTREAM_SOURCE_HEADER) == canonicalKey) {
                             sub.headers
                         } else {
                             (sub.headers.orEmpty() + (SUPERSTREAM_SOURCE_HEADER to canonicalKey))
@@ -637,6 +659,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                             SubtitleFile(lang = formattedLabel, url = sub.url).apply {
                                 headers = mergedHeaders
                             }
+                        }
+                        if (canonicalKey != null && canonicalKey != "urdu-neural-fallback") {
+                            urduSubtitleSources.add(canonicalKey)
                         }
                         urduSubsFound.incrementAndGet()
                         earlyController.onSubtitleEmitted(normalizedUrdu)
@@ -800,7 +825,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 controller = earlyController
             )
 
-            if (urduMode && urduSubsFound.get() == 0 && englishDonorSubs.isNotEmpty()) {
+            if (urduMode && urduSubtitleSources.isEmpty() && englishDonorSubs.isNotEmpty()) {
                 withTimeoutOrNull(8_000L) {
                     synthesizeSuperStreamUrduFallback(
                         englishSubs = englishDonorSubs,

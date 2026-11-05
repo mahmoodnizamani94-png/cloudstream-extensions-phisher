@@ -211,6 +211,7 @@ class StreamPlayStremioCatelog(
         }
         val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: StreamPlay.companionSharedPref)
         val urduSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val englishDonorSubs = java.util.concurrent.CopyOnWriteArrayList<SubtitleFile>()
 
         val trackedSubCallback: (SubtitleFile) -> Unit = subCallback@{ rawSub ->
@@ -258,6 +259,7 @@ class StreamPlayStremioCatelog(
                             val urSub = SubtitleFile(lang = formattedLang, url = sub.url).apply {
                                 headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to canonicalSource)
                             }
+                            urduSubtitleSources.add(canonicalSource)
                             urduSubtitleCount.incrementAndGet()
                             catalogSubsFound.incrementAndGet()
                             earlyController.onSubtitleEmitted(urSub)
@@ -408,7 +410,7 @@ class StreamPlayStremioCatelog(
             controller = earlyController
         )
 
-        if (urduMode && urduSubtitleCount.get() == 0 && (englishDonorSubs.isNotEmpty() || ! resolved.title.isNullOrBlank())) {
+        if (urduMode && urduSubtitleSources.isEmpty() && (englishDonorSubs.isNotEmpty() || !resolved.title.isNullOrBlank())) {
             withTimeoutOrNull(8_000L) {
                 UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
                     imdbId = imdb,

@@ -98,6 +98,37 @@ object StreamPlayExtractor : StreamPlay() {
     val encDecApiSemaphore = Semaphore(4)
     val vidlinkEncCache = ConcurrentHashMap<Int, Pair<String, Long>>()
 
+    // Shared pre-built OkHttpClient pool (zero per-request allocation)
+    private val fastHttpClient: okhttp3.OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .callTimeout(10L, TimeUnit.SECONDS)
+            .connectTimeout(5L, TimeUnit.SECONDS)
+            .readTimeout(6L, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val standardHttpClient: okhttp3.OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .callTimeout(12L, TimeUnit.SECONDS)
+            .connectTimeout(6L, TimeUnit.SECONDS)
+            .readTimeout(6L, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val downloadHttpClient: okhttp3.OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .callTimeout(16L, TimeUnit.SECONDS)
+            .connectTimeout(8L, TimeUnit.SECONDS)
+            .readTimeout(8L, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private fun httpClientForTimeout(timeoutSec: Long): okhttp3.OkHttpClient = when {
+        timeoutSec <= 4L -> fastHttpClient
+        timeoutSec <= 6L -> standardHttpClient
+        else -> downloadHttpClient
+    }
+
     suspend inline fun <T> suspendCancellable(crossinline block: suspend () -> T): T? {
         currentCoroutineContext().ensureActive()
         val result = try {
@@ -149,14 +180,7 @@ object StreamPlayExtractor : StreamPlay() {
         timeoutSec: Long = 3L
     ): String? = suspendCancellableCoroutine { cont ->
         try {
-            val connectSec = timeoutSec.coerceAtLeast(5L)
-            val readSec = timeoutSec.coerceAtLeast(6L)
-            val totalCallSec = (timeoutSec * 2L).coerceAtLeast(10L)
-            val client = app.baseClient.newBuilder()
-                .callTimeout(totalCallSec, TimeUnit.SECONDS)
-                .connectTimeout(connectSec, TimeUnit.SECONDS)
-                .readTimeout(readSec, TimeUnit.SECONDS)
-                .build()
+            val client = httpClientForTimeout(timeoutSec)
             val req = Request.Builder()
                 .url(url)
                 .apply {
@@ -213,14 +237,7 @@ object StreamPlayExtractor : StreamPlay() {
         timeoutSec: Long = 3L
     ): Response? = suspendCancellableCoroutine { cont ->
         try {
-            val connectSec = timeoutSec.coerceAtLeast(5L)
-            val readSec = timeoutSec.coerceAtLeast(6L)
-            val totalCallSec = (timeoutSec * 2L).coerceAtLeast(10L)
-            val client = app.baseClient.newBuilder()
-                .callTimeout(totalCallSec, TimeUnit.SECONDS)
-                .connectTimeout(connectSec, TimeUnit.SECONDS)
-                .readTimeout(readSec, TimeUnit.SECONDS)
-                .build()
+            val client = httpClientForTimeout(timeoutSec)
             val req = Request.Builder()
                 .url(url)
                 .post(requestBody)
@@ -2794,6 +2811,63 @@ object StreamPlayExtractor : StreamPlay() {
 
     private val OPEN_SUBTITLES_REST_HEADERS = mapOf("User-Agent" to OPENSUBTITLES_USER_AGENT)
 
+    internal data class OpenSubtitlesExtraMetadata(
+        val autoTranslation: String? = null,
+        val aiTranslated: String? = null,
+        val machineTranslated: String? = null,
+        val fromTrusted: String? = null,
+        val userNickName: String? = null,
+        val subTranslator: String? = null,
+        val authorComment: String? = null
+    )
+
+    private val OPEN_SUBTITLES_AI_AUTHOR_REGEX = Regex(
+        """(?i)\b(ai[\s_]*translated|auto[\s_]*translated|machine[\s_]*translated|chatgpt|google[\s_]*translate|subdl[\s_]*ai)\b"""
+    )
+
+    internal fun parseOpenSubtitlesExtraMetadata(jsonBody: String): Map<String, OpenSubtitlesExtraMetadata> {
+        return try {
+            val trimmed = jsonBody.trim()
+            if (!trimmed.startsWith("[")) return emptyMap()
+            val arr = JSONArray(trimmed)
+            val map = HashMap<String, OpenSubtitlesExtraMetadata>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val dl = obj.optString("SubDownloadLink").trim()
+                if (dl.isEmpty()) continue
+                map[dl] = OpenSubtitlesExtraMetadata(
+                    autoTranslation = obj.optString("SubAutoTranslation").takeIf { it.isNotEmpty() },
+                    aiTranslated = obj.optString("AiTranslated").takeIf { it.isNotEmpty() },
+                    machineTranslated = obj.optString("MachineTranslated").takeIf { it.isNotEmpty() },
+                    fromTrusted = obj.optString("SubFromTrusted").takeIf { it.isNotEmpty() },
+                    userNickName = obj.optString("UserNickName").takeIf { it.isNotEmpty() },
+                    subTranslator = obj.optString("SubTranslator").takeIf { it.isNotEmpty() },
+                    authorComment = obj.optString("SubAuthorComment").takeIf { it.isNotEmpty() }
+                )
+            }
+            map
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    internal fun isOpenSubtitlesAiOrMachineEntry(
+        sub: OpenSubtitlesLegacySubtitle,
+        extra: OpenSubtitlesExtraMetadata?
+    ): Boolean {
+        if (extra != null) {
+            if (extra.autoTranslation == "1" || extra.aiTranslated == "1" || extra.machineTranslated == "1") {
+                return true
+            }
+            val metaText = "${extra.userNickName.orEmpty()} ${extra.subTranslator.orEmpty()} ${extra.authorComment.orEmpty()}"
+            if (OPEN_SUBTITLES_AI_AUTHOR_REGEX.containsMatchIn(metaText)) {
+                return true
+            }
+        }
+        val releaseAndFile = "${sub.fileName.orEmpty()} ${sub.releaseName.orEmpty()}"
+        return OPEN_SUBTITLES_AI_AUTHOR_REGEX.containsMatchIn(releaseAndFile)
+    }
+
     private suspend fun harvestOpenSubtitlesLanguage(
         urls: List<String>,
         langId: String,
@@ -2814,6 +2888,7 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                 } ?: continue
                 val results = tryParseJson<Array<OpenSubtitlesLegacySubtitle>>(body) ?: continue
+                val extraByLink = parseOpenSubtitlesExtraMetadata(body)
                 val matched = results.asSequence()
                     .filter { sub ->
                         sub.languageId.equals(langId, ignoreCase = true) ||
@@ -2821,10 +2896,18 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     .filter { !it.downloadLink.isNullOrBlank() }
                     .filterNot { it.hearingImpaired == "1" || it.bad == "1" }
+                    .filterNot { sub ->
+                        val extra = extraByLink[sub.downloadLink?.trim().orEmpty()]
+                        isOpenSubtitlesAiOrMachineEntry(sub, extra)
+                    }
                     .filter { openSubtitlesEpisodeMatches(it, season, episode) }
                     .sortedWith(
-                        compareByDescending<OpenSubtitlesLegacySubtitle> { it.rating?.toDoubleOrNull() ?: 0.0 }
+                        compareByDescending<OpenSubtitlesLegacySubtitle> { sub ->
+                            val extra = extraByLink[sub.downloadLink?.trim().orEmpty()]
+                            if (extra?.fromTrusted == "1") 1 else 0
+                        }
                             .thenByDescending { it.downloads?.toLongOrNull() ?: 0L }
+                            .thenByDescending { it.rating?.toDoubleOrNull() ?: 0.0 }
                     )
                     .take(5)
                     .toList()
@@ -3042,21 +3125,23 @@ object StreamPlayExtractor : StreamPlay() {
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
         val cleanId = id?.trim()?.takeIf { it.isNotBlank() && it != "0" && it != "null" } ?: return
-        val key = wyziekey.takeIf { !it.isNullOrBlank() }
+        val key = wyziekey.takeIf { !it.isNullOrBlank() }?.trim()
+            ?: runCatching { System.getProperty("cloudstream.wyzie.key") }.getOrNull()?.takeIf { it.isNotBlank() }?.trim()
         val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
-        if (key == null && !urduMode) return
+        // sub.wyzie.io/search and sub.wyzie.ru/search always return HTTP 401 Unauthorized when key is unset
+        if (key == null) return
         try {
             val baseParams = if (season != null && season > 0) {
                 "id=$cleanId&season=$season&episode=${episode ?: 1}"
             } else {
                 "id=$cleanId"
             }
-            val keySuffix = if (!key.isNullOrBlank()) "&source=all&key=$key" else ""
+            val keySuffix = "&source=all&key=$key"
 
             val wyzieLabel = UrduSubtitleEngine.formatUrduSourceLabel("wyziesub")
             var emittedUrdu = 0
 
-            // In Urdu mode, first query Wyzie's dedicated Urdu endpoint (/search?...&language=ur&sort=downloads)
+            // In Urdu mode, first query Wyzie's dedicated Urdu endpoint (/search?...&language=ur&sort=downloads&source=all&key=...)
             if (urduMode) {
                 val urQueryPath = "/search?$baseParams&language=ur&sort=downloads$keySuffix"
                 val urBody = cancellableGetText("$WYZIESubsAPI$urQueryPath", timeoutSec = 6L)
@@ -3082,7 +3167,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            if (key == null) return
+            if (urduMode && emittedUrdu >= 2) return
             val queryPath = "/search?$baseParams$keySuffix"
             val body = cancellableGetText("$WYZIESubsAPI$queryPath", timeoutSec = 8L)
                 ?: cancellableGetText("https://sub.wyzie.ru$queryPath", timeoutSec = 8L)
@@ -3316,10 +3401,12 @@ object StreamPlayExtractor : StreamPlay() {
     /**
      * SubtitleCat harvest.
      *
-     * SubtitleCat is the fallback that still answers when every id-keyed catalogue misses a release:
-     * it is searched by release text, so an episode-numbering mismatch (a provider exposing season
-     * 2 episode 5 while the file is named `S02E05`, or an anime numbered as a bare `- 05`) is not a
-     * dead end. Its English and Urdu files are stable `.srt` links.
+     * Note: SubtitleCat's pre-cached `-ur.srt` (`State A`) is 100% literal Google Translate, NOT a
+     * human-translated Urdu archive. In Urdu mode, `invokeSubtitleCat` never emits `-ur.srt` as a
+     * Phase 1 `Urdu [SubtitleCat]` human track (which would preempt real human Urdu archives or our
+     * Spoken-Urdu Contextual Engine); instead it harvests and records the verified English donor
+     * (`-orig.srt` / `-en.srt` / `-eng.srt`) via `UrduSubtitleEngine.recordSubtitleCatOrigCandidate`
+     * (and records `-ur.srt` only as a last-resort Phase 4 fallback).
      */
     suspend fun invokeSubtitleCat(
         titles: List<String>,
@@ -3333,7 +3420,6 @@ object StreamPlayExtractor : StreamPlay() {
         val queries = buildSubtitleCatQueries(titles, season, episode, isMovie, isAnime)
         if (queries.isEmpty()) return
         val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
-        val subtitleCatLabel = UrduSubtitleEngine.formatUrduSourceLabel("subtitlecat")
         try {
             for (query in queries) {
                 val searchUrl = "$SUBTITLECAT_HOST/index.php?search=" +
@@ -3381,6 +3467,7 @@ object StreamPlayExtractor : StreamPlay() {
                 val englishEntries = resolvedDetails.mapNotNull { detail ->
                     val enUrl = parseSubtitleCatDetail(detail)
                     val origPair = parseSubtitleCatOrigSrt(detail)
+                    val urUrl = parseSubtitleCatUrduDetail(detail)
                     when {
                         enUrl != null -> {
                             val origUrl = origPair?.first ?: enUrl
@@ -3390,46 +3477,50 @@ object StreamPlayExtractor : StreamPlay() {
                         origPair != null -> {
                             Triple(origPair.first, origPair.first, origPair.second)
                         }
+                        urUrl != null -> {
+                            // Derive -orig.srt donor path from -ur.srt when State A page omits explicit -en.srt
+                            val derivedOrigUrl = urUrl
+                                .replace(Regex("""(?i)-(?:ur|urd)\.srt$"""), "-orig.srt")
+                            if (derivedOrigUrl != urUrl) {
+                                val derivedName = derivedOrigUrl.substringAfterLast('/').substringBefore('?')
+                                Triple(derivedOrigUrl, derivedOrigUrl, derivedName)
+                            } else {
+                                null
+                            }
+                        }
                         else -> null
                     }
                 }.distinctBy { it.first }
-                val english = englishEntries.map { it.first }
-                val urdu = if (urduMode) {
+
+                val preCachedUrduUrls = if (urduMode) {
                     resolvedDetails.mapNotNull { parseSubtitleCatUrduDetail(it) }.distinct()
                 } else {
                     emptyList()
                 }
 
-                if (urduMode && urdu.isEmpty()) {
+                if (urduMode) {
                     englishEntries.forEach { (_, origUrl, origFilename) ->
-                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(origUrl, origFilename)
+                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
+                            origUrl = origUrl,
+                            origFilename = origFilename,
+                            season = season,
+                            episode = episode
+                        )
+                    }
+                    preCachedUrduUrls.forEach { urUrl ->
+                        UrduSubtitleEngine.recordSubtitleCatPreCachedUrduCandidate(
+                            urduUrl = urUrl,
+                            season = season,
+                            episode = episode
+                        )
                     }
                 }
 
-                if (english.isEmpty() && urdu.isEmpty()) continue
+                if (englishEntries.isEmpty() && preCachedUrduUrls.isEmpty()) continue
 
-                var emittedUrdu = 0
-                for (url in urdu) {
-                    if (emittedUrdu >= 2) break
-                    val materializedUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
-                        url = url,
-                        headers = SUBTITLE_BROWSER_HEADERS,
-                        season = season,
-                        episode = episode,
-                        sourceTag = "subtitlecat"
-                    ) ?: continue
-                    subtitleCallback.invoke(
-                        newSubtitleFile(subtitleCatLabel, materializedUri) {
-                            headers = SUBTITLE_BROWSER_HEADERS + ("X-StreamPlay-Source" to "subtitlecat")
-                        }
-                    )
-                    emittedUrdu++
-                }
-                if (urduMode && emittedUrdu == 0) {
-                    englishEntries.forEach { (_, origUrl, origFilename) ->
-                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(origUrl, origFilename)
-                    }
-                }
+                // Always emit English donor candidates (with X-SubtitleCat-Orig-Url metadata) so
+                // StreamPlay's Phase 4 Spoken-Urdu Contextual Engine can translate them; never emit
+                // SubtitleCat's pre-cached literal Google Translate (-ur.srt) as a Phase 1 human Urdu track!
                 englishEntries.forEach { (url, origUrl, origFilename) ->
                     subtitleCallback.invoke(
                         newSubtitleFile("English", url) {

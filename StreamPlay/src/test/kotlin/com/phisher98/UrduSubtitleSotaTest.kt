@@ -905,5 +905,319 @@ class UrduSubtitleSotaTest {
             UrduSubtitleEngine.containsVerifiedUrduScript(genuineUrduSrt)
         )
     }
+
+    @Test
+    fun `containsVerifiedUrduScript accepts genuine Urdu cues and rejects Persian and Arabic multi-cue subtitle files`() {
+        assertTrue(UrduSubtitleEngine.containsVerifiedUrduScript("یہ اردو سب ٹائٹل ہے"))
+        assertTrue(UrduSubtitleEngine.containsVerifiedUrduScript("رُک جاؤ، ورنہ گولی مار دوں گا!"))
+
+        val persianMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            راشل، من کارم تموم شد
+
+            2
+            00:00:03,500 --> 00:00:05,500
+            باشه، فردا میبینمت
+
+            3
+            00:00:06,000 --> 00:00:08,500
+            کجا بودی؟ چرا انقدر دیر کردی؟
+
+            4
+            00:00:09,000 --> 00:00:11,500
+            خیلی خوب، اینجا منتظرم باش
+
+            5
+            00:00:12,000 --> 00:00:14,500
+            من دارم میرم خونه
+        """.trimIndent()
+        assertFalse(
+            "Persian (Farsi) subtitle file using Arabic script must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianMultiCueSrt)
+        )
+
+        val arabicMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,500
+            مرحبًا بك في هذا العالم، ماذا تفعل هنا؟
+
+            2
+            00:00:04,000 --> 00:00:06,500
+            هذا هو اليوم الذي ننتظره
+
+            3
+            00:00:07,000 --> 00:00:09,500
+            لماذا لم تخبرني عن هذه المشكلة؟
+
+            4
+            00:00:10,000 --> 00:00:12,500
+            التي كانت هناك منذ البداية
+
+            5
+            00:00:13,000 --> 00:00:15,500
+            ماذا تريد أن تفعل الآن؟
+        """.trimIndent()
+        assertFalse(
+            "Arabic subtitle file using Arabic script must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(arabicMultiCueSrt)
+        )
+    }
+
+    @Test
+    fun `refineUrduToSpokenIdiom and adaptEnglishForSpokenUrduTranslation transform calques and idioms into natural spoken Urdu`() {
+        assertEquals("یا خدایا!", UrduSubtitleEngine.refineUrduToSpokenIdiom("اوہ ، میرے خدا۔"))
+        assertEquals("اف خدایا!", UrduSubtitleEngine.refineUrduToSpokenIdiom("اوہ ، میرے گوش۔"))
+        assertEquals("کیا تمہارا دماغ خراب ہو گیا ہے؟", UrduSubtitleEngine.refineUrduToSpokenIdiom("کیا آپ اپنے دماغ سے باہر ہیں؟"))
+        assertEquals("یا خدایا!", UrduSubtitleEngine.refineUrduToSpokenIdiom("مسیح!"))
+        assertEquals("بیڑا غرق!", UrduSubtitleEngine.refineUrduToSpokenIdiom("گندگی!"))
+        assertEquals("عالی جاہ", UrduSubtitleEngine.refineUrduToSpokenIdiom("آپ کا فضل"))
+        assertEquals("طبیعت خراب ہو رہی", UrduSubtitleEngine.refineUrduToSpokenIdiom("صحت ناکام ہو رہی"))
+        assertEquals("سوچو، سوچو، ذرا سوچو۔", UrduSubtitleEngine.refineUrduToSpokenIdiom("سوچو ، سوچو ، سوچئے۔"))
+        assertTrue(UrduSubtitleEngine.refineUrduToSpokenIdiom("سوچو ، سوچو ، سوچئے۔").contains("سوچو، سوچو، ذرا سوچو"))
+
+        // Pre-translation English idiom adaptation
+        assertEquals(
+            "کیا تمہارا دماغ خراب ہو گیا ہے؟",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("Are you out of your mind?")
+        )
+        assertEquals(
+            "یہ تم آخر کر کیا رہے ہو؟",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("What the hell are you doing?")
+        )
+        assertEquals(
+            "یا خدایا!",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("Oh, my God!")
+        )
+        assertEquals(
+            "ذرا رکو!",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("Hold on!")
+        )
+        assertEquals(
+            "کوئی بات نہیں۔",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("You're welcome.")
+        )
+    }
+
+    @Test
+    fun `isBrokenSmtUrdu detects 2012-era SMT dumps and scoreUrduSubtitleNaturalness ranks natural spoken Urdu higher than literal calques`() = runBlocking {
+        val brokenSmtSrt = """
+            1
+            00:00:01,000 --> 00:00:03,500
+            اس سے پہلے کہ تم یہ جانتے ہو کہ وہ ٹکڑے ٹکڑے کرنے کے ایک دوسرے کے ripping کے رہے
+
+            2
+            00:00:04,000 --> 00:00:06,500
+            میں نے کبھی نہیں دیکھا ہے wildlings اس طرح ایک کام کرو
+
+            3
+            00:00:07,000 --> 00:00:09,500
+            اپنے گھوڑے پر واپس حاصل
+        """.trimIndent()
+
+        val brokenCues = UrduSubtitleEngine.parseSubtitleCues(brokenSmtSrt)
+        assertEquals(3, brokenCues.size)
+        assertTrue(
+            "2012-era broken SMT dump with embedded English tokens and ungrammatical SMT phrases must be flagged by isBrokenSmtUrdu",
+            UrduSubtitleEngine.isBrokenSmtUrdu(brokenCues)
+        )
+
+        // Verify broken SMT Urdu is also rejected during materialization when extracted from a ZIP archive
+        val brokenZipBytes = ByteArrayOutputStream().apply {
+            ZipOutputStream(this).use { zos ->
+                zos.putNextEntry(ZipEntry("Broken.2012.SMT.Urdu.srt"))
+                zos.write(brokenSmtSrt.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+        }.toByteArray()
+        val tempBrokenZip = java.io.File.createTempFile("broken_smt_test_", ".zip")
+        try {
+            tempBrokenZip.writeBytes(brokenZipBytes)
+            // Use extractBestSubtitleFromZip / decodeAndNormalizeUrduBytes + materialization validation path
+            val decodedBroken = UrduSubtitleEngine.decodeAndNormalizeUrduBytes(brokenZipBytes)
+            val parsedBroken = UrduSubtitleEngine.parseSubtitleCues(UrduSubtitleEngine.normalizeUrduTypography(decodedBroken))
+            assertTrue(UrduSubtitleEngine.isBrokenSmtUrdu(parsedBroken))
+        } finally {
+            tempBrokenZip.delete()
+        }
+
+        val naturalSpokenCues = listOf(
+            UrduSubtitleEngine.SrtCue(1, "00:00:01,000 --> 00:00:03,000", "یا خدایا! ذرا رُک جاؤ یار، کیا تمہارا دماغ خراب ہو گیا ہے؟"),
+            UrduSubtitleEngine.SrtCue(2, "00:00:04,000 --> 00:00:06,000", "بھئی دیکھو، بالکل ٹھیک ہے، اب چلو یہاں سے۔"),
+            UrduSubtitleEngine.SrtCue(3, "00:00:07,000 --> 00:00:09,000", "خبردار! ورنہ بہت برا ہو گا، سنو میری بات۔")
+        )
+        val literalCalqueCues = listOf(
+            UrduSubtitleEngine.SrtCue(1, "00:00:01,000 --> 00:00:03,000", "اوہ ، میرے خدا۔ کیا آپ اپنے دماغ سے باہر ہیں؟"),
+            UrduSubtitleEngine.SrtCue(2, "00:00:04,000 --> 00:00:06,000", "اوہ ، میرے گوش۔ آپ کا فضل، صحت ناکام ہو رہی ہے۔"),
+            UrduSubtitleEngine.SrtCue(3, "00:00:07,000 --> 00:00:09,000", "میرے پاس بھی نہیں۔")
+        )
+
+        assertFalse(UrduSubtitleEngine.isBrokenSmtUrdu(naturalSpokenCues))
+        val naturalScore = UrduSubtitleEngine.scoreUrduSubtitleNaturalness(naturalSpokenCues)
+        val calqueScore = UrduSubtitleEngine.scoreUrduSubtitleNaturalness(literalCalqueCues)
+        val brokenScore = UrduSubtitleEngine.scoreUrduSubtitleNaturalness(brokenCues)
+
+        assertTrue(
+            "Natural spoken Urdu ($naturalScore) must score significantly higher than literal calques ($calqueScore)",
+            naturalScore > calqueScore + 50
+        )
+        assertTrue(
+            "Broken SMT cues ($brokenScore) must score heavily negative",
+            brokenScore <= -500
+        )
+    }
+
+    @Test
+    fun `parseSubDlUrduPageZips scopes strictly to data-language urdu filters out AI rows and ranks Tier-1A uploaders ahead of Tier-1C`() {
+        // 1. HTML with persian and indonesian data-language blocks (and SUBDL AI) but no data-language="urdu"
+        val nonUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <span>Inception.2010.1080p.Persian</span>
+                <a href="https://dl.subdl.com/subtitle/3001-9001.zip">Download</a>
+              </div>
+            </div>
+            <div data-language="indonesian">
+              <div class="sub-row">
+                <span>Inception.2010.1080p.Indonesian (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/3002-9002.zip">Download</a>
+              </div>
+            </div>
+        """.trimIndent()
+        assertEquals(
+            "When data-language blocks exist without data-language='urdu', parseSubDlUrduPageZips must return emptyList()",
+            emptyList<String>(),
+            UrduSubtitleEngine.parseSubDlUrduPageZips(nonUrduAstroHtml)
+        )
+
+        // 2. HTML with data-language="urdu" containing AI rows, Tier-1C bulk uploaders, and Tier-1A human uploaders
+        val mixedUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <a href="https://dl.subdl.com/subtitle/1111-1111.zip">Persian Sub</a>
+              </div>
+            </div>
+            <div data-language="urdu">
+              <div class="sub-row" data-ai-translated="true">
+                <span>Movie.2024.1080p.Urdu</span>
+                <a data-subtitle-author="subdl_ai" href="https://dl.subdl.com/subtitle/2222-2222.zip">Download AI 1</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.Urdu (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/2223-2223.zip">Download AI 2</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.WEBRip.Urdu</span>
+                <a data-subtitle-author="blackgold" href="https://dl.subdl.com/subtitle/3333-3333.zip">Download Tier 1C blackgold</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.BluRay.Urdu</span>
+                <a data-subtitle-author="akhaliq_655" href="https://dl.subdl.com/subtitle/3334-3334.zip">Download Tier 1C akhaliq</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.NF.WEB-DL.Urdu</span>
+                <a data-subtitle-author="naveshta" href="https://dl.subdl.com/subtitle/4444-4444.zip">Download Tier 1A naveshta</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.AMZN.WEB-DL.Urdu</span>
+                <a data-subtitle-author="faizybaba" href="https://dl.subdl.com/subtitle/4445-4445.zip">Download Tier 1A faizybaba</a>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val parsedZips = UrduSubtitleEngine.parseSubDlUrduPageZips(mixedUrduAstroHtml)
+        assertFalse("Persian zip must be excluded", parsedZips.contains("https://dl.subdl.com/subtitle/1111-1111.zip"))
+        assertFalse("data-ai-translated row must be filtered out", parsedZips.contains("https://dl.subdl.com/subtitle/2222-2222.zip"))
+        assertFalse("(SUBDL AI) row must be filtered out", parsedZips.contains("https://dl.subdl.com/subtitle/2223-2223.zip"))
+        assertEquals(
+            "Tier-1A human uploaders (naveshta, faizybaba) must be ranked ahead of Tier-1C bulk uploaders (blackgold, akhaliq_655)",
+            listOf(
+                "https://dl.subdl.com/subtitle/4444-4444.zip",
+                "https://dl.subdl.com/subtitle/4445-4445.zip",
+                "https://dl.subdl.com/subtitle/3333-3333.zip",
+                "https://dl.subdl.com/subtitle/3334-3334.zip"
+            ),
+            parsedZips
+        )
+    }
+
+    @Test
+    fun `cross-cue sentence continuation merging and proportional Urdu splitting preserve exact cue timestamps`() = runBlocking {
+        val cue1 = UrduSubtitleEngine.SrtCue(
+            index = 1,
+            timestamp = "00:01:10,000 --> 00:01:12,500",
+            text = "As we begin, I believe you have"
+        )
+        val cue2 = UrduSubtitleEngine.SrtCue(
+            index = 2,
+            timestamp = "00:01:12,700 --> 00:01:15,200",
+            text = "a statement to read into the record."
+        )
+        val cue3 = UrduSubtitleEngine.SrtCue(
+            index = 3,
+            timestamp = "00:01:18,000 --> 00:01:20,000",
+            text = "Thank you, Senator."
+        )
+
+        assertTrue(
+            "Consecutive cues splitting a single sentence with 200ms (< 1500ms) gap must be merged",
+            UrduSubtitleEngine.shouldMergeContinuationCues(cue1, cue2)
+        )
+        assertFalse(
+            "Cue ending with terminal period must not merge with next cue",
+            UrduSubtitleEngine.shouldMergeContinuationCues(cue2, cue3)
+        )
+
+        val fullUrduSentence = "جیسا کہ ہم آغاز کر رہے ہیں، میرا خیال ہے کہ آپ کے پاس ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"
+        val (part1, part2) = UrduSubtitleEngine.splitTranslatedUrduProportionally(
+            translatedText = fullUrduSentence,
+            firstSourceLen = cue1.text.length,
+            secondSourceLen = cue2.text.length
+        )
+        assertTrue(part1.isNotBlank())
+        assertTrue(part2.isNotBlank())
+        assertEquals(fullUrduSentence, "$part1 $part2")
+
+        // Verify end-to-end through translateEnglishSrtToUrdu (which invokes buildContextualTranslationUnits)
+        val englishSrt = """
+            1
+            00:01:10,000 --> 00:01:12,500
+            As we begin, I believe you have
+
+            2
+            00:01:12,700 --> 00:01:15,200
+            a statement to read into the record.
+
+            3
+            00:01:18,000 --> 00:01:20,000
+            Thank you, Senator.
+        """.trimIndent()
+
+        var receivedBatchInputs: List<String> = emptyList()
+        val translatedSrt = UrduSubtitleEngine.translateEnglishSrtToUrdu(englishSrt) { batch ->
+            receivedBatchInputs = batch
+            listOf(
+                fullUrduSentence,
+                "شکریہ، سینیٹر۔"
+            )
+        }
+
+        // 3 English cues (where 1 & 2 are continuation cues) must be merged into 2 contextual translation units
+        assertEquals(2, receivedBatchInputs.size)
+        assertEquals(
+            "As we begin, I believe you have a statement to read into the record.",
+            receivedBatchInputs[0]
+        )
+
+        assertNotNull(translatedSrt)
+        val outputCues = UrduSubtitleEngine.parseSubtitleCues(translatedSrt!!)
+        assertEquals("Proportionally split output must restore all 3 original cues", 3, outputCues.size)
+        assertEquals("00:01:10,000 --> 00:01:12,500", outputCues[0].timestamp)
+        assertEquals("00:01:12,700 --> 00:01:15,200", outputCues[1].timestamp)
+        assertEquals("00:01:18,000 --> 00:01:20,000", outputCues[2].timestamp)
+        assertTrue(outputCues[0].text.contains("جیسا کہ ہم آغاز کر رہے ہیں"))
+        assertTrue(outputCues[1].text.contains("ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"))
+    }
 }
+
 

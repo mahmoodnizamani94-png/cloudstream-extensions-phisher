@@ -210,7 +210,7 @@ class EarlySatisfactionController(
                 (dualMet && subsMet && p720Met && links >= config.minVerifiedLinks) ||
                 (links >= 4 && subsMet && p720Met) ||
                 (links >= 6 && subsMet) ||
-                (links >= 8)
+                (links >= 8 && subsMet)
             }
             // 1. 1 high-bitrate/quality stream
             qualityLinks >= config.minQualityStreams && subsMet && p720Met -> true
@@ -221,7 +221,7 @@ class EarlySatisfactionController(
             // 4. Hard ceiling
             links >= 4 && subsMet && p720Met -> true
             links >= 6 && subsMet -> true
-            links >= 8 -> true
+            links >= 8 && subsMet -> true
             else -> false
         }
 

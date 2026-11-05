@@ -1,6 +1,7 @@
 package com.phisher98
 
 import android.content.Context
+import android.content.ContextWrapper
 import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
@@ -215,14 +216,20 @@ class StreamPlayPlugin: Plugin() {
         registerExtractorAPI(Hubcloudone())
 
         openSettings = { ctx ->
-            val act = ctx as AppCompatActivity
-            if (!act.isFinishing && !act.isDestroyed) {
+            val act = ctx.unwrapActivity()
+            if (act != null && !act.isFinishing && !act.isDestroyed) {
                 val frag = MainSettingsFragment(this, sharedPref)
                 frag.show(act.supportFragmentManager, "Frag")
             } else {
                 Log.e("Plugin", "Activity is not valid anymore, cannot show settings dialog")
             }
         }
+    }
+
+    private tailrec fun Context.unwrapActivity(): AppCompatActivity? = when (this) {
+        is AppCompatActivity -> this
+        is ContextWrapper -> baseContext.unwrapActivity()
+        else -> null
     }
 
 

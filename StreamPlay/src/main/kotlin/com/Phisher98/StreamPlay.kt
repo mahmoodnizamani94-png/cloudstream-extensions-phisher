@@ -41,6 +41,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -252,6 +253,53 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
         }
 
+        private const val PREWARM_COOLDOWN_MS = 10 * 60 * 1000L // 10 minutes
+        private val prewarmCooldownMap = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        private val prewarmScope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
+        )
+
+        internal fun scheduleSpeculativeUrduPrewarm(
+            imdbId: String?,
+            title: String?,
+            season: Int?,
+            episode: Int?,
+            year: Int?,
+            sharedPref: SharedPreferences?
+        ) {
+            val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+            val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
+            val prewarmKey = cleanImdb ?: cleanTitle?.lowercase(java.util.Locale.ROOT) ?: return
+            val now = System.currentTimeMillis()
+            val lastWarm = prewarmCooldownMap[prewarmKey] ?: 0L
+            if (now - lastWarm < PREWARM_COOLDOWN_MS) return
+            prewarmCooldownMap[prewarmKey] = now
+
+            prewarmScope.launch {
+                runCatching {
+                    UrduSubtitleEngine.invokeSubDlUrduKeyless(
+                        imdbId = cleanImdb,
+                        title = cleanTitle,
+                        season = season,
+                        episode = episode,
+                        year = year,
+                        sharedPref = sharedPref ?: companionSharedPref,
+                        subtitleCallback = {}
+                    )
+                }
+                if (cleanImdb != null) {
+                    runCatching {
+                        UrduSubtitleEngine.invokeSubSenseUrdu(
+                            imdbId = cleanImdb,
+                            season = season,
+                            episode = episode,
+                            subtitleCallback = {}
+                        )
+                    }
+                }
+            }
+        }
+
         private const val DOMAINS_URL =
             "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json"
         private var cachedDomains: DomainsParser? = null
@@ -434,8 +482,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val data = parseJson<Data>(url)
         val type = getType(data.type)
+        val urduMode = UrduSubtitleEngine.isUrduMode(context = null, sharedPref = sharedPref ?: companionSharedPref)
+        val subtitleModeBadge = if (urduMode) {
+            "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
+        } else {
+            "🇬🇧 Subtitles: English (Default)"
+        }
 
-        val cacheKey = "metadata_${data.id}_${data.type}_$langCode"
+        val cacheKey = "metadata_${data.id}_${data.type}_${langCode}_${if (urduMode) "urdu" else "en"}"
         StreamPlayCache.getCachedLoadResponse(cacheKey)?.let { return it }
         val cached = StreamPlayCache.getCachedMetadata(cacheKey)
         if (cached != null) {
@@ -539,6 +593,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val keywords = res.keywords?.results?.mapNotNull { it.name }.orEmpty()
             .ifEmpty { res.keywords?.keywords?.mapNotNull { it.name } }
+        val baseTags = (keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
+            ?.takeIf { it.isNotEmpty() } ?: genres).orEmpty()
+        val enrichedTags = listOf(subtitleModeBadge) + baseTags
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
             val name = cast.name ?: cast.originalName ?: return@mapNotNull null
@@ -827,8 +884,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     try { this.logoUrl = logoUrl } catch(_:Throwable){}
                     this.year = year
                     this.plot = res.overview
-                    this.tags = keywords?.map { it.replaceFirstChar { c -> c.titlecase() } }
-                        ?.takeIf { it.isNotEmpty() } ?: genres
+                    this.tags = enrichedTags
                     this.score = Score.from10(res.vote_average.toString())
                     this.showStatus = getStatus(res.status)
                     this.recommendations = recommendations
@@ -838,17 +894,27 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     this.contentRating = cineRes?.meta?.appExtras?.certification
                     addImdbId(imdbId)
                 }
+                if (urduMode) {
+                    scheduleSpeculativeUrduPrewarm(
+                        imdbId = imdbId,
+                        title = enTitle ?: title,
+                        season = 1,
+                        episode = 1,
+                        year = year,
+                        sharedPref = sharedPref
+                    )
+                }
                 StreamPlayCache.cacheLoadResponse(cacheKey, animeResponse)
                 return animeResponse
             } else {
+                val tvImdbId = res.external_ids?.imdb_id
                 val tvResponse = newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                     this.comingSoon = if (episodes.isNotEmpty()) false else comingSoonFlag
                     this.posterUrl = poster
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
                     this.plot = res.overview
-                    this.tags = keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
-                        ?.takeIf { it.isNotEmpty() } ?: genres
+                    this.tags = enrichedTags
                     this.score = Score.from10(res.vote_average.toString())
                     this.showStatus = getStatus(res.status)
                     this.recommendations = recommendations
@@ -856,7 +922,17 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     try { this.logoUrl = logoUrl } catch(_:Throwable){}
                     this.contentRating = cineRes?.meta?.appExtras?.certification
                     addTrailer(trailer)
-                    addImdbId(res.external_ids?.imdb_id)
+                    addImdbId(tvImdbId)
+                }
+                if (urduMode) {
+                    scheduleSpeculativeUrduPrewarm(
+                        imdbId = tvImdbId,
+                        title = enTitle ?: title,
+                        season = 1,
+                        episode = 1,
+                        year = year,
+                        sharedPref = sharedPref
+                    )
                 }
                 StreamPlayCache.cacheLoadResponse(cacheKey, tvResponse)
                 return tvResponse
@@ -927,8 +1003,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 this.year = year
                 this.plot = res.overview
                 this.duration = res.runtime
-                this.tags = keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
-                    ?.takeIf { it.isNotEmpty() } ?: genres
+                this.tags = enrichedTags
                 try { this.logoUrl = logoUrl } catch(_:Throwable){}
                 this.score = Score.from10(res.vote_average.toString())
                 this.recommendations = recommendations
@@ -936,6 +1011,16 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 this.contentRating = cineRes?.meta?.appExtras?.certification
                 addTrailer(trailer)
                 addImdbId(movieImdbId)
+            }
+            if (urduMode) {
+                scheduleSpeculativeUrduPrewarm(
+                    imdbId = movieImdbId,
+                    title = enTitle ?: title,
+                    season = null,
+                    episode = null,
+                    year = year,
+                    sharedPref = sharedPref
+                )
             }
             StreamPlayCache.cacheLoadResponse(cacheKey, movieResponse)
             return movieResponse
@@ -1212,7 +1297,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 }
                 if (isUrdu) {
                     urduSubtitleSources.add(provenance)
-                    if (provenance == "yify") urduSubtitleSources.add("yifysub")
                 }
                 @Suppress("DEPRECATION")
                 val cleanedSubtitle = SubtitleFile(lang = finalLang, url = shieldedUrl).apply {
@@ -1267,8 +1351,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
 
         val subtitleHarvestTasks = buildList {
             if (res.isAnime) {
-                // For anime, generic movie/TV subtitle catalogues (SubtitleCat, Addic7ed, WyZIESUB,
-                // SubtitleAPI, OpenSubtitles) are never queried because they serve machine-translated,
+                // For anime in Default mode, generic movie/TV subtitle catalogues (SubtitleCat, Addic7ed,
+                // WyZIESUB, SubtitleAPI, OpenSubtitles) are never queried because they serve machine-translated,
                 // TV-broadcast-cut, or wrong-episode subtitles. Instead, KickAssAnime (BirdStream +
                 // VidStreaming soft-sub VTTs) runs alongside the anime primary providers (AniZone,
                 // AnimePahe, MegaPlay, Animex/ZokoAnime, CineSrc, Cineby, VidLink).
@@ -1292,7 +1376,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         }
                     )
                 }
-            } else {
+            }
+            if (!res.isAnime || urduMode) {
                 val subLookupId = res.imdbId?.trim()?.takeIf { it.isNotBlank() } ?: res.id?.toString()
                 if (!subLookupId.isNullOrBlank()) {
                     add(
@@ -1376,7 +1461,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                 episode = res.episode,
                                 year = res.year,
                                 isMovie = res.isMovie == true,
-                                isAnime = false
+                                isAnime = res.isAnime
                             ) { sub ->
                                 emitSubtitle(sub, "subtitlecat")
                             }
@@ -1384,7 +1469,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     )
                 }
                 val addic7edTitle = res.title ?: res.nametitle ?: res.orgTitle
-                if (!urduMode && !addic7edTitle.isNullOrBlank() && (res.season ?: 0) > 0 && (res.episode ?: 0) > 0) {
+                if (!urduMode && !res.isAnime && !addic7edTitle.isNullOrBlank() && (res.season ?: 0) > 0 && (res.episode ?: 0) > 0) {
                     add(
                         PipelinedTask(
                             providerId = "addic7ed",
@@ -1541,6 +1626,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
         }
 
+        fun countVerifiedHumanUrduSources(): Int =
+            urduSubtitleSources.count { it != "urdu-neural-fallback" && it != "subtitlecat" }
+
         try {
             if (primaryTasks.isNotEmpty()) {
                 Log.d(TAG, "🚀 Starting ${primaryTasks.size} primary providers with SpeculativePipeliner (concurrency: $concurrency, urduMode: $urduMode)")
@@ -1592,18 +1680,31 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             // Phase 3: Subtitle completion.
             //
             // In Default mode, the app downloads one English subtitle per source so that at least one
-            // is in sync with the release on disk. In Urdu mode, video stream providers do not carry
-            // Urdu subtitles, so we only retry unfinished dedicated Urdu subtitle harvesters when zero
-            // human Urdu tracks arrived in Phase 1, with a fast 5s timeout.
+            // is in sync with the release on disk. In Urdu mode, we retry unfinished human Urdu
+            // subtitle harvesters when fewer than 2 verified human Urdu sources (`humanUrduCount < 2`)
+            // arrived in Phase 1, with a fast, bounded per-task timeout of 4.5s and breaking out as
+            // soon as `humanUrduCount >= 2`.
+            val humanUrduCountBeforePhase3 = countVerifiedHumanUrduSources()
             val needsSubtitleCompletion = if (urduMode) {
-                urduSubtitleSources.isEmpty()
+                humanUrduCountBeforePhase3 < 2
             } else {
                 englishSubtitleSources.size < TARGET_ENGLISH_SUBTITLE_SOURCES
             }
             if (needsSubtitleCompletion) {
-                val retryableHarvests = subtitleHarvestTasks.filter { task ->
-                    if (urduMode) task.providerId !in urduSubtitleSources else task.providerId !in englishSubtitleSources
-                }
+                val retryableHarvests = subtitleHarvestTasks
+                    .filter { task ->
+                        if (urduMode) {
+                            task.providerId != "subtitlecat" &&
+                                task.providerId != "kickassanime" &&
+                                !urduSubtitleSources.contains(task.providerId) &&
+                                !(task.providerId == "yifysub" && urduSubtitleSources.contains("yify"))
+                        } else {
+                            task.providerId !in englishSubtitleSources
+                        }
+                    }
+                    .map { task ->
+                        if (urduMode) task.copy(taskTimeoutMs = 4_500L) else task
+                    }
                 val remainingSlots = (MAX_SUBTITLE_COMPLETION_PROVIDERS - retryableHarvests.size).coerceAtLeast(0)
                 val completionProviders = if (urduMode) {
                     emptyList()
@@ -1622,7 +1723,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     Log.d(
                         TAG,
                         "📝 Subtitle completion: ${englishSubtitleSources.size}/$TARGET_ENGLISH_SUBTITLE_SOURCES " +
-                            "English sources, ${urduSubtitleSources.size}/${UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES} Urdu sources; " +
+                            "English sources, $humanUrduCountBeforePhase3/2 verified human Urdu sources; " +
                             "querying ${retryableHarvests.size + completionProviders.size} more " +
                             "(${(retryableHarvests.map { it.providerId } + completionProviders.map { it.id }).joinToString()})"
                     )
@@ -1641,14 +1742,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         tier2DelayMs = 150L,
                         tier3DelayMs = 500L,
                         adaptiveTierEscalation = false,
-                        maxPipelineTimeoutMs = if (urduMode) 5_000L else SUBTITLE_COMPLETION_TIMEOUT_MS,
+                        maxPipelineTimeoutMs = if (urduMode) 4_500L else SUBTITLE_COMPLETION_TIMEOUT_MS,
                         postSatisfactionGraceMs = 0L
                     )
                     val completionController = EarlySatisfactionController(
                         completionConfig,
                         extraCondition = {
                             if (urduMode) {
-                                urduSubtitleSources.isNotEmpty()
+                                countVerifiedHumanUrduSources() >= 2
                             } else {
                                 englishSubtitleSources.size >= TARGET_ENGLISH_SUBTITLE_SOURCES
                             }
@@ -1705,16 +1806,18 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     Log.d(
                         TAG,
                         "📝 Subtitle completion finished: ${englishSubtitleCount.get()} English subtitles " +
-                            "from ${englishSubtitleSources.size} sources, ${urduSubtitleSources.size} Urdu sources"
+                            "from ${englishSubtitleSources.size} sources, ${countVerifiedHumanUrduSources()} verified human Urdu sources"
                     )
                 }
             }
 
-            // Phase 4: Zero-Gap Neural Urdu Fallback (Urdu mode only).
-            // When Urdu mode is active and fewer than TARGET_URDU_SUBTITLE_SOURCES human Urdu subtitle
-            // sources were found, translate the top English subtitle into timing-preserved RTL Urdu
-            // within a strict timeout so every movie and episode is guaranteed Urdu subtitles.
-            if (urduMode && urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
+            // Phase 4: Spoken-Urdu Contextual Neural Fallback (Urdu mode only).
+            // Run Phase 4 neural fallback only when zero verified human Urdu tracks (`humanUrduCount == 0`)
+            // were found across Phase 1 and Phase 3. When at least one verified human Urdu archive
+            // (SubDL, YTS-Subs, Subf2m, OpenSubtitles, SubSource, SubSense, Wyzie) succeeded, we never
+            // pollute the user's download/stream with an AI-translated fallback track or block for 8s.
+            val humanUrduCount = countVerifiedHumanUrduSources()
+            if (urduMode && humanUrduCount == 0) {
                 withTimeoutOrNull(8_000L) {
                     UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
                         imdbId = res.imdbId,

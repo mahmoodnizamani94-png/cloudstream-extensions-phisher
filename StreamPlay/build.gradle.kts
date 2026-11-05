@@ -11,7 +11,7 @@ import org.jetbrains.kotlin.konan.properties.Properties
 //    without ever needing to rewrite history.
 //  - Never decrement or re-issue an already-published number: users' apps compare
 //    `>` against the installed version, so any regression silently stops updates.
-version = 724
+version = 725
 
 android {
     buildFeatures {
@@ -40,7 +40,7 @@ cloudstream {
     language = "en"
     // All of these properties are optional, you can safely remove them
 
-     description = "#1 best extention based on MultiAPI"
+     description = "#1 SOTA Multi-API Extension • Instant 1-Tap English & Spoken Urdu (اردو) Subtitles (Verified Human Archives + Contextual Spoken AI) • Smart 720p/1080p Priority Engine"
      authors = listOf("Phisher98", "Hexated")
 
     /**

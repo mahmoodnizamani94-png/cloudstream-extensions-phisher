@@ -20,15 +20,15 @@ several providers share CDN hosts.
 
 `UrduSubtitleEngine` (in `StreamPlay`) and `SuperStreamUtils` (in `SuperStream`) provide a zero-latency, cross-classloader subtitle mode switch between:
 - **`SubtitleMode.DEFAULT` (`"default"`, `"Default (English)"`)** — the out-of-the-box default:
-  - `StreamPlay`, `StreamPlayExtractor`, `StreamPlayStremioCatelog`, `SuperStream`, and `SuperStreamExtractor` strictly filter and emit **English-only** subtitles (`TARGET_ENGLISH_SUBTITLE_SOURCES = 5`).
+  - `StreamPlay`, `StreamPlayAnime`, `StreamPlayExtractor`, `StreamPlayStremioCatelog`, `SuperStream`, and `SuperStreamExtractor` strictly filter and emit **English-only** subtitles (`TARGET_ENGLISH_SUBTITLE_SOURCES = 5`).
   - All non-English subtitles (including Urdu) are rejected in `emitSubtitle` / `trackedSubCallback`, and Urdu-only scrapers (`subdl`, `subsense`, `subf2m`) plus `synthesizeUrduFallbackFromEnglish` are never scheduled.
-- **`SubtitleMode.URDU` (`"urdu"`, `"Urdu (اردو)"`)**:
-  - Harvests all human Urdu subtitle sources in parallel (`subdl` Urdu, `subsense` Urdu, `subf2m` Urdu, `yts-subs` Urdu, `opensubtitles` `urd`, `subtitlecat` `-ur.srt`, `wyzie` `ur`) while recording English donor URLs (plus per-request `X-SubtitleCat-Orig-Url` / `X-SubtitleCat-Orig-Name` headers) for fallback synthesis.
-  - Both `UrduSubtitleEngine.materializeNormalizedUrduSubtitle` (in `StreamPlay`) and `SuperStreamExtractor.materializeNormalizedUrduSubtitle` (in `SuperStream`) unpack GZIP and season/episode-aware ZIP archives, detect `Windows-1256` (`CP1256`) vs `Windows-1252` and `UTF-16LE/BE`, normalize Arabic/Urdu glyphs (`NFKC` presentation forms, `\u06CC`, `\u06A9`, `\u06C1`, `\u06D2`), strip promotional watermarks while preserving inline tags (`<i>`, `<b>`, `<u>`, `<s>`, `{\an1}`..`{\an9}`), wrap RTL lines with `\u200F` (`RLM`), and materialize verified cues into local UTF-8-BOM `.srt` files (`file:///...`).
-  - Phase 3 completion checks `urduSubtitleSources.size < TARGET_URDU_SUBTITLE_SOURCES` and retries only subtitle harvesters not yet in `urduSubtitleSources` (and `SuperStream.loadLinks` sets `requireSubtitles = true` in `EarlySatisfactionConfig` so subtitle harvesters are never prematurely cancelled before a subtitle track is satisfied).
-  - Runs `UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish` (in `StreamPlay` and `StreamPlayStremioCatelog`) or `synthesizeSuperStreamUrduFallback` (in `SuperStream`, bounded by `withTimeoutOrNull(8_000L)`) when human Urdu sources are missing, translating the top English `.srt`/`.vtt` via batched `clients5.google.com/translate_a/t` (`dict-chrome-ex`, 250-cue batches with 50-cue bisection retry and `Semaphore(4)`) into a UTF-8 BOM + `\u200F` RLM `.srt` (published to SubtitleCat CDN or written to canonical `file:///...` local cache).
-  - Emits **pure Urdu subtitles** to `subtitleCallback` whenever at least one Urdu source (human or synthesized) is available; `deferredNonUrduSubtitles` / `englishDonorSubs` are only flushed in the rare emergency where both human scrapers and neural translation yield 0 Urdu tracks.
-  - `emitSubtitle` normalizes any `file:/...` URI from `File.toURI().toString()` to canonical triple-slash `file:///...` and `cleanSubtitleLabel` strips `(AI Translated)` / `[Neural AI]` suffixes so all Urdu tracks canonicalize cleanly to `"Urdu"`.
+- **`SubtitleMode.URDU` (`"urdu"`, `"Urdu (اردو)"`)** across `StreamPlay`, `StreamPlay-Anime` (`StreamPlayAnime.kt`), `StreamPlayStremioCatelog`, and `SuperStream`:
+  - **Speculative Detail-Page Pre-Warming (`load()`)**: While the user views a Movie or TV Series detail page in Urdu mode, `StreamPlay.scheduleSpeculativeUrduPrewarm` warms the `SubDL` and `SubSense` Urdu subtitle caches in the background (with a 10-minute per-title cooldown), and both `StreamPlay.load()` and `SuperStream.load()` prepend an active mode badge (`"🇵🇰 Subtitles: Urdu (اردو • SOTA)"` vs `"🇬🇧 Subtitles: English (Default)"`) to detail-page tags.
+  - **Parallel Multi-Catalogue Human Urdu Harvesting**: Harvests human Urdu subtitle sources in parallel (`subdl` Urdu via `api3.subdl.com/auto` + `subdl.com`, `subsense` Urdu, `subf2m` Urdu, `yts-subs` Urdu, `opensubtitles` `urd`, `subsource` Urdu when `subsource_api_key` is configured, and `wyzie` `ur` when `wyziekey` is configured) while recording English donor URLs (including `subtitlecat` English donors with `X-SubtitleCat-Orig-Url` / `X-SubtitleCat-Orig-Name` headers) for fallback synthesis.
+  - **In-Flight Cue Normalization & Materialization**: Both `UrduSubtitleEngine.materializeNormalizedUrduSubtitle` (in `StreamPlay`) and `SuperStreamExtractor.materializeNormalizedUrduSubtitle` (in `SuperStream`) unpack GZIP and season/episode-aware ZIP archives, detect `Windows-1256` (`CP1256`) vs `Windows-1252` and `UTF-16LE/BE`, normalize Arabic/Urdu glyphs (`NFKC` presentation forms, `\u06CC`, `\u06A9`, `\u06C1`, `\u06D2`), strip promotional watermarks while preserving inline tags (`<i>`, `<b>`, `<u>`, `<s>`, `{\an1}`..`{\an9}`), wrap RTL lines with `\u200F` (`RLM`), and materialize verified cues into local UTF-8-BOM `.srt` files (`file:///...`).
+  - **Phase 3 Urdu Subtitle Completion (`StreamPlay.kt`)**: Checks `humanUrduCount < 2` (fewer than 2 verified human Urdu sources arrived in Phase 1) and retries unfinished human Urdu subtitle harvesters (`!urduSubtitleSources.contains(task.providerId)`) with a fast, bounded per-task timeout of `4_500L` (4.5s), breaking out immediately as soon as `humanUrduCount >= 2` (and `SuperStream.loadLinks` sets `requireSubtitles = true` in `EarlySatisfactionConfig` so subtitle harvesters are never prematurely cancelled before a subtitle track is satisfied).
+  - **Phase 4 Spoken-Urdu Contextual Neural Fallback (`synthesizeUrduFallbackFromEnglish` / `synthesizeSuperStreamUrduFallback`)**: Runs **only when `humanUrduCount == 0`** (`urduSubtitleSources.isEmpty()`, bounded by `withTimeoutOrNull(8_000L)`), translating the top English donor `.srt`/`.vtt` across `StreamPlay`, `StreamPlayAnime`, `StreamPlayStremioCatelog`, and `SuperStream`. Uses cross-cue sentence-continuation merging (preserving complete English SVO sentences before translation so Urdu SOV word order is grammatically intact) and spoken Pakistani/Hindustani Urdu idiom adaptation (`adaptEnglishForSpokenUrduTranslation` + `refineUrduToSpokenIdiom`) via batched `clients5.google.com/translate_a/t` (`dict-chrome-ex`, 250-cue batches with 50-cue bisection retry and `Semaphore(4)`) into a UTF-8 BOM + `\u200F` RLM `.srt` written to canonical `file:///...` local cache.
+  - **Strict Source Attribution & Pure Urdu Emission**: Emits **pure Urdu subtitles** to `subtitleCallback` whenever at least one Urdu source (human or synthesized) is available; `deferredNonUrduSubtitles` / `englishDonorSubs` are only flushed in the rare emergency where both human scrapers and neural translation yield 0 Urdu tracks. `emitSubtitle` normalizes any `file:/...` URI from `File.toURI().toString()` to canonical triple-slash `file:///...` and `cleanSubtitleLabel` preserves verified source badges (`Urdu [SubDL]`, `Urdu [YTS-Subs]`, `Urdu [Subf2m]`, `Urdu [OpenSubtitles]`, `Urdu [SubSense]`, `Urdu [SubSource]`, `Urdu [Wyzie]`, `Urdu [Neural AI]`) without falsely attributing unknown labels.
 
 ### Zero-Latency Synchronization (0 ms, no app restart)
 Because the host app (`com.lagradost.cloudstream3`), `StreamPlay`, and `SuperStream` run in the same JVM process, both `UrduSubtitleEngine.setSubtitleMode` and `SuperStreamUtils.setSubtitleMode` read and write:
@@ -41,30 +41,32 @@ Users can toggle the mode at any time from either **StreamPlay Settings** or **S
 
 ## 2. Sources the extension schedules
 
+> **Note on Keyless vs. Key-Gated Sources:** `subdl` (`api3.subdl.com/auto` + `subdl.com`), `subsense`, `subf2m`, `yifysub`, `opensubtitles`, `subtitles` (`opensubtitles-v3.strem.io`), and `subtitlecat` (donor) operate **keylessly** out of the box. Direct API queries to `wyziesub` and `subsource` require user-configured API keys (`wyziekey` / `subsource_api_key` in SharedPreferences) and gracefully no-op when unconfigured.
+
 ### `StreamPlay.kt`, `StreamPlayStremioCatelog.kt` & `SuperStream.kt` (movies and TV)
 
 | Task id | Method | Key | Covers | Priority |
 |---|---|---|---|---|
-| `wyziesub` | `invokeWYZIESubs` / `invokeWyZIESUBAPI` | IMDb/TMDB id + season/episode (`sub.wyzie.io` + `.ru` fallback) | Movies, TV, anime (English in Default; Urdu + English donor in Urdu mode) | 110 (host marker) |
-| `subtitles` | `invokeSubtitleAPI` | IMDb id (`opensubtitles-v3.strem.io`) | Movies, TV (English in Default; Urdu + English donor in Urdu mode) | 105 |
-| `opensubtitles` | `invokeOpenSubtitlesLegacy` | IMDb id, then every known title (`eng` + `urd`) | Movies, TV, anime (English + Urdu) | 104 |
-| `addic7ed` | `invokeAddic7ed` | title + season + episode | TV | 103 |
-| `subtitlecat` | `invokeSubtitleCat` | release text: title + `SXXEXX` / `NxNN` / `- XX` | Movies, TV, anime (English with `X-SubtitleCat-Orig-Url` header + State A `-ur.srt` + State B neural Urdu) | 102 |
-| `yifysub` | `invokeYifySubs` | IMDb id (`yts-subs.com` + `yifysubtitles.ch` fallback) | Movies (English + Urdu) | 103 |
-| `subdl` | `UrduSubtitleEngine.invokeSubDlUrduKeyless` / `SuperStreamExtractor.invokeSubDlUrduKeyless` | IMDb id / title + year (`api3.subdl.com/auto` -> `subdl.com/.../urdu`) | Movies, TV (Urdu `.zip`, Urdu mode only) | 101 |
-| `subsense` | `UrduSubtitleEngine.invokeSubSenseUrdu` / `SuperStreamExtractor.invokeSubSenseUrdu` | IMDb id (`subsense.nepiraw.com` Stremio Urdu endpoints) | Movies, TV (Urdu, Urdu mode only) | 101 |
-| `subf2m` | `UrduSubtitleEngine.invokeSubf2mUrdu` | Normalized title + year/episode + `isMovie` (`subf2m.co/subtitles/.../urdu`) | Movies, TV (Urdu, Urdu mode only) | 100 |
-| `urdu-neural-fallback` | `synthesizeUrduFallbackFromEnglish` / `synthesizeSuperStreamUrduFallback` | Post-harvest timing-preserved neural translation (`clients5.google.com` 250-cue batching + SubtitleCat CDN / `file:///` local cache) | Movies, TV (Zero-gap RTL Urdu fallback in StreamPlay, StremioCatalog, and SuperStream) | 99 |
+| `wyziesub` | `invokeWYZIESubs` / `invokeWyZIESUBAPI` | IMDb/TMDB id + season/episode (`sub.wyzie.io` + `.ru` fallback; requires `wyziekey`) | Movies, TV, anime (English in Default; Urdu + English donor in Urdu mode) | 110 (host marker) |
+| `subtitles` | `invokeSubtitleAPI` | IMDb id (`opensubtitles-v3.strem.io`, keyless) | Movies, TV (English in Default; Urdu + English donor in Urdu mode) | 105 |
+| `opensubtitles` | `invokeOpenSubtitlesLegacy` | IMDb id, then every known title (`eng` + `urd`, keyless) | Movies, TV, anime (English + Urdu) | 104 |
+| `addic7ed` | `invokeAddic7ed` | title + season + episode (keyless) | TV (Default English mode) | 103 |
+| `subtitlecat` | `invokeSubtitleCat` | release text: title + `SXXEXX` / `NxNN` / `- XX` (keyless) | Movies, TV, anime (English in Default; English donor in Urdu mode) | 102 |
+| `yifysub` | `invokeYifySubs` | IMDb id (`yts-subs.com` + `yifysubtitles.ch` fallback, keyless) | Movies (English + Urdu) | 103 |
+| `subdl` | `UrduSubtitleEngine.invokeSubDlUrduKeyless` / `SuperStreamExtractor.invokeSubDlUrduKeyless` | IMDb id / title + year (`api3.subdl.com/auto` -> `subdl.com/.../urdu`, keyless + optional `subdl_api_key`) | Movies, TV, anime (Urdu `.zip`, Urdu mode only) | 101 |
+| `subsense` | `UrduSubtitleEngine.invokeSubSenseUrdu` / `SuperStreamExtractor.invokeSubSenseUrdu` | IMDb id (`subsense.nepiraw.com` Stremio Urdu endpoints, keyless) | Movies, TV, anime (Urdu, Urdu mode only) | 101 |
+| `subf2m` | `UrduSubtitleEngine.invokeSubf2mUrdu` | Normalized title + year/episode + `isMovie` (`subf2m.co/subtitles/.../urdu`, keyless) | Movies, TV (Urdu, Urdu mode only) | 100 |
+| `subsource` | `UrduSubtitleEngine.invokeSubSourceUrdu` | IMDb id + title + season/episode (requires `subsource_api_key`) | Movies, TV (Urdu, Urdu mode only) | 100 |
+| `urdu-neural-fallback` | `synthesizeUrduFallbackFromEnglish` / `synthesizeSuperStreamUrduFallback` | Spoken-Urdu contextual neural fallback (`clients5.google.com` cross-cue sentence merging + SOV/idiom refinement + `file:///` local cache; runs only when `humanUrduCount == 0`) | Movies, TV, anime (Zero-gap RTL Urdu fallback in StreamPlay, StreamPlayAnime, StremioCatalog, and SuperStream) | 99 |
 
 ### `StreamPlayAnime.kt` (anime)
 
 | Task id | Method | Gate |
 |---|---|---|
-| `wyziesub` | `invokeWYZIESubs` | TMDB-linked entry |
-| `subtitles` | `invokeSubtitleAPI` | IMDb id resolved |
-| `opensubtitles` | `invokeOpenSubtitlesLegacy` | IMDb id or any known title |
-| `addic7ed` | `invokeAddic7ed` | verified TMDB season/episode |
-| `subtitlecat` | `invokeSubtitleCat` | always (title + episode; no id needed) |
+| `kickassanime` | `invokeKickAssAnime` | any known anime title (English/multi-lang soft-sub VTTs; English donor in Urdu mode) |
+| `subdl` | `UrduSubtitleEngine.invokeSubDlUrduKeyless` | Urdu mode + (IMDb id or primary anime title) |
+| `subsense` | `UrduSubtitleEngine.invokeSubSenseUrdu` | Urdu mode + IMDb id resolved |
+| `urdu-neural-fallback` | `UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish` | Urdu mode + `urduSubtitleSources.isEmpty()` + `englishDonorSubs.isNotEmpty()` |
 
 Anime is searched by every known name (English, Romaji, native, AniList synonyms) because a
 Japanese-only query frequently returns nothing even when an English sidecar exists. The names travel
@@ -119,8 +121,8 @@ named accordingly. AnimePahe emits no sidecar and therefore has no subtitle mark
 | Podnapisi | dead | Domain no longer resolves. |
 | TVsubtitles | broken | Homepage loads; `search1.php` returns 404. |
 | Kitsunekko | rejected | Japanese-language files only; cannot satisfy an English-only contract. |
-| Subf2m | rejected | Downloads redirect to short-lived signed CDN URLs that expire before a queued download. |
-| SubSource / SubDL / Jimaku / Wyzie direct | key-gated | Need an API key or account. |
+| Subf2m (raw remote URLs in Default mode) | rejected for raw URL emission | Remote download links redirect to short-lived signed CDN URLs that expire before a queued download (in Urdu mode, `invokeSubf2mUrdu` immediately downloads, unpacks, and materializes the `.zip` into a local `file:///...` `.srt` during harvesting). |
+| Jimaku | key-gated | Requires an API key/account (note: `SubSource` and `Wyzie` are also key-gated via optional `subsource_api_key` / `wyziekey`, whereas `SubDL` Urdu operates keylessly via `api3.subdl.com/auto` + `subdl.com` HTML/ZIP materialization). |
 | Subscene | dead | Shut down. |
 | Anime Tosho feed | dead | Old feed endpoint no longer resolves. |
 | VidRock / VidSrc / VidSrcSU / Hexa / EmbedSU / Superstream / Vaplayer / Riverstream / Videasy | banned | Stripped by `StreamPlayShield` and the host's `isBannedOrDeadSubtitle`. |

@@ -336,4 +336,229 @@ class SuperStreamUrduSubtitleTest {
         assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(englishOnly))
         assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(sampleSrt))
     }
+
+    @Test
+    fun `containsVerifiedUrduScript accepts genuine Urdu cues and rejects Persian and Arabic multi-cue subtitle files`() {
+        val genuineUrduTwoCues = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            یہ اردو سب ٹائٹل ہے
+
+            2
+            00:00:04,000 --> 00:00:06,000
+            رُک جاؤ، ورنہ گولی مار دوں گا!
+        """.trimIndent()
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(genuineUrduTwoCues))
+
+        val persianMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            راشل، من کارم تموم شد
+
+            2
+            00:00:03,500 --> 00:00:05,500
+            باشه، فردا میبینمت
+
+            3
+            00:00:06,000 --> 00:00:08,500
+            کجا بودی؟ چرا انقدر دیر کردی؟
+
+            4
+            00:00:09,000 --> 00:00:11,500
+            خیلی خوب، اینجا منتظرم باش
+
+            5
+            00:00:12,000 --> 00:00:14,500
+            من دارم میرم خونه
+        """.trimIndent()
+        assertFalse(
+            "Persian (Farsi) multi-cue subtitle file must be rejected by containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(persianMultiCueSrt)
+        )
+
+        val arabicMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,500
+            مرحبًا، ماذا تفعل؟
+
+            2
+            00:00:04,000 --> 00:00:06,500
+            ذلك اليوم الذي ننتظره، ربما غدًا
+
+            3
+            00:00:07,000 --> 00:00:09,500
+            لماذا لم تخبرني؟ أين كنت؟
+
+            4
+            00:00:10,000 --> 00:00:12,500
+            تلك المشكلة التي كانت منذ البداية
+
+            5
+            00:00:13,000 --> 00:00:15,500
+            نحن لا نعرف كيف حدث ذلك
+        """.trimIndent()
+        assertFalse(
+            "Arabic multi-cue subtitle file must be rejected by containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(arabicMultiCueSrt)
+        )
+    }
+
+    @Test
+    fun `refineUrduToSpokenIdiom and adaptEnglishForSpokenUrduTranslation rewrite calques and colloquial idioms`() {
+        assertEquals("یا اللہ!", SuperStreamExtractor.refineUrduToSpokenIdiom("اوہ ، میرے گوش۔"))
+        assertEquals("یا خدا!", SuperStreamExtractor.refineUrduToSpokenIdiom("مسیح!"))
+        assertEquals("لعنت ہے!", SuperStreamExtractor.refineUrduToSpokenIdiom("گندگی!"))
+        assertEquals("ہرگز نہیں۔", SuperStreamExtractor.refineUrduToSpokenIdiom("کوئی راستہ نہیں ۔"))
+        assertEquals("بس کام ختم ہوا", SuperStreamExtractor.refineUrduToSpokenIdiom("یہ ایک لپیٹ ہے"))
+        assertEquals("شکریہ، براہِ کرم بیٹھیں۔", SuperStreamExtractor.refineUrduToSpokenIdiom("دھنیواد ، کرپیا بیٹھیں ۔"))
+
+        assertEquals("Oh God!", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("Oh, my God!"))
+        assertEquals("what on earth are you doing?", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("What the hell are you doing?"))
+        assertEquals("absolutely not!", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("No way!"))
+        assertEquals("you must be joking", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("You're kidding me"))
+    }
+
+    @Test
+    fun `isBrokenSmtUrdu detects broken SMT dumps and scoreUrduSubtitleNaturalness ranks natural spoken Urdu higher than literal calques`() {
+        val brokenCues = (1..12).map { idx ->
+            SuperStreamExtractor.SuperStreamSrtCue(
+                timestamp = "00:00:%02d,000 --> 00:00:%02d,500".format(idx, idx + 1),
+                text = when (idx % 3) {
+                    0 -> "اس سے پہلے کہ تم یہ جانتے ہو کہ وہ ٹکڑے ٹکڑے کرنے کے ایک دوسرے کے ripping کے رہے کا"
+                    1 -> "میں نے کبھی نہیں دیکھا ہے wildlings اس طرح ایک کام کرو کے ہے"
+                    else -> "اپنے گھوڑے پر واپس حاصل کرنے کا ہے کی سے"
+                }
+            )
+        }
+        assertTrue(
+            "Broken SMT cues with embedded English tokens and ungrammatical terminals must be flagged by isBrokenSmtUrdu",
+            SuperStreamExtractor.isBrokenSmtUrdu(brokenCues)
+        )
+
+        val naturalSpokenCues = (1..10).map { idx ->
+            SuperStreamExtractor.SuperStreamSrtCue(
+                timestamp = "00:00:%02d,000 --> 00:00:%02d,500".format(idx, idx + 1),
+                text = "دیکھو یار، فکر نہ کرو، سب ٹھیک ہے اور ہم جلدی جاؤ گے۔"
+            )
+        }
+        val literalCalqueCues = (1..10).map { idx ->
+            SuperStreamExtractor.SuperStreamSrtCue(
+                timestamp = "00:00:%02d,000 --> 00:00:%02d,500".format(idx, idx + 1),
+                text = "اوہ میرے گوش، مقدس گندگی، یہ ایک لپیٹ ہے، دھنیواد کرپیا نمسکار"
+            )
+        }
+
+        assertFalse(SuperStreamExtractor.isBrokenSmtUrdu(naturalSpokenCues))
+        val naturalScore = SuperStreamExtractor.scoreUrduSubtitleNaturalness(naturalSpokenCues)
+        val calqueScore = SuperStreamExtractor.scoreUrduSubtitleNaturalness(literalCalqueCues)
+        assertTrue(
+            "Natural spoken Urdu ($naturalScore) must score significantly higher than literal calques ($calqueScore)",
+            naturalScore > calqueScore + 100
+        )
+    }
+
+    @Test
+    fun `parseSubDlUrduPageZips scopes to data-language urdu filters AI rows and ranks Tier-1A uploaders ahead of Tier-1C`() {
+        val nonUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <a href="https://dl.subdl.com/subtitle/3001-9001.zip">Download Persian</a>
+              </div>
+            </div>
+            <div data-language="indonesian">
+              <div class="sub-row">
+                <span>Movie.2024.Indonesian (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/3002-9002.zip">Download Indonesian</a>
+              </div>
+            </div>
+        """.trimIndent()
+        assertEquals(
+            emptyList<String>(),
+            SuperStreamExtractor.parseSubDlUrduPageZips(nonUrduAstroHtml)
+        )
+
+        val mixedUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <a href="https://dl.subdl.com/subtitle/1111-1111.zip">Persian</a>
+              </div>
+            </div>
+            <div data-language="urdu">
+              <div class="sub-row" data-ai-translated="true">
+                <span>Movie.2024.1080p.Urdu</span>
+                <a href="https://dl.subdl.com/subtitle/2222-2222.zip">AI Row 1</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.Urdu (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/2223-2223.zip">AI Row 2</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.WEBRip.Urdu by Black Gold</span>
+                <a href="https://dl.subdl.com/subtitle/3333-3333.zip">Tier 1C Black Gold</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.NF.WEB-DL.Urdu by malik_rehan</span>
+                <a href="https://dl.subdl.com/subtitle/4444-4444.zip">Tier 1A malik_rehan</a>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val zips = SuperStreamExtractor.parseSubDlUrduPageZips(mixedUrduAstroHtml)
+        assertEquals(
+            listOf(
+                "https://dl.subdl.com/subtitle/4444-4444.zip",
+                "https://dl.subdl.com/subtitle/3333-3333.zip"
+            ),
+            zips
+        )
+    }
+
+    @Test
+    fun `shouldMergeContinuationCues and splitTranslatedUrduProportionally merge split English sentences and preserve timestamps`() = runBlocking {
+        val text1 = "As we begin, I believe you have"
+        val text2 = "a statement to read into the record."
+        val text3 = "Thank you, Senator."
+
+        assertTrue(SuperStreamExtractor.shouldMergeContinuationCues(text1, text2))
+        assertFalse(SuperStreamExtractor.shouldMergeContinuationCues(text2, text3))
+
+        val fullUrdu = "جیسا کہ ہم آغاز کر رہے ہیں، میرا خیال ہے کہ آپ کے پاس ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"
+        val splitParts = SuperStreamExtractor.splitTranslatedUrduProportionally(
+            translated = fullUrdu,
+            parts = 2,
+            weights = listOf(text1.length, text2.length)
+        )
+        assertEquals(2, splitParts.size)
+        assertEquals(fullUrdu, "${splitParts[0]} ${splitParts[1]}")
+
+        val rawEnglishSrt = """
+            1
+            00:01:10,000 --> 00:01:12,500
+            As we begin, I believe you have
+
+            2
+            00:01:12,700 --> 00:01:15,200
+            a statement to read into the record.
+
+            3
+            00:01:18,000 --> 00:01:20,000
+            Thank you, Senator.
+        """.trimIndent()
+
+        var batchSent: List<String> = emptyList()
+        val translatedSrt = SuperStreamExtractor.translateEnglishSrtToUrdu(rawEnglishSrt) { batch ->
+            batchSent = batch
+            listOf(fullUrdu, "شکریہ، سینیٹر۔")
+        }
+        assertEquals(2, batchSent.size)
+        assertEquals("As we begin, I believe you have a statement to read into the record.", batchSent[0])
+        assertNotNull(translatedSrt)
+
+        val outCues = SuperStreamExtractor.parseSuperStreamCues(translatedSrt!!)
+        assertEquals(3, outCues.size)
+        assertEquals("00:01:10,000 --> 00:01:12,500", outCues[0].timestamp)
+        assertEquals("00:01:12,700 --> 00:01:15,200", outCues[1].timestamp)
+        assertEquals("00:01:18,000 --> 00:01:20,000", outCues[2].timestamp)
+    }
 }
+
