@@ -794,7 +794,7 @@ class SuperStreamUrduSubtitleTest {
             append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
             for (i in 2..31) {
                 append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
-                append(padding[i % padding.size] + "\n")
+                append(padding[i % padding.size] + "\n\n")
             }
         }
         assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(padded))
@@ -805,6 +805,53 @@ class SuperStreamUrduSubtitleTest {
             }
         }
         assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(genuine))
+    }
+
+    @Test
+    fun `Token-free Persian padding with one Urdu line is rejected by the evidence-share gate in SuperStream too`() {
+        // Round-3 finding (GLM): the share gate is the list-independent defense; every padding
+        // line below was mechanically verified token-free against the compiled RAW and normalized
+        // patterns, so ONLY the >= 40% evidence-share gate rejects this file.
+        val padding = listOf(
+            "او به مدرسه رفت",
+            "پدرم چای می\u200Cخورد",
+            "او نامه نوشت",
+            "حالت چطوره؟",
+            "دیر رسید",
+            "دوستم تلفن کرد",
+            "سارا کتاب خواند",
+            "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(padded))
+    }
+
+    @Test
+    fun `Persian homograph vocabulary and vocative-dense genuine Urdu behave identically to StreamPlay`() {
+        val persianHava = buildString {
+            for (i in 1..30) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("هوا سرد بود و باران می\u200Cبارید\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianHava))
+        val vocativeDense = buildString {
+            for (i in 1..12) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 13..24) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(vocativeDense))
     }
 
     @Test

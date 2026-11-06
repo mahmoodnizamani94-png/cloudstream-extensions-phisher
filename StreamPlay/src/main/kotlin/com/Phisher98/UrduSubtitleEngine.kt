@@ -451,8 +451,13 @@ object UrduSubtitleEngine {
     // Arabic (تو / یا / اگر / مگر / لیکن / پر / ہو / ہم / تم — identical after `normalizeUrduTypography`
     // collapses ه/ك/ي/ى into ہ/ک/ی) are deliberately excluded so a homograph-only match can never
     // satisfy the script gate on its own.
+    // Homograph-free Urdu function words: Urdu-specific evidence with NO Persian/Arabic
+    // homograph (shared words like تو/اگر/پر/ہو/ہم/ہوا are deliberately excluded so a
+    // fa/ar cue can never earn Urdu-evidence credit after normalization). This token set
+    // is IDENTICAL to SuperStream's SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
     val URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|کے|کا|کو|سے|اور|یہ|وہ|کیا|بھی|تاکہ|کیونکہ|ہوں|گے|گی|گا|آپ|گیا|گئی|گئے|رہا|رہی|رہے|ہوئی|ہوا|ہوئے|اپنا|اپنی|اپنے|کچھ|کوئی|جب|اب|پھر|ساتھ|لیے|پہلے|کیوں|کیسے|کہاں|جائیں|کیجئے)(?:$|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اب|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رہا|رہی|رہے|ساتھ|سب|سے|لیے|میں|نہیں|وہ|پھر|پہلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+
 
     // Exclusive Persian (fa) and Arabic (ar) markers (recognizing normalized ی/ک/ہ variants as well)
 
@@ -464,8 +469,14 @@ object UrduSubtitleEngine {
     // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
     // This token set is IDENTICAL to SuperStream's SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX
     // (one curated list shared by both engines), so the two engines cannot drift apart.
+    // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
+    // This token set is IDENTICAL to SuperStream's SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX
+    // (one curated list shared by both engines) and deliberately contains ONLY fa/ar-distinctive
+    // function words, verb morphology, and colloquialisms — Urdu-shared everyday nouns are
+    // excluded so bare-noun cues can never be miscounted as fa/ar-leaning.
     val RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)])(آب|آبی|آتش|آره|آسمان|آفتاب|آقا|آمدم|آمدی|آنجا|آنها|آهن|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|اسم|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|بابا|باد|باران|باشد|باشه|باید|بدون|برادر|برای|برف|بزرگ|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|بچه|تحت|تكون|تلك|تموم|توی|جدا|جنگ|جنگل|جهان|جوان|حب|حتما|حتى|حرب|حرف|حقا|حول|حياة|خانم|خانه|خاک|خدا|خلال|خواهر|خوشگل|خونه|خیابان|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دختر|دخترم|در|درخت|درست|دریا|دست|دشمن|دقیقه|دل|دنیا|دوست|دون|دیدم|دیدی|دیروز|دیوار|دیگه|ذلك|رأس|راه|رب|ربما|رجل|رفتم|رفتی|رنگ|روز|روی|زرد|زمین|زن|زندگی|ساعة|ساعت|سال|سبز|ستاره|سخن|سر|سرخ|سفید|سلام|سنة|سنگ|سوف|سيارة|سیاه|شاید|شب|شدند|شما|شهر|شود|صدا|صلح|صوت|ضد|طبعا|طريق|طعام|طفل|طلا|عالم|عشق|على|عمل|عن|عند|عندما|عين|غدا|غدًا|غذا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قشنگ|قلب|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماشین|مال|مامان|ماه|مثل|مدينة|مرحبا|مرحبًا|مرد|مردم|مرسی|مرگ|مع|ممنون|من|منذ|منزل|منم|مهتاب|موت|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نام|نان|نحن|نحو|نقره|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نگاه|نیست|های|هایی|هذا|هذه|هرگز|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پا|پدر|پسر|پسرم|پنجره|پول|پیر|چرا|چشم|چطور|چقدر|چون|چیزی|چیه|کار|کجا|کدام|کردم|کردند|کردی|کردیم|کشور|کند|کنم|کنند|کنی|کنیم|کوه|کوچک|گفتم|گفتند|گفتی|گل)(?=$|[\s\u200F\u200E،,.!?;:'\(\)])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آسمان|آفتاب|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باران|باشد|باشه|باید|بدون|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|جنگل|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|درخت|دریا|دقیقه|دون|دیدم|دیدی|دیروز|دیوار|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زمین|زن|ساعة|ستاره|سر|سفید|سلام|سنة|سوف|سيارة|سیاه|شاید|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|عالم|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قشنگ|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منزل|منم|مهتاب|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نقره|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نگاه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|پنجره|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])""")
+
 
     // The same fa/ar marker set expressed in the glyphs `normalizeUrduTypography` produces
     // (U+0647->U+06C1, U+0643->U+06A9, U+064A/U+0649->U+06CC), derived 1:1 from the raw pattern
@@ -2302,10 +2313,15 @@ object UrduSubtitleEngine {
         }
 
         // Per-cue language verification: the aggregate counts above can be defeated by padding one
-        // Urdu-distinctive line over a Persian/Arabic body. Cues carrying Urdu evidence (distinctive
-        // glyphs or homograph-free function words) must outnumber cues that lean Persian/Arabic
-        // (exclusive fa/ar markers with zero Urdu evidence on the same cue).
-        if (cues.size > 4) {
+        // Urdu-distinctive line over a Persian/Arabic body (even one that avoids every curated
+        // token). Two list-independent per-cue rules apply to every multi-cue file:
+        //  (a) Dominance — cues carrying Urdu evidence (distinctive glyphs or homograph-free
+        //      function words) must outnumber cues that lean Persian/Arabic (exclusive fa/ar marker
+        //      with zero Urdu evidence on the same cue).
+        //  (b) Share — at least 40% of the file's Arabic-script cues must carry positive Urdu
+        //      evidence, so a token-free Persian/Arabic body padded with a single Urdu line is
+        //      rejected regardless of the curated token list.
+        if (cues.size >= 2) {
             var urduEvidenceCues = 0
             var faArabicLeaningCues = 0
             for (cue in cues) {
@@ -2322,6 +2338,9 @@ object UrduSubtitleEngine {
                 }
             }
             if (faArabicLeaningCues > urduEvidenceCues) {
+                return false
+            }
+            if (urduEvidenceCues * 100 < urduCues * 40) {
                 return false
             }
         }

@@ -1375,6 +1375,76 @@ class UrduSubtitleSotaTest {
     }
 
     @Test
+    fun `Token-free Persian padding with one Urdu line is rejected by the evidence-share gate`() {
+        // Round-3 finding (GLM): natural colloquial Persian can contain ZERO matches against the
+        // curated fa/ar token list, so the list-independent share gate is the only defense. Every
+        // padding line below was mechanically verified token-free against the compiled RAW and
+        // normalized patterns (0 fa/ar matches, 0 Urdu evidence). The file is 1 Urdu cue over 30
+        // such lines: dominance passes (0 fa-leaning), so ONLY the >= 40% evidence-share gate
+        // rejects it.
+        val padding = listOf(
+            "او به مدرسه رفت",
+            "پدرم چای می\u200Cخورد",
+            "او نامه نوشت",
+            "حالت چطوره؟",
+            "دیر رسید",
+            "دوستم تلفن کرد",
+            "سارا کتاب خواند",
+            "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n\n")
+            }
+        }
+        assertFalse(
+            "Token-free Persian padding must be rejected by the evidence-share gate",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Persian homograph vocabulary can no longer earn Urdu-evidence credit`() {
+        // Round-3 finding (GLM): Persian هوا (air) normalized into the evidence word ہوا, letting
+        // a Persian body earn Urdu-evidence credit. ہوا/ہوئی/ہوئے were removed from the
+        // homograph-free evidence list, so an all-هوا Persian file has 0% evidence.
+        val persianHava = buildString {
+            for (i in 1..30) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("هوا سرد بود و باران می\u200Cبارید\n")
+            }
+        }
+        assertFalse(
+            "Persian هوا cues must not earn Urdu-evidence credit",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianHava)
+        )
+    }
+
+    @Test
+    fun `Vocative-dense genuine Urdu files are accepted`() {
+        // Round-3 finding (GLM): bare greeting/vocative cues (خدا حافظ، سلام علیکم) share their
+        // nouns with Persian/Arabic, and the old exclusive list counted them as fa/ar-leaning,
+        // rejecting vocative-dense genuine Urdu. The shared nouns were removed from the list, so
+        // such cues are language-neutral and the file passes on the strength of its dialogue cues.
+        val vocativeDense = buildString {
+            for (i in 1..12) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 13..24) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(
+            "Vocative-dense genuine Urdu must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(vocativeDense)
+        )
+    }
+
+    @Test
     fun `Genuine Urdu subtitles containing shared homographs are still accepted`() {
         // Urdu fixture deliberately contains homographs (تم، کیا، اور) alongside distinctive glyphs
         // (ٹ، ں، ے، ھ) — the tightened gate must never reject genuine spoken Urdu.
@@ -1425,7 +1495,7 @@ class UrduSubtitleSotaTest {
             append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
             for (i in 2..31) {
                 append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
-                append(padding[i % padding.size] + "\n")
+                append(padding[i % padding.size] + "\n\n")
             }
         }
         assertFalse(
