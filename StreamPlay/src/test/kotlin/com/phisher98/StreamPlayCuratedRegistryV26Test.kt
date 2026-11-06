@@ -1474,6 +1474,72 @@ class StreamPlayCuratedRegistryV26Test {
         // timeline is ignored), paired with the 128 kbps audio representation.
         val stExpectedMb = ((1_100_000L + 128_000L) / 8.0) * 1440 / (1024.0 * 1024.0)
         assertEquals("Swapped attribute order + max-timeline scoping must compute 24 minutes", stExpectedMb.toInt(), st720!!.estimatedSizeMb)
+
+        // 4b. Template WITHOUT a `duration` attribute: exact timing derives from Σ(r+1)*d over
+        //     the timeline's own `<S>` entries, including entries with no `r` (implicit r=0).
+        val noDurationTemplateMpd = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <MPD>
+              <Period id="0">
+                <AdaptationSet mimeType="video/mp4" width="1720" height="720">
+                  <Representation id="v720" bandwidth="1100000">
+                    <SegmentTemplate timescale="1000" initialization="init.mp4">
+                      <SegmentTimeline>
+                        <S d="4000" r="99"/>
+                        <S d="2000"/>
+                      </SegmentTimeline>
+                    </SegmentTemplate>
+                  </Representation>
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val ndVariants = StreamPlayExtractor.parseDashMasterVariants(
+            "https://sacdn.hakunaymatata.com/dash/nodur/index.mpd",
+            noDurationTemplateMpd,
+            durationHintSeconds = 0.0
+        )
+        val nd720 = ndVariants.firstOrNull { it.quality == Qualities.P720.value }
+        assertNotNull("Σ(r+1)*d timeline arithmetic must yield the 720p variant", nd720)
+        // (100 x 4000 + 1 x 2000) / 1000 = 402 s.
+        val ndExpectedMb = (1_100_000L / 8.0) * 402 / (1024.0 * 1024.0)
+        assertEquals("Template without duration must derive timing from per-S d values", ndExpectedMb.toInt(), nd720!!.estimatedSizeMb)
+    }
+
+    @Test
+    fun testResolutionTruthClassifierIndependentProperties() {
+        // Classifier-independent properties that do NOT re-derive the band table:
+        // 1. Dimensional symmetry: classify(w, h) == classify(h, w).
+        // 2. Ladder closure: every classification is one of the canonical rungs.
+        // 3. Absolute anchors: standard broadcast/cinema dimensions resolve to their standard
+        //    tiers — derived from the formats themselves, not from the band table.
+        val canonicalTiers = setOf(144, 240, 360, 480, 720, 1080, 1440, 2160)
+        val widths = listOf(256, 320, 344, 426, 480, 640, 700, 720, 854, 960, 1024, 1280, 1332, 1366, 1720, 1800, 1850, 1920, 1998, 2048, 2560, 2650, 3440, 3840)
+        val heights = listOf(144, 180, 240, 268, 270, 356, 360, 400, 480, 534, 540, 576, 600, 720, 768, 800, 1038, 1080, 1440, 2160)
+        for (w in widths) {
+            for (h in heights) {
+                val forward = ResolutionTruth.classifyDimensions(w, h)
+                assertEquals("classify(${w}, ${h}) must equal classify(${h}, ${w})", forward, ResolutionTruth.classifyDimensions(h, w))
+                assertTrue(
+                    "classify($w, $h) = $forward must be a canonical ladder rung",
+                    forward in canonicalTiers || forward == Qualities.Unknown.value
+                )
+            }
+        }
+        // Absolute anchors (format-derived truth, not table-derived):
+        val anchors = mapOf(
+            "3840x2160" to 2160, "2560x1440" to 1440, "1920x1080" to 1080, "1280x720" to 720,
+            "854x480" to 480, "640x360" to 360, "426x240" to 240, "256x144" to 144,
+            "1998x1080" to 1080, "2048x1080" to 1080, "2048x858" to 1080, "1720x720" to 720,
+            "1332x720" to 720, "1850x720" to 720, "2650x1080" to 1080, "1200x480" to 480,
+            "864x360" to 360, "1920x800" to 1080, "1280x534" to 720, "854x356" to 480,
+            "640x268" to 360, "768x576" to 480
+        )
+        for ((label, expectedTier) in anchors) {
+            val (w, h) = label.split("x").map { it.toInt() }
+            assertEquals("Standard dimension $label must resolve to ${expectedTier}p", expectedTier, ResolutionTruth.classifyDimensions(w, h))
+            assertEquals("Standard dimension $label must hold for the swapped order", expectedTier, ResolutionTruth.classifyDimensions(h, w))
+        }
     }
 
     @Test

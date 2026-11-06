@@ -6325,10 +6325,12 @@ object StreamPlayExtractor : StreamPlay() {
     )
     private val DASH_TIMESCALE_ATTR_REGEX = Regex("""\btimescale\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
     private val DASH_SEGMENT_DURATION_ATTR_REGEX = Regex("""\bduration\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
-    private val DASH_SEGMENT_ENTRY_REGEX = Regex(
-        """<S\b[^>]*\br\s*=\s*["']?(\d+)["']?[^>]*/?>""",
+    private val DASH_S_ENTRY_REGEX = Regex(
+        """<S\b([^>]*)/?>""",
         RegexOption.IGNORE_CASE
     )
+    private val DASH_S_REPEAT_ATTR_REGEX = Regex("""\br\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
+    private val DASH_S_DURATION_ATTR_REGEX = Regex("""\bd\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
 
     /**
      * Nominal episode length used only to turn a provider-declared HLS bandwidth into a ranking
@@ -6704,18 +6706,39 @@ object StreamPlayExtractor : StreamPlay() {
             for ((index, template) in templateMatches.withIndex()) {
                 val attrs = template.groupValues[1]
                 val timescale = DASH_TIMESCALE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: continue
-                val segDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: continue
+                val templateDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 }
                 val scopeEnd = templateMatches.getOrNull(index + 1)?.range?.first ?: manifestText.length
                 val scopeText = manifestText.substring(template.range.last + 1, scopeEnd)
                 // MP4Box-style MPDs declare one AdaptationSet-level template with per-Representation
-                // timelines: count EVERY timeline in the template's scope and keep the LARGEST
-                // (a `.find` of only the first would undercount the longest video ladder).
-                val segmentCount = DASH_SEGMENT_TIMELINE_REGEX.findAll(scopeText)
-                    .maxOfOrNull { timeline ->
-                        DASH_SEGMENT_ENTRY_REGEX.findAll(timeline.groupValues[1])
-                            .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
-                    }?.takeIf { it > 0 } ?: continue
-                bestDurationSec = maxOf(bestDurationSec, segmentCount * segDuration / timescale.toDouble())
+                // timelines: evaluate EVERY timeline in the template's scope and keep the LARGEST
+                // duration (the video ladder), never a cross-timeline sum.
+                // Complete timeline arithmetic: each `<S>` entry contributes (r + 1) segments
+                // (entries without `r` contribute one). When every entry carries a `d` attribute
+                // the timeline's own Σ(r+1)*d is authoritative — templates without a `duration`
+                // attribute still yield exact timing; otherwise the template `duration` scales
+                // the counted segments.
+                var bestTimelineUnits = 0L
+                var sawTimeline = false
+                for (timeline in DASH_SEGMENT_TIMELINE_REGEX.findAll(scopeText)) {
+                    sawTimeline = true
+                    val entries = DASH_S_ENTRY_REGEX.findAll(timeline.groupValues[1]).map { entry ->
+                        val entryAttrs = entry.groupValues[1]
+                        val repeats = DASH_S_REPEAT_ATTR_REGEX.find(entryAttrs)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                        val entryDuration = DASH_S_DURATION_ATTR_REGEX.find(entryAttrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 }
+                        repeats to entryDuration
+                    }.toList()
+                    if (entries.isEmpty()) continue
+                    val allDurationsKnown = entries.all { it.second != null }
+                    val units = if (allDurationsKnown) {
+                        entries.sumOf { (repeats, entryDuration) -> (repeats + 1) * (entryDuration ?: 0L) }
+                    } else {
+                        val count = entries.sumOf { it.first + 1 }
+                        if (templateDuration != null && count > 0) count * templateDuration else continue
+                    }
+                    bestTimelineUnits = maxOf(bestTimelineUnits, units)
+                }
+                if (!sawTimeline || bestTimelineUnits <= 0) continue
+                bestDurationSec = maxOf(bestDurationSec, bestTimelineUnits / timescale.toDouble())
             }
             bestDurationSec.takeIf { it > 0.0 }
         }

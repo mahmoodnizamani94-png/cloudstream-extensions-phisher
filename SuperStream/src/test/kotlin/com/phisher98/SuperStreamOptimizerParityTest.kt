@@ -367,7 +367,7 @@ class SuperStreamOptimizerParityTest {
         // behavior level can never drift at the source level.
         val streamPlayPkg = "StreamPlay/src/main/kotlin/com/Phisher98"
         val superStreamPkg = "SuperStream/src/main/kotlin/com/phisher98"
-        for (name in listOf("ResolutionTruth.kt", "VidLinkCdnPolicy.kt")) {
+        for (name in listOf("ResolutionTruth.kt", "VidLinkCdnPolicy.kt", "SingleFlight.kt")) {
             val streamPlayFile = File(repoRoot(), "$streamPlayPkg/$name")
             val superStreamFile = File(repoRoot(), "$superStreamPkg/$name")
             assertTrue("$name must exist in the StreamPlay twin", streamPlayFile.isFile)
