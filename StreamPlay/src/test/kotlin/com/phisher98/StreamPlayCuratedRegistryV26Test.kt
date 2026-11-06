@@ -1507,6 +1507,62 @@ class StreamPlayCuratedRegistryV26Test {
     }
 
     @Test
+    fun testUrduModeLedgerSemanticsAreIndependentOfEnglishDiversity() {
+        // Urdu mode: English deliveries must never satisfy or suppress the Urdu completion walk,
+        // and vice versa — the two ledgers are independent per AGENTS.md §6.
+        val ledger = SubtitleSourceLedger(
+            targetEnglishSources = TARGET_ENGLISH_SUBTITLE_SOURCES,
+            targetUrduSources = UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
+        )
+        fun deliver(url: String, lang: String, provenance: String, sourceKey: String) {
+            val cleanedLang = cleanSubtitleLabel(lang)
+            if (ledger.markEmitted(cleanedLang, url)) {
+                val normalized = ledger.normalizeProvenance(provenance).orEmpty()
+                if (isEnglishSubtitleLabel(cleanedLang)) ledger.recordEnglishDelivery(normalized, sourceKey)
+                if (isUrduSubtitleLabel(cleanedLang)) ledger.recordUrduDelivery(normalized, sourceKey)
+            }
+        }
+
+        assertTrue("Urdu mode starts with pending completion", ledger.needsUrduCompletion())
+
+        // English sidecars arrive first: they count toward ENGLISH diversity only.
+        deliver("https://sub.wyzie.ru/s/en.vtt", "English", "wyzie", "wyzie")
+        deliver("https://api.subtitleapi.io/en.vtt", "English", "subtitleapi", "subtitles")
+        deliver("https://rest.opensubtitles.org/en.srt", "English", "opensubtitles", "opensubtitles")
+        assertEquals(3, ledger.englishSubtitleSources.size)
+        assertTrue("English deliveries never satisfy the Urdu target", ledger.needsUrduCompletion())
+        assertTrue(
+            "An English-only provider is NOT suppressed from Urdu re-querying",
+            !ledger.isUrduProviderCompleted("wyzie") && !ledger.isUrduSource("wyzie")
+        )
+
+        // Two distinct Urdu provenances speak: still short of the 3-source target.
+        deliver("https://urducdn.example/1.srt", "Urdu", "subtitles", "subtitles")
+        deliver("https://urducdn.example/2.srt", "Urdu (AI Translated)", "yifysub", "yifysub")
+        assertEquals(2, ledger.urduSubtitleSources.size)
+        assertTrue(ledger.needsUrduCompletion())
+
+        // The same Urdu sidecar re-offered under a #fragment must not double-count.
+        deliver("https://urducdn.example/1.srt#extra", "Urdu", "addic7ed", "addic7ed")
+        assertEquals("Fragment-spoofed duplicate must not inflate Urdu diversity", 2, ledger.urduSubtitleSources.size)
+
+        // Third distinct Urdu provenance completes the Urdu walk.
+        deliver("https://urducdn.example/3.srt", "اردو", "subtitlecat", "subtitlecat")
+        assertEquals(3, ledger.urduSubtitleSources.size)
+        assertFalse("Three distinct Urdu provenances complete the Urdu walk", ledger.needsUrduCompletion())
+        assertTrue(
+            "A provider that delivered Urdu is suppressed from Urdu re-querying",
+            ledger.isUrduProviderCompleted("subtitlecat") && ledger.isUrduSource("subtitlecat")
+        )
+
+        // Cross-mode isolation: completing Urdu must not flip the English walk's verdicts.
+        assertTrue(
+            "English-only completion is judged independently of Urdu deliveries",
+            ledger.isEnglishProviderCompleted("wyzie") && !ledger.isEnglishSource("subtitlecat")
+        )
+    }
+
+    @Test
     fun testResolutionTruthClassifierIndependentProperties() {
         // Classifier-independent properties that do NOT re-derive the band table:
         // 1. Dimensional symmetry: classify(w, h) == classify(h, w).
