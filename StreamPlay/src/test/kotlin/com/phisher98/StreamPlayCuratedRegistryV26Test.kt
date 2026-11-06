@@ -1375,6 +1375,146 @@ class StreamPlayCuratedRegistryV26Test {
     }
 
     @Test
+    fun testDashRobustnessBranches() {
+        // 1. Self-closing `<AdaptationSet/>` + bare representations outside paired sets + single-quoted
+        //    attributes + per-Period duration summation + median audio bandwidth pairing. No root
+        //    mediaPresentationDuration: the total is the SUM of the declared Period durations (45 min).
+        val selfClosingMpd = """
+            <?xml version='1.0' encoding='UTF-8'?>
+            <MPD>
+              <Period id='0' duration='PT20M'>
+                <AdaptationSet contentType='video' width='1920' height='800'/>
+                <Representation id='v1' bandwidth='2200000' width='1920' height='800'/>
+                <Representation id='v2' bandwidth='1100000' width='1720' height='720'/>
+              </Period>
+              <Period id='1' duration='PT25M'>
+                <AdaptationSet mimeType='audio/mp4' lang='en'>
+                  <Representation id='a1' bandwidth='96000'/>
+                  <Representation id='a2' bandwidth='128000'/>
+                  <Representation id='a3' bandwidth='192000'/>
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selfClosingVariants = StreamPlayExtractor.parseDashMasterVariants(
+            "https://sacdn.hakunaymatata.com/dash/self/index.mpd",
+            selfClosingMpd
+        )
+        val sc720 = selfClosingVariants.firstOrNull { it.quality == Qualities.P720.value }
+        val sc1080 = selfClosingVariants.firstOrNull { it.quality == Qualities.P1080.value }
+        assertNotNull("Bare representation outside a paired set must still be parsed (1720x720)", sc720)
+        assertNotNull("Bare representation outside a paired set must still be parsed (1920x800)", sc1080)
+        assertTrue("Single-quoted attributes must be parsed", selfClosingVariants.isNotEmpty())
+        // Median audio bandwidth of {96, 128, 192} kbps = 128 kbps paired with each video rep.
+        // Total presentation = 20 min + 25 min = 45 min.
+        val expectedMb = ((1_100_000L + 128_000L) / 8.0) * (45 * 60) / (1024.0 * 1024.0)
+        assertEquals("Per-Period duration sum (45 min) must drive the size estimate", expectedMb.toInt(), sc720!!.estimatedSizeMb)
+        // Median, not max, audio: max-audio pairing would add 192 kbps and inflate the estimate.
+        val maxAudioMb = ((1_100_000L + 192_000L) / 8.0) * (45 * 60) / (1024.0 * 1024.0)
+        assertTrue("Median audio bandwidth must not inflate estimates like max-audio pairing", sc720.estimatedSizeMb!! < maxAudioMb.toInt())
+
+        // 2. Multi-Period MPD without a root duration: per-Period durations are summed.
+        val multiPeriodMpd = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <MPD>
+              <Period id="0" duration="PT15M0S"/>
+              <Period id="1" duration="PT15M0S"/>
+              <Period id="2" duration="PT10M0S"/>
+              <Period id="3">
+                <AdaptationSet mimeType="video/mp4" width="1720" height="720">
+                  <Representation id="v720" bandwidth="1100000"/>
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val multiPeriodVariants = StreamPlayExtractor.parseDashMasterVariants(
+            "https://sacdn.hakunaymatata.com/dash/multi/index.mpd",
+            multiPeriodMpd
+        )
+        val mp720 = multiPeriodVariants.firstOrNull { it.quality == Qualities.P720.value }
+        assertNotNull("Multi-Period duration sum must yield the 720p variant", mp720)
+        val multiExpectedMb = (1_100_000L / 8.0) * (40 * 60) / (1024.0 * 1024.0)
+        assertEquals("15+15+10 minutes = 40 minutes must drive the size estimate", multiExpectedMb.toInt(), mp720!!.estimatedSizeMb)
+
+        // 3. SegmentTemplate fallback: attribute order swapped (duration BEFORE timescale) and
+        //    `<S>` repeat counts scoped per SegmentTimeline (max timeline, not a cross-set sum).
+        val segmentTemplateMpd = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <MPD>
+              <Period id="0">
+                <AdaptationSet mimeType="video/mp4" width="1720" height="720">
+                  <Representation id="v720" bandwidth="1100000">
+                    <SegmentTemplate duration="4000" timescale="1000" initialization="init-v720.mp4">
+                      <SegmentTimeline>
+                        <S d="4000" r="359"/>
+                      </SegmentTimeline>
+                    </SegmentTemplate>
+                  </Representation>
+                </AdaptationSet>
+                <AdaptationSet mimeType="audio/mp4">
+                  <Representation id="a0" bandwidth="128000">
+                    <SegmentTemplate duration="4000" timescale="48000">
+                      <SegmentTimeline>
+                        <S d="4000" r="47"/>
+                      </SegmentTimeline>
+                    </SegmentTemplate>
+                  </Representation>
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val stVariants = StreamPlayExtractor.parseDashMasterVariants(
+            "https://sacdn.hakunaymatata.com/dash/tpl/index.mpd",
+            segmentTemplateMpd,
+            durationHintSeconds = 0.0
+        )
+        val st720 = stVariants.firstOrNull { it.quality == Qualities.P720.value }
+        assertNotNull("SegmentTemplate fallback must yield the 720p variant", st720)
+        // 360 video segments x 4000/1000 = 1440 s (the video timeline; the 48-segment audio
+        // timeline is ignored), paired with the 128 kbps audio representation.
+        val stExpectedMb = ((1_100_000L + 128_000L) / 8.0) * 1440 / (1024.0 * 1024.0)
+        assertEquals("Swapped attribute order + max-timeline scoping must compute 24 minutes", stExpectedMb.toInt(), st720!!.estimatedSizeMb)
+    }
+
+    @Test
+    fun testTtlBoundedCacheEvictionPolicy() {
+        var now = 1_000_000L
+        val cache = TtlBoundedCache<String, Int>(ttlMs = 100L, maxEntries = 3, clock = { now })
+
+        cache.put("a", 1)
+        cache.put("b", 2)
+        assertEquals(1, cache.get("a"))
+        assertEquals(2, cache.get("b"))
+
+        // TTL boundary: at exactly ttlMs the entry is expired; just below it is live.
+        now += 99L
+        assertEquals("Entry one tick inside the TTL must still be live", 1, cache.get("a"))
+        now += 1L
+        assertNull("Entry at exactly ttlMs must be expired", cache.get("a"))
+
+        // Expired entries are swept before live ones when the cache overflows.
+        now += 1_000L
+        cache.put("c", 3)
+        cache.put("d", 4)
+        assertEquals(2, cache.size)
+
+        // Oldest-live entries are trimmed when nothing is expired.
+        cache.clear()
+        now = 2_000_000L
+        cache.put("k1", 1)
+        now += 1
+        cache.put("k2", 2)
+        now += 1
+        cache.put("k3", 3)
+        now += 1
+        cache.put("k4", 4)
+        assertEquals("Overflow trims down to maxEntries", 3, cache.size)
+        assertNull("Oldest entry (k1) is trimmed first", cache.get("k1"))
+        assertEquals(2, cache.get("k2"))
+        assertEquals(4, cache.get("k4"))
+    }
+
+    @Test
     fun testDashAdaptationSetAttributeInheritanceAndDayPrefixDuration() {
         val mpdWithInheritedAttrs = """
             <?xml version="1.0" encoding="utf-8"?>
@@ -1510,8 +1650,9 @@ class StreamPlayCuratedRegistryV26Test {
         )
         val heights = listOf(
             144, 200, 240, 268, 320, 350, 353, 354, 356, 360, 372, 373, 400, 430, 466, 467, 468,
-            480, 492, 493, 534, 540, 550, 576, 600, 650, 690, 700, 720, 740, 741, 768, 800, 950,
-            1038, 1040, 1080, 1100, 1101, 1350, 1420, 1440, 1460, 2000, 2140, 2160, 2180
+            480, 492, 493, 534, 540, 550, 576, 600, 650, 689, 690, 700, 720, 740, 741, 768, 800,
+            950, 1038, 1039, 1040, 1080, 1100, 1101, 1350, 1419, 1420, 1440, 1460, 1461, 2000,
+            2139, 2140, 2160, 2180, 2181
         )
         for (w in widths) {
             for (h in heights) {

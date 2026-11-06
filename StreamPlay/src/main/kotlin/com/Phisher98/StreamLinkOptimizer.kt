@@ -1802,7 +1802,8 @@ object StreamLinkOptimizer {
         for (m in DIMENSION_PAIR_REGEX.findAll(text)) {
             val w = m.groupValues[1].toIntOrNull() ?: continue
             val h = m.groupValues[2].toIntOrNull() ?: continue
-            if (minOf(w, h) < 100 || maxOf(w, h) > 4320) continue
+            // `\d{3,4}` guarantees both dimensions are >= 100; only implausible giants are skipped.
+            if (maxOf(w, h) > 4320) continue
             val q = ResolutionTruth.classifyDimensions(w, h)
             if (q > 0 && q != Qualities.Unknown.value && q > best) best = q
         }

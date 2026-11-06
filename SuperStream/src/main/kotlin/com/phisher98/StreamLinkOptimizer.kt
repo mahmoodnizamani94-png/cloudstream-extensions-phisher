@@ -1176,7 +1176,8 @@ object StreamLinkOptimizer {
         for (m in DIMENSION_PAIR_REGEX.findAll(text)) {
             val w = m.groupValues[1].toIntOrNull() ?: continue
             val h = m.groupValues[2].toIntOrNull() ?: continue
-            if (minOf(w, h) < 100 || maxOf(w, h) > 4320) continue
+            // `\d{3,4}` guarantees both dimensions are >= 100; only implausible giants are skipped.
+            if (maxOf(w, h) > 4320) continue
             val q = ResolutionTruth.classifyDimensions(w, h)
             if (q > 0 && q != Qualities.Unknown.value && q > best) best = q
         }
@@ -1650,15 +1651,15 @@ object StreamLinkOptimizer {
      *
      * - `1000` -> #1: `VidLink 720p` (rank 100)
      * - `900`  -> #2: `VidLink 1080p` (rank 100)
-     * - `675..780` -> #3: other top-tier `720p` (`800 - (100 - rank)`: HexaSU 780 > AutoEmbed 760 >
-     *   VidFast 740 > VidEasy 720 > VidSrc 675)
-     * - `165..540` -> #4: other top-tier `1080p` (`600 - (100 - rank) * 3`: HexaSU 540 > AutoEmbed 480 >
-     *   VidFast 420 > VidEasy 360 > VidSrc 165)
-     * - `45..90` -> #5: top-tier SD / Unknown / above-1080p (`100 - (100 - rank)`)
+     * - `755..790` -> #3: other top-tier `720p` (`800 - (100 - rank)`: HexaSU 790 > AutoEmbed 780 >
+     *   VidFast 770 > VidEasy 760 > VidSrc 755)
+     * - `465..570` -> #4: other top-tier `1080p` (`600 - (100 - rank) * 3`: HexaSU 570 > AutoEmbed 540 >
+     *   VidFast 510 > VidEasy 480 > VidSrc 465)
+     * - `55..90` -> #5: top-tier SD / Unknown / above-1080p (`100 - (100 - rank)`)
      * - `0` -> #6: secondary / unranked (`sourceRank < 55`) fallback sources
      *
      * Anime (`isAnime == true`): resolution-first across the same chain — every top-tier `720p`
-     * (675..780) outranks every top-tier `1080p` (165..540, including VidLink's).
+     * (755..790) outranks every top-tier `1080p` (465..570, including VidLink's).
      */
     fun getPrimaryStreamTierMultiplier(
         link: ExtractorLink,
@@ -1697,11 +1698,28 @@ object StreamLinkOptimizer {
      * Tiebreakers after the tier: source rank -> quality score -> verified size (smallest first) ->
      * direct byte stream over HLS/DASH -> bitrate -> endpoint -> video/HDR -> audio -> headers.
      */
-    fun isBetterThan(candidate: ExtractorLink, current: ExtractorLink): Boolean {
+    fun isBetterThan(
+        candidate: ExtractorLink,
+        current: ExtractorLink,
+        isAnime: Boolean? = null
+    ): Boolean {
+        // `null` auto-detects anime from the stream headers/extractor data; an explicit
+        // true/false from the caller is authoritative and never silently overridden. The flag is
+        // resolved ONCE for the pair so a mixed anime/movie comparison never ranks the two links
+        // under different tier regimes.
+        val effectiveIsAnime = isAnime ?: (isAnimeStream(candidate) || isAnimeStream(current))
         val sourceRank1 = getSourcePriorityRank(candidate)
         val sourceRank2 = getSourcePriorityRank(current)
-        val tierMult1 = getPrimaryStreamTierMultiplier(candidate, sourceRank = sourceRank1)
-        val tierMult2 = getPrimaryStreamTierMultiplier(current, sourceRank = sourceRank2)
+        val tierMult1 = getPrimaryStreamTierMultiplier(
+            candidate,
+            sourceRank = sourceRank1,
+            isAnime = effectiveIsAnime
+        )
+        val tierMult2 = getPrimaryStreamTierMultiplier(
+            current,
+            sourceRank = sourceRank2,
+            isAnime = effectiveIsAnime
+        )
         if (tierMult1 != tierMult2) {
             return tierMult1 > tierMult2
         }
@@ -1875,84 +1893,130 @@ object StreamLinkOptimizer {
      * 2. Micro-tiebreakers (bitrate, codecs, audio badges, headers) strictly bounded to < 10.0f
      *    so they break ties between equivalent streams without ever inverting source or quality tiers.
      */
-    fun getStreamCompositeScore(link: ExtractorLink): Float {
+    /**
+     * Overall stream score combining the v27 tier hierarchy with verified-size and transport
+     * tiebreakers, mirroring the StreamPlay twin:
+     * 1. Priority tier ([getPrimaryStreamTierMultiplier], x10_000) — strictly dominant, so
+     *    `VidLink 1080p` (tier 900) always outranks `HexaSU 720p` (tier 790) and every same-tier
+     *    comparison resolves through the sub-terms below without ever inverting tiers.
+     * 2. Intra-tier quality term (720p > 1080p > 480p > SD > above-1080p > Unknown).
+     * 3. Lane bonus: smallest verified `[XXX MB]` file size first, direct MP4 (VIDEO) before
+     *    HLS/DASH — the lowest-file-size-first contract.
+     * 4. Micro-tiebreakers (bitrate, codecs, audio, headers) strictly bounded to < 10.0f and
+     *    suppressed whenever a verified size exists, so they never invert size ordering.
+     */
+    fun getStreamCompositeScore(link: ExtractorLink, isAnime: Boolean? = null): Float {
+        val effectiveIsAnime = isAnime ?: isAnimeStream(link)
         val sourceRank = getSourcePriorityRank(link)
-        val quality = if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
-            link.quality
-        } else {
-            extractQualityFromText(link.name, link.url)
-        }
-        val isTopTier = isTopTierSource(link) // sourceRank >= 55
+        val rawQuality = getEffectiveQuality(link)
+        val isUnknown = rawQuality <= 0 || rawQuality == Qualities.Unknown.value
+        val quality = if (isUnknown) 0 else rawQuality
         val is720 = is720p(link) || quality == Qualities.P720.value || quality in 700..749
         val is1080 = !is720 && (is1080p(link) || quality == Qualities.P1080.value || (quality in 750..1088 && quality !in 700..749))
-        val isBelow720 = !is720 && !is1080 && isBelow720p(link)
-        val isAbove1080 = !is720 && !is1080 && isAbove1080p(link)
+        val isBelow720 = !is720 && !is1080 && !isUnknown && isBelow720p(link)
+        val isAbove1080 = !is720 && !is1080 && !isUnknown && isAbove1080p(link)
 
         val bitrate = parseBitrateKbpsFromText(link.name) ?: 0L
         val videoScore = calculateVideoScore(link)
         val audioScore = calculateAudioScore(link)
         val headerScore = calculateHeaderScore(link)
-        // Normalized tiebreaker (0.0f .. 9.9f) strictly prevents inverting source or quality tiers:
         val tiebreaker = minOf(9.9f, (minOf(50_000L, bitrate) / 10_000f) + (videoScore * 0.05f) + (audioScore * 0.05f) + (headerScore * 0.02f))
 
-        val baseScore = if (isTopTier) {
-            when {
-                // Tier 1: Highest priority sources with 720p (#1 Priority)
-                // VidLink (100) -> 11,000 | HexaSU (90) -> 10,900 | AutoEmbed (80) -> 10,800 | VidFast (70) -> 10,700 | VidEasy (60) -> 10,600 | VidSrc (55) -> 10,550
-                is720 -> 10_000f + (sourceRank * 10f)
+        val tierMultiplier = getPrimaryStreamTierMultiplier(
+            link = link,
+            sourceRank = sourceRank,
+            effectiveQuality = quality,
+            isAnime = effectiveIsAnime
+        )
+        val verifiedSizeBytes = parseSizeBytes(link.name)?.takeIf { it in 1L..MAX_REASONABLE_STREAM_BYTES }
+        val isDirect = isDirectMp4Stream(link)
 
-                // Tier 2: Highest priority sources with 1080p (#2 Priority)
-                // VidLink (100) -> 9,000 | HexaSU (90) -> 8,900 | AutoEmbed (80) -> 8,800 | VidFast (70) -> 8,700 | VidEasy (60) -> 8,600 | VidSrc (55) -> 8,550
-                is1080 -> 8_000f + (sourceRank * 10f)
-
-                // Tier 3: Rest of the qualities for highest priority sources (720 -> 1080 -> then the rest)
-                // 3A: 480p (Tier 2 SD) -> 7,000 down to 6,550
-                quality == Qualities.P480.value -> 6_000f + (sourceRank * 10f)
-
-                // 3B: Other SD (576p > 540p > 360p > 240p) -> ~5,200 down to ~4,600
-                isBelow720 -> {
-                    val sdOffset = if (quality in (Qualities.P480.value + 1) until 700) 200f else (minOf(479, maxOf(1, quality)) / 4.79f)
-                    4_000f + (sourceRank * 10f) + sdOffset
-                }
-
-                // 3C: Above 1080p (1440p > 4K / 2160p > 8K) -> ~3,200 down to ~2,600
-                isAbove1080 -> {
-                    val uhdOffset = when {
-                        quality == Qualities.P1440.value || (quality in 1089..1800) -> 200f
-                        quality == Qualities.P2160.value || (quality in 1801..3000) -> 100f
-                        else -> 50f
-                    }
-                    2_000f + (sourceRank * 10f) + uhdOffset
-                }
-
-                // 3D: Unknown or unspecified quality
-                else -> 1_200f + (sourceRank * 5f)
+        val laneBonus = if (verifiedSizeBytes != null) {
+            val clampedMb = ((verifiedSizeBytes + (512L * 1024L)) / (1024L * 1024L)).toInt().coerceIn(1, 2500)
+            if (tierMultiplier > 0) {
+                // Exact IEEE-754 dyadic multiples of 0.0625f (32.0f .. 344.4375f): strictly above
+                // unsized Direct MP4 (16.0f) and unsized HLS (0f), and strictly below any tier gap
+                // (>= 100 * 10_000f).
+                (512 + ((2500 - clampedMb) * 2) + (if (isDirect) 1 else 0)) * 0.0625f
+            } else {
+                // Secondary links: scaled bonus so a sized 240p never outscores an unsized 360p.
+                1.6f + ((2500 - clampedMb) * 0.001f) + (if (isDirect) 0.0005f else 0.0f)
             }
+        } else if (isDirect) {
+            if (tierMultiplier > 0) 16.0f else 0.4f
         } else {
-            // Secondary / Fallback sources (< 55)
-            when {
-                is720 -> 800f + (sourceRank * 2f)
-                is1080 -> 600f + (sourceRank * 2f)
-                quality == Qualities.P480.value -> 400f + (sourceRank * 2f)
-                isBelow720 -> 200f + (sourceRank * 2f) + (minOf(479, maxOf(1, quality)) / 4.79f * 0.5f)
-                isAbove1080 -> 100f + (sourceRank * 2f)
-                else -> sourceRank * 2f
-            }
+            0f
         }
 
-        return baseScore + tiebreaker
-    }
+        val qualityTerm = when {
+            is720 -> 9_600f
+            is1080 -> 8_000f + ((quality.coerceIn(721, 1080) - 1080) * 1.5f)
+            quality == Qualities.P480.value -> 6_000f
+            isBelow720 -> {
+                if (quality in (Qualities.P480.value + 1) until 700) {
+                    4_200f
+                } else {
+                    3_500f + (minOf(479, maxOf(1, quality)) / 4.79f * 1.5f)
+                }
+            }
+            isUnknown && quality >= 0 -> 3_000f
+            isAbove1080 -> {
+                when {
+                    quality == Qualities.P1440.value || (quality in 1089..1800) -> 2_600f - ((quality.coerceIn(1089, 1800) - 1089) * 0.2f)
+                    quality == Qualities.P2160.value || (quality in 1801..3000) -> 2_100f - ((quality.coerceIn(1801, 3000) - 2160).coerceAtLeast(0) * 0.1f)
+                    else -> 1_600f
+                }
+            }
+            else -> 1_000f
+        }
 
-    val STREAM_PRIORITY_COMPARATOR = Comparator<ExtractorLink> { a, b ->
-        getStreamCompositeScore(b).compareTo(getStreamCompositeScore(a))
+        val baseScore = if (tierMultiplier > 0) {
+            (tierMultiplier * 10_000f) + qualityTerm + laneBonus
+        } else {
+            // Secondary / fallback sources stay strictly below every top-tier stream (legacy
+            // proportional ordering already keeps 720p > 1080p > 480p > SD > above-1080p).
+            val secQualityTerm = when {
+                is720 -> 800f
+                is1080 -> 600f + ((quality.coerceIn(721, 1080) - 1080) * 0.5f)
+                quality == Qualities.P480.value -> 400f
+                isBelow720 -> 200f + (minOf(479, maxOf(1, quality)) / 4.79f * 0.5f)
+                isUnknown && quality >= 0 -> 150f
+                isAbove1080 -> {
+                    when {
+                        quality == Qualities.P1440.value || (quality in 1089..1800) -> 120f
+                        quality == Qualities.P2160.value || (quality in 1801..3000) -> 100f
+                        else -> 80f
+                    }
+                }
+                else -> 0f
+            }
+            secQualityTerm + laneBonus
+        }
+
+        val effectiveTiebreaker = if (verifiedSizeBytes != null) 0f else tiebreaker
+        return baseScore + effectiveTiebreaker
     }
 
     /**
-     * Determines whether candidate stream is strictly higher priority for user playback than current stream,
-     * enforcing the user priority hierarchy (720p > 1080p > 480p > above 1080p > below 480p).
+     * Priority comparator delegating to [isBetterThan] so the emission order in
+     * [emitTopTierDualQualityStreamLinks] and [PriorityStreamDispatcher] is EXACTLY the v27
+     * tier-first hierarchy (one comparison contract, no split-brain with a legacy flat score).
+     */
+    val STREAM_PRIORITY_COMPARATOR = Comparator<ExtractorLink> { a, b ->
+        when {
+            isBetterThan(a, b) -> -1
+            isBetterThan(b, a) -> 1
+            else -> 0
+        }
+    }
+
+    /**
+     * Determines whether candidate stream is strictly higher priority for user playback than
+     * current stream under the v27 hierarchy (720p-first across top sources, verified size,
+     * direct MP4 before HLS/DASH).
      */
     fun isStreamBetter(candidate: ExtractorLink, current: ExtractorLink): Boolean {
-        return getStreamCompositeScore(candidate) > getStreamCompositeScore(current)
+        return isBetterThan(candidate, current)
     }
 
     private fun calculateVideoScore(link: ExtractorLink): Int {

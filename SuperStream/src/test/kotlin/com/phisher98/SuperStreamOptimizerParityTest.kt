@@ -211,6 +211,110 @@ class SuperStreamOptimizerParityTest {
     }
 
     @Test
+    fun testTierMultiplierTableMatchesTheDocumentedV27Ladder() {
+        // Enumerated (rank, quality) -> multiplier contract for SuperStream's registry — this is
+        // the table the KDoc documents, pinned value by value so prose and code cannot drift.
+        fun multiplierFor(rank: Int, quality: Int): Int {
+            val source = when (rank) {
+                100 -> "Vidlink"
+                90 -> "HexaSU"
+                80 -> "AutoEmbed"
+                70 -> "VidFast"
+                60 -> "VidEasy"
+                55 -> "VidSrc"
+                else -> "MovieBox"
+            }
+            val tag = when (quality) {
+                Qualities.P720.value -> "720p"
+                Qualities.P1080.value -> "1080p"
+                Qualities.P480.value -> "480p"
+                Qualities.P2160.value -> "4K"
+                else -> "Auto"
+            }
+            val link = createSourceLink(
+                source = source,
+                name = "$source [$tag]",
+                url = "https://cdn.example/$rank/${quality}.m3u8",
+                quality = quality,
+                type = ExtractorLinkType.M3U8
+            )
+            return StreamLinkOptimizer.getPrimaryStreamTierMultiplier(link, sourceRank = rank)
+        }
+
+        // #1 and #2 lanes
+        assertEquals(1000, multiplierFor(100, Qualities.P720.value))
+        assertEquals(900, multiplierFor(100, Qualities.P1080.value))
+        // #3 other top-tier 720p = 800 - (100 - rank)
+        assertEquals(790, multiplierFor(90, Qualities.P720.value))
+        assertEquals(780, multiplierFor(80, Qualities.P720.value))
+        assertEquals(770, multiplierFor(70, Qualities.P720.value))
+        assertEquals(760, multiplierFor(60, Qualities.P720.value))
+        assertEquals(755, multiplierFor(55, Qualities.P720.value))
+        // #4 other top-tier 1080p = 600 - (100 - rank) * 3
+        assertEquals(570, multiplierFor(90, Qualities.P1080.value))
+        assertEquals(540, multiplierFor(80, Qualities.P1080.value))
+        assertEquals(510, multiplierFor(70, Qualities.P1080.value))
+        assertEquals(480, multiplierFor(60, Qualities.P1080.value))
+        assertEquals(465, multiplierFor(55, Qualities.P1080.value))
+        // #5 SD / Unknown / above-1080p = 100 - (100 - rank)
+        assertEquals(90, multiplierFor(90, Qualities.P480.value))
+        assertEquals(80, multiplierFor(80, Qualities.P480.value))
+        assertEquals(70, multiplierFor(70, Qualities.P2160.value))
+        assertEquals(90, multiplierFor(90, Qualities.Unknown.value))
+        // #6 secondary sources are tier 0
+        assertEquals(0, multiplierFor(50, Qualities.P720.value))
+        assertEquals(0, multiplierFor(20, Qualities.P720.value))
+    }
+
+    @Test
+    fun testStreamPriorityComparatorFollowsTheV27Hierarchy() {
+        fun sizedLink(source: String, quality: Int, sizeMb: Int, type: ExtractorLinkType = ExtractorLinkType.M3U8): ExtractorLink {
+            val qualityTag = if (quality == Qualities.P720.value) "720p" else "1080p"
+            return createSourceLink(
+                source = source,
+                name = "$source [$qualityTag] [$sizeMb MB]",
+                url = "https://cdn.example/${source.lowercase()}/$quality-$sizeMb.m3u8",
+                quality = quality,
+                type = type
+            )
+        }
+
+        val vidlink1080 = sizedLink("Vidlink", Qualities.P1080.value, 2500)
+        val hexasu720 = sizedLink("HexaSU", Qualities.P720.value, 690)
+        val vidsrc720 = sizedLink("VidSrc", Qualities.P720.value, 660)
+
+        // The comparator must agree with isBetterThan: VidLink 1080p (#2) outranks every other
+        // top-tier 720p (#3) — the legacy flat formula (10_000 + rank*10 vs 8_000 + rank*10)
+        // inverted exactly this pair.
+        val sorted = listOf(hexasu720, vidsrc720, vidlink1080).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+        assertEquals("Vidlink", sorted.first().source)
+        assertEquals(Qualities.P1080.value, sorted.first().quality)
+        assertEquals("HexaSU", sorted[1].source)
+        assertEquals("VidSrc", sorted.last().source)
+
+        // Same tier: smallest verified file size first; unsized direct MP4 before unsized HLS.
+        val big720 = sizedLink("HexaSU", Qualities.P720.value, 900)
+        val small720 = sizedLink("HexaSU", Qualities.P720.value, 650)
+        assertEquals("Smallest verified size must sort first within a tier", small720, listOf(big720, small720).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR).first())
+
+        val unsizedHls720 = createSourceLink(
+            source = "HexaSU",
+            name = "HexaSU [720p]",
+            url = "https://cdn.example/hexasu/720.m3u8",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8
+        )
+        val mp4Diagnostic = createSourceLink(
+            source = "HexaSU",
+            name = "HexaSU [720p]",
+            url = "https://cdn.example/hexasu/720.mp4",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.VIDEO
+        )
+        assertEquals("Direct MP4 must sort before unsized HLS within a tier", mp4Diagnostic, listOf(unsizedHls720, mp4Diagnostic).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR).first())
+    }
+
+    @Test
     fun testTwinSourceFilesAreByteIdenticalWithStreamPlay() {
         // The ResolutionTruth and VidLinkCdnPolicy single-source-of-truth modules must be byte
         // identical across the StreamPlay and SuperStream twins so the parity proven here at the

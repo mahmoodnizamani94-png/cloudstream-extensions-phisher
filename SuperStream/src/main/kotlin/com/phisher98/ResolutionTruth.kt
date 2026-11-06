@@ -17,7 +17,9 @@ import com.lagradost.cloudstream3.utils.Qualities
 internal object ResolutionTruth {
     private val TIER_LADDER = intArrayOf(2160, 1440, 1080, 720, 480, 360, 240, 144)
 
-    /** Snaps a bare pixel height to the nearest canonical ladder rung (`768` -> `720`, `1092` -> `1080`). */
+    /** Snaps a bare pixel height to the nearest canonical ladder rung (`768` -> `720`, `1092` -> `1080`).
+     *  Equidistant values (e.g. `600` between the `720` and `480` rungs) resolve UP to the higher
+     *  rung because higher tiers precede lower ones in [TIER_LADDER]'s search order. */
     fun snapToTier(px: Int): Int {
         if (px <= 0) return Qualities.Unknown.value
         return TIER_LADDER.minByOrNull { kotlin.math.abs(it - px) } ?: Qualities.Unknown.value

@@ -2572,25 +2572,11 @@ object StreamPlayExtractor : StreamPlay() {
 
     private const val ANIZONE_PLAYER_CACHE_TTL_MS = 10 * 60 * 1000L
     private const val ANIZONE_PLAYER_CACHE_MAX_ENTRIES = 64
-    private val aniZoneEpisodePlayerCache = java.util.concurrent.ConcurrentHashMap<String, Pair<AniZonePlayer, Long>>()
-    private val aniZoneEpisodePlayerInFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<AniZonePlayer?>>()
-
-    /**
-     * Bounded TTL cache eviction: expired entries are swept first and, only if the cache still
-     * exceeds [ANIZONE_PLAYER_CACHE_MAX_ENTRIES], the oldest entries are trimmed — never a
-     * cliff `clear()` that would throw away every warm episode resolution.
-     */
-    private fun evictAniZonePlayerCacheIfNeeded() {
-        if (aniZoneEpisodePlayerCache.size <= ANIZONE_PLAYER_CACHE_MAX_ENTRIES) return
-        val now = System.currentTimeMillis()
-        aniZoneEpisodePlayerCache.entries.removeIf { (_, value) -> now - value.second > ANIZONE_PLAYER_CACHE_TTL_MS }
-        if (aniZoneEpisodePlayerCache.size > ANIZONE_PLAYER_CACHE_MAX_ENTRIES) {
-            aniZoneEpisodePlayerCache.entries
-                .sortedBy { it.value.second }
-                .take(aniZoneEpisodePlayerCache.size - ANIZONE_PLAYER_CACHE_MAX_ENTRIES)
-                .forEach { aniZoneEpisodePlayerCache.remove(it.key) }
-        }
-    }
+    private val aniZoneEpisodePlayerCache = TtlBoundedCache<String, AniZonePlayer>(
+        ttlMs = ANIZONE_PLAYER_CACHE_TTL_MS,
+        maxEntries = ANIZONE_PLAYER_CACHE_MAX_ENTRIES
+    )
+    private val aniZoneEpisodePlayerSingleFlight = SingleFlight<String, AniZonePlayer?>()
 
     /**
      * Harvests frame-synced external soft-subtitles (`SubsPlease`, `Erai-raws`, `HorribleSubs`,
@@ -2648,19 +2634,12 @@ object StreamPlayExtractor : StreamPlay() {
             .take(MAX_ANIME_SOURCE_TITLE_QUERIES)
         if (queries.isEmpty()) return null
         val cacheKey = "${queries.joinToString("|") { it.lowercase(Locale.ROOT) }}|${year ?: 0}|$episodeNumber|$isMovie"
-        val now = System.currentTimeMillis()
-        aniZoneEpisodePlayerCache[cacheKey]?.let { (cached, ts) ->
-            if (now - ts < ANIZONE_PLAYER_CACHE_TTL_MS) return cached
-        }
-        val newDeferred = kotlinx.coroutines.CompletableDeferred<AniZonePlayer?>()
-        val existingDeferred = aniZoneEpisodePlayerInFlight.putIfAbsent(cacheKey, newDeferred)
-        if (existingDeferred != null) {
-            // A waiter never inherits the owner's cancellation or failure as a poisoned success:
-            // an exceptionally-completed shared deferred surfaces here as null and the next call
-            // re-resolves (failures are never negatively cached).
-            return runCatching { existingDeferred.await() }.getOrNull()
-        }
-        try {
+        aniZoneEpisodePlayerCache.get(cacheKey)?.let { return it }
+        // SingleFlight coalescing: concurrent callers share one resolution; a cancelled or failed
+        // leader hands the flight to the next waiter (no poisoned false-null), and failures are
+        // never written into the TTL cache so the next call re-resolves.
+        return aniZoneEpisodePlayerSingleFlight.execute(cacheKey) {
+            aniZoneEpisodePlayerCache.get(cacheKey)?.let { return@execute it }
             var hit: AniZoneSearchHit? = null
             for (query in queries) {
                 val html = withTimeoutOrNull(7_000L) {
@@ -2673,10 +2652,7 @@ object StreamPlayExtractor : StreamPlay() {
                 hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
                 if (hit != null) break
             }
-            val resolved = hit ?: run {
-                newDeferred.complete(null)
-                return null
-            }
+            val resolved = hit ?: return@execute null
             val baseUrl = resolved.url.trim()
                 .replaceFirst("http://", "https://")
                 .substringBefore('?')
@@ -2686,25 +2662,12 @@ object StreamPlayExtractor : StreamPlay() {
             val pageUrl = "$baseUrl/$episodeNumber"
             val pageHtml = withTimeoutOrNull(7_000L) {
                 cancellableGetText(pageUrl, headers = ANIZONE_HEADERS, timeoutSec = 6L)
-            } ?: run {
-                newDeferred.complete(null)
-                return null
-            }
+            } ?: return@execute null
             val parsedPlayer = aniZoneParsePlayer(pageHtml)
             if (parsedPlayer != null) {
-                evictAniZonePlayerCacheIfNeeded()
-                aniZoneEpisodePlayerCache[cacheKey] = parsedPlayer to System.currentTimeMillis()
+                aniZoneEpisodePlayerCache.put(cacheKey, parsedPlayer)
             }
-            newDeferred.complete(parsedPlayer)
-            return parsedPlayer
-        } catch (ce: CancellationException) {
-            newDeferred.completeExceptionally(ce)
-            throw ce
-        } catch (t: Throwable) {
-            newDeferred.completeExceptionally(t)
-            throw t
-        } finally {
-            aniZoneEpisodePlayerInFlight.remove(cacheKey, newDeferred)
+            parsedPlayer
         }
     }
 
@@ -4479,7 +4442,7 @@ object StreamPlayExtractor : StreamPlay() {
                     if (!subUrl.isNullOrBlank() && seenSubUrls.add(subUrl)) {
                         hasCaptions = true
                         val lang = cleanSubtitleLabel(caption.language)
-                        if (lang.contains("en", ignoreCase = true)) {
+                        if (isEnglishSubtitleLabel(lang)) {
                             hasEnglishCaptions = true
                         }
                         subtitleCallback?.invoke(
@@ -4610,23 +4573,25 @@ object StreamPlayExtractor : StreamPlay() {
                 // 3. Parse adaptive playlists (DASH .mpd from dash-hevc and/or HLS .m3u8 from dash-hevc/standard)
                 suspend fun resolveVidlinkPlaylistLinks(s: VidlinkStream): List<ExtractorLink> {
                     val rawPlaylistUrl = s.playlist?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
-                    var referer = ""
-                    var origin = ""
 
+                    // URL-embedded `headers=` JSON is an embed-wrapper artifact. It may only FILL
+                    // slots the VidLink CDN policy left blank on third-party hosts — it never
+                    // overrides the policy's filmboom/strip decisions.
+                    var embeddedReferer = ""
+                    var embeddedOrigin = ""
                     val headersJson = Regex("""[?&]headers=([^&]+)""")
                         .find(rawPlaylistUrl)?.groupValues?.get(1)
                         ?.let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrNull() }
-
                     if (!headersJson.isNullOrBlank()) {
                         runCatching {
                             val obj = Gson().fromJson(headersJson, JsonObject::class.java)
                             val ref = obj?.get("referer")?.asString
                             val parsedOrigin = obj?.get("origin")?.asString
-                            if (!ref.isNullOrBlank() && !ref.contains("vidlink.pro", ignoreCase = true) && !ref.contains("filmboom.top", ignoreCase = true) && !ref.contains("embed", ignoreCase = true)) {
-                                referer = ref
+                            if (!ref.isNullOrBlank() && VidLinkCdnPolicy.isAllowedThirdPartyReferer(ref)) {
+                                embeddedReferer = ref.trim()
                             }
-                            if (!parsedOrigin.isNullOrBlank() && !parsedOrigin.contains("vidlink.pro", ignoreCase = true) && !parsedOrigin.contains("filmboom.top", ignoreCase = true) && !parsedOrigin.contains("embed", ignoreCase = true)) {
-                                origin = parsedOrigin
+                            if (!parsedOrigin.isNullOrBlank() && VidLinkCdnPolicy.isAllowedThirdPartyReferer(parsedOrigin)) {
+                                embeddedOrigin = parsedOrigin.trim()
                             }
                         }
                     }
@@ -4638,11 +4603,11 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     if (!cleanPlaylistUrl.startsWith("http", ignoreCase = true)) return emptyList()
 
-                    val effRef = if (referer.isNotBlank() && !referer.contains("filmboom.top", ignoreCase = true)) referer else ""
-                    val effOrig = if (origin.isNotBlank() && !origin.contains("filmboom.top", ignoreCase = true)) origin else ""
                     val playlistHeaders = sanitizeVidlinkHeaders(s.playlistHeaders, cleanPlaylistUrl)
-                    if (effOrig.isNotBlank()) playlistHeaders["Origin"] = effOrig
-                    if (effRef.isNotBlank()) playlistHeaders["Referer"] = effRef
+                    if (VidLinkCdnPolicy.modeFor(cleanPlaylistUrl) == VidLinkCdnPolicy.RefererMode.THIRD_PARTY) {
+                        if (playlistHeaders["Origin"].isNullOrBlank() && embeddedOrigin.isNotBlank()) playlistHeaders["Origin"] = embeddedOrigin
+                        if (playlistHeaders["Referer"].isNullOrBlank() && embeddedReferer.isNotBlank()) playlistHeaders["Referer"] = embeddedReferer
+                    }
                     val finalEffRef = playlistHeaders["Referer"].orEmpty()
                     val finalEffOrig = playlistHeaders["Origin"].orEmpty()
 
@@ -6321,7 +6286,7 @@ object StreamPlayExtractor : StreamPlay() {
         RegexOption.IGNORE_CASE
     )
     private val DASH_ADAPTATION_SET_REGEX = Regex(
-        """<AdaptationSet\b([^>]*)>([\s\S]*?)</AdaptationSet>""",
+        """<AdaptationSet\b((?:[^>]*[^>/])?)>([\s\S]*?)</AdaptationSet>""",
         RegexOption.IGNORE_CASE
     )
     private val DASH_REPRESENTATION_TAG_REGEX = Regex(
@@ -6341,10 +6306,16 @@ object StreamPlayExtractor : StreamPlay() {
         """<Period\b[^>]*\bduration\s*=\s*["']([^"']+)["'][^>]*/?>""",
         RegexOption.IGNORE_CASE
     )
-    private val DASH_SEGMENT_TEMPLATE_DURATION_REGEX = Regex(
-        """<SegmentTemplate\b[^>]*\btimescale\s*=\s*["']?(\d+)["']?[^>]*\bduration\s*=\s*["']?(\d+)["']?[^>]*>""",
+    private val DASH_SEGMENT_TEMPLATE_TAG_REGEX = Regex(
+        """<SegmentTemplate\b([^>]*)/?>""",
         RegexOption.IGNORE_CASE
     )
+    private val DASH_SEGMENT_TIMELINE_REGEX = Regex(
+        """<SegmentTimeline\b[^>]*>([\s\S]*?)</SegmentTimeline>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val DASH_TIMESCALE_ATTR_REGEX = Regex("""\btimescale\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
+    private val DASH_SEGMENT_DURATION_ATTR_REGEX = Regex("""\bduration\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
     private val DASH_SEGMENT_ENTRY_REGEX = Regex(
         """<S\b[^>]*\br\s*=\s*["']?(\d+)["']?[^>]*/?>""",
         RegexOption.IGNORE_CASE
@@ -6714,12 +6685,26 @@ object StreamPlayExtractor : StreamPlay() {
             ?.sum()
             ?.takeIf { it > 0.0 }
         ?: run {
-            val template = DASH_SEGMENT_TEMPLATE_DURATION_REGEX.find(manifestText) ?: return@run null
-            val timescale = template.groupValues[1].toLongOrNull()?.takeIf { it > 0 } ?: return@run null
-            val segDuration = template.groupValues[2].toLongOrNull()?.takeIf { it > 0 } ?: return@run null
-            val segmentCount = DASH_SEGMENT_ENTRY_REGEX.findAll(manifestText)
-                .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
-                .takeIf { it > 0 } ?: return@run null
+            // Attribute-order independent: match the SegmentTemplate TAG first, then locate
+            // `timescale` and `duration` anywhere inside it (`duration` before `timescale` in
+            // real MPDs must not defeat the fallback).
+            val templateTag = DASH_SEGMENT_TEMPLATE_TAG_REGEX.findAll(manifestText)
+                .firstOrNull {
+                    DASH_TIMESCALE_ATTR_REGEX.find(it.groupValues[1]) != null &&
+                        DASH_SEGMENT_DURATION_ATTR_REGEX.find(it.groupValues[1]) != null
+                } ?: return@run null
+            val timescale = DASH_TIMESCALE_ATTR_REGEX.find(templateTag.groupValues[1])
+                ?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: return@run null
+            val segDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(templateTag.groupValues[1])
+                ?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: return@run null
+            // Repeat counts are summed per SegmentTimeline and the LARGEST timeline (the video
+            // ladder's) drives the estimate — summing `<S>` entries across every audio + video
+            // timeline in the MPD would multiply the duration.
+            val segmentCount = DASH_SEGMENT_TIMELINE_REGEX.findAll(manifestText)
+                .maxOfOrNull { timeline ->
+                    DASH_SEGMENT_ENTRY_REGEX.findAll(timeline.groupValues[1])
+                        .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
+                }?.takeIf { it > 0 } ?: return@run null
             (segmentCount * segDuration / timescale.toDouble()).takeIf { it > 0.0 }
         }
         val effectiveDurationSec = mpdDurationSec
