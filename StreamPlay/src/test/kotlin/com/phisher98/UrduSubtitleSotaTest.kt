@@ -1411,6 +1411,121 @@ class UrduSubtitleSotaTest {
     }
 
     @Test
+    fun `Adversarially padded files (one Urdu line over a Persian body) are rejected by per-cue verification`() {
+        // Round-2 finding (GLM): the file-level aggregate counts can be defeated by padding a
+        // single Urdu-distinctive line over Persian sentences that contain no list-tokens at all.
+        // The per-cue gate requires Urdu evidence (distinctive glyphs or homograph-free function
+        // words) in a healthy share of the Arabic-script cues.
+        val padding = listOf(
+            "او به مدرسه رفت", "برادرم دیروز آمد", "او گفت فردا می‌آید", "این کتاب نو است",
+            "آن‌ها در پارک قدم می‌زدند", "پدرم چای می‌خورد", "ما به بازار رفتیم", "او نامه نوشت",
+            "دوستم تلفن کرد", "هوا سرد شده است", "کتاب روی میز است", "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n")
+            }
+        }
+        assertFalse(
+            "One padded Urdu line over a Persian body must be rejected by per-cue verification",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+        // Genuine Urdu with a few Persian-shared single-word cues must still pass comfortably.
+        val genuine = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(UrduSubtitleEngine.containsVerifiedUrduScript(genuine))
+    }
+
+    @Test
+    fun `Corrupted URL-index cache entries are discarded instead of served`() = runBlocking {
+        val urduSrt = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو سبٹائٹل لائن $i ہے، اور یہ بہت خوبصورت ہے\n\n")
+            }
+        }
+        val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+        server.createContext("/sub.srt") { exchange ->
+            fetchCount.incrementAndGet()
+            val bytes = urduSrt.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "application/octet-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            UrduSubtitleEngine.clearCachesForTest()
+            val url = "http://127.0.0.1:${server.address.port}/sub.srt?run=${System.nanoTime()}"
+            // Pre-plant a > 64-byte NON-Urdu payload at the exact URL-index path for this cache key.
+            val cacheKey = "$url|S0E0"
+            val urlCacheName = "cs_urdu_url_${UrduSubtitleEngine.sha256Hex(cacheKey).take(24)}.srt"
+            val bogus = java.io.File(System.getProperty("java.io.tmpdir"), urlCacheName)
+            bogus.writeText("1\n00:00:01,000 --> 00:00:02,000\nTotally not Urdu at all\n\n2\n00:00:02,000 --> 00:00:03,000\nstill not urdu here\n")
+            try {
+                val result = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "integrity-test")
+                assertNotNull("Materialization must fall through to the network", result)
+                assertEquals("The network must have been used instead of the corrupt cache", 1, fetchCount.get())
+                val served = java.io.File(result!!.removePrefix("file://")).readText()
+                assertTrue("Served payload must be the verified Urdu content", served.contains("سبٹائٹل"))
+                val indexNow = runCatching { bogus.readText() }.getOrNull().orEmpty()
+                assertTrue(
+                    "The corrupt entry must have been replaced by the verified Urdu payload",
+                    indexNow.contains("سبٹائٹل") && !indexNow.contains("Totally not Urdu")
+                )
+            } finally {
+                java.io.File(System.getProperty("java.io.tmpdir"), urlCacheName).delete()
+            }
+        } finally {
+            server.stop(0)
+            UrduSubtitleEngine.clearCachesForTest()
+        }
+    }
+
+    @Test
+    fun `Corrupted CAS cache entries are rewritten on the next write`() {
+        val srt = "1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے اور اچھی ہے\n\n2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n"
+        val uri = UrduSubtitleEngine.writeUrduLocalCacheFile("cas_corruption_test", srt)
+        assertNotNull(uri)
+        val file = java.io.File(uri!!.removePrefix("file://"))
+        try {
+            file.writeText("CORRUPTED GARBAGE PAYLOAD THAT NO LONGER MATCHES THE HASH ".repeat(3))
+            val uri2 = UrduSubtitleEngine.writeUrduLocalCacheFile("cas_corruption_test", srt)
+            assertEquals("The same CAS path must be returned after the rewrite", uri, uri2)
+            assertTrue(
+                "The rewritten payload must be the verified Urdu content again",
+                java.io.File(uri2!!.removePrefix("file://")).readText().contains("سبٹائٹل")
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `Cached payload trust helper rejects non-Urdu and broken content`() {
+        val validUrdu = "1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے اور اچھی ہے\n\n2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n"
+        assertTrue(UrduSubtitleEngine.isTrustedCachedUrduContent(validUrdu))
+        assertFalse(
+            "Non-Urdu content must fail the cache trust gate",
+            UrduSubtitleEngine.isTrustedCachedUrduContent("1\n00:00:01,000 --> 00:00:02,000\nplain english text\n")
+        )
+        assertFalse(
+            "Blank payload must fail the cache trust gate",
+            UrduSubtitleEngine.isTrustedCachedUrduContent("")
+        )
+        assertFalse(
+            "Non-cue payload must fail the cache trust gate",
+            UrduSubtitleEngine.isTrustedCachedUrduContent("جستجوی متن بدون تایم‌استمپ")
+        )
+    }
+
+    @Test
     fun `Concurrent materializations of the same URL coalesce into a single network fetch`() = runBlocking {
         val urduSrt = buildString {
             for (i in 1..40) {

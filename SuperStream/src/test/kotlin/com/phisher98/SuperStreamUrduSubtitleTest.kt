@@ -781,5 +781,48 @@ class SuperStreamUrduSubtitleTest {
         val otherEpisode = SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(imdbId = "tt2222222", season = 1, episode = 3)
         assertTrue("A different episode must not consume another title's scoped candidate", otherEpisode.isEmpty())
     }
+
+    @Test
+    fun `Adversarially padded files are rejected by per-cue verification in SuperStream too`() {
+        // Round-2 finding (GLM): parity with StreamPlay's per-cue language verification.
+        val padding = listOf(
+            "او به مدرسه رفت", "برادرم دیروز آمد", "او گفت فردا می‌آید", "این کتاب نو است",
+            "آن‌ها در پارک قدم می‌زدند", "پدرم چای می‌خورد", "ما به بازار رفتیم", "او نامه نوشت",
+            "دوستم تلفن کرد", "هوا سرد شده است", "کتاب روی میز است", "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(padded))
+        val genuine = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(genuine))
+    }
+
+    @Test
+    fun `Cached payload trust helper rejects non-Urdu and broken content in SuperStream too`() {
+        val validUrdu = "1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے اور اچھی ہے\n\n2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n"
+        assertTrue(SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent(validUrdu))
+        assertFalse(
+            "Non-Urdu content must fail the cache trust gate",
+            SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("1\n00:00:01,000 --> 00:00:02,000\nplain english text\n")
+        )
+        assertFalse(
+            "Blank payload must fail the cache trust gate",
+            SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("")
+        )
+        assertFalse(
+            "Non-cue payload must fail the cache trust gate",
+            SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("جستجوی متن بدون تایم‌استمپ")
+        )
+    }
 }
 

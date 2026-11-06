@@ -98,8 +98,9 @@ private val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
     """(?:^|[\s\u200F\u200E"،۔؟!…])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|آپ|کا|کے|کو|سے|اور|یہ|وہ|کیا|کیوں|کیسے|کہاں|جب|اب|پھر|ساتھ|لیے|پہلے|کچھ|سب|کوئی|اپنے|اپنی|اپنا|گیا|گئی|گئے|رہا|رہی|رہے|ہوا|ہوئی|کریں|کرو|جاؤ|آؤ|بھی|ہوں)(?=$|[\s\u200F\u200E"،۔؟!…])"""
 )
 private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E"،۔؟!…])(است|نیست|هست|هستم|هستی|هستند|می\u200C|نمی\u200C|های|هایی|برای|خیلی|چون|چرا|کجا|اینجا|آنجا|شما|آنها|ایشان|دیگه|همین|الان|باید|شاید|دارم|داری|دارد|داریم|دارند|کردم|کردی|کردیم|کردند|شود|شدند|بشه|میشه|نمیشه|نمیدونم|میدونم|میخوام|میخوای|میخواد|منم|توی|روی|چیه|چیزی|وقتی|اون|اونا|اینو|اونو|بابا|مامان|آقا|خانم|بله|آره|نه|چشم|مرسی|ممنون|بفرمایید|پدر|مادر|برادر|خواهر|پسرم|دخترم|کنم|کنی|کند|کنیم|کنند|گفتم|گفتی|گفتند|رفتم|رفتی|آمدم|آمدی|دیدم|دیدی|بدون|همه|هیچ|کدام|چطور|چقدر|هرگز|البته|حتما|واقعا|درست|بزرگ|کوچک|قشنگ|خوشگل|امروز|دیروز|فردا|شب|روز|ساعت|دقیقه|سال|ماه|هفته|زندگی|مرگ|عشق|دوست|دشمن|جنگ|صلح|خانه|اتاق|ماشین|خیابان|شهر|کشور|دنیا|جهان|خدا|مردم|بچه|پسر|دختر|زن|مرد|پیر|جوان|آب|نان|غذا|کار|پول|دست|پا|سر|چشم|دل|قلب|نام|اسم|حرف|سخن|صدا|نگاه|راه|در|دیوار|پنجره|آسمان|زمین|دریا|کوه|جنگل|درخت|گل|باران|برف|باد|آفتاب|مهتاب|ستاره|آتش|خاک|سنگ|آهن|طلا|نقره|رنگ|سفید|سیاه|سرخ|قرمز|آبی|سبز|زرد|هذا|هذه|ذلك|تلك|الذي|التي|الذين|ربما|لماذا|كيف|أين|نحن|أنتم|هم|ليس|ليست|كان|كانت|يكون|تكون|على|إلى|عن|مع|في|من|أن|إن|قد|لم|لن|لا|ما|هو|هي|هم|هن|أنت|أنا|عند|تحت|فوق|بين|قبل|بعد|حتى|منذ|خلال|حول|ضد|نحو|دون|سوف|كل|بعض|غير|أي|مثل|كذلك|أيضا|فقط|رب|إله|ناس|رجل|امرأة|ولد|بنت|طفل|بيت|منزل|سيارة|طريق|مدينة|بلد|عالم|حياة|موت|حب|حرب|سلام|ماء|طعام|عمل|مال|يد|رجل|رأس|عين|قلب|اسم|كلمة|صوت|يوم|ليلة|ساعة|سنة|شهر|أسبوع|أمس|غدا|الآن|هنا|هناك|جدا|كثيرا|قليلا|طبعا|فعلا|حقا|أبدا|دائما|أحيانا)(?=$|[\s\u200F\u200E"،۔؟!…])"""
+    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)])(آب|آبی|آتش|آره|آسمان|آفتاب|آقا|آمدم|آمدی|آنجا|آنها|آهن|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|اسم|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|بابا|باد|باران|باشد|باشه|باید|بدون|برادر|برای|برف|بزرگ|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|بچه|تحت|تكون|تلك|تموم|توی|جدا|جنگ|جنگل|جهان|جوان|حب|حتما|حتى|حرب|حرف|حقا|حول|حياة|خانم|خانه|خاک|خدا|خلال|خواهر|خوشگل|خونه|خیابان|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دختر|دخترم|در|درخت|درست|دریا|دست|دشمن|دقیقه|دل|دنیا|دوست|دون|دیدم|دیدی|دیروز|دیوار|دیگه|ذلك|رأس|راه|رب|ربما|رجل|رفتم|رفتی|رنگ|روز|روی|زرد|زمین|زن|زندگی|ساعة|ساعت|سال|سبز|ستاره|سخن|سر|سرخ|سفید|سلام|سنة|سنگ|سوف|سيارة|سیاه|شاید|شب|شدند|شما|شهر|شود|صدا|صلح|صوت|ضد|طبعا|طريق|طعام|طفل|طلا|عالم|عشق|على|عمل|عن|عند|عندما|عين|غدا|غدًا|غذا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قشنگ|قلب|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماشین|مال|مامان|ماه|مثل|مدينة|مرحبا|مرحبًا|مرد|مردم|مرسی|مرگ|مع|ممنون|من|منذ|منزل|منم|مهتاب|موت|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نام|نان|نحن|نحو|نقره|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نگاه|نیست|های|هایی|هذا|هذه|هرگز|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پا|پدر|پسر|پسرم|پنجره|پول|پیر|چرا|چشم|چطور|چقدر|چون|چیزی|چیه|کار|کجا|کدام|کردم|کردند|کردی|کردیم|کشور|کند|کنم|کنند|کنی|کنیم|کوه|کوچک|گفتم|گفتند|گفتی|گل)(?=$|[\s\u200F\u200E،,.!?;:'\(\)])"""
 )
+
 // Same fa/ar marker set, but expressed in the glyphs `normalizeUrduTypography` produces
 // (ه→ہ ك→ک ي/ى→ی) so the normalized-text scan stays in exact 1:1 correspondence with the raw scan.
 private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX = Regex(
@@ -1551,14 +1552,20 @@ object SuperStreamExtractor : SuperStream() {
             if (diskUrlFile != null && diskUrlFile.exists() && diskUrlFile.isFile && diskUrlFile.length() > 64L) {
                 val ageMs = System.currentTimeMillis() - diskUrlFile.lastModified()
                 if (ageMs in 0..SUPERSTREAM_PERSISTENT_URL_CACHE_TTL_MS) {
-                    val diskUri = "file:///" + diskUrlFile.absolutePath.trimStart('/')
-                    synthesizedUrduCache[cacheKey] = diskUri
-                    subtitleCallback(
-                        newSubtitleFile(formatSuperStreamUrduSourceLabel("urdu-neural-fallback"), diskUri) {
-                            this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "urdu-neural-fallback")
-                        }
-                    )
-                    return@withContext true
+                    val cachedPayload = runCatching { diskUrlFile.readText() }.getOrNull()
+                    if (cachedPayload != null && isSuperStreamTrustedCachedUrduContent(cachedPayload)) {
+                        val diskUri = "file:///" + diskUrlFile.absolutePath.trimStart('/')
+                        synthesizedUrduCache[cacheKey] = diskUri
+                        subtitleCallback(
+                            newSubtitleFile(formatSuperStreamUrduSourceLabel("urdu-neural-fallback"), diskUri) {
+                                this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "urdu-neural-fallback")
+                            }
+                        )
+                        return@withContext true
+                    }
+                    // Corrupted or non-Urdu payload on disk: drop the stale index entry so the
+                    // translation below is re-run from the network donor.
+                    runCatching { diskUrlFile.delete() }
                 }
             }
             val rawBytes = try {
@@ -1674,6 +1681,31 @@ object SuperStreamExtractor : SuperStream() {
         ) {
             return false
         }
+
+        // Per-cue language verification (parity with StreamPlay): the aggregate counts can be
+        // defeated by padding one Urdu-distinctive line over a Persian/Arabic body. Cues carrying
+        // Urdu evidence (distinctive glyphs or homograph-free function words) must outnumber cues
+        // that lean Persian/Arabic (exclusive fa/ar markers with zero Urdu evidence on the cue).
+        if (cues.size > 4) {
+            var urduEvidenceCues = 0
+            var faArabicLeaningCues = 0
+            for (cue in cues) {
+                val cueNormalized = normalizeUrduTypography(cue.text)
+                if (SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.containsMatchIn(cueNormalized) ||
+                    SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(cueNormalized)
+                ) {
+                    urduEvidenceCues++
+                } else if (
+                    SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cue.text) ||
+                    SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.containsMatchIn(cueNormalized)
+                ) {
+                    faArabicLeaningCues++
+                }
+            }
+            if (faArabicLeaningCues > urduEvidenceCues) {
+                return false
+            }
+        }
         return true
     }
 
@@ -1724,9 +1756,15 @@ object SuperStreamExtractor : SuperStream() {
         if (diskUrlFile != null && diskUrlFile.exists() && diskUrlFile.isFile && diskUrlFile.length() > 64L) {
             val ageMs = System.currentTimeMillis() - diskUrlFile.lastModified()
             if (ageMs in 0..SUPERSTREAM_PERSISTENT_URL_CACHE_TTL_MS) {
-                val diskUri = "file:///" + diskUrlFile.absolutePath.trimStart('/')
-                materializedUrduCache[cacheKey] = diskUri
-                return@withContext diskUri
+                val cachedPayload = runCatching { diskUrlFile.readText() }.getOrNull()
+                if (cachedPayload != null && isSuperStreamTrustedCachedUrduContent(cachedPayload)) {
+                    val diskUri = "file:///" + diskUrlFile.absolutePath.trimStart('/')
+                    materializedUrduCache[cacheKey] = diskUri
+                    return@withContext diskUri
+                }
+                // Corrupted or non-Urdu payload on disk: drop the stale index entry and fall
+                // through to the network instead of serving unverified bytes.
+                runCatching { diskUrlFile.delete() }
             }
         }
 
@@ -2787,12 +2825,12 @@ object SuperStreamExtractor : SuperStream() {
                                     parseGoogleBatchResponse(resp.body.string(), expectedCount = texts.size)
                                 }.getOrNull()
                             }
-                            if (cont.isActive) cont.resume(parsed, onCancellation = null)
+                            if (cont.isActive) cont.resumeWith(Result.success(parsed))
                         }
                     }
 
                     override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
-                        if (cont.isActive) cont.resume(null, onCancellation = null)
+                        if (cont.isActive) cont.resumeWith(Result.success(null))
                     }
                 })
             }
@@ -2851,6 +2889,20 @@ object SuperStreamExtractor : SuperStream() {
     }
 
     /**
+     * Integrity re-verification for cached payloads (parity with StreamPlay): a cache hit is
+     * trusted only when its content still parses as subtitle cues, passes
+     * `containsVerifiedUrduScript`, and is not broken SMT — a payload corrupted in place is
+     * discarded instead of served.
+     */
+    internal fun isSuperStreamTrustedCachedUrduContent(cachedPayload: String): Boolean {
+        if (cachedPayload.isBlank()) return false
+        val content = cachedPayload.removePrefix("\uFEFF")
+        val cues = parseSuperStreamCues(content)
+        if (cues.isEmpty()) return false
+        return containsVerifiedUrduScript(cues) && !isBrokenSmtUrdu(cues)
+    }
+
+    /**
      * Atomic single-shot cache write (`.tmp` sibling + `ATOMIC_MOVE` rename, `renameTo` fallback)
      * so readers sharing this cache directory — including StreamPlay's engine — can never observe
      * a partially written `.srt`. Returns false without leaving temporary files behind on failure.
@@ -2878,6 +2930,11 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
+    private fun superStreamSha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
     internal fun writeLocalUrduSrtFile(urduSrtContent: String, urlCacheKey: String? = null): String? {
         if (urduSrtContent.isBlank()) return null
         return try {
@@ -2894,7 +2951,18 @@ object SuperStreamExtractor : SuperStream() {
             if (!file.exists() || file.length() <= 64L) {
                 if (!writeSuperStreamCacheFileAtomically(file, payloadBytes)) return null
             } else {
-                runCatching { file.setLastModified(System.currentTimeMillis()) }
+                // CAS entries are content-hashed by name: re-hash the stored payload and rewrite
+                // when the bytes no longer match the name (corruption in place), so a damaged
+                // cache entry is never served.
+                val trusted = runCatching {
+                    superStreamSha256Hex(file.readText().removePrefix("\uFEFF")).take(24) == digest
+                }.getOrNull() == true
+                if (trusted) {
+                    runCatching { file.setLastModified(System.currentTimeMillis()) }
+                } else {
+                    runCatching { file.delete() }
+                    if (!writeSuperStreamCacheFileAtomically(file, payloadBytes)) return null
+                }
             }
             if (!urlCacheKey.isNullOrBlank()) {
                 resolvePersistentUrlCacheFile(urlCacheKey)?.let { urlFile ->

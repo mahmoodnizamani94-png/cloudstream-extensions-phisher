@@ -455,15 +455,29 @@ object UrduSubtitleEngine {
         Regex("""(?:^|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|کے|کا|کو|سے|اور|یہ|وہ|کیا|بھی|تاکہ|کیونکہ|ہوں|گے|گی|گا|آپ|گیا|گئی|گئے|رہا|رہی|رہے|ہوئی|ہوا|ہوئے|اپنا|اپنی|اپنے|کچھ|کوئی|جب|اب|پھر|ساتھ|لیے|پہلے|کیوں|کیسے|کہاں|جائیں|کیجئے)(?:$|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])""")
 
     // Exclusive Persian (fa) and Arabic (ar) markers (recognizing normalized ی/ک/ہ variants as well)
-    val PERSIAN_ARABIC_EXCLUSIVE_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،.!?])(می|نمی|باشه|باشہ|چرا|خیلی|دارم|داری|داره|دارہ|اینجا|آنجا|میبینمت|تموم|خونه|خونہ|کجا|بودی|فردا|انقدر|ہست|نیست|مرحبًا|مرحبا|هذا|ہذا|هذه|ہذہ|ذلك|ذلک|تلك|تلک|الذي|الذی|التي|التی|ماذا|لماذا|نحن|أين|این|کیف|ربما|غدًا|غدا)(?:$|[\s\u200F\u200E،.!?])""")
+
 
     // Persian/Arabic orthography as it appears in RAW (pre-normalization) cue text: ه ك ي ى spellings
     // plus core Arabic/Persian function words. `normalizeUrduTypography` rewrites ه/ك/ي/ى into Urdu
     // glyphs (ہ/ک/ی), which would otherwise turn Arabic هو/هم into the Urdu words ہو/ہم and mask the
     // source language; this regex is therefore applied to the raw text BEFORE normalization.
+    // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
+    // This token set is IDENTICAL to SuperStream's SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX
+    // (one curated list shared by both engines), so the two engines cannot drift apart.
     val RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?;:"'\(\)])(است|نیست|هست|هستم|هستی|هستند|می\u200C|نمی\u200C|های|هایی|برای|خیلی|چون|چرا|کجا|اینجا|آنجا|شما|باشد|باید|شاید|دارم|داری|دارد|دارند|شود|بشه|میشه|نمیشه|میخوام|خانه|همه|هیچ|وقتی|الان|امروز|دیروز|فردا|بزرگ|کوچک|هذا|هذه|ذلك|تلك|الذي|التي|الذين|ربما|لماذا|كيف|أين|نحن|أنتم|كان|كانت|كانوا|يكون|تكون|على|إلى|عن|في|أن|إن|قد|لكن|هو|هي|هن|أنت|أنا|عند|قبل|حتى|منذ|سوف|كل|بعض|مثل|فقط|جدا|الآن|هنا|هناك|كذلك|أيضا|ليلة|ساعة|أسبوع|أمس|غدا|يوم|عندما|ليس|ليست|أو)(?:$|[\s\u200F\u200E،,.!?;:"'\(\)])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)])(آب|آبی|آتش|آره|آسمان|آفتاب|آقا|آمدم|آمدی|آنجا|آنها|آهن|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|اسم|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|بابا|باد|باران|باشد|باشه|باید|بدون|برادر|برای|برف|بزرگ|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|بچه|تحت|تكون|تلك|تموم|توی|جدا|جنگ|جنگل|جهان|جوان|حب|حتما|حتى|حرب|حرف|حقا|حول|حياة|خانم|خانه|خاک|خدا|خلال|خواهر|خوشگل|خونه|خیابان|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دختر|دخترم|در|درخت|درست|دریا|دست|دشمن|دقیقه|دل|دنیا|دوست|دون|دیدم|دیدی|دیروز|دیوار|دیگه|ذلك|رأس|راه|رب|ربما|رجل|رفتم|رفتی|رنگ|روز|روی|زرد|زمین|زن|زندگی|ساعة|ساعت|سال|سبز|ستاره|سخن|سر|سرخ|سفید|سلام|سنة|سنگ|سوف|سيارة|سیاه|شاید|شب|شدند|شما|شهر|شود|صدا|صلح|صوت|ضد|طبعا|طريق|طعام|طفل|طلا|عالم|عشق|على|عمل|عن|عند|عندما|عين|غدا|غدًا|غذا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قشنگ|قلب|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماشین|مال|مامان|ماه|مثل|مدينة|مرحبا|مرحبًا|مرد|مردم|مرسی|مرگ|مع|ممنون|من|منذ|منزل|منم|مهتاب|موت|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نام|نان|نحن|نحو|نقره|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نگاه|نیست|های|هایی|هذا|هذه|هرگز|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پا|پدر|پسر|پسرم|پنجره|پول|پیر|چرا|چشم|چطور|چقدر|چون|چیزی|چیه|کار|کجا|کدام|کردم|کردند|کردی|کردیم|کشور|کند|کنم|کنند|کنی|کنیم|کوه|کوچک|گفتم|گفتند|گفتی|گل)(?=$|[\s\u200F\u200E،,.!?;:'\(\)])""")
+
+    // The same fa/ar marker set expressed in the glyphs `normalizeUrduTypography` produces
+    // (U+0647->U+06C1, U+0643->U+06A9, U+064A/U+0649->U+06CC), derived 1:1 from the raw pattern
+    // so the normalized-text scan can never drift from the raw-text scan.
+    val PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
+        RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern
+            .replace("\u0647", "\u06C1")
+            .replace("\u0643", "\u06A9")
+            .replace("\u064A", "\u06CC")
+            .replace("\u0649", "\u06CC")
+    )
+
 
     private val ARABIC_PRESENTATION_FORMS_REGEX =
         Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
@@ -2196,8 +2210,22 @@ object UrduSubtitleEngine {
             val fileName = customFileName ?: "cs_urdu_cas_$contentDigest.srt"
             val file = File(baseDir, fileName)
             if (file.exists() && file.isFile && file.length() > 64L) {
-                runCatching { file.setLastModified(System.currentTimeMillis()) }
-                return toCanonicalFileUri(file)
+                // CAS entries are content-hashed by name: re-hash the stored payload and rewrite
+                // when the bytes no longer match the name (corruption in place), so a damaged
+                // cache entry is never served.
+                val trusted = if (fileName.startsWith("cs_urdu_cas_")) {
+                    runCatching {
+                        sha256Hex(file.readText().removePrefix("\uFEFF")).take(24) ==
+                            fileName.removePrefix("cs_urdu_cas_").removeSuffix(".srt")
+                    }.getOrNull() == true
+                } else {
+                    true
+                }
+                if (trusted) {
+                    runCatching { file.setLastModified(System.currentTimeMillis()) }
+                    return toCanonicalFileUri(file)
+                }
+                runCatching { file.delete() }
             }
             // Include UTF-8 BOM so ExoPlayer / external players unconditionally detect UTF-8
             val bomBytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
@@ -2208,6 +2236,19 @@ object UrduSubtitleEngine {
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Integrity re-verification for cached payloads: a cache hit is trusted only when its content
+     * still parses as subtitle cues, passes `containsVerifiedUrduScript`, and is not broken SMT —
+     * a payload corrupted in place (bit rot, partial legacy write) is discarded instead of served.
+     */
+    internal fun isTrustedCachedUrduContent(cachedPayload: String): Boolean {
+        if (cachedPayload.isBlank()) return false
+        val content = cachedPayload.removePrefix("\uFEFF")
+        val cues = parseSubtitleCues(content)
+        if (cues.isEmpty()) return false
+        return containsVerifiedUrduScript(cues) && !isBrokenSmtUrdu(cues)
     }
 
     /**
@@ -2258,6 +2299,31 @@ object UrduSubtitleEngine {
             (urduDistinctiveCount == 0 || persianArabicExclusiveCount > (urduDistinctiveCount + urduUnambiguousFunctionCount))
         ) {
             return false
+        }
+
+        // Per-cue language verification: the aggregate counts above can be defeated by padding one
+        // Urdu-distinctive line over a Persian/Arabic body. Cues carrying Urdu evidence (distinctive
+        // glyphs or homograph-free function words) must outnumber cues that lean Persian/Arabic
+        // (exclusive fa/ar markers with zero Urdu evidence on the same cue).
+        if (cues.size > 4) {
+            var urduEvidenceCues = 0
+            var faArabicLeaningCues = 0
+            for (cue in cues) {
+                val cueNormalized = normalizeUrduTypography(cue.text)
+                if (URDU_DISTINCTIVE_CHARS_REGEX.containsMatchIn(cueNormalized) ||
+                    URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(cueNormalized)
+                ) {
+                    urduEvidenceCues++
+                } else if (
+                    RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cue.text) ||
+                    PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cueNormalized)
+                ) {
+                    faArabicLeaningCues++
+                }
+            }
+            if (faArabicLeaningCues > urduEvidenceCues) {
+                return false
+            }
         }
 
         return true
@@ -2344,10 +2410,16 @@ object UrduSubtitleEngine {
         if (urlDiskFile.exists() && urlDiskFile.isFile && urlDiskFile.length() > 64L) {
             val ageMs = (System.currentTimeMillis() - urlDiskFile.lastModified()).coerceAtLeast(0L)
             if (ageMs < PERSISTENT_URL_CACHE_TTL_MS) {
-                runCatching { urlDiskFile.setLastModified(System.currentTimeMillis()) }
-                val diskUri = toCanonicalFileUri(urlDiskFile)
-                materializedUrduCache[cacheKey] = diskUri
-                return@withContext diskUri
+                val cachedPayload = runCatching { urlDiskFile.readText() }.getOrNull()
+                if (cachedPayload != null && isTrustedCachedUrduContent(cachedPayload)) {
+                    runCatching { urlDiskFile.setLastModified(System.currentTimeMillis()) }
+                    val diskUri = toCanonicalFileUri(urlDiskFile)
+                    materializedUrduCache[cacheKey] = diskUri
+                    return@withContext diskUri
+                }
+                // Corrupted or non-Urdu payload on disk: drop the stale index entry and fall
+                // through to the network instead of serving unverified bytes.
+                runCatching { urlDiskFile.delete() }
             }
         }
 

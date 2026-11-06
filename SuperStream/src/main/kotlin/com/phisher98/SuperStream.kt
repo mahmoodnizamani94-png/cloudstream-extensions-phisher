@@ -53,10 +53,11 @@ import com.phisher98.SuperStreamExtractor.invokeSuperstream
 import com.phisher98.SuperStreamExtractor.invokeSuperstreamFeb
 import com.phisher98.SuperStreamExtractor.invokeWyZIESUBAPI
 import com.phisher98.SuperStreamExtractor.synthesizeSuperStreamUrduFallback
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -646,6 +647,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         val urduSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
         val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val englishDonorSubs = CopyOnWriteArrayList<SubtitleFile>()
+        // Completed as soon as 2 verified human Urdu sources arrived; Phase 3 awaits this signal
+        // (event-driven, parity with StreamPlay's EarlySatisfactionController) instead of polling.
+        val urduFloorSignal = CompletableDeferred<Unit>()
 
         val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
             if (!urduMode) {
@@ -680,6 +684,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                             }
                             if (canonicalKey != "urdu-neural-fallback" && canonicalKey != "subtitlecat") {
                                 urduSubtitleSources.add(canonicalKey)
+                                if (urduSubtitleSources.size >= 2) {
+                                    urduFloorSignal.complete(Unit)
+                                }
                             }
                             urduSubsFound.incrementAndGet()
                             earlyController.onSubtitleEmitted(normalizedUrdu)
@@ -1007,14 +1014,15 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                                 })
                             }
                         }
-                        // Break out immediately once TARGET (2) verified human Urdu sources arrived,
-                        // cancelling the remaining slow harvesters (parity with StreamPlay's
-                        // EarlySatisfactionController-driven Phase 3), instead of awaiting every job.
-                        while (jobs.any { it.isActive }) {
-                            if (urduSubtitleSources.size >= 2) break
-                            delay(100)
+                        // Event-driven completion (parity with StreamPlay's EarlySatisfactionController):
+                        // stop as soon as either every harvester finished or 2 verified human Urdu
+                        // sources arrived (urduFloorSignal), cancelling the remaining slow harvesters.
+                        val allHarvestersDone = async { jobs.forEach { it.join() } }
+                        select<Unit> {
+                            allHarvestersDone.onAwait { }
+                            urduFloorSignal.onAwait { }
                         }
-                        jobs.forEach { it.cancel() }
+                        jobs.forEach { runCatching { it.cancel() } }
                     }
                 }
             }
