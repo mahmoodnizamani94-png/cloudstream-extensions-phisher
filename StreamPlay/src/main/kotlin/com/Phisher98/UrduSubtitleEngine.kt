@@ -447,83 +447,30 @@ object UrduSubtitleEngine {
     val URDU_DISTINCTIVE_CHARS_REGEX =
         Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
 
-    // Urdu function words that have NO Persian/Arabic homograph. Homographs shared with Persian and
-    // Arabic (تو / یا / اگر / مگر / لیکن / پر / ہو / ہم / تم — identical after `normalizeUrduTypography`
-    // collapses ه/ك/ي/ى into ہ/ک/ی) are deliberately excluded so a homograph-only match can never
-    // satisfy the script gate on its own.
-    // Homograph-free Urdu function words: Urdu-specific evidence with NO Persian/Arabic
-    // homograph (shared words like تو/اگر/پر/ہو/ہم/ہوا are deliberately excluded so a
-    // fa/ar cue can never earn Urdu-evidence credit after normalization). This token set
-    // is IDENTICAL to SuperStream's SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
-    // Homograph-free Urdu function words — mechanically audited under the normalization map:
-    // (1) every token whose Persian/Arabic orthographic twin (ہ→ه، ک→ك) is a real fa/ar word was
-    // removed or respelled with do-chashmi heh (ھ) which normalization never produces
-    // (رھا/رھی/رھے/نھیں/پھلے — Persian رها normalizes to ہ, never ھ); (2) hamza-less Arabic
-    // spellings (اب←أب، سب←سَبّ) removed; (3) shared homographs (تو/اگر/پر/ہو/ہم/ہوا) excluded.
-    // IDENTICAL to SuperStream's SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
-    // Homograph-free Urdu function-word evidence — scanned on RAW cue text ONLY.
-    // Matching on raw text makes the entire normalization-homograph class impossible by
-    // construction: Persian یه (ی+ه U+0647), رها, etc. can never match tokens spelled with
-    // Urdu glyphs (یہ ی+ہ U+06C1، رہا/رھا، رھی/رہی، ...) before normalization runs. The
-    // 53-token set contains BOTH standard (gol-heh: رہا/رہی/رہے/نہیں/پہلے) and do-chashmi
-    // (رھا/رھی/رھے/نھیں/پھلے) spellings for full recall, was mechanically swept so that no
-    // token contains raw fa/ar codepoints (ه ك ي ى) or equals a hamza-less Arabic spelling,
-    // and excludes shared homographs (تو/اگر/پر/ہو/ہم/ہوا). IDENTICAL to SuperStream's
-    // SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
+    // Homograph-free Urdu function-word evidence — scanned on RAW cue text ONLY. Matching on raw
+    // text makes the normalization-homograph class impossible by construction: Persian یه (ی+ه
+    // U+0647), رها, etc. can never match tokens spelled with Urdu glyphs (یہ ی+ہ U+06C1، رھا، ...)
+    // before normalization runs. The set carries BOTH standard (gol-heh: رہا/رہی/رہے/نہیں/پہلے)
+    // and do-chashmi (رھا/رھی/رھے/نھیں/پھلے) spellings for full recall, was mechanically swept so
+    // that no token contains raw fa/ar codepoints (ه ك ي ى) or equals a hamza-less Arabic spelling
+    // (اب←أب، سب←سَبّ، جب←جَبّ), and excludes shared homographs (تو/اگر/پر/ہو/ہم/ہوا). IDENTICAL
+    // to SuperStream's SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
     val URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX =
         Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
 
-
-
-
-    // Exclusive Persian (fa) and Arabic (ar) markers (recognizing normalized ی/ک/ہ variants as well)
-
-
-    // Persian/Arabic orthography as it appears in RAW (pre-normalization) cue text: ه ك ي ى spellings
-    // plus core Arabic/Persian function words. `normalizeUrduTypography` rewrites ه/ك/ي/ى into Urdu
-    // glyphs (ہ/ک/ی), which would otherwise turn Arabic هو/هم into the Urdu words ہو/ہم and mask the
-    // source language; this regex is therefore applied to the raw text BEFORE normalization.
     // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
-    // This token set is IDENTICAL to SuperStream's SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX
-    // (one curated list shared by both engines), so the two engines cannot drift apart.
-    // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
-    // This token set is IDENTICAL to SuperStream's SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX
-    // (one curated list shared by both engines) and deliberately contains ONLY fa/ar-distinctive
-    // function words, verb morphology, and colloquialisms — Urdu-shared everyday nouns are
-    // excluded so bare-noun cues can never be miscounted as fa/ar-leaning.
-    // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
-    // This token set is IDENTICAL to SuperStream's SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX
-    // (one curated list shared by both engines) and deliberately contains ONLY fa/ar-distinctive
-    // function words, verb morphology, and colloquialisms — Urdu-shared vocabulary (nouns,
-    // greetings, scenery) is excluded so bare-noun cues can never be miscounted as fa/ar-leaning.
-    // Structural (list-independent) Persian/Arabic orthography signals for per-cue leaning:
-    //  - Persian ZWNJ verb prefix (می\u200C / نمی\u200C at word start) — Urdu orthography never uses ZWNJ.
-    //  - Arabic-specific letters (أ إ ؤ ئ ة ء) — Urdu orthography uses آ/ہ/ھ instead.
-    val PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(?:می|نمی)\u200C""")
-    // Persian یه ("a/one") — word-boundary ی followed by RAW heh (U+0647); Urdu یه is spelled
-    // with goal heh (U+06C1), so this signal is Urdu-safe and catches the most common
-    // colloquial Persian word even when every other signal is absent.
-    val PERSIAN_YEH_RAW_HEH_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
-    // Arabic-specific hamza/ta-marbuta letters. ؤ/ئ are EXCLUDED: Urdu uses them in formal
-    // Arabic loanwords (سؤال، مؤثر، جائزہ، باعث), so including them would false-lean genuine
-    // formal-Urdu cues.
-    val ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629\u0621]""")
+    // One curated list shared by both engines (IDENTICAL to SuperStream's
+    // SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX) containing ONLY fa/ar-distinctive function
+    // words, verb morphology, and colloquialisms — ALL Urdu-shared vocabulary (nouns, greetings,
+    // scenery, loanword function words like بعد/فقط/جدا/کل/نہ/علی/غیر/عین/طریق) is excluded so
+    // bare-noun cues and genuine Urdu never lean fa/ar. CI collision-sweep self-tests enforce
+    // this in both modules. Applied to RAW text BEFORE normalization.
     val RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برای|بشه|بفرمایید|بله|بودی|بيت|بين|تكون|تلك|تموم|توی|حتما|حتى|حقا|حياة|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|ربما|رجل|رفتم|رفتی|ساعة|سنة|سوف|سيارة|شدند|شما|شود|طبعا|طريق|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فوق|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كلمة|كيف|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|ماذا|مدينة|مرحبا|مرحبًا|مرسی|مع|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برای|بشه|بفرمایید|بله|بودی|تكون|تلك|تموم|توی|حتما|حتى|حقا|حياة|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|ربما|رجل|رفتم|رفتی|ساعة|سنة|سوف|سيارة|شدند|شما|شود|طبعا|عند|عندما|غدا|غدًا|فردا|فعلا|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كلمة|كيف|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ماء|ماذا|مدينة|مرحبا|مرحبًا|مرسی|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|پسرم|چرا|چطور|چقدر|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])""")
 
-
-
-    // The normalized-text scan, derived 1:1 from the raw tokens via the normalizeUrduTypography
-    // glyph map (U+0647->U+06C1, U+0643->U+06A9, U+064A/U+0649->U+06CC) — with one mechanical
-    // exclusion: raw tokens whose normalized form collides with a COMMON URDU WORD
-    // (هم->ہم، هو->ہو، هي->ہی، بعد->بعد، من->من، لا->لا، قد->قد، على->علی، جدا->جدا، فقط->فقط)
-    // are matched on RAW text only. Genuine Urdu ہم/ہو/ہی/بعد cues must never lean fa/ar, and
-    // raw fa/ar text already leans via the raw scan, so excluding them from the normalized
-    // scan costs nothing and closes the collision class by construction.
-    // The normalized-text scan is derived 1:1 from the RAW pattern (glyph replaces only) —
-    // byte-identical construction in both engines; the Urdu-shared purge happens in the RAW list.
+    // The normalized-text scan, derived 1:1 from the RAW pattern via the normalizeUrduTypography
+    // glyph map (U+0647->U+06C1, U+0643->U+06A9, U+064A/U+0649->U+06CC) — byte-identical
+    // construction in both engines; the Urdu-shared purge happens in the RAW list.
     val PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
         RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern
             .replace("\u0647", "\u06C1")
@@ -532,6 +479,17 @@ object UrduSubtitleEngine {
             .replace("\u0649", "\u06CC")
     )
 
+    // Structural (list-independent) Persian/Arabic orthography signals for per-cue leaning:
+    //  - Persian ZWNJ verb prefix (می\u200C / نمی\u200C at word start) — Urdu orthography never uses ZWNJ.
+    //  - Persian colloquial یه — word-boundary ی followed by RAW heh (U+0647); Urdu یہ is spelled
+    //    with goal heh (U+06C1), so this signal is Urdu-safe (with $| so cue-final یه matches).
+    //  - Arabic-specific letters أ إ ة — Urdu orthography uses آ/ہ/ھ instead. ؤ/ئ are excluded
+    //    (formal Urdu loanwords سؤال/مؤثر/جائزہ) and ء is excluded (شیء/جزء/انشاء).
+    val PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(?:می|نمی)\u200C""")
+    val PERSIAN_YEH_RAW_HEH_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+    val ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629]""")
 
     private val ARABIC_PRESENTATION_FORMS_REGEX =
         Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")

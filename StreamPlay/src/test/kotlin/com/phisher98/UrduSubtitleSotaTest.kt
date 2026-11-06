@@ -1880,7 +1880,8 @@ class UrduSubtitleSotaTest {
             "دوست", "خدا", "سلام", "کار", "روز", "دل", "نام", "دست", "شہر", "مردم", "عشق",
             "دشمن", "صدا", "عالم", "آسمان", "زمین", "دریا", "سر", "شب", "سال", "مادر", "پدر",
             "برادر", "مرد", "بچے", "کام", "نہیں", "پھر", "پہلے", "رہا", "رہی", "رہے", "ہوا",
-            "یہ", "کے", "کا", "کو", "کی", "سے", "اور", "مگر", "لیکن", "براہ"
+            "یہ", "کے", "کا", "کو", "کی", "سے", "اور", "مگر", "لیکن", "براہ",
+            "طریق", "عین", "غیر", "بین", "بیت", "یوم", "فوق", "مع", "ما", "چون",
         )
         for (token in tokensOf(UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)) {
             assertFalse(
@@ -1978,6 +1979,23 @@ class UrduSubtitleSotaTest {
         assertTrue(
             "Hamza-loanword formal fragments must be accepted (ء exempted from the Arabic signal)",
             UrduSubtitleEngine.containsVerifiedUrduScript(hamzaFragments)
+        )
+
+        // Round-7 finding (Gemini): غیر/عین/طریق were spelled with Arabic yeh (U+064A) in the raw
+        // list, so the normalized scan leaned every genuine Urdu cue containing them; and ء was
+        // left in the Arabic signal, leaning standalone انشاء اللہ cues.
+        val everydayLoanwords = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nغیر ضروری بات مت کرو\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nعین وقت پر پہنچے ہو\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nغیر قانونی کام منع ہے\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nعین ممکن ہے\n\n")
+            append("5\n00:00:05,000 --> 00:00:06,000\nغیر معمولی صورتحال ہے\n\n")
+            append("6\n00:00:06,000 --> 00:00:07,000\nشکریہ\n\n")
+            append("7\n00:00:07,000 --> 00:00:08,000\nانشاء اللہ!\n")
+        }
+        assertTrue(
+            "Everyday غیر/عین cues and standalone انشاء اللہ must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(everydayLoanwords)
         )
     }
 }
