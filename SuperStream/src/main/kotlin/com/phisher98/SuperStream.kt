@@ -674,7 +674,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                                 headers = mergedHeaders
                             }
                         }
-                        if (canonicalKey != null && canonicalKey != "urdu-neural-fallback") {
+                        if (canonicalKey != null && canonicalKey != "urdu-neural-fallback" && canonicalKey != "subtitlecat") {
                             urduSubtitleSources.add(canonicalKey)
                         }
                         urduSubsFound.incrementAndGet()
