@@ -6,15 +6,20 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.FormBody
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONArray
@@ -39,20 +44,23 @@ import java.util.zip.ZipInputStream
 
 /**
  * State-of-the-Art (SOTA) Urdu Subtitle Harvesting, Encoding/Typography Normalization,
+ * Spoken-Urdu Linguistic Quality Scoring, Idiomatic Dialogue Adaptation,
  * RTL BiDi Sanitization, and Timing-Preserved Neural Translation Pipeline.
  *
  * Designed for StreamPlay so that:
- * 1. Human Urdu subtitles from SubDL, SubSource, SubSense, Subf2m, OpenSubtitles, YTS-Subs, and SubtitleCat
- *    are harvested concurrently without API keys (with optional API v1 acceleration for SubDL and SubSource).
+ * 1. Human Urdu subtitles from SubDL, SubSource, Wyzie, SubSense, Subf2m, OpenSubtitles, YTS-Subs, and SubtitleCat
+ *    are harvested concurrently (with AI/SMT filtering and Spoken-Human Uploader Quality Ranking).
  * 2. Legacy Urdu encodings (`Windows-1256` / `CP1256`, `UTF-16LE/BE`, BOM-prefixed `UTF-8`),
- *    compressed payloads (`GZIP`, multi-entry `ZIP` with season/episode-aware selection),
+ *    compressed payloads (`GZIP`, multi-entry `ZIP` with season/episode-aware and naturalness-scored selection),
  *    Arabic-vs-Urdu glyph variants (`\u064A`/`\u0649` -> `\u06CC`, `\u0643` -> `\u06A9`,
  *    `\u0647`/`\u06D5` -> `\u06C1`, `\u06D3` -> `\u06D2`, presentation forms NFKC decomposition),
- *    and mixed-script RTL punctuation order (`\u200F` RLM) are normalized deterministically.
+ *    spoken-Urdu idiomatic refinement (`refineUrduToSpokenIdiom`), and mixed-script RTL punctuation order (`\u200F` RLM)
+ *    are normalized deterministically.
  * 3. When no human Urdu subtitle exists for a movie or episode, the highest-priority English `.srt`/`.vtt`
- *    is translated into timing-preserved Urdu via batched neural translation (`250` cues/batch with 50-cue
+ *    is adapted for spoken Urdu idioms, contextually sentence-merged across SVO->SOV continuation cues,
+ *    translated into timing-preserved Urdu via batched neural translation (`250` cues/batch with 50-cue
  *    bisect retry and inline tag protection, 1-to-1 cue mapping with zero timestamp drift) and served
- *    via local `.srt` cache (`file:///...`) or real SubtitleCat CDN folders.
+ *    via local `.srt` cache (`file:///...`).
  */
 object UrduSubtitleEngine {
 
@@ -61,6 +69,9 @@ object UrduSubtitleEngine {
     private const val TRANSLATION_BATCH_SIZE = 250
     private const val TRANSLATION_SUB_BATCH_SIZE = 50
     private const val RLM = '\u200F'
+    private const val PERSISTENT_URL_CACHE_TTL_MS = 7L * 24L * 60L * 60L * 1000L // 7 days
+    private const val PREWARM_COOLDOWN_MS = 10L * 60L * 1000L // 10 minutes
+    private const val NEGATIVE_SLUG_SENTINEL = "__NONE__"
 
     const val SUBTITLE_MODE_PREFS_NAME = "cloudstream_subtitle_mode_prefs"
     const val STREAMPLAY_PREFS_NAME = "StreamPlay"
@@ -69,7 +80,165 @@ object UrduSubtitleEngine {
     const val SUBTITLE_MODE_SYS_PROP = "cloudstream.subtitle.mode"
     const val MODE_DEFAULT = "default"
     const val MODE_URDU = "urdu"
-    const val TARGET_URDU_SUBTITLE_SOURCES = 3
+    const val TARGET_URDU_SUBTITLE_SOURCES = 2
+    const val TOTAL_URDU_SOTA_SOURCES = 8
+
+    data class UrduSourceDescriptor(
+        val canonicalKey: String,
+        val displayName: String,
+        val tierLabel: String
+    )
+
+    /**
+     * Canonical registry of the 8 State-of-the-Art (SOTA) Human/Indexed Urdu Subtitle Sources
+     * for Hollywood Movies & TV Series, plus the Tier-2 Timing-Preserved Neural AI Fallback.
+     */
+    val URDU_SOTA_SOURCES: List<UrduSourceDescriptor> = listOf(
+        UrduSourceDescriptor("subdl", "SubDL", "Tier 1 • Human Urdu Archive & API v1 (unpack=1)"),
+        UrduSourceDescriptor("subsource", "SubSource", "Tier 1 • Post-Subscene Urdu Archive & API v1"),
+        UrduSourceDescriptor("wyziesub", "Wyzie", "Tier 1 • Multi-Source Edge Aggregator (sub.wyzie.io)"),
+        UrduSourceDescriptor("subsense", "SubSense", "Tier 1 • Multi-Archive Stremio Urdu Aggregator"),
+        UrduSourceDescriptor("yify", "YTS-Subs", "Tier 1 • Keyless IMDb Hollywood Urdu Archive (~700 Films)"),
+        UrduSourceDescriptor("subf2m", "Subf2m", "Tier 1 • Independent Community Urdu Mirror"),
+        UrduSourceDescriptor("subtitlecat", "SubtitleCat", "Tier 1 • 16.87M+ Catalog Verified English Donor Index"),
+        UrduSourceDescriptor("opensubtitles", "OpenSubtitles", "Tier 1 • OpenSubtitles v3 & Legacy REST Urdu Index")
+    )
+
+    val URDU_NEURAL_FALLBACK_DESCRIPTOR = UrduSourceDescriptor(
+        canonicalKey = "urdu-neural-fallback",
+        displayName = "Neural AI",
+        tierLabel = "Tier 2 • Timing-Preserved Spoken-Urdu Neural Translator (100% Coverage)"
+    )
+
+    private val URDU_SOURCE_KEY_ALIASES: Map<String, String> = mapOf(
+        "subdl" to "subdl",
+        "subdl-api-v1" to "subdl",
+        "subdl-urdu" to "subdl",
+        "subdl.com" to "subdl",
+        "subsource" to "subsource",
+        "subsource-urdu" to "subsource",
+        "subsource.net" to "subsource",
+        "wyzie" to "wyziesub",
+        "wyziesub" to "wyziesub",
+        "wyzie-urdu" to "wyziesub",
+        "wyzie.io" to "wyziesub",
+        "subsense" to "subsense",
+        "subsense-urdu" to "subsense",
+        "nepiraw" to "subsense",
+        "yify" to "yify",
+        "yts" to "yify",
+        "yts-subs" to "yify",
+        "yts-urdu" to "yify",
+        "yifysubtitles" to "yify",
+        "subf2m" to "subf2m",
+        "subf2m-urdu" to "subf2m",
+        "subf2m.co" to "subf2m",
+        "subtitlecat" to "subtitlecat",
+        "subtitlecat-urdu" to "subtitlecat",
+        "subtitlecat.com" to "subtitlecat",
+        "opensubtitles" to "opensubtitles",
+        "opensubtitles-urdu" to "opensubtitles",
+        "stremio-os-urdu" to "subtitles",
+        "subtitles" to "subtitles",
+        "urdu-neural-fallback" to "urdu-neural-fallback",
+        "neural-ai" to "urdu-neural-fallback",
+        "spoken-ai" to "urdu-neural-fallback",
+        "urdu-synth" to "urdu-neural-fallback",
+        "urdu-fallback" to "urdu-neural-fallback"
+    )
+
+    private val URDU_CANONICAL_DISPLAY_NAMES: Map<String, String> = mapOf(
+        "subdl" to "SubDL",
+        "subsource" to "SubSource",
+        "wyziesub" to "Wyzie",
+        "subsense" to "SubSense",
+        "yify" to "YTS-Subs",
+        "subf2m" to "Subf2m",
+        "subtitlecat" to "SubtitleCat",
+        "opensubtitles" to "OpenSubtitles",
+        "subtitles" to "OpenSubtitles",
+        "urdu-neural-fallback" to "Neural AI"
+    )
+
+    /**
+     * Normalizes a raw source identifier or `X-StreamPlay-Source` header into one of the canonical
+     * Urdu source keys recognized by both StreamPlay and the CloudStream host app's `DownloadSubtitlePolicy`.
+     * Returns `null` if [raw] is a video stream extractor (`vidlink`, `cinesrc`, `meowtv`, `vidrift`, etc.)
+     * or an English-only subtitle scraper (`addic7ed`).
+     */
+    fun canonicalUrduSourceKey(raw: String?): String? {
+        val cleaned = raw?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return null
+        URDU_SOURCE_KEY_ALIASES[cleaned]?.let { return it }
+        return when {
+            cleaned.contains("urdu-neural") || cleaned.contains("neural-ai") || cleaned.contains("neural ai") ||
+                cleaned.contains("spoken-ai") || cleaned.contains("spoken ai") || cleaned == "neural" -> "urdu-neural-fallback"
+            cleaned.contains("subdl") -> "subdl"
+            cleaned.contains("subsource") -> "subsource"
+            cleaned.contains("wyzie") -> "wyziesub"
+            cleaned.contains("subsense") || cleaned.contains("nepiraw") -> "subsense"
+            cleaned.contains("yts") || cleaned.contains("yify") -> "yify"
+            cleaned.contains("subf2m") -> "subf2m"
+            cleaned.contains("subtitlecat") -> "subtitlecat"
+            cleaned.contains("opensubtitles") -> "opensubtitles"
+            else -> null
+        }
+    }
+
+    /**
+     * Returns the human-readable Urdu source badge name (e.g. `"SubDL"`, `"SubSource"`, `"Wyzie"`,
+     * `"SubSense"`, `"YTS-Subs"`, `"Subf2m"`, `"SubtitleCat"`, `"OpenSubtitles"`, `"Neural AI"`),
+     * or `null` if [rawKey] is not a verified Urdu subtitle source.
+     */
+    fun urduSourceDisplayName(rawKey: String?): String? {
+        val canonical = canonicalUrduSourceKey(rawKey) ?: return null
+        return URDU_CANONICAL_DISPLAY_NAMES[canonical]
+    }
+
+    /**
+     * Extracts a known Urdu source badge from an existing subtitle label (e.g. `"Urdu [SubDL]"` -> `"SubDL"`).
+     */
+    fun extractUrduSourceBadge(label: String?): String? {
+        if (label.isNullOrBlank()) return null
+        val trimmed = label.trim()
+        for (badge in (URDU_CANONICAL_DISPLAY_NAMES.values + listOf("Spoken AI")).distinct()) {
+            if (trimmed.equals(badge, ignoreCase = true) ||
+                trimmed.contains("[$badge]", ignoreCase = true) ||
+                trimmed.contains("($badge)", ignoreCase = true) ||
+                trimmed.endsWith("- $badge", ignoreCase = true) ||
+                trimmed.endsWith("• $badge", ignoreCase = true)
+            ) {
+                return if (badge.equals("Spoken AI", ignoreCase = true)) "Neural AI" else badge
+            }
+        }
+        return null
+    }
+
+    /**
+     * Formats an unmistakable Urdu track label for the CloudStream subtitle picker and downloader
+     * (e.g. `"Urdu [SubDL]"`, `"Urdu [SubSource]"`, `"Urdu [Wyzie]"`, `"Urdu [YTS-Subs]"`, `"Urdu [Neural AI]"`).
+     * This ensures that even when CloudStream's `RepoLinkGenerator` overwrites `nameSuffix` with a numeric
+     * index (`• 1`, `• 2`), the user clearly sees the exact verified Urdu source (`Urdu [SubDL] • 1`)
+     * and never sees random or English video stream sources.
+     */
+    fun formatUrduSourceLabel(sourceKey: String?, modifier: String? = null): String {
+        val badge = urduSourceDisplayName(sourceKey) ?: extractUrduSourceBadge(sourceKey)
+        val cleanMod = modifier?.trim()?.removePrefix("[")?.removeSuffix("]")?.trim()?.takeIf { it.isNotEmpty() }
+        return buildString {
+            append("Urdu")
+            if (badge != null) {
+                append(" [").append(badge).append("]")
+            }
+            if (cleanMod != null && !cleanMod.equals(badge, ignoreCase = true)) {
+                append(" [").append(cleanMod).append("]")
+            }
+        }
+    }
+
+    /**
+     * Returns a concise summary of the active SOTA Urdu architecture for UI dialogs and subtitles settings.
+     */
+    fun sotaSourcesSummary(): String =
+        "$TOTAL_URDU_SOTA_SOURCES SOTA Sources (SubDL, SubSource, Wyzie, SubSense, YTS-Subs, Subf2m, SubtitleCat, OpenSubtitles) + Neural AI"
 
     @Volatile
     private var appContextRef: android.content.Context? = null
@@ -118,16 +287,25 @@ object UrduSubtitleEngine {
                     ctx.getSharedPreferences(prefName, android.content.Context.MODE_PRIVATE)
                         ?.getString(SUBTITLE_MODE_KEY, null)
                 }.getOrNull()
-                SubtitleMode.fromId(sharedModeStr)?.let { return it }
+                SubtitleMode.fromId(sharedModeStr)?.let { resolved ->
+                    runCatching { System.setProperty(SUBTITLE_MODE_SYS_PROP, resolved.id) }
+                    return resolved
+                }
             }
         }
 
         // 3. StreamPlay's own SharedPreferences
         val effectivePref = sharedPref ?: StreamPlay.companionSharedPref
         val extModeStr = runCatching { effectivePref?.getString(SUBTITLE_MODE_KEY, null) }.getOrNull()
-        SubtitleMode.fromId(extModeStr)?.let { return it }
+        SubtitleMode.fromId(extModeStr)?.let { resolved ->
+            runCatching { System.setProperty(SUBTITLE_MODE_SYS_PROP, resolved.id) }
+            return resolved
+        }
 
         // 4. Default is always Default (English)
+        if (context != null || sharedPref != null) {
+            runCatching { System.setProperty(SUBTITLE_MODE_SYS_PROP, SubtitleMode.DEFAULT.id) }
+        }
         return SubtitleMode.DEFAULT
     }
 
@@ -231,8 +409,91 @@ object UrduSubtitleEngine {
     private const val BROWSER_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-    private val URDU_ARABIC_SCRIPT_REGEX =
+    // Shared pre-built OkHttpClient pool (zero per-request allocation)
+    internal val fastHttpClient: OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .callTimeout(8L, TimeUnit.SECONDS)
+            .connectTimeout(4L, TimeUnit.SECONDS)
+            .readTimeout(5L, TimeUnit.SECONDS)
+            .build()
+    }
+
+    internal val standardHttpClient: OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .callTimeout(12L, TimeUnit.SECONDS)
+            .connectTimeout(6L, TimeUnit.SECONDS)
+            .readTimeout(6L, TimeUnit.SECONDS)
+            .build()
+    }
+
+    internal val downloadHttpClient: OkHttpClient by lazy {
+        app.baseClient.newBuilder()
+            .callTimeout(16L, TimeUnit.SECONDS)
+            .connectTimeout(8L, TimeUnit.SECONDS)
+            .readTimeout(8L, TimeUnit.SECONDS)
+            .build()
+    }
+
+    internal fun httpClientForTimeout(timeoutSec: Long): OkHttpClient = when {
+        timeoutSec <= 4L -> fastHttpClient
+        timeoutSec <= 6L -> standardHttpClient
+        else -> downloadHttpClient
+    }
+
+    val URDU_ARABIC_SCRIPT_REGEX =
         Regex("""[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]""")
+
+    // Letters that exist in Urdu but NOT in standard Arabic or Persian (ٹ, ڈ, ڑ, ں, ے, ھ)
+    val URDU_DISTINCTIVE_CHARS_REGEX =
+        Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
+
+    // Homograph-free Urdu function-word evidence — scanned on RAW cue text ONLY. Matching on raw
+    // text makes the normalization-homograph class impossible by construction: Persian یه (ی+ه
+    // U+0647), رها, etc. can never match tokens spelled with Urdu glyphs (یہ ی+ہ U+06C1، رھا، ...)
+    // before normalization runs. The set carries BOTH standard (gol-heh: رہا/رہی/رہے/نہیں/پہلے)
+    // and do-chashmi (رھا/رھی/رھے/نھیں/پھلے) spellings for full recall, was mechanically swept so
+    // that no token contains raw fa/ar codepoints (ه ك ي ى) or equals a hamza-less Arabic spelling
+    // (اب←أب، سب←سَبّ، جب←جَبّ), and excludes shared homographs (تو/اگر/پر/ہو/ہم/ہوا). IDENTICAL
+    // to SuperStream's SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
+    val URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+
+    // Persian/Arabic exclusive markers in RAW pre-normalization orthography (heh/kaf/yeh forms).
+    // One curated list shared by both engines (IDENTICAL to SuperStream's
+    // SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX) containing ONLY fa/ar-distinctive function
+    // words, verb morphology, and colloquialisms — ALL Urdu-shared vocabulary (nouns, greetings,
+    // scenery, loanword function words like بعد/فقط/جدا/کل/نہ/علی/غیر/عین/طریق) is excluded so
+    // bare-noun cues and genuine Urdu never lean fa/ar. CI collision-sweep self-tests enforce
+    // this in both modules. Applied to RAW text BEFORE normalization.
+    // Deliberate asymmetric-frequency keeps (acknowledged): مرحبا (common Urdu greeting),
+    // نیست (نیست و نابود idiom), and فردا (formal Urdu) remain — Persian-recall value
+    // outweighs their rare Urdu-register leaning; the dominance/share floors absorb the
+    // rare cue in realistic dialogue (probe-verified).
+    val RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برای|بشه|بفرمایید|بودی|تكون|تموم|توی|حقا|حياة|خونه|دارد|دارم|دارند|داره|داری|داریم|دخترم|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|ربما|رجل|رفتم|رفتی|ساعة|سنة|سوف|سيارة|شدند|شما|شود|عند|عندما|غدا|غدًا|فردا|قرمز|قليلا|كانت|كانوا|كثيرا|كذلك|كلمة|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ماذا|مدينة|مرحبا|مرحبًا|مرسی|منذ|منم|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نمی|نمی\u200C|نمیدونم|نمیشه|نیست|های|هایی|هذا|هذه|هستم|هستند|هستی|هنا|هناك|هیچ|يد|يكون|پسرم|چطور|چقدر|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کنم|کنند|کنی|کنیم|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])""")
+
+    // The normalized-text scan, derived 1:1 from the RAW pattern via the normalizeUrduTypography
+    // glyph map (U+0647->U+06C1, U+0643->U+06A9, U+064A/U+0649->U+06CC) — byte-identical
+    // construction in both engines; the Urdu-shared purge happens in the RAW list.
+    val PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
+        RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern
+            .replace("\u0647", "\u06C1")
+            .replace("\u0643", "\u06A9")
+            .replace("\u064A", "\u06CC")
+            .replace("\u0649", "\u06CC")
+    )
+
+    // Structural (list-independent) Persian/Arabic orthography signals for per-cue leaning:
+    //  - Persian ZWNJ verb prefix (می\u200C / نمی\u200C at word start) — Urdu orthography never uses ZWNJ.
+    //  - Persian colloquial یه — word-boundary ی followed by RAW heh (U+0647); Urdu یہ is spelled
+    //    with goal heh (U+06C1), so this signal is Urdu-safe (with $| so cue-final یه matches).
+    //  - Arabic-specific letters أ إ ة — Urdu orthography uses آ/ہ/ھ instead. ؤ/ئ are excluded
+    //    (formal Urdu loanwords سؤال/مؤثر/جائزہ) and ء is excluded (شیء/جزء/انشاء).
+    val PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(?:می|نمی)\u200C""")
+    val PERSIAN_YEH_RAW_HEH_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+    val ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629]""")
 
     private val ARABIC_PRESENTATION_FORMS_REGEX =
         Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
@@ -250,6 +511,8 @@ object UrduSubtitleEngine {
     private val WATERMARK_PATTERNS = listOf(
         "@iamdesigora",
         "iamdesigora",
+        "میرا پیج لایک کرو",
+        "tryray.app",
         "black gold",
         "subtitles by",
         "subtitle by",
@@ -260,9 +523,20 @@ object UrduSubtitleEngine {
         "subscene.com",
         "subdl.com",
         "subsource.net",
+        "subf2m.co",
         "addic7ed.com",
         "سے ڈاؤن لوڈ",
         "ترجمہ کار"
+    )
+
+    private val WATERMARK_REGEX_PATTERNS = listOf(
+        Regex("""(?i)tryray\.app"""),
+        Regex("""200\+\s*زبانیں"""),
+        Regex("""(?i)@?iamdesigora"""),
+        Regex("""میرا\s+پیج\s+لا[ئی]ک\s+کرو"""),
+        Regex("""(?i)subdl\.com"""),
+        Regex("""(?i)subsource\.net"""),
+        Regex("""(?i)subf2m\.co""")
     )
 
     private val SEASON_ORDINALS = mapOf(
@@ -294,26 +568,227 @@ object UrduSubtitleEngine {
     // Cache of materialized human Urdu subtitle file:/// URIs keyed by "$url|S${season ?: 0}E${episode ?: 0}"
     private val materializedUrduCache = ConcurrentHashMap<String, String>()
 
-    // Pending SubtitleCat original SRT candidates recorded during SubtitleCat harvesting:
-    // Pair(origSrtAbsoluteUrl, origFilename)
-    private val pendingSubtitleCatOrigList = ConcurrentHashMap.newKeySet<Pair<String, String>>()
+    // SingleFlight deduplication for concurrent materialization of the same URL/episode
+    private val materializationInFlight = ConcurrentHashMap<String, CompletableDeferred<String?>>()
 
-    fun recordSubtitleCatOrigCandidate(origUrl: String, origFilename: String) {
+    // Series/Movie Slug & Discovery Caches + Negative Cache ("__NONE__")
+    private val subDlSlugCache = ConcurrentHashMap<String, String>()
+    private val subf2mSlugCache = ConcurrentHashMap<String, String>()
+
+    // Speculative Pre-Warming Scope & Cooldown Guard
+    private val prewarmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val prewarmHistory = ConcurrentHashMap<String, Long>()
+
+    // Pending SubtitleCat original SRT candidates recorded during SubtitleCat harvesting:
+    // Pair(origSrtAbsoluteUrl, origFilename) + media-scoped map for concurrent episode safety
+    private val pendingSubtitleCatOrigList = ConcurrentHashMap.newKeySet<Pair<String, String>>()
+    private val pendingSubtitleCatOrigByMedia = ConcurrentHashMap<String, MutableSet<Pair<String, String>>>()
+
+    // Pending SubtitleCat pre-cached -ur.srt fallback URLs (never emitted as Phase 1 human tracks;
+    // only refined via Spoken-Urdu Idiomatic Engine in Phase 4 fallback if needed)
+    private val pendingSubtitleCatUrduFallbackByMedia = ConcurrentHashMap<String, MutableSet<String>>()
+
+    private fun buildMediaDonorKey(imdbId: String? = null, season: Int? = null, episode: Int? = null): String {
+        val cleanImdb = imdbId?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: "global"
+        return "$cleanImdb|S${season ?: 0}E${episode ?: 0}"
+    }
+
+    fun recordSubtitleCatOrigCandidate(
+        origUrl: String,
+        origFilename: String,
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ) {
         if (origUrl.isNotBlank() && origFilename.isNotBlank()) {
-            pendingSubtitleCatOrigList.add(origUrl.trim() to origFilename.trim())
+            val pair = origUrl.trim() to origFilename.trim()
+            pendingSubtitleCatOrigList.add(pair)
+            val mediaKey = buildMediaDonorKey(imdbId, season, episode)
+            pendingSubtitleCatOrigByMedia.computeIfAbsent(mediaKey) { ConcurrentHashMap.newKeySet() }.add(pair)
+            if (imdbId != null) {
+                val globalKey = buildMediaDonorKey(null, season, episode)
+                pendingSubtitleCatOrigByMedia.computeIfAbsent(globalKey) { ConcurrentHashMap.newKeySet() }.add(pair)
+            }
         }
     }
 
-    fun consumeSubtitleCatOrigCandidates(): List<Pair<String, String>> {
-        val list = pendingSubtitleCatOrigList.toList()
+    fun recordSubtitleCatPreCachedUrduCandidate(
+        urduUrl: String,
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ) {
+        if (urduUrl.isNotBlank()) {
+            val cleanUrl = urduUrl.trim()
+            val mediaKey = buildMediaDonorKey(imdbId, season, episode)
+            pendingSubtitleCatUrduFallbackByMedia.computeIfAbsent(mediaKey) { ConcurrentHashMap.newKeySet() }
+                .add(cleanUrl)
+            if (imdbId != null) {
+                val globalKey = buildMediaDonorKey(null, season, episode)
+                pendingSubtitleCatUrduFallbackByMedia.computeIfAbsent(globalKey) { ConcurrentHashMap.newKeySet() }
+                    .add(cleanUrl)
+            }
+        }
+    }
+
+    fun consumeSubtitleCatOrigCandidates(
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ): List<Pair<String, String>> {
+        val result = LinkedHashSet<Pair<String, String>>()
+        val hasScope = !imdbId.isNullOrBlank() || season != null || episode != null
+        if (hasScope) {
+            val mediaKey = buildMediaDonorKey(imdbId, season, episode)
+            pendingSubtitleCatOrigByMedia.remove(mediaKey)?.let { result.addAll(it) }
+            val globalEpisodeKey = buildMediaDonorKey(null, season, episode)
+            pendingSubtitleCatOrigByMedia.remove(globalEpisodeKey)?.let { result.addAll(it) }
+            if (result.isNotEmpty()) {
+                pendingSubtitleCatOrigList.removeAll(result)
+                return result.toList()
+            }
+            // Fallback to unscoped global list only if no scoped candidates existed for this episode
+            val unscopedKey = buildMediaDonorKey(null, null, null)
+            pendingSubtitleCatOrigByMedia.remove(unscopedKey)?.let {
+                result.addAll(it)
+                pendingSubtitleCatOrigList.removeAll(it)
+            }
+            return result.toList()
+        }
+        result.addAll(pendingSubtitleCatOrigList)
         pendingSubtitleCatOrigList.clear()
-        return list
+        val allKeys = pendingSubtitleCatOrigByMedia.keys().toList()
+        for (k in allKeys) {
+            pendingSubtitleCatOrigByMedia.remove(k)?.let { result.addAll(it) }
+        }
+        return result.toList()
+    }
+
+    internal fun consumeSubtitleCatPreCachedUrduCandidates(
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ): List<String> {
+        val result = LinkedHashSet<String>()
+        val hasScope = !imdbId.isNullOrBlank() || season != null || episode != null
+        if (hasScope) {
+            val mediaKey = buildMediaDonorKey(imdbId, season, episode)
+            pendingSubtitleCatUrduFallbackByMedia.remove(mediaKey)?.let { result.addAll(it) }
+            val globalEpisodeKey = buildMediaDonorKey(null, season, episode)
+            pendingSubtitleCatUrduFallbackByMedia.remove(globalEpisodeKey)?.let { result.addAll(it) }
+            if (result.isNotEmpty()) {
+                return result.toList()
+            }
+            val unscopedKey = buildMediaDonorKey(null, null, null)
+            pendingSubtitleCatUrduFallbackByMedia.remove(unscopedKey)?.let { result.addAll(it) }
+            return result.toList()
+        }
+        val allKeys = pendingSubtitleCatUrduFallbackByMedia.keys().toList()
+        for (k in allKeys) {
+            pendingSubtitleCatUrduFallbackByMedia.remove(k)?.let { result.addAll(it) }
+        }
+        return result.toList()
     }
 
     internal fun clearCachesForTest() {
         synthesizedUrduCache.clear()
         materializedUrduCache.clear()
+        materializationInFlight.clear()
+        subDlSlugCache.clear()
+        subf2mSlugCache.clear()
+        prewarmHistory.clear()
         pendingSubtitleCatOrigList.clear()
+        pendingSubtitleCatOrigByMedia.clear()
+        pendingSubtitleCatUrduFallbackByMedia.clear()
+    }
+
+    internal fun sha256Hex(input: String): String {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(input.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    private fun resolveCacheBaseDir(): File {
+        val baseDir = appContextRef?.cacheDir
+            ?: File(System.getProperty("java.io.tmpdir") ?: "/tmp")
+        if (!baseDir.exists()) baseDir.mkdirs()
+        return baseDir
+    }
+
+    /**
+     * Speculative Detail-Page Pre-Warming Entry Point (`prewarmUrduSubtitlesAsync`):
+     * Uses a bounded background `CoroutineScope(SupervisorJob() + Dispatchers.IO)` and a
+     * `ConcurrentHashMap<String, Long>` deduplication guard (10-minute cooldown per media key)
+     * to speculatively warm the SubDL, SubSense, OpenSubtitles, and YTS-Subs (movies) Urdu subtitle
+     * caches in the background when the user opens a Movie/Series detail page (`load()`) while
+     * `isUrduMode()` is active.
+     */
+    fun prewarmUrduSubtitlesAsync(
+        imdbId: String?,
+        tmdbId: Int? = null,
+        title: String?,
+        year: Int? = null,
+        season: Int? = null,
+        episode: Int? = null,
+        isMovie: Boolean = season == null,
+        sharedPref: android.content.SharedPreferences? = null
+    ) {
+        if (!isUrduMode(sharedPref = sharedPref)) return
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
+        if (cleanImdb == null && cleanTitle == null && (tmdbId == null || tmdbId <= 0)) return
+
+        val mediaKey = "${cleanImdb ?: cleanTitle ?: tmdbId}|Y${year ?: 0}|S${season ?: 0}E${episode ?: 0}"
+        val now = System.currentTimeMillis()
+        val lastRun = prewarmHistory[mediaKey]
+        if (lastRun != null && (now - lastRun) < PREWARM_COOLDOWN_MS) return
+        prewarmHistory[mediaKey] = now
+
+        val targetSeason = if (!isMovie && season != null && season > 0) season else null
+        val targetEpisode = if (targetSeason != null) (episode?.takeIf { it > 0 } ?: 1) else null
+
+        prewarmScope.launch {
+            try {
+                withTimeoutOrNull(8_000L) {
+                    coroutineScope {
+                        launch {
+                            invokeSubDlUrduKeyless(
+                                imdbId = cleanImdb,
+                                title = cleanTitle,
+                                season = targetSeason,
+                                episode = targetEpisode,
+                                year = year
+                            ) {}
+                        }
+                        if (cleanImdb != null) {
+                            launch {
+                                invokeSubSenseUrdu(
+                                    imdbId = cleanImdb,
+                                    season = targetSeason,
+                                    episode = targetEpisode
+                                ) {}
+                            }
+                            launch {
+                                StreamPlayExtractor.invokeOpenSubtitlesLegacy(
+                                    id = cleanImdb,
+                                    season = targetSeason,
+                                    episode = targetEpisode,
+                                    title = cleanTitle
+                                ) {}
+                            }
+                            if (targetSeason == null) {
+                                launch {
+                                    StreamPlayExtractor.invokeYifySubs(
+                                        imdbId = cleanImdb
+                                    ) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     // =========================================================================
@@ -323,7 +798,7 @@ object UrduSubtitleEngine {
     /**
      * Safely inflates GZIP (`0x1F 0x8B`) or ZIP (`0x50 0x4B 0x03 0x04`) subtitle archives
      * up to [MAX_INFLATE_BYTES] (8 MiB), selecting the best `.srt`/`.vtt`/`.ass`/`.ssa` entry
-     * inside ZIPs (with season/episode matching for TV packs) while skipping `.nfo`, `.txt`, and directories.
+     * inside ZIPs (with season/episode matching and Spoken-Urdu naturalness scoring) while skipping `.nfo`, `.txt`, and directories.
      */
     fun inflateArchiveIfNeeded(
         rawBytes: ByteArray,
@@ -361,7 +836,7 @@ object UrduSubtitleEngine {
         episode: Int? = null
     ): ByteArray? {
         var bestBytes: ByteArray? = null
-        var bestScore = -1
+        var bestScore = Int.MIN_VALUE
 
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
             while (true) {
@@ -434,7 +909,18 @@ object UrduSubtitleEngine {
                         entryBytes
                     }
 
-                    val score = episodeBonus + extScore + langBonus + (unpacked.size.coerceAtMost(500_000) / 10_000)
+                    // Score naturalness across candidate subtitle entries in multi-SRT archives
+                    val naturalnessBonus = runCatching {
+                        val previewDecoded = normalizeUrduTypography(decodeSubtitleCharset(unpacked))
+                        val previewCues = parseSubtitleCues(previewDecoded)
+                        if (previewCues.isNotEmpty() && URDU_ARABIC_SCRIPT_REGEX.containsMatchIn(previewDecoded)) {
+                            if (isBrokenSmtUrdu(previewCues)) -400 else scoreUrduSubtitleNaturalness(previewCues)
+                        } else {
+                            0
+                        }
+                    }.getOrDefault(0)
+
+                    val score = episodeBonus + extScore + langBonus + naturalnessBonus + (unpacked.size.coerceAtMost(500_000) / 10_000)
                     if (score > bestScore) {
                         bestScore = score
                         bestBytes = unpacked
@@ -472,14 +958,18 @@ object UrduSubtitleEngine {
     fun decodeAndNormalizeUrduBytes(
         rawBytes: ByteArray,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        normalizeTypography: Boolean = true
     ): String {
         if (rawBytes.isEmpty()) return ""
         val bytes = inflateArchiveIfNeeded(rawBytes, season = season, episode = episode)
         if (bytes.isEmpty()) return ""
 
         val decoded = decodeSubtitleCharset(bytes)
-        return normalizeUrduTypography(decoded)
+        // Stage separation: language verification must run on RAW decoded text (normalizeTypography
+        // = false) so orthography signals (raw heh, ZWNJ, hamza) are intact; typography
+        // normalization happens only AFTER the raw gate passes.
+        return if (normalizeTypography) normalizeUrduTypography(decoded) else decoded
     }
 
     internal fun decodeSubtitleCharset(bytes: ByteArray): String {
@@ -675,9 +1165,15 @@ object UrduSubtitleEngine {
 
         val lines = withoutTags.split('\n')
         val processedLines = lines.mapNotNull { rawLine ->
-            val stripped = rawLine.trim().trim(RLM, '\u200E', '\u202A', '\u202B', '\u202C')
+            val strippedRaw = rawLine.trim().trim(RLM, '\u200E', '\u202A', '\u202B', '\u202C')
+            if (strippedRaw.isEmpty()) return@mapNotNull null
+            if (isWatermarkCue(strippedRaw)) return@mapNotNull null
+            val stripped = if (URDU_ARABIC_SCRIPT_REGEX.containsMatchIn(strippedRaw)) {
+                refineUrduToSpokenIdiom(strippedRaw).trim()
+            } else {
+                strippedRaw
+            }
             if (stripped.isEmpty()) return@mapNotNull null
-            if (isWatermarkCue(stripped)) return@mapNotNull null
             if (URDU_ARABIC_SCRIPT_REGEX.containsMatchIn(stripped)) {
                 "$RLM$stripped$RLM"
             } else {
@@ -709,7 +1205,212 @@ object UrduSubtitleEngine {
 
     internal fun isWatermarkCue(text: String): Boolean {
         val lower = text.lowercase(Locale.ROOT)
-        return WATERMARK_PATTERNS.any { pattern -> lower.contains(pattern.lowercase(Locale.ROOT)) }
+        if (WATERMARK_PATTERNS.any { pattern -> lower.contains(pattern.lowercase(Locale.ROOT)) }) {
+            return true
+        }
+        return WATERMARK_REGEX_PATTERNS.any { regex -> regex.containsMatchIn(text) }
+    }
+
+    // =========================================================================
+    // 1B. Spoken-Urdu Linguistic Quality Scorer & Idiomatic Dialogue Engine
+    // =========================================================================
+
+    private val BROKEN_SMT_EMBEDDED_ASCII_REGEX =
+        Regex("""[\u0600-\u06FF]+\s+[a-z]{3,}\s+[\u0600-\u06FF]+""")
+
+    private val BROKEN_SMT_INLINE_ASCII_VERB_NOUN_REGEX =
+        Regex("""(?:[\u0600-\u06FF]{2,}\s+[a-z]{3,}|[a-z]{3,}\s+[\u0600-\u06FF]{2,})""")
+
+    private val BROKEN_SMT_UNGRAMMATICAL_TOKENS = listOf(
+        "ہںس",
+        "واپس سربراہ چاہئے",
+        "واپس حاصل",
+        "سر واپس چاہئے",
+        "کے ripping",
+        "ripping کے",
+        "wildlings اس"
+    )
+
+    private val SPOKEN_CONVERSATIONAL_URDU_MARKERS = listOf(
+        "یار",
+        "بھئی",
+        "ذرا",
+        "بھلا",
+        "بالکل",
+        "ورنہ",
+        "خبردار",
+        "رُک جاؤ",
+        "رک جاؤ",
+        "بکواس",
+        "دماغ خراب",
+        "پاگل",
+        "یا خدایا",
+        "یا اللہ",
+        "معاف",
+        "چلو",
+        "دیکھو",
+        "سنو",
+        "بتاؤ",
+        "خاموش",
+        "چپ کرو",
+        "حوصلہ",
+        "ٹھیک ہے",
+        "کیا بات ہے"
+    )
+
+    private val LITERAL_CALQUE_PENALTY_PATTERNS = listOf(
+        "اپنے دماغ سے باہر",
+        "اوہ، میرے خدا",
+        "اوہ ، میرے خدا",
+        "اوہ، میرے گوش",
+        "اوہ ، میرے گوش",
+        "آپ کا فضل",
+        "صحت ناکام ہو رہی",
+        "میرے پاس بھی نہیں"
+    )
+
+    private val SPOKEN_URDU_IDIOM_REPLACEMENTS: List<Pair<Regex, String>> = listOf(
+        Regex("""اوہ\s*[،,]?\s*میرے\s+خدا[!۔.]?""") to "یا خدایا!",
+        Regex("""اوہ\s*[،,]?\s*میرے\s+گوش[!۔.]?""") to "اف خدایا!",
+        Regex("""کیا\s+(?:آپ|تم)\s+اپنے\s+دماغ\s+سے\s+باہر\s+(?:ہیں|ہو)\s*[؟?]?""") to "کیا تمہارا دماغ خراب ہو گیا ہے؟",
+        Regex("""اپنے\s+دماغ\s+سے\s+باہر""") to "حواس کھو بیٹھے",
+        Regex("""^(?:[\u200F\s\-]*)(?:یسوع\s+)?مسیح\s*[!۔.]?$""") to "یا خدایا!",
+        Regex("""^(?:[\u200F\s\-]*)(?:شٹ|گندگی|لعنت\s+ہے)\s*[!۔.]?$""") to "بیڑا غرق!",
+        Regex("""^(?:[\u200F\s\-]*)(?:بل\s*شٹ|بیل\s+کی\s+گندگی)\s*[!۔.]?$""") to "سب بکواس ہے!",
+        Regex("""آپ\s+کا\s+استقبال\s+ہے""") to "کوئی بات نہیں",
+        Regex("""کوئی\s+راستہ\s+نہیں\s*[!۔.]?""") to "ہرگز نہیں!",
+        Regex("""کوئی\s+دماغ\s+نہیں""") to "چلو چھوڑو",
+        Regex("""صحت\s+ناکام\s+ہو\s+رہی""") to "طبیعت خراب ہو رہی",
+        Regex("""آپ\s+کا\s+فضل""") to "عالی جاہ",
+        Regex("""^(?:[\u200F\s\-]*)پکڑو\s*[!۔.]?$""") to "ذرا رکو!",
+        Regex("""^(?:[\u200F\s\-]*)دھکا\s*[!۔.]?$""") to "زور لگاؤ!",
+        Regex("""^(?:[\u200F\s\-]*)اور\s+دھکا\s*[!۔.]?$""") to "اور زور لگاؤ!",
+        Regex("""سوچو\s*[،,]\s*سوچو\s*[،,]\s*سوچئے""") to "سوچو، سوچو، ذرا سوچو"
+    )
+
+    private val DETACHED_URDU_PUNCTUATION_REGEX = Regex("""\s+([،۔!؟])""")
+
+    /**
+     * Transforms literal English-to-Urdu calques into natural spoken Pakistani/Hindustani Urdu
+     * dialogue and fixes detached Urdu punctuation spacing (`\s+([،۔!؟])` -> `$1`).
+     */
+    fun refineUrduToSpokenIdiom(text: String): String {
+        if (text.isBlank()) return text
+        var current = normalizeUrduTypography(text)
+        val (protectedText, inlineTags) = protectSubtitleTags(current)
+        val refinedLines = protectedText.split('\n').map { line ->
+            var working = line.trim()
+            for ((regex, replacement) in SPOKEN_URDU_IDIOM_REPLACEMENTS) {
+                working = regex.replace(working, replacement)
+            }
+            working = DETACHED_URDU_PUNCTUATION_REGEX.replace(working, "$1")
+            working
+        }
+        current = restoreSubtitleTags(refinedLines.joinToString("\n"), inlineTags)
+        return DETACHED_URDU_PUNCTUATION_REGEX.replace(current, "$1")
+    }
+
+    /**
+     * Detects broken Statistical Machine Translation (SMT) corruption (such as `akhaliq_655`'s
+     * `"کے ripping کے رہے"`, `"wildlings اس طرح"`, `"(بچوں ہںس)"`, `"واپس سربراہ چاہئے"`):
+     * Rejects when:
+     * - Even 1 cue contains an explicit ungrammatical SMT signature (`BROKEN_SMT_UNGRAMMATICAL_TOKENS`)
+     * - For short snippets (`<= 4` cues), at least 2 cues contain embedded lowercase ASCII words or inline ASCII+Urdu corruption
+     * - Or `>= 3` cues / `>= 4%` of cues contain lowercase ASCII words embedded inside Urdu phrases.
+     */
+    fun isBrokenSmtUrdu(cues: List<SrtCue>): Boolean {
+        if (cues.isEmpty()) return false
+        var embeddedAsciiCount = 0
+        var inlineAsciiCount = 0
+        var explicitSmtCount = 0
+        for (cue in cues) {
+            val (protectedText, _) = protectSubtitleTags(cue.text)
+            val text = protectedText
+            if (BROKEN_SMT_UNGRAMMATICAL_TOKENS.any { token -> text.contains(token, ignoreCase = true) }) {
+                explicitSmtCount++
+            }
+            if (BROKEN_SMT_EMBEDDED_ASCII_REGEX.containsMatchIn(text)) {
+                embeddedAsciiCount++
+            } else if (BROKEN_SMT_INLINE_ASCII_VERB_NOUN_REGEX.containsMatchIn(text)) {
+                inlineAsciiCount++
+            }
+        }
+        if (explicitSmtCount >= 1 && (embeddedAsciiCount + inlineAsciiCount + explicitSmtCount) >= 2) {
+            return true
+        }
+        if (cues.size <= 4 && (embeddedAsciiCount >= 1 && (embeddedAsciiCount + inlineAsciiCount + explicitSmtCount) >= 2)) {
+            return true
+        }
+        val totalCorrupted = embeddedAsciiCount + explicitSmtCount
+        return totalCorrupted >= 3 || (cues.size >= 5 && totalCorrupted * 100 >= cues.size * 4)
+    }
+
+    /**
+     * Computes a linguistic naturalness score for a candidate Urdu subtitle cue list:
+     * - `+10` for each spoken conversational Urdu marker (`یار`, `بھئی`, `ذرا`, `بالکل`, `یا خدایا`, etc.)
+     * - `-15` for each literal English calque (`اپنے دماغ سے باہر`, `اوہ، میرے خدا`, `اوہ ، میرے گوش`, `آپ کا فضل`, etc.)
+     * - `-500` penalty if broken SMT corruption (`isBrokenSmtUrdu`) is detected.
+     */
+    fun scoreUrduSubtitleNaturalness(cues: List<SrtCue>): Int {
+        if (cues.isEmpty()) return 0
+        var score = if (isBrokenSmtUrdu(cues)) -500 else 0
+        for (cue in cues) {
+            val text = normalizeUrduTypography(cue.text)
+            for (marker in SPOKEN_CONVERSATIONAL_URDU_MARKERS) {
+                if (text.contains(marker)) {
+                    score += 10
+                }
+            }
+            for (calque in LITERAL_CALQUE_PENALTY_PATTERNS) {
+                if (text.contains(calque)) {
+                    score -= 15
+                }
+            }
+            if (BROKEN_SMT_EMBEDDED_ASCII_REGEX.containsMatchIn(text)) {
+                score -= 25
+            }
+        }
+        return score
+    }
+
+    private val ENGLISH_SPOKEN_IDIOM_ADAPTATIONS: List<Pair<Regex, String>> = listOf(
+        Regex("""(?i)^[\s\-]*(?:oh\s*,?\s*my\s+god|omg)\s*[!.]*$""") to "یا خدایا!",
+        Regex("""(?i)\b(?:oh\s*,?\s*my\s+god|omg)\b[!.,]*""") to "یا خدایا،",
+        Regex("""(?i)^[\s\-]*oh\s*,?\s*my\s+gosh\s*[!.]*$""") to "اف خدایا!",
+        Regex("""(?i)\boh\s*,?\s*my\s+gosh\b[!.,]*""") to "اف خدایا،",
+        Regex("""(?i)^[\s\-]*(?:jesus\s+christ|jesus|christ)\s*[!.]*$""") to "یا خدایا!",
+        Regex("""(?i)^[\s\-]*(?:are\s+you\s+out\s+of\s+your\s+mind|have\s+you\s+lost\s+your\s+mind)\s*[?!.]*$""") to "کیا تمہارا دماغ خراب ہو گیا ہے؟",
+        Regex("""(?i)\b(?:are\s+you\s+out\s+of\s+your\s+mind|have\s+you\s+lost\s+your\s+mind)\s*\??""") to "کیا تمہارا دماغ خراب ہو گیا ہے؟",
+        Regex("""(?i)^[\s\-]*what\s+the\s+hell\s+are\s+you\s+doing\s*[?!.]*$""") to "یہ تم آخر کر کیا رہے ہو؟",
+        Regex("""(?i)\bwhat\s+the\s+hell\s+are\s+you\s+doing\s*\??""") to "یہ تم آخر کر کیا رہے ہو؟",
+        Regex("""(?i)\bwhat\s+the\s+hell\b""") to "آخر یہ کیا",
+        Regex("""(?i)^[\s\-]*shut\s+up\s*[!.]*$""") to "بکواس بند کرو!",
+        Regex("""(?i)^[\s\-]*bullshit\s*[!.]*$""") to "سب بکواس ہے!",
+        Regex("""(?i)^[\s\-]*(?:goddamn\s+it|damn\s+it|dammit|shit)\s*[!.]*$""") to "بیڑا غرق!",
+        Regex("""(?i)^[\s\-]*(?:hold\s+on|hang\s+on)\s*[!.]*$""") to "ذرا رکو!",
+        Regex("""(?i)^[\s\-]*(?:watch\s+out|look\s+out)\s*[!.]*$""") to "دھیان سے!",
+        Regex("""(?i)^[\s\-]*get\s+out\s+of\s+here\s*[!.]*$""") to "دفع ہو جاؤ یہاں سے!",
+        Regex("""(?i)^[\s\-]*no\s+way\s*[!.]*$""") to "ہو ہی نہیں سکتا!",
+        Regex("""(?i)^[\s\-]*never\s+mind\s*[!.]*$""") to "چلو چھوڑو۔",
+        Regex("""(?i)^[\s\-]*(?:take\s+it\s+easy|calm\s+down)\s*[!.]*$""") to "حوصلہ رکھو۔",
+        Regex("""(?i)^[\s\-]*you(?:'re|\s+are)\s+welcome\s*[!.]*$""") to "کوئی بات نہیں۔"
+    )
+
+    /**
+     * Pre-adapts English idioms and exclamations into natural spoken Pakistani/Hindustani Urdu
+     * equivalents before neural translation so Google NMT never emits literal word-by-word calques.
+     */
+    fun adaptEnglishForSpokenUrduTranslation(text: String): String {
+        if (text.isBlank()) return text
+        val (protectedText, inlineTags) = protectSubtitleTags(text)
+        val adaptedLines = protectedText.split('\n').map { rawLine ->
+            var working = rawLine
+            for ((regex, replacement) in ENGLISH_SPOKEN_IDIOM_ADAPTATIONS) {
+                working = regex.replace(working, replacement)
+            }
+            working
+        }
+        return restoreSubtitleTags(adaptedLines.joinToString("\n"), inlineTags)
     }
 
     // =========================================================================
@@ -721,6 +1422,8 @@ object UrduSubtitleEngine {
         val timestamp: String,
         val text: String
     )
+
+    typealias SubtitleCue = SrtCue
 
     private const val FLEXIBLE_TIME_TOKEN = """(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[,.]\d{1,3})?"""
 
@@ -897,9 +1600,140 @@ object UrduSubtitleEngine {
         return "$hms,$msPart"
     }
 
+    internal fun parseSrtTimeToMillis(ts: String): Long? {
+        return try {
+            val normalized = normalizeSrtTimestamp(ts)
+            val mainAndMs = normalized.split(',')
+            val hms = mainAndMs[0].split(':')
+            if (hms.size != 3) return null
+            val h = hms[0].toLong()
+            val m = hms[1].toLong()
+            val s = hms[2].toLong()
+            val ms = mainAndMs.getOrNull(1)?.toLongOrNull() ?: 0L
+            ((h * 3600L + m * 60L + s) * 1000L) + ms
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun cueGapMillis(firstCue: SrtCue, secondCue: SrtCue): Long? {
+        val firstParts = firstCue.timestamp.split("-->")
+        val secondParts = secondCue.timestamp.split("-->")
+        if (firstParts.size != 2 || secondParts.size != 2) return null
+        val endFirst = parseSrtTimeToMillis(firstParts[1]) ?: return null
+        val startSecond = parseSrtTimeToMillis(secondParts[0]) ?: return null
+        return startSecond - endFirst
+    }
+
+    private val TERMINAL_PUNCTUATION_CHARS = setOf('.', '!', '?', '"', '\'', '…', '—', ']', ')', ':', ';', '۔', '؟', '♪', '♫')
+
+    private val CONTINUATION_TRAILING_ELLIPSIS_REGEX = Regex("""(?:\.\.\.|…)\s*$""")
+    private val CONTINUATION_LEADING_ELLIPSIS_REGEX = Regex("""^(?:\.\.\.|…)\s*""")
+
+    private val COMMON_PROPER_NOUN_CONTINUATIONS = setOf(
+        "I", "I'm", "I've", "I'll", "I'd", "God", "Lord", "Mr.", "Mrs.", "Ms.", "Dr."
+    )
+
+    private fun stripInlineFormattingForContinuationCheck(text: String): String {
+        return PROTECTED_SUBTITLE_TOKEN_REGEX.replace(text, "").trim()
+    }
+
+    /**
+     * Checks whether [firstCue] and [secondCue] form a single split English SVO sentence:
+     * - [firstCue] does not end with terminal punctuation (or ends with a continuation ellipsis `...`/`…` or comma `,`),
+     * - [secondCue] is not a multi-speaker dialogue turn (`- `) and starts with a lowercase ASCII letter (`a..z`),
+     *   a continuation ellipsis (`...`), or a first-person pronoun (`I`, `I'm`, `I'll`, `I've`, `I'd`) after a comma/conjunction,
+     * - The gap between [firstCue] end and [secondCue] start is in `0L..1500L` ms (rejects negative overlapping cues).
+     */
+    internal fun shouldMergeContinuationCues(firstCue: SrtCue, secondCue: SrtCue): Boolean {
+        val plainFirstRaw = stripInlineFormattingForContinuationCheck(firstCue.text)
+        val plainSecondRaw = stripInlineFormattingForContinuationCheck(secondCue.text)
+        if (plainFirstRaw.isEmpty() || plainSecondRaw.isEmpty()) return false
+        if (plainSecondRaw.startsWith("-") || plainFirstRaw.startsWith("-")) return false
+
+        val gap = cueGapMillis(firstCue, secondCue) ?: return false
+        if (gap < 0L || gap > 1500L) return false
+
+        val firstHasTrailingEllipsis = CONTINUATION_TRAILING_ELLIPSIS_REGEX.containsMatchIn(plainFirstRaw)
+        val plainFirst = plainFirstRaw.replace(CONTINUATION_TRAILING_ELLIPSIS_REGEX, "").trim()
+        val plainSecond = plainSecondRaw.replace(CONTINUATION_LEADING_ELLIPSIS_REGEX, "").trim()
+        if (plainFirst.isEmpty() || plainSecond.isEmpty()) return false
+
+        val lastChar = plainFirst.last()
+        if (!firstHasTrailingEllipsis && lastChar in TERMINAL_PUNCTUATION_CHARS) return false
+
+        val firstCharSecond = plainSecond.first()
+        val firstWordSecond = plainSecond.substringBefore(' ').trimEnd(',', '.', '!', '?')
+        val validContinuationStart = firstCharSecond in 'a'..'z' ||
+            (lastChar == ',' && firstWordSecond in COMMON_PROPER_NOUN_CONTINUATIONS)
+        return validContinuationStart
+    }
+
+    /**
+     * Splits a translated Urdu sentence proportionally across 2 or more original continuation cues
+     * according to their relative character lengths (splitting at the nearest word boundary
+     * or comma near the proportional split points) while preserving original timestamps.
+     */
+    internal fun splitTranslatedUrduProportionally(
+        translatedText: String,
+        sourceLengths: List<Int>
+    ): List<String> {
+        if (sourceLengths.isEmpty()) return emptyList()
+        val cleaned = translatedText.trim()
+        if (sourceLengths.size == 1) return listOf(cleaned)
+        val words = cleaned.split(Regex("""\s+""")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return List(sourceLengths.size) { "" }
+        if (words.size < sourceLengths.size) {
+            return List(sourceLengths.size) { idx -> words.getOrElse(idx) { words.last() } }
+        }
+
+        val safeLengths = sourceLengths.map { it.coerceAtLeast(1) }
+        val totalSource = safeLengths.sum().coerceAtLeast(1)
+        val segments = ArrayList<String>(sourceLengths.size)
+        var startWordIdx = 0
+        var cumulativeSource = 0
+
+        for (segIdx in 0 until sourceLengths.size - 1) {
+            cumulativeSource += safeLengths[segIdx]
+            val remainingSegments = sourceLengths.size - 1 - segIdx
+            val minSplit = startWordIdx + 1
+            val maxSplit = (words.size - remainingSegments).coerceAtLeast(minSplit)
+            val ratio = cumulativeSource.toDouble() / totalSource.toDouble()
+            val targetSplit = (words.size * ratio).toInt().coerceIn(minSplit, maxSplit)
+
+            var bestSplit = targetSplit
+            for (offset in listOf(0, -1, 1)) {
+                val candidate = targetSplit + offset
+                if (candidate in minSplit..maxSplit) {
+                    val prevWord = words[candidate - 1]
+                    if (prevWord.endsWith("،") || prevWord.endsWith(",")) {
+                        bestSplit = candidate
+                        break
+                    }
+                }
+            }
+            segments.add(words.subList(startWordIdx, bestSplit).joinToString(" "))
+            startWordIdx = bestSplit
+        }
+        segments.add(words.subList(startWordIdx, words.size).joinToString(" "))
+        return segments
+    }
+
+    internal fun splitTranslatedUrduProportionally(
+        translatedText: String,
+        firstSourceLen: Int,
+        secondSourceLen: Int
+    ): Pair<String, String> {
+        val parts = splitTranslatedUrduProportionally(
+            translatedText,
+            listOf(firstSourceLen, secondSourceLen)
+        )
+        return (parts.getOrNull(0) ?: translatedText) to (parts.getOrNull(1) ?: translatedText)
+    }
+
     /**
      * Reconstructs a valid `.srt` document from translated cues, applying Urdu typography
-     * normalization and stateless `\u200F` RLM wrapping on every Urdu line.
+     * normalization, spoken-Urdu idiomatic refinement, and stateless `\u200F` RLM wrapping on every Urdu line.
      */
     fun formatCuesAsUrduSrt(cues: List<SrtCue>): String {
         if (cues.isEmpty()) return ""
@@ -915,10 +1749,80 @@ object UrduSubtitleEngine {
         return sb.toString().trimEnd() + "\n"
     }
 
+    private sealed class TranslationUnit {
+        abstract val syntheticCue: SrtCue
+
+        data class Single(val cue: SrtCue) : TranslationUnit() {
+            override val syntheticCue: SrtCue = cue
+        }
+
+        data class MergedChain(
+            val cues: List<SrtCue>,
+            override val syntheticCue: SrtCue,
+            val plainLengths: List<Int>
+        ) : TranslationUnit()
+    }
+
+    private fun extractLeadingAndTrailingTags(text: String): Pair<String, String> {
+        val trimmed = text.trim()
+        val leadingMatch = Regex("""^(?:(?i)<(?:i|b|u|s)\b[^>]*>|\{\\an[1-9]\})+""").find(trimmed)
+        val trailingMatch = Regex("""(?:(?i)</(?:i|b|u|s)>)+$""").find(trimmed)
+        return (leadingMatch?.value ?: "") to (trailingMatch?.value ?: "")
+    }
+
+    private fun buildContextualTranslationUnits(cues: List<SrtCue>): List<TranslationUnit> {
+        val units = ArrayList<TranslationUnit>(cues.size)
+        var i = 0
+        while (i < cues.size) {
+            val current = cues[i]
+            if (i + 1 < cues.size && shouldMergeContinuationCues(current, cues[i + 1])) {
+                val chain = mutableListOf(current, cues[i + 1])
+                var nextIdx = i + 2
+                // Allow up to 3-cue sentence continuation chains when total plain length <= 220 chars
+                while (
+                    chain.size < 3 &&
+                    nextIdx < cues.size &&
+                    shouldMergeContinuationCues(chain.last(), cues[nextIdx]) &&
+                    chain.sumOf { stripInlineFormattingForContinuationCheck(it.text).length } +
+                        stripInlineFormattingForContinuationCheck(cues[nextIdx].text).length <= 220
+                ) {
+                    chain.add(cues[nextIdx])
+                    nextIdx++
+                }
+                val combinedText = chain.joinToString(" ") { cue ->
+                    adaptEnglishForSpokenUrduTranslation(
+                        cue.text
+                            .replace(CONTINUATION_TRAILING_ELLIPSIS_REGEX, "")
+                            .replace(CONTINUATION_LEADING_ELLIPSIS_REGEX, "")
+                    ).replace('\n', ' ').trim()
+                }.replace(Regex("""\s{2,}"""), " ").trim()
+                val plainLengths = chain.map {
+                    stripInlineFormattingForContinuationCheck(it.text).length.coerceAtLeast(1)
+                }
+                units.add(
+                    TranslationUnit.MergedChain(
+                        cues = chain,
+                        syntheticCue = current.copy(text = combinedText),
+                        plainLengths = plainLengths
+                    )
+                )
+                i += chain.size
+            } else {
+                val adapted = adaptEnglishForSpokenUrduTranslation(current.text)
+                units.add(TranslationUnit.Single(current.copy(text = adapted)))
+                i++
+            }
+        }
+        return units
+    }
+
     /**
      * Translates an English `.srt` or `.vtt` subtitle string into a timing-preserved Urdu `.srt`
-     * by batching cues (`250` cues per batch, bounded by `Semaphore(4)`) in parallel via
-     * `clients5.google.com` (`dict-chrome-ex`) with automatic fallback to `translate.google.com` (`client=at`).
+     * with Spoken-English Idiom Pre-Adaptation (`adaptEnglishForSpokenUrduTranslation`),
+     * Cross-Cue Sentence Continuation Merging (2-cue and 3-cue SVO -> SOV context windowing with
+     * proportional Urdu word splitting and outer tag preservation), and batched neural translation
+     * (`250` cues per batch, bounded by `Semaphore(4)`) via `clients5.google.com` (`dict-chrome-ex`)
+     * with fallback to `translate.google.com` (`client=at`).
      * If a 250-cue batch fails, bisects/splits into 50-cue sub-batches and retries, succeeding
      * as long as at least 60% of cues are translated.
      */
@@ -932,36 +1836,64 @@ object UrduSubtitleEngine {
         val translator: suspend (List<String>) -> List<String>? =
             batchTranslator ?: { batch -> translateBatchToUrdu(batch) }
 
-        suspend fun translateChunk(chunkCues: List<SrtCue>): List<SrtCue>? {
-            if (chunkCues.isEmpty()) return emptyList()
-            val protectedPairs = chunkCues.map { protectSubtitleTags(it.text) }
+        val units = buildContextualTranslationUnits(cues)
+
+        suspend fun translateUnitChunk(chunkUnits: List<TranslationUnit>): List<SrtCue>? {
+            if (chunkUnits.isEmpty()) return emptyList()
+            val protectedPairs = chunkUnits.map { protectSubtitleTags(it.syntheticCue.text) }
             val sourceTexts = protectedPairs.map { it.first }
             val translatedTexts = translationBatchSemaphore.withPermit {
                 translator(sourceTexts)
             }
-            if (translatedTexts != null && translatedTexts.size == chunkCues.size) {
-                return chunkCues.mapIndexed { idx, cue ->
+            if (translatedTexts != null && translatedTexts.size == chunkUnits.size) {
+                val outCues = ArrayList<SrtCue>(chunkUnits.size * 2)
+                for (idx in chunkUnits.indices) {
+                    val unit = chunkUnits[idx]
                     val restored = restoreSubtitleTags(translatedTexts[idx], protectedPairs[idx].second)
-                    cue.copy(text = restored)
+                    val refined = refineUrduToSpokenIdiom(restored)
+                    when (unit) {
+                        is TranslationUnit.Single -> {
+                            outCues.add(unit.cue.copy(text = refined))
+                        }
+                        is TranslationUnit.MergedChain -> {
+                            val plainTranslated = PROTECTED_SUBTITLE_TOKEN_REGEX.replace(refined, "").trim()
+                            val splitParts = splitTranslatedUrduProportionally(
+                                plainTranslated,
+                                unit.plainLengths
+                            )
+                            for (cIdx in unit.cues.indices) {
+                                val origCue = unit.cues[cIdx]
+                                val partText = splitParts.getOrElse(cIdx) { plainTranslated }
+                                val (leadTag, trailTag) = extractLeadingAndTrailingTags(origCue.text)
+                                val wrappedPart = if (leadTag.isNotEmpty() || trailTag.isNotEmpty()) {
+                                    "$leadTag$partText$trailTag"
+                                } else {
+                                    partText
+                                }
+                                outCues.add(origCue.copy(text = wrappedPart))
+                            }
+                        }
+                    }
                 }
+                return outCues
             }
             return null
         }
 
-        val batches = cues.chunked(TRANSLATION_BATCH_SIZE)
-        val translatedBatches = batches.map { batchCues ->
+        val batches = units.chunked(TRANSLATION_BATCH_SIZE)
+        val translatedBatches = batches.map { batchUnits ->
             async(Dispatchers.IO) {
-                translateChunk(batchCues) ?: run {
-                    if (batchCues.size <= 1) return@run emptyList<SrtCue>()
-                    val subChunkSize = if (batchCues.size > TRANSLATION_SUB_BATCH_SIZE) {
+                translateUnitChunk(batchUnits) ?: run {
+                    if (batchUnits.size <= 1) return@run emptyList<SrtCue>()
+                    val subChunkSize = if (batchUnits.size > TRANSLATION_SUB_BATCH_SIZE) {
                         TRANSLATION_SUB_BATCH_SIZE
                     } else {
-                        maxOf(1, (batchCues.size + 1) / 2)
+                        maxOf(1, (batchUnits.size + 1) / 2)
                     }
-                    val subChunks = batchCues.chunked(subChunkSize)
+                    val subChunks = batchUnits.chunked(subChunkSize)
                     val recovered = mutableListOf<SrtCue>()
                     for (sub in subChunks) {
-                        val subRes = translateChunk(sub)
+                        val subRes = translateUnitChunk(sub)
                         if (subRes != null) {
                             recovered.addAll(subRes)
                         }
@@ -1102,18 +2034,16 @@ object UrduSubtitleEngine {
     }
 
     // =========================================================================
-    // 3. Delivery, Materialization & Caching (Local File Cache + SubtitleCat CDN)
+    // 3. Delivery, Materialization & Two-Tier Content/URL-Addressed Caching
     // =========================================================================
 
     private val REAL_SUBTITLECAT_FOLDER_REGEX = Regex("""^/subs/[^/]+/$""", RegexOption.IGNORE_CASE)
 
     /**
      * Publishes a translated Urdu `.srt` to SubtitleCat's permanent CDN via
-     * `POST https://www.subtitlecat.com/upload_subtitles.php` and returns the resulting
-     * `https://www.subtitlecat.com/subs/.../...-ur.srt` URL when successful.
-     *
-     * Never uploads to the synthetic `"/subs/synthesized/"` folder (which does not exist on
-     * SubtitleCat and produces a 404 URL if `upload_subtitles.php` returns `"ok"`).
+     * `POST https://www.subtitlecat.com/upload_subtitles.php` when explicitly invoked with a real folder.
+     * Note: `synthesizeUrduFallbackFromEnglish` never calls this method so machine-translated `.srt`
+     * files never pollute SubtitleCat's public servers as fake "State A" human tracks.
      */
     suspend fun publishToSubtitleCatCdn(
         origFilename: String,
@@ -1200,42 +2130,296 @@ object UrduSubtitleEngine {
         return uri.startsWith("http://", ignoreCase = true) || uri.startsWith("https://", ignoreCase = true)
     }
 
+    private fun toCanonicalFileUri(file: File): String {
+        val absPath = file.absolutePath
+        val normalizedPath = if (absPath.startsWith("/")) absPath else "/$absPath"
+        return "file://$normalizedPath"
+    }
+
+    private const val MAX_DISK_CACHE_FILES = 64
+    private const val MAX_DISK_CACHE_BYTES = 16L * 1024L * 1024L
+
+    /**
+     * Evicts expired (`> 7` days old) or excess (`> 64` files or `> 16 MiB`) cached `.srt` files
+     * from [baseDir] using Least-Recently-Modified ordering so disk usage stays bounded.
+     */
+    internal fun evictStaleAndExcessCacheFiles(baseDir: File) {
+        try {
+            val now = System.currentTimeMillis()
+            val srtFiles = baseDir.listFiles { file ->
+                file.isFile &&
+                    file.name.startsWith("cs_urdu_", ignoreCase = true) &&
+                    file.name.endsWith(".srt", ignoreCase = true)
+            }?.toMutableList() ?: return
+
+            val iterator = srtFiles.iterator()
+            while (iterator.hasNext()) {
+                val f = iterator.next()
+                val age = (now - f.lastModified()).coerceAtLeast(0L)
+                if (age > PERSISTENT_URL_CACHE_TTL_MS || f.length() == 0L) {
+                    runCatching { f.delete() }
+                    iterator.remove()
+                }
+            }
+
+            var remainingCount = srtFiles.size
+            var totalBytes = srtFiles.sumOf { it.length() }
+            if (remainingCount <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) {
+                return
+            }
+
+            srtFiles.sortBy { it.lastModified() }
+            for (f in srtFiles) {
+                if (remainingCount <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) {
+                    break
+                }
+                val len = f.length()
+                if (runCatching { f.delete() }.getOrDefault(false)) {
+                    remainingCount--
+                    totalBytes = (totalBytes - len).coerceAtLeast(0L)
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     /**
      * Writes the normalized/translated Urdu `.srt` to the local cache directory as a canonical
      * triple-slash `file:///...` URI (so `StreamPlay.emitSubtitle`'s `startsWith("file://")` check
      * and ExoPlayer's `FileDataSource` both accept it unconditionally).
+     *
+     * When [customFileName] is null, uses True Content-Addressed Storage (`cs_urdu_cas_${sha256Hex(urduSrtContent).take(24)}.srt`)
+     * keyed by the SHA-256 of the normalized Urdu `.srt` payload so identical subtitle payloads downloaded
+     * from different mirrors deduplicate to a single on-disk `.srt` file.
      */
-    fun writeUrduLocalCacheFile(keySeed: String, urduSrtContent: String): String? {
+    /**
+     * Atomic single-shot cache write: payloads land in a unique `.tmp` sibling first and are then
+     * moved into place with `ATOMIC_MOVE` (falling back to `renameTo` on filesystems without
+     * atomic rename support), so a concurrent reader — or the other module sharing this cache
+     * directory — can never observe a partially written `.srt`. Returns false without leaving
+     * any temporary file behind when the write fails.
+     */
+    private fun writeUrduCacheFileAtomically(file: File, payloadBytes: ByteArray): Boolean {
+        val tmp = File(file.parentFile, "${file.name}.${System.nanoTime()}.tmp")
+        return try {
+            tmp.writeBytes(payloadBytes)
+            try {
+                java.nio.file.Files.move(
+                    tmp.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                if (!tmp.renameTo(file)) {
+                    runCatching { tmp.delete() }
+                    return false
+                }
+            }
+            true
+        } catch (_: Exception) {
+            runCatching { tmp.delete() }
+            false
+        }
+    }
+
+    fun writeUrduLocalCacheFile(keySeed: String, urduSrtContent: String, customFileName: String? = null): String? {
         if (urduSrtContent.isBlank()) return null
         return try {
-            val digest = MessageDigest.getInstance("SHA-256")
-                .digest(keySeed.toByteArray(StandardCharsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-                .take(16)
-            val baseDir = appContextRef?.cacheDir
-                ?: File(System.getProperty("java.io.tmpdir") ?: "/tmp")
-            if (!baseDir.exists()) baseDir.mkdirs()
-            val file = File(baseDir, "streamplay_urdu_$digest.srt")
+            val baseDir = resolveCacheBaseDir()
+            val contentDigest = sha256Hex(urduSrtContent).take(24)
+            val fileName = customFileName ?: "cs_urdu_cas_$contentDigest.srt"
+            val file = File(baseDir, fileName)
+            if (file.exists() && file.isFile && file.length() > 64L) {
+                // CAS entries are content-hashed by name: re-hash the stored payload and rewrite
+                // when the bytes no longer match the name (corruption in place), so a damaged
+                // cache entry is never served.
+                val trusted = if (fileName.startsWith("cs_urdu_cas_")) {
+                    runCatching {
+                        sha256Hex(file.readText().removePrefix("\uFEFF")).take(24) ==
+                            fileName.removePrefix("cs_urdu_cas_").removeSuffix(".srt")
+                    }.getOrNull() == true
+                } else {
+                    true
+                }
+                if (trusted) {
+                    runCatching { file.setLastModified(System.currentTimeMillis()) }
+                    return toCanonicalFileUri(file)
+                }
+                runCatching { file.delete() }
+            }
             // Include UTF-8 BOM so ExoPlayer / external players unconditionally detect UTF-8
             val bomBytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
             val contentBytes = urduSrtContent.toByteArray(StandardCharsets.UTF_8)
-            file.writeBytes(bomBytes + contentBytes)
-            val absPath = file.absolutePath
-            val normalizedPath = if (absPath.startsWith("/")) absPath else "/$absPath"
-            "file://$normalizedPath"
+            if (!writeUrduCacheFileAtomically(file, bomBytes + contentBytes)) return null
+            evictStaleAndExcessCacheFiles(baseDir)
+            toCanonicalFileUri(file)
         } catch (_: Exception) {
             null
         }
     }
 
     /**
-     * Downloads, extracts (season/episode-aware for `.zip`/`.gz` archives), decodes (`Windows-1256` /
-     * `UTF-16` / `UTF-8`), normalizes Urdu typography + RTL BiDi, and materializes a human Urdu
-     * subtitle URL into a local UTF-8-BOM `.srt` (`file:///...`).
-     *
-     * Fails closed (`null`) whenever download, decoding, or cue validation fails so dead or
-     * corrupted URLs are never emitted to ExoPlayer.
+     * Integrity re-verification for cached payloads: a cache hit is trusted only when its content
+     * still parses as subtitle cues, passes `containsVerifiedUrduScript`, and is not broken SMT —
+     * a payload corrupted in place (bit rot, partial legacy write) is discarded instead of served.
      */
+    internal fun isTrustedCachedUrduContent(cachedPayload: String): Boolean {
+        if (cachedPayload.isBlank()) return false
+        val content = cachedPayload.removePrefix("\uFEFF")
+        val cues = parseSubtitleCues(content)
+        if (cues.isEmpty()) return false
+        return containsVerifiedUrduScript(cues) && !isBrokenSmtUrdu(cues)
+    }
+
+    /**
+     * True Urdu Script & Language Verification (`containsVerifiedUrduScript`):
+     * - Requires `>= 15%` (or at least 1 cue for short test snippets `<= 4` cues) to contain `URDU_ARABIC_SCRIPT_REGEX`.
+     * - Deterministically blocks Persian (`fa`) and Arabic (`ar`) false positives across ALL file sizes:
+     *   - Requires at least 1 match of `URDU_DISTINCTIVE_CHARS_REGEX` (`ٹ`, `ڈ`, `ڑ`, `ں`, `ے`, `ھ`) OR
+     *     at least 1 match of `URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX` — Urdu function words with no
+     *     Persian/Arabic homograph (`ہے`, `ہیں`, `تھا`, `نہیں`, `میں`, `کے`, `کا`, `کو`, `سے`, `اور`, `یہ`, `وہ`, `کیا`, ...).
+     *     Shared fa/ar homographs (`تو`, `یا`, `اگر`, `پر`, `ہو`, `ہم`, ...) that normalize identically
+     *     to Urdu words can never satisfy the gate on their own.
+     *   - Rejects when `RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX` matches the RAW cue text (pre-normalization
+     *     `ه ك ي ى` orthography, incl. Arabic `هذا`/`رأس` and Persian `است`/`خونه`) and there are zero
+     *     Urdu-distinctive characters.
+     *   - Rejects when `PERSIAN_ARABIC_EXCLUSIVE_REGEX` matches and there are zero distinctive Urdu
+     *     characters, or when Persian/Arabic exclusive tokens outnumber Urdu markers
+     *     (`persianArabicExclusiveCount > urduDistinctiveCount + urduUnambiguousFunctionCount`).
+     */
+    fun containsVerifiedUrduScript(cues: List<SrtCue>): Boolean {
+        if (cues.isEmpty()) return false
+        val urduCues = cues.count { URDU_ARABIC_SCRIPT_REGEX.containsMatchIn(it.text) }
+        if (urduCues < 1 || (cues.size > 4 && urduCues * 100 < cues.size * 15)) {
+            return false
+        }
+
+        val rawText = cues.joinToString("\n") { it.text }
+        val combinedText = normalizeUrduTypography(rawText)
+        val urduDistinctiveCount = URDU_DISTINCTIVE_CHARS_REGEX.findAll(combinedText).count()
+        val urduUnambiguousFunctionCount = URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(rawText).count()
+        val persianArabicExclusiveCount = PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(combinedText).count()
+        val rawPersianArabicExclusiveCount = RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(rawText).count()
+
+        val hasUrduMarkers = urduDistinctiveCount >= 1 || urduUnambiguousFunctionCount >= 1
+        if (!hasUrduMarkers) {
+            return false
+        }
+
+        // Persian/Arabic orthography visible in the raw text (before typography normalization) with zero
+        // Urdu-distinctive glyphs is deterministically not Urdu (Arabic هو/هم normalize INTO Urdu ہو/ہم,
+        // so the raw scan is the only trustworthy signal for shared-glyph languages).
+        if (rawPersianArabicExclusiveCount >= 1 && urduDistinctiveCount == 0) {
+            return false
+        }
+
+        // If Persian/Arabic exclusive words outnumber Urdu markers, reject deterministically; a
+        // zero-distinctive file can never outweigh even one exclusive fa/ar marker.
+        if (persianArabicExclusiveCount >= 1 &&
+            (urduDistinctiveCount == 0 || persianArabicExclusiveCount > (urduDistinctiveCount + urduUnambiguousFunctionCount))
+        ) {
+            return false
+        }
+
+        // Per-cue language verification: the aggregate counts above can be defeated by padding one
+        // Urdu-distinctive line over a Persian/Arabic body (even one that avoids every curated
+        // token). Two list-independent per-cue rules apply to every multi-cue file:
+        //  (a) Dominance — cues carrying Urdu evidence (distinctive glyphs or homograph-free
+        //      function words) must outnumber cues that lean Persian/Arabic (exclusive fa/ar marker
+        //      with zero Urdu evidence on the same cue).
+        //  (b) Share — at least 40% of the file's Arabic-script cues must carry positive Urdu
+        //      evidence, so a token-free Persian/Arabic body padded with a single Urdu line is
+        //      rejected regardless of the curated token list.
+        if (cues.size >= 2) {
+            var urduEvidenceCues = 0
+            var faArabicLeaningCues = 0
+            for (cue in cues) {
+                val cueNormalized = normalizeUrduTypography(cue.text)
+                // Dual counting: evidence and fa/ar-leaning are recorded INDEPENDENTLY per cue, so
+                // a cue carrying an fa/ar marker can never be "inoculated" by any other token.
+                if (URDU_DISTINCTIVE_CHARS_REGEX.containsMatchIn(cueNormalized) ||
+                    URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(cue.text)
+                ) {
+                    urduEvidenceCues++
+                }
+                if (
+                    RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cue.text) ||
+                    PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cueNormalized) ||
+                    PERSIAN_ZWNJ_VERB_PREFIX_REGEX.containsMatchIn(cue.text) ||
+                    PERSIAN_YEH_RAW_HEH_REGEX.containsMatchIn(cue.text) ||
+                    ARABIC_ORTHOGRAPHY_REGEX.containsMatchIn(cue.text)
+                ) {
+                    faArabicLeaningCues++
+                }
+            }
+            if (faArabicLeaningCues > urduEvidenceCues) {
+                return false
+            }
+            // Share: with any fa/ar signal present, at least 40% of the file's Arabic-script cues
+            // must carry positive Urdu evidence; when NO cue carries any fa/ar signal (the pure
+            // neutral-padding case) a 30% floor still defeats one-Urdu-line padding while accepting
+            // genuine vocative/interjection-dense Urdu.
+            val shareFloor = if (faArabicLeaningCues > 0) 40 else 30
+            if (urduEvidenceCues * 100 < urduCues * shareFloor) {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    fun containsVerifiedUrduScript(rawContent: String): Boolean {
+        if (rawContent.isBlank()) return false
+        val cues = parseSubtitleCues(rawContent)
+        if (cues.isNotEmpty()) {
+            return containsVerifiedUrduScript(cues)
+        }
+        val normalized = normalizeUrduTypography(rawContent)
+        if (!URDU_ARABIC_SCRIPT_REGEX.containsMatchIn(normalized)) return false
+        val urduDistinctiveCount = URDU_DISTINCTIVE_CHARS_REGEX.findAll(normalized).count()
+        val urduUnambiguousFunctionCount = URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(rawContent).count()
+        val persianArabicExclusiveCount = PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(normalized).count()
+        val rawPersianArabicExclusiveCount = RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(rawContent).count()
+        val hasUrduMarkers = urduDistinctiveCount >= 1 || urduUnambiguousFunctionCount >= 1
+        if (!hasUrduMarkers) return false
+        if (rawPersianArabicExclusiveCount >= 1 && urduDistinctiveCount == 0) {
+            return false
+        }
+        if (persianArabicExclusiveCount >= 1 &&
+            (urduDistinctiveCount == 0 || persianArabicExclusiveCount > (urduDistinctiveCount + urduUnambiguousFunctionCount))
+        ) {
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Two-Tier Persistent Content-Addressed & URL-Addressed Materialization with SingleFlight Coalescing:
+     * 1. Checks in-memory `materializedUrduCache[cacheKey]`.
+     * 2. Performs Disk-First URL Lookup (`cs_urdu_url_${urlCacheKey.take(24)}.srt`) before any network fetch:
+     *    if the file exists on disk, is `< 7` days old, and `length() > 64`, updates its LRU timestamp and
+     *    returns its canonical `file:///...` URI in `< 1ms` with zero HTTP requests.
+     * 3. Uses `materializationInFlight` (`CompletableDeferred`) so concurrent harvesters requesting
+     *    the same URL/episode coalesce into a single download & verification pass.
+     * 4. Rejects broken SMT corruptions (`isBrokenSmtUrdu(parsedCues)`) and non-Urdu scripts (`containsVerifiedUrduScript`).
+     * 5. Deduplicates identical subtitle payloads across mirrors via Content-Addressed Storage
+     *    (`cs_urdu_cas_${sha256Hex(normalized).take(24)}.srt`) while maintaining the URL-index file for
+     *    zero-network-call cold-start lookups.
+     */
+    suspend fun materializeVerifiedUrduSubtitleFile(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        season: Int? = null,
+        episode: Int? = null,
+        sourceTag: String = "urdu-human"
+    ): String? = materializeNormalizedUrduSubtitle(
+        url = url,
+        headers = headers,
+        season = season,
+        episode = episode,
+        sourceTag = sourceTag
+    )
+
     suspend fun materializeNormalizedUrduSubtitle(
         url: String,
         headers: Map<String, String> = emptyMap(),
@@ -1259,28 +2443,96 @@ object UrduSubtitleEngine {
             }
         }
 
-        val rawBytes = fetchRawBytes(cleanUrl, headers = headers, timeoutSec = 8L)
-            ?: return@withContext null
-        if (rawBytes.isEmpty()) return@withContext null
+        val urlCacheKey = sha256Hex(cacheKey)
+        val urlCacheFileName = "cs_urdu_url_${urlCacheKey.take(24)}.srt"
+        val urlDiskFile = File(resolveCacheBaseDir(), urlCacheFileName)
+        if (urlDiskFile.exists() && urlDiskFile.isFile && urlDiskFile.length() > 64L) {
+            val ageMs = (System.currentTimeMillis() - urlDiskFile.lastModified()).coerceAtLeast(0L)
+            if (ageMs < PERSISTENT_URL_CACHE_TTL_MS) {
+                val cachedPayload = runCatching { urlDiskFile.readText() }.getOrNull()
+                if (cachedPayload != null && isTrustedCachedUrduContent(cachedPayload)) {
+                    runCatching { urlDiskFile.setLastModified(System.currentTimeMillis()) }
+                    val diskUri = toCanonicalFileUri(urlDiskFile)
+                    materializedUrduCache[cacheKey] = diskUri
+                    return@withContext diskUri
+                }
+                // Corrupted or non-Urdu payload on disk: drop the stale index entry and fall
+                // through to the network instead of serving unverified bytes.
+                runCatching { urlDiskFile.delete() }
+            }
+        }
 
-        val decoded = decodeAndNormalizeUrduBytes(rawBytes, season = season, episode = episode)
-        if (decoded.isBlank()) return@withContext null
+        val newDeferred = CompletableDeferred<String?>()
+        val existingDeferred = materializationInFlight.putIfAbsent(cacheKey, newDeferred)
+        if (existingDeferred != null) {
+            return@withContext existingDeferred.await()
+        }
 
-        val normalized = normalizeUrduSubtitleText(decoded)
-        if (parseSubtitleCues(normalized).isEmpty()) return@withContext null
+        try {
+            val rawBytes = fetchRawBytes(cleanUrl, headers = headers, timeoutSec = 8L)
+            if (rawBytes == null || rawBytes.isEmpty()) {
+                newDeferred.complete(null)
+                return@withContext null
+            }
 
-        val localUri = writeUrduLocalCacheFile("$sourceTag|$cacheKey", normalized)
-            ?: return@withContext null
-        materializedUrduCache[cacheKey] = localUri
-        localUri
+            // Stage separation: decode RAW (no typography normalization) and run the language gate
+            // on raw cues first — orthography signals (raw heh, ZWNJ, hamza) must be intact, or
+            // Persian یه/رها arrive pre-converted and the raw-scan policy is nullified.
+            val decoded = decodeAndNormalizeUrduBytes(
+                rawBytes,
+                season = season,
+                episode = episode,
+                normalizeTypography = false
+            )
+            if (decoded.isBlank()) {
+                newDeferred.complete(null)
+                return@withContext null
+            }
+
+            // Validate raw parsed cues before and after normalization so broken SMT files are rejected
+            val rawCues = parseSubtitleCues(decoded)
+            if (rawCues.isEmpty() || isBrokenSmtUrdu(rawCues) || !containsVerifiedUrduScript(rawCues)) {
+                newDeferred.complete(null)
+                return@withContext null
+            }
+
+            val normalized = normalizeUrduSubtitleText(decoded)
+            val parsedCues = parseSubtitleCues(normalized)
+            if (!containsVerifiedUrduScript(parsedCues) || isBrokenSmtUrdu(parsedCues)) {
+                newDeferred.complete(null)
+                return@withContext null
+            }
+
+            // Persist to both Content-Addressed Storage (`cs_urdu_cas_<sha256(normalized)>.srt`)
+            // and URL-Addressed L2 index (`cs_urdu_url_<sha256(url|S|E)>.srt`)
+            val contentUri = writeUrduLocalCacheFile(cacheKey, normalized)
+            val urlDiskUri = writeUrduLocalCacheFile(cacheKey, normalized, customFileName = urlCacheFileName)
+            val localUri = contentUri ?: urlDiskUri
+            if (localUri != null) {
+                materializedUrduCache[cacheKey] = localUri
+            }
+            newDeferred.complete(localUri)
+            localUri
+        } catch (e: CancellationException) {
+            newDeferred.cancel(e)
+            throw e
+        } catch (_: Exception) {
+            newDeferred.complete(null)
+            null
+        } finally {
+            materializationInFlight.remove(cacheKey, newDeferred)
+        }
     }
 
     /**
      * End-to-end neural Urdu fallback synthesis:
      * Fetches the best available English `.srt`/`.vtt`/`.gz`/`.zip` candidate (preferring
      * SubtitleCat `-orig.srt` candidates passed via [subtitleCatOrigCandidates], [englishSubtitleFiles] /
-     * [candidateEnglishSubs] headers, or recorded in `pendingSubtitleCatOrigList`), translates it to
-     * timing-preserved RTL Urdu, and emits `Urdu` with `X-StreamPlay-Source: urdu-neural-fallback`.
+     * [candidateEnglishSubs] headers, or recorded in `pendingSubtitleCatOrigByMedia`), translates it to
+     * timing-preserved Spoken Urdu, and emits `Urdu [Neural AI]` with `X-StreamPlay-Source: urdu-neural-fallback`.
+     *
+     * Never calls `publishToSubtitleCatCdn` so machine-translated `.srt` files never pollute
+     * SubtitleCat's public servers.
      */
     suspend fun synthesizeUrduFallbackFromEnglish(
         imdbId: String? = null,
@@ -1310,7 +2562,7 @@ object UrduSubtitleEngine {
                     add(origUrl to name)
                 }
             }
-            addAll(consumeSubtitleCatOrigCandidates())
+            addAll(consumeSubtitleCatOrigCandidates(imdbId = imdbId, season = season, episode = episode))
         }
 
         val orderedCandidates = buildList<Pair<String, String>> {
@@ -1334,10 +2586,9 @@ object UrduSubtitleEngine {
             }
         }.take(3)
 
-        if (orderedCandidates.isEmpty()) return@withContext false
-
+        val neuralLabel = formatUrduSourceLabel("urdu-neural-fallback")
         val imdbPrefix = imdbId?.trim()?.takeIf { it.isNotBlank() }?.let { "$it|" }.orEmpty()
-        for ((enUrl, origName) in orderedCandidates) {
+        for ((enUrl, _) in orderedCandidates) {
             val cacheKey = if (season != null || episode != null || imdbPrefix.isNotEmpty()) {
                 "$imdbPrefix$enUrl|S${season ?: 0}E${episode ?: 0}"
             } else {
@@ -1347,7 +2598,7 @@ object UrduSubtitleEngine {
             if (cachedUrl != null) {
                 if (isCachedSubtitleUriValid(cachedUrl)) {
                     subtitleCallback(
-                        newSubtitleFile("Urdu", cachedUrl) {
+                        newSubtitleFile(neuralLabel, cachedUrl) {
                             headers = mapOf("X-StreamPlay-Source" to "urdu-neural-fallback")
                         }
                     )
@@ -1363,32 +2614,54 @@ object UrduSubtitleEngine {
             if (decodedEnglish.length < 32) continue
 
             val urduSrt = translateEnglishSrtToUrdu(decodedEnglish) ?: continue
-            val subFolder = if (enUrl.contains("subtitlecat.com/subs/", ignoreCase = true)) {
-                val path = enUrl.substringAfter("subtitlecat.com").substringBeforeLast('/') + "/"
-                path
-            } else {
-                "/subs/synthesized/"
+            val synthesizedCues = parseSubtitleCues(urduSrt)
+            if (synthesizedCues.isEmpty() || !containsVerifiedUrduScript(synthesizedCues) || isBrokenSmtUrdu(synthesizedCues)) {
+                continue
             }
 
-            // Prefer local file:/// cache whenever writable so a dead 404 CDN URL is never emitted;
-            // only fall back to SubtitleCat CDN when subFolder is a real SubtitleCat path.
-            val localUrl = writeUrduLocalCacheFile(cacheKey, urduSrt)
-            val cdnUrl = if (localUrl == null) {
-                publishToSubtitleCatCdn(origName, urduSrt, subFolder)
-            } else {
-                null
-            }
-            val deliveryUrl = localUrl ?: cdnUrl ?: continue
+            // Always materialize locally to the verified UTF-8 .srt cache file (file:///...);
+            // never upload machine-translated subtitles back onto SubtitleCat's public servers.
+            val deliveryUrl = writeUrduLocalCacheFile(cacheKey, urduSrt) ?: continue
 
             synthesizedUrduCache[cacheKey] = deliveryUrl
             synthesizedUrduCache[enUrl] = deliveryUrl
+
             subtitleCallback(
-                newSubtitleFile("Urdu", deliveryUrl) {
+                newSubtitleFile(neuralLabel, deliveryUrl) {
                     headers = mapOf("X-StreamPlay-Source" to "urdu-neural-fallback")
                 }
             )
             return@withContext true
         }
+
+        // Last-resort Phase 4 fallback: if SubtitleCat had a pre-cached -ur.srt and no English donor
+        // was available, refine it through refineUrduToSpokenIdiom and emit as urdu-neural-fallback
+        val preCachedUrUrls = consumeSubtitleCatPreCachedUrduCandidates(imdbId = imdbId, season = season, episode = episode)
+        for (urUrl in preCachedUrUrls.take(2)) {
+            val rawBytes = fetchRawBytes(urUrl, timeoutSec = 5L) ?: continue
+            val decodedUr = decodeAndNormalizeUrduBytes(
+                rawBytes,
+                season = season,
+                episode = episode,
+                normalizeTypography = false
+            )
+            if (decodedUr.isBlank()) continue
+            val rawUrCues = parseSubtitleCues(decodedUr)
+            if (rawUrCues.isEmpty() || isBrokenSmtUrdu(rawUrCues) || !containsVerifiedUrduScript(rawUrCues)) continue
+            val normalizedUr = normalizeUrduSubtitleText(decodedUr)
+            val cues = parseSubtitleCues(normalizedUr)
+            if (!containsVerifiedUrduScript(cues) || isBrokenSmtUrdu(cues)) continue
+            val cacheKey = "${imdbPrefix}subcat_ur_fallback|$urUrl|S${season ?: 0}E${episode ?: 0}"
+            val deliveryUrl = writeUrduLocalCacheFile(cacheKey, normalizedUr) ?: continue
+            synthesizedUrduCache[cacheKey] = deliveryUrl
+            subtitleCallback(
+                newSubtitleFile(neuralLabel, deliveryUrl) {
+                    headers = mapOf("X-StreamPlay-Source" to "urdu-neural-fallback")
+                }
+            )
+            return@withContext true
+        }
+
         false
     }
 
@@ -1405,11 +2678,7 @@ object UrduSubtitleEngine {
             }.getOrNull()
         }
         try {
-            val client = app.baseClient.newBuilder()
-                .callTimeout(timeoutSec * 2L, TimeUnit.SECONDS)
-                .connectTimeout(timeoutSec, TimeUnit.SECONDS)
-                .readTimeout(timeoutSec, TimeUnit.SECONDS)
-                .build()
+            val client = httpClientForTimeout(timeoutSec)
             val reqBuilder = Request.Builder()
                 .url(url)
                 .header("User-Agent", headers["User-Agent"] ?: BROWSER_USER_AGENT)
@@ -1521,11 +2790,72 @@ object UrduSubtitleEngine {
         return text.substring(start, end)
     }
 
+    private val SUBDL_DATA_LANGUAGE_ATTR_REGEX =
+        Regex("""data-language\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
+    private val SUBDL_AI_MARKER_REGEX = Regex(
+        """(?i)(?:data-ai-translated|data-ai-row|data-ai-subtitles|\bsubdl[\s_]*ai\b|"ai_translated"\s*:\s*true|\bai[\s_]*translated\b|\bauto[\s_]*translated\b|\bmachine[\s_]*translated\b|\bchatgpt\b|\bgoogle[\s_]*translate\b)"""
+    )
+
+    private val SUBDL_TIER_1A_AUTHORS = listOf(
+        "naveshta",
+        "netflix",
+        "amzn",
+        "amazon",
+        "prime",
+        "zee5",
+        "sonyliv",
+        "tapmad",
+        "tamasha",
+        "faizybaba",
+        "moorninja",
+        "usmankhadim",
+        "h18o9",
+        "sunil kumar",
+        "urdu_official",
+        "malik_rehan",
+        "shabbir_umer",
+        "urdu zone"
+    )
+
+    private val SUBDL_TIER_1C_MACHINE_AUTHORS = listOf(
+        "blackgold",
+        "black gold",
+        "iamdesigora",
+        "akhaliq_655",
+        "saad.jan",
+        "tryray"
+    )
+
+    /**
+     * Scores a SubDL candidate row/entry by Verified Spoken-Human Uploader Quality:
+     * - Tier 1A (`+100`): Official streaming & verified spoken-Urdu translators (`naveshta`, `netflix`, `amzn`, `faizybaba`, `moorninja`, `usmankhadim`, `h18o9`, `sunil kumar`, `urdu_official`, `malik_rehan`, `shabbir_umer`, `urdu zone`, etc.)
+     * - Tier 1C (`-40`): Known bulk machine/SMT uploaders (`blackgold`, `iamdesigora`, `akhaliq_655`, `saad.jan`, `tryray`)
+     * - Tier 1B (`+50`): Standard community human uploaders
+     */
+    internal fun scoreSubDlAuthorTier(authorAndContext: String): Int {
+        val lower = authorAndContext.lowercase(Locale.ROOT)
+        if (SUBDL_TIER_1C_MACHINE_AUTHORS.any { lower.contains(it) }) {
+            return -40
+        }
+        if (SUBDL_TIER_1A_AUTHORS.any { lower.contains(it) }) {
+            return 100
+        }
+        return 50
+    }
+
+    internal fun isSubDlAiEntry(contextOrHtml: String): Boolean {
+        return SUBDL_AI_MARKER_REGEX.containsMatchIn(contextOrHtml)
+    }
+
     /**
      * Extracts direct `https://dl.subdl.com/subtitle/\d+-\d+\.zip` download URLs from a SubDL
-     * `/urdu` HTML page (including Next.js `__NEXT_DATA__` JSON and anchor tags).
-     * For TV episodes (`episode != null`), filters surrounding release/row text for episode match
-     * (`S01E02`, `E02`, or season pack).
+     * `/urdu` HTML page (including Astro SSR `<div data-language="urdu">`, Next.js `__NEXT_DATA__` JSON,
+     * and anchor tags):
+     * 1. Scopes strictly to `data-language="urdu"` when `data-language=` sections are present
+     *    (returning `emptyList()` if `data-language=` exists without `data-language="urdu"`).
+     * 2. Rejects any row/block marked as AI-generated (`SUBDL AI`, `data-ai-translated`, `ai_translated":true`, etc.).
+     * 3. Ranks candidates in descending order of Verified Spoken-Human Uploader Quality (`scoreSubDlAuthorTier`).
      */
     internal fun parseSubDlUrduPageZips(
         htmlBody: String,
@@ -1533,57 +2863,107 @@ object UrduSubtitleEngine {
         episode: Int? = null
     ): List<String> {
         if (htmlBody.isBlank()) return emptyList()
-        val results = LinkedHashSet<String>()
         val zipRegex = Regex("""https?://dl\.subdl\.com/subtitle/\d+-\d+\.zip|/subtitle/\d+-\d+\.zip""", RegexOption.IGNORE_CASE)
 
         val doc = Jsoup.parse(htmlBody)
-        // 1. Anchor tags with surrounding row/container text
-        for (anchor in doc.select("a[href]")) {
-            val href = anchor.attr("href").trim()
-            val match = zipRegex.find(href) ?: continue
-            val fullUrl = if (match.value.startsWith("http", ignoreCase = true)) {
-                match.value
-            } else {
-                "$SUBDL_DL_HOST${match.value}"
+        val dataLangElements = doc.select("[data-language]")
+        val hasRawDataLangAttr = SUBDL_DATA_LANGUAGE_ATTR_REGEX.containsMatchIn(htmlBody)
+
+        val searchRoots = if (dataLangElements.isNotEmpty() || hasRawDataLangAttr) {
+            val urduContainers = dataLangElements.filter { el ->
+                val langAttr = el.attr("data-language").trim().lowercase(Locale.ROOT)
+                langAttr == "urdu" || langAttr == "ur" || langAttr == "urd"
             }
-            val selfAndParentText = buildString {
-                append(anchor.text()).append(' ')
-                append(anchor.attr("title")).append(' ')
-                anchor.parent()?.takeIf { it.tagName().lowercase(Locale.ROOT) !in setOf("body", "html") }
-                    ?.text()?.let { append(it) }
-            }.trim()
-            val contextText = if (selfAndParentText.length > 12) {
-                selfAndParentText
-            } else {
-                buildString {
-                    append(selfAndParentText).append(' ')
-                    anchor.parent()?.parent()
-                        ?.takeIf { it.tagName().lowercase(Locale.ROOT) !in setOf("body", "html") }
-                        ?.text()?.let { append(it) }
-                }.trim()
+            if (urduContainers.isEmpty()) {
+                return emptyList()
             }
-            if (subDlEpisodeMatches(contextText, season, episode)) {
-                results.add(fullUrl)
-            }
+            urduContainers
+        } else {
+            listOf(doc)
         }
 
-        // 2. Also scan raw HTML / __NEXT_DATA__ JSON for dl.subdl.com/subtitle/\d+-\d+\.zip
-        if (results.isEmpty()) {
-            for (match in zipRegex.findAll(htmlBody)) {
-                val raw = match.value
-                val fullUrl = if (raw.startsWith("http", ignoreCase = true)) raw else "$SUBDL_DL_HOST$raw"
-                if (episode == null || episode <= 0) {
-                    results.add(fullUrl)
+        val scoredCandidates = LinkedHashMap<String, Int>()
+
+        // 1. Anchor tags with surrounding row/container text and uploader attributes
+        for (root in searchRoots) {
+            for (anchor in root.select("a[href]")) {
+                val href = anchor.attr("href").trim()
+                val match = zipRegex.find(href) ?: continue
+                val fullUrl = if (match.value.startsWith("http", ignoreCase = true)) {
+                    match.value
                 } else {
-                    val window = extractBoundedSubDlContextWindow(htmlBody, match.range)
-                    if (subDlEpisodeMatches(window, season, episode)) {
-                        results.add(fullUrl)
+                    "$SUBDL_DL_HOST${match.value}"
+                }
+
+                // Walk up to enclosing row (`li`, `tr`, `div`) to inspect AI attributes & author metadata
+                val rowElement = anchor.parents().firstOrNull { el ->
+                    val tag = el.tagName().lowercase(Locale.ROOT)
+                    tag == "li" || tag == "tr" || (tag == "div" && !el.hasAttr("data-language"))
+                } ?: anchor.parent()
+
+                val rowOuterHtml = rowElement?.outerHtml().orEmpty()
+                val selfAndParentText = buildString {
+                    append(anchor.text()).append(' ')
+                    append(anchor.attr("title")).append(' ')
+                    anchor.parent()?.takeIf { it.tagName().lowercase(Locale.ROOT) !in setOf("body", "html") }
+                        ?.text()?.let { append(it) }
+                }.trim()
+                val contextText = if (selfAndParentText.length > 12) {
+                    selfAndParentText
+                } else {
+                    buildString {
+                        append(selfAndParentText).append(' ')
+                        anchor.parent()?.parent()
+                            ?.takeIf { it.tagName().lowercase(Locale.ROOT) !in setOf("body", "html") }
+                            ?.text()?.let { append(it) }
+                    }.trim()
+                }
+
+                val authorAttr = buildString {
+                    rowElement?.select("a[data-subtitle-author], [data-subtitle-author], a[href*=/u/], .author, [class*=author]")
+                        ?.forEach { el ->
+                            append(el.attr("data-subtitle-author")).append(' ')
+                            append(el.text()).append(' ')
+                        }
+                    append(contextText).append(' ')
+                    append(rowOuterHtml)
+                }
+
+                if (isSubDlAiEntry(authorAttr)) {
+                    continue
+                }
+
+                if (subDlEpisodeMatches(contextText, season, episode)) {
+                    val tierScore = scoreSubDlAuthorTier(authorAttr)
+                    val prev = scoredCandidates[fullUrl]
+                    if (prev == null || tierScore > prev) {
+                        scoredCandidates[fullUrl] = tierScore
                     }
                 }
             }
         }
 
-        return results.take(5).toList()
+        // 2. Also scan raw HTML / __NEXT_DATA__ JSON when no data-language DOM exclusion occurred
+        if (scoredCandidates.isEmpty() && dataLangElements.isEmpty() && !hasRawDataLangAttr) {
+            for (match in zipRegex.findAll(htmlBody)) {
+                val raw = match.value
+                val fullUrl = if (raw.startsWith("http", ignoreCase = true)) raw else "$SUBDL_DL_HOST$raw"
+                val window = extractBoundedSubDlContextWindow(htmlBody, match.range)
+                if (isSubDlAiEntry(window)) continue
+                if (episode == null || episode <= 0 || subDlEpisodeMatches(window, season, episode)) {
+                    val tierScore = scoreSubDlAuthorTier(window)
+                    val prev = scoredCandidates[fullUrl]
+                    if (prev == null || tierScore > prev) {
+                        scoredCandidates[fullUrl] = tierScore
+                    }
+                }
+            }
+        }
+
+        return scoredCandidates.entries
+            .sortedByDescending { it.value }
+            .map { it.key }
+            .take(5)
     }
 
     internal fun subDlEpisodeMatches(text: String, season: Int?, episode: Int?): Boolean {
@@ -1599,8 +2979,9 @@ object UrduSubtitleEngine {
     }
 
     /**
-     * Parses Official SubDL API v1 JSON (`{"status":true,"subtitles":[{"url":"/subtitle/123-456.zip","lang":"urdu",...}]}`)
-     * and returns direct `.zip` URLs matching [season] and [episode].
+     * Parses Official SubDL API v1 JSON (`{"status":true,"subtitles":[{"url":"/subtitle/123-456.zip","lang":"urdu",...}]}`),
+     * filters out AI-generated subtitles, and returns direct `.zip` URLs matching [season] and [episode]
+     * ranked in descending order of Verified Spoken-Human Uploader Quality (`scoreSubDlAuthorTier`).
      */
     internal fun parseSubDlApiV1Zips(
         json: String,
@@ -1612,7 +2993,7 @@ object UrduSubtitleEngine {
             val root = JSONObject(json)
             if (root.has("status") && !root.optBoolean("status", true)) return emptyList()
             val arr = root.optJSONArray("subtitles") ?: root.optJSONArray("data") ?: return emptyList()
-            val urls = LinkedHashSet<String>()
+            val scoredUrls = LinkedHashMap<String, Int>()
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
                 val lang = (item.optString("lang").ifBlank { item.optString("language") })
@@ -1620,6 +3001,27 @@ object UrduSubtitleEngine {
                 if (lang.isNotBlank() && lang != "ur" && lang != "urd" && lang != "urdu" && !lang.startsWith("ur")) {
                     continue
                 }
+                if (item.optBoolean("ai_translated", false) ||
+                    item.optBoolean("machine_translated", false) ||
+                    item.optBoolean("auto_translated", false)
+                ) {
+                    continue
+                }
+
+                val authorText = buildString {
+                    append(item.optString("author")).append(' ')
+                    append(item.optString("uploader")).append(' ')
+                    append(item.optString("username")).append(' ')
+                    append(item.optString("comment")).append(' ')
+                    append(item.optString("release_name")).append(' ')
+                    append(item.optString("name")).append(' ')
+                    append(item.optString("title"))
+                }.trim()
+
+                if (isSubDlAiEntry(authorText) || isSubDlAiEntry(item.toString())) {
+                    continue
+                }
+
                 val itemSeason = item.optInt("season", -1)
                 val itemEpisode = item.optInt("episode", -1)
                 val releaseName = buildString {
@@ -1649,27 +3051,78 @@ object UrduSubtitleEngine {
                     rawUrl.startsWith("/") -> "$SUBDL_DL_HOST$rawUrl"
                     else -> "$SUBDL_DL_HOST/$rawUrl"
                 }
-                urls.add(fullUrl)
+                val tierScore = scoreSubDlAuthorTier(authorText)
+                val prev = scoredUrls[fullUrl]
+                if (prev == null || tierScore > prev) {
+                    scoredUrls[fullUrl] = tierScore
+                }
             }
-            urls.take(5).toList()
+            scoredUrls.entries
+                .sortedByDescending { it.value }
+                .map { it.key }
+                .take(5)
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    private fun resolveSubDlApiKey(
+    private fun readCrossModuleSharedPrefString(
+        key: String,
+        sharedPref: android.content.SharedPreferences? = null,
+        context: android.content.Context? = null
+    ): String? {
+        runCatching { sharedPref?.getString(key, null) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it.trim() }
+        runCatching { StreamPlay.companionSharedPref?.getString(key, null) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it.trim() }
+        val appCtx = context?.applicationContext ?: context ?: appContextRef ?: return null
+        for (prefName in listOf("StreamPlay", "SuperStream", "cloudstream_subtitle_mode_prefs")) {
+            val v = runCatching {
+                appCtx.getSharedPreferences(prefName, android.content.Context.MODE_PRIVATE).getString(key, null)
+            }.getOrNull()
+            if (!v.isNullOrBlank()) return v.trim()
+        }
+        return null
+    }
+
+    fun resolveWyzieApiKey(
         apiKey: String? = null,
-        sharedPref: android.content.SharedPreferences? = null
+        sharedPref: android.content.SharedPreferences? = null,
+        context: android.content.Context? = null
     ): String? {
         val candidates = listOfNotNull(
             apiKey,
-            runCatching { sharedPref?.getString("subdl_api_key", null) }.getOrNull(),
-            runCatching { StreamPlay.companionSharedPref?.getString("subdl_api_key", null) }.getOrNull(),
+            readCrossModuleSharedPrefString("wyzie_key", sharedPref, context),
+            readCrossModuleSharedPrefString("wyzie_api_key", sharedPref, context),
+            runCatching { System.getProperty("cloudstream.wyzie.key") }.getOrNull(),
+            runCatching { System.getProperty("wyzie.api.key") }.getOrNull(),
+            runCatching { System.getenv("WYZIE_API_KEY") }.getOrNull()
+        )
+        return candidates.firstOrNull { it.isNotBlank() }?.trim()
+    }
+
+    fun resolveWyzieApiKey(
+        context: android.content.Context?,
+        sharedPref: android.content.SharedPreferences? = null
+    ): String? = resolveWyzieApiKey(apiKey = null, sharedPref = sharedPref, context = context)
+
+    fun resolveSubDlApiKey(
+        apiKey: String? = null,
+        sharedPref: android.content.SharedPreferences? = null,
+        context: android.content.Context? = null
+    ): String? {
+        val candidates = listOfNotNull(
+            apiKey,
+            readCrossModuleSharedPrefString("subdl_api_key", sharedPref, context),
+            runCatching { System.getProperty("cloudstream.subdl.key") }.getOrNull(),
             runCatching { System.getProperty("subdl.api.key") }.getOrNull(),
             runCatching { System.getenv("SUBDL_API_KEY") }.getOrNull()
         )
         return candidates.firstOrNull { it.isNotBlank() }?.trim()
     }
+
+    fun resolveSubDlApiKey(
+        context: android.content.Context?,
+        sharedPref: android.content.SharedPreferences? = null
+    ): String? = resolveSubDlApiKey(apiKey = null, sharedPref = sharedPref, context = context)
 
     /**
      * Queries Official SubDL API v1 (`https://api.subdl.com/api/v1/subtitles`) when an API key
@@ -1694,7 +3147,7 @@ object UrduSubtitleEngine {
         val type = if (season != null && season > 0) "tv" else "movie"
         val url = buildString {
             append("$SUBDL_API_V1?api_key=${URLEncoder.encode(resolvedKey, "UTF-8")}")
-            append("&languages=UR&subs_per_page=10&type=$type")
+            append("&languages=UR&subs_per_page=10&unpack=1&type=$type")
             if (cleanImdb != null) {
                 append("&imdb_id=${URLEncoder.encode(cleanImdb, "UTF-8")}")
             } else if (cleanTitle != null) {
@@ -1714,26 +3167,28 @@ object UrduSubtitleEngine {
         } ?: return 0
 
         val zipUrls = parseSubDlApiV1Zips(json, season, episode)
+        val subDlLabel = formatUrduSourceLabel("subdl")
         var emitted = 0
         for (zipUrl in zipUrls) {
             val dlHeaders = mapOf(
                 "User-Agent" to BROWSER_USER_AGENT,
                 "Referer" to "$SUBDL_WEB_HOST/",
-                "X-StreamPlay-Source" to "subdl-api-v1"
+                "X-StreamPlay-Source" to "subdl"
             )
             val materializedUri = materializeNormalizedUrduSubtitle(
                 url = zipUrl,
                 headers = dlHeaders,
                 season = season,
                 episode = episode,
-                sourceTag = "subdl-api-v1"
+                sourceTag = "subdl"
             ) ?: continue
             subtitleCallback(
-                newSubtitleFile("Urdu", materializedUri) {
+                newSubtitleFile(subDlLabel, materializedUri) {
                     this.headers = dlHeaders
                 }
             )
             emitted++
+            if (emitted >= 2) break
         }
         return emitted
     }
@@ -1742,7 +3197,8 @@ object UrduSubtitleEngine {
      * SubDL Urdu Harvester (`invokeSubDlUrduKeyless`):
      * 1. Queries Official SubDL API v1 first if an API key is configured.
      * 2. Seamlessly falls back to keyless `https://api3.subdl.com/auto?query=...` + `/urdu` page
-     *    harvesting, and materializes `.zip` Urdu archives into playable UTF-8-BOM `.srt` files.
+     *    harvesting (caching `imdbId|title|year -> slug` + negative sentinel across episodes),
+     *    and materializes `.zip` Urdu archives into playable UTF-8-BOM `.srt` files.
      */
     suspend fun invokeSubDlUrduKeyless(
         imdbId: String? = null,
@@ -1772,24 +3228,39 @@ object UrduSubtitleEngine {
             )
             if (apiEmitted > 0) return
 
-            // 2. Keyless fallback via api3.subdl.com/auto + HTML/__NEXT_DATA__
-            val autoUrl = "$SUBDL_AUTO_API?query=${URLEncoder.encode(query, "UTF-8")}"
+            // 2. Keyless fallback via api3.subdl.com/auto + HTML/__NEXT_DATA__ with slug cache
             val headers = mapOf(
                 "User-Agent" to BROWSER_USER_AGENT,
                 "Accept" to "application/json, text/plain, */*",
                 "Origin" to SUBDL_WEB_HOST,
                 "Referer" to "$SUBDL_WEB_HOST/"
             )
-            val autoBody = withTimeoutOrNull(5_000L) {
-                StreamPlayExtractor.cancellableGetText(autoUrl, headers = headers, timeoutSec = 5L)
-            }
-            var slugLink = autoBody?.let { parseSubDlAutoSlug(it, year) }
-            if (slugLink == null && cleanImdb != null && cleanTitle != null) {
-                val fallbackAutoUrl = "$SUBDL_AUTO_API?query=${URLEncoder.encode(cleanTitle, "UTF-8")}"
-                val fallbackBody = withTimeoutOrNull(5_000L) {
-                    StreamPlayExtractor.cancellableGetText(fallbackAutoUrl, headers = headers, timeoutSec = 5L)
+            val slugCacheKey = "${cleanImdb ?: ""}|${cleanTitle?.lowercase(Locale.ROOT) ?: ""}|${year ?: 0}"
+            val cachedSlug = subDlSlugCache[slugCacheKey]
+            val slugLink = when {
+                cachedSlug == NEGATIVE_SLUG_SENTINEL -> return
+                !cachedSlug.isNullOrBlank() -> cachedSlug
+                else -> {
+                    val autoUrl = "$SUBDL_AUTO_API?query=${URLEncoder.encode(query, "UTF-8")}"
+                    val autoBody = withTimeoutOrNull(5_000L) {
+                        StreamPlayExtractor.cancellableGetText(autoUrl, headers = headers, timeoutSec = 5L)
+                    }
+                    var resolved = autoBody?.let { parseSubDlAutoSlug(it, year) }
+                    if (resolved == null && cleanImdb != null && cleanTitle != null) {
+                        val fallbackAutoUrl = "$SUBDL_AUTO_API?query=${URLEncoder.encode(cleanTitle, "UTF-8")}"
+                        val fallbackBody = withTimeoutOrNull(5_000L) {
+                            StreamPlayExtractor.cancellableGetText(fallbackAutoUrl, headers = headers, timeoutSec = 5L)
+                        }
+                        resolved = fallbackBody?.let { parseSubDlAutoSlug(it, year) }
+                    }
+                    if (!resolved.isNullOrBlank()) {
+                        subDlSlugCache[slugCacheKey] = resolved
+                        if (cleanImdb != null) subDlSlugCache[cleanImdb] = resolved
+                    } else if (autoBody != null) {
+                        subDlSlugCache[slugCacheKey] = NEGATIVE_SLUG_SENTINEL
+                    }
+                    resolved
                 }
-                slugLink = fallbackBody?.let { parseSubDlAutoSlug(it, year) }
             }
             if (slugLink.isNullOrBlank()) return
 
@@ -1805,6 +3276,8 @@ object UrduSubtitleEngine {
             } ?: return
 
             val zipUrls = parseSubDlUrduPageZips(html, season, episode)
+            val subDlLabel = formatUrduSourceLabel("subdl")
+            var emitted = 0
             for (zipUrl in zipUrls) {
                 val dlHeaders = mapOf(
                     "User-Agent" to BROWSER_USER_AGENT,
@@ -1819,10 +3292,12 @@ object UrduSubtitleEngine {
                     sourceTag = "subdl"
                 ) ?: continue
                 subtitleCallback(
-                    newSubtitleFile("Urdu", materializedUri) {
+                    newSubtitleFile(subDlLabel, materializedUri) {
                         this.headers = dlHeaders
                     }
                 )
+                emitted++
+                if (emitted >= 2) break
             }
         } catch (e: CancellationException) {
             throw e
@@ -2000,25 +3475,30 @@ object UrduSubtitleEngine {
         }
     }
 
-    private fun resolveSubSourceApiKey(
+    fun resolveSubSourceApiKey(
         apiKey: String? = null,
-        sharedPref: android.content.SharedPreferences? = null
+        sharedPref: android.content.SharedPreferences? = null,
+        context: android.content.Context? = null
     ): String? {
         val candidates = listOfNotNull(
             apiKey,
-            runCatching { sharedPref?.getString("subsource_api_key", null) }.getOrNull(),
-            runCatching { StreamPlay.companionSharedPref?.getString("subsource_api_key", null) }.getOrNull(),
+            readCrossModuleSharedPrefString("subsource_api_key", sharedPref, context),
+            runCatching { System.getProperty("cloudstream.subsource.key") }.getOrNull(),
             runCatching { System.getProperty("subsource.api.key") }.getOrNull(),
             runCatching { System.getenv("SUBSOURCE_API_KEY") }.getOrNull()
         )
         return candidates.firstOrNull { it.isNotBlank() }?.trim()
     }
 
+    fun resolveSubSourceApiKey(
+        context: android.content.Context?,
+        sharedPref: android.content.SharedPreferences? = null
+    ): String? = resolveSubSourceApiKey(apiKey = null, sharedPref = sharedPref, context = context)
+
     /**
-     * Official SubSource API v1 + Public Keyless Urdu Harvester (`invokeSubSourceUrdu`):
-     * Searches SubSource by `imdbId` or `title`, fetches Urdu subtitle entries, downloads and
-     * materializes each subtitle (frequently `Windows-1256` `.zip`) via [materializeNormalizedUrduSubtitle],
-     * and emits `Urdu` with `X-StreamPlay-Source: subsource`.
+     * Official SubSource API v1 Urdu Harvester (`invokeSubSourceUrdu`):
+     * Note: `api.subsource.net/api/v1` returns `401 Unauthorized` without a key; returns `0` / exits
+     * immediately when `resolvedKey == null` so we never waste 3 sequential 5-second requests hitting 401s.
      */
     suspend fun invokeSubSourceUrdu(
         imdbId: String? = null,
@@ -2030,22 +3510,20 @@ object UrduSubtitleEngine {
         apiKey: String? = null,
         sharedPref: android.content.SharedPreferences? = null,
         subtitleCallback: (SubtitleFile) -> Unit
-    ) {
+    ): Int {
+        val resolvedKey = resolveSubSourceApiKey(apiKey, sharedPref) ?: return 0
         val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
         val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
-        if (cleanImdb == null && cleanTitle == null) return
+        if (cleanImdb == null && cleanTitle == null) return 0
 
-        val resolvedKey = resolveSubSourceApiKey(apiKey, sharedPref)
-        val headers = buildMap {
-            put("User-Agent", BROWSER_USER_AGENT)
-            put("Accept", "application/json")
-            if (!resolvedKey.isNullOrBlank()) {
-                put("X-API-Key", resolvedKey)
-                put("api-key", resolvedKey)
-            }
-        }
+        val headers = mapOf(
+            "User-Agent" to BROWSER_USER_AGENT,
+            "Accept" to "application/json",
+            "X-API-Key" to resolvedKey,
+            "api-key" to resolvedKey
+        )
 
-        try {
+        return try {
             var movieId: String? = null
             // 1. Search Movie ID via /api/v1/movies/search
             val searchUrl = buildString {
@@ -2065,7 +3543,7 @@ object UrduSubtitleEngine {
                 movieId = parseSubSourceSearchMovieId(searchJson, cleanImdb, cleanTitle, year, season)
             }
 
-            // 2. Query Subtitles list via /api/v1/subtitles (and keyless public fallback endpoints)
+            // 2. Query Subtitles list via /api/v1/subtitles
             val subtitleCandidateEndpoints = buildList {
                 if (!movieId.isNullOrBlank()) {
                     add(
@@ -2080,13 +3558,6 @@ object UrduSubtitleEngine {
                     add(
                         buildString {
                             append("$SUBSOURCE_API_V1/subtitles?imdb=${URLEncoder.encode(cleanImdb, "UTF-8")}&language=urdu")
-                            if (season != null && season > 0) append("&season=$season")
-                            if (episode != null && episode > 0) append("&episode=$episode")
-                        }
-                    )
-                    add(
-                        buildString {
-                            append("$SUBSOURCE_API_HOST/v1/subtitles?imdb=${URLEncoder.encode(cleanImdb, "UTF-8")}&language=urdu")
                             if (season != null && season > 0) append("&season=$season")
                             if (episode != null && episode > 0) append("&episode=$episode")
                         }
@@ -2106,6 +3577,8 @@ object UrduSubtitleEngine {
                 }
             }
 
+            val subSourceLabel = formatUrduSourceLabel("subsource")
+            var emitted = 0
             for (dlUrl in downloadUrls) {
                 val dlHeaders = buildMap {
                     putAll(headers)
@@ -2119,21 +3592,30 @@ object UrduSubtitleEngine {
                     sourceTag = "subsource"
                 ) ?: continue
                 subtitleCallback(
-                    newSubtitleFile("Urdu", materializedUri) {
+                    newSubtitleFile(subSourceLabel, materializedUri) {
                         this.headers = dlHeaders
                     }
                 )
+                emitted++
+                if (emitted >= 2) break
             }
+            emitted
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "invokeSubSourceUrdu failed: ${e.message}")
+            0
         }
     }
 
+    private val SUBSENSE_HI_OR_AI_LABEL_REGEX = Regex(
+        """(?i)(?:·\s*HI\b|\[HI\]|\bSDH\b|AI[\s_]*Translated|Auto[\s_]*Translated|Machine[\s_]*Translated)"""
+    )
+
     /**
      * Parses SubSense Stremio JSON payload and extracts Urdu subtitle URLs where `lang` is
-     * `"ur"`, `"urd"`, or `"urdu"`.
+     * `"ur"`, `"urd"`, or `"urdu"`, skipping Hearing-Impaired (`hi` / `hearingImpaired` / `· HI` / `[HI]` / `SDH`)
+     * and AI/Auto-translated entries.
      */
     internal fun parseSubSenseUrduJson(jsonBody: String): List<String> {
         if (jsonBody.isBlank()) return emptyList()
@@ -2143,6 +3625,20 @@ object UrduSubtitleEngine {
             val urls = LinkedHashSet<String>()
             for (i in 0 until arr.length()) {
                 val obj = arr.optJSONObject(i) ?: continue
+                if (obj.optBoolean("hi", false) ||
+                    obj.optBoolean("hearingImpaired", false) ||
+                    obj.optBoolean("ai_translated", false)
+                ) {
+                    continue
+                }
+                val labelOrTitle = buildString {
+                    append(obj.optString("label")).append(' ')
+                    append(obj.optString("title")).append(' ')
+                    append(obj.optString("name"))
+                }.trim()
+                if (labelOrTitle.isNotEmpty() && SUBSENSE_HI_OR_AI_LABEL_REGEX.containsMatchIn(labelOrTitle)) {
+                    continue
+                }
                 val lang = obj.optString("lang").trim().lowercase(Locale.ROOT)
                 val url = obj.optString("url").trim()
                 if (url.startsWith("http", ignoreCase = true) &&
@@ -2161,7 +3657,7 @@ object UrduSubtitleEngine {
      * Keyless SubSense Urdu Harvester (`invokeSubSenseUrdu`):
      * Queries `https://subsense.nepiraw.com/12345678-eyJsYW5ndWFnZXMiOiBbInVyIl19/subtitles/$type/$stremioId.json`,
      * materializes each Urdu subtitle via [materializeNormalizedUrduSubtitle], and emits verified
-     * Urdu subtitles with `X-StreamPlay-Source: subsense`.
+     * Urdu subtitles (`Urdu [SubSense]`) with `X-StreamPlay-Source: subsense`.
      */
     suspend fun invokeSubSenseUrdu(
         imdbId: String? = null,
@@ -2181,6 +3677,8 @@ object UrduSubtitleEngine {
                 StreamPlayExtractor.cancellableGetText(url, headers = headers, timeoutSec = 5L)
             } ?: return
 
+            val subSenseLabel = formatUrduSourceLabel("subsense")
+            var emitted = 0
             for (subUrl in parseSubSenseUrduJson(body)) {
                 val dlHeaders = mapOf(
                     "User-Agent" to BROWSER_USER_AGENT,
@@ -2194,10 +3692,12 @@ object UrduSubtitleEngine {
                     sourceTag = "subsense"
                 ) ?: continue
                 subtitleCallback(
-                    newSubtitleFile("Urdu", materializedUri) {
+                    newSubtitleFile(subSenseLabel, materializedUri) {
                         this.headers = dlHeaders
                     }
                 )
+                emitted++
+                if (emitted >= 2) break
             }
         } catch (e: CancellationException) {
             throw e
@@ -2280,10 +3780,10 @@ object UrduSubtitleEngine {
 
     /**
      * Keyless Subf2m Urdu Harvester (`invokeSubf2mUrdu`):
-     * Searches `https://subf2m.co/subtitles/searchbytitle?query=...`, verifies exact normalized
-     * title (and year for movies), fetches `/subtitles/${slug}/urdu`, resolves top detail page
-     * `<a id="downloadButton" href="...">`, materializes the archive via [materializeNormalizedUrduSubtitle],
-     * and emits `Urdu` with `X-StreamPlay-Source: subf2m`.
+     * Searches `https://subf2m.co/subtitles/searchbytitle?query=...` (with `title|year|isMovie -> slug`
+     * + negative caching), verifies exact normalized title (and year for movies), fetches `/subtitles/${slug}/urdu`,
+     * resolves top detail page `<a id="downloadButton" href="...">`, materializes the archive via
+     * [materializeNormalizedUrduSubtitle], and emits `Urdu [Subf2m]` with `X-StreamPlay-Source: subf2m`.
      */
     suspend fun invokeSubf2mUrdu(
         title: String? = null,
@@ -2295,19 +3795,35 @@ object UrduSubtitleEngine {
     ) {
         val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return
         try {
-            val searchUrl = "$SUBF2M_HOST/subtitles/searchbytitle?query=${URLEncoder.encode(cleanTitle, "UTF-8")}"
             val headers = mapOf("User-Agent" to BROWSER_USER_AGENT)
-            val searchHtml = withTimeoutOrNull(5_000L) {
-                StreamPlayExtractor.cancellableGetText(searchUrl, headers = headers, timeoutSec = 5L)
+            val slugCacheKey = "${cleanTitle.lowercase(Locale.ROOT)}|${year ?: 0}|$isMovie"
+            val cachedSlug = subf2mSlugCache[slugCacheKey]
+            val slug = when {
+                cachedSlug == NEGATIVE_SLUG_SENTINEL -> return
+                !cachedSlug.isNullOrBlank() -> cachedSlug
+                else -> {
+                    val searchUrl = "$SUBF2M_HOST/subtitles/searchbytitle?query=${URLEncoder.encode(cleanTitle, "UTF-8")}"
+                    val searchHtml = withTimeoutOrNull(5_000L) {
+                        StreamPlayExtractor.cancellableGetText(searchUrl, headers = headers, timeoutSec = 5L)
+                    } ?: return
+                    val resolved = parseSubf2mSearchSlug(searchHtml, cleanTitle, year, isMovie)
+                    if (!resolved.isNullOrBlank()) {
+                        subf2mSlugCache[slugCacheKey] = resolved
+                    } else {
+                        subf2mSlugCache[slugCacheKey] = NEGATIVE_SLUG_SENTINEL
+                    }
+                    resolved
+                }
             } ?: return
 
-            val slug = parseSubf2mSearchSlug(searchHtml, cleanTitle, year, isMovie) ?: return
             val urduListUrl = "$SUBF2M_HOST/subtitles/$slug/urdu"
             val listHtml = withTimeoutOrNull(5_000L) {
                 StreamPlayExtractor.cancellableGetText(urduListUrl, headers = headers, timeoutSec = 5L)
             } ?: return
 
             val detailUrls = parseSubf2mUrduDetailLinks(listHtml, slug, season, episode)
+            val subf2mLabel = formatUrduSourceLabel("subf2m")
+            var emitted = 0
             for (detailUrl in detailUrls) {
                 val detailHtml = withTimeoutOrNull(5_000L) {
                     StreamPlayExtractor.cancellableGetText(detailUrl, headers = headers, timeoutSec = 5L)
@@ -2326,10 +3842,12 @@ object UrduSubtitleEngine {
                     sourceTag = "subf2m"
                 ) ?: continue
                 subtitleCallback(
-                    newSubtitleFile("Urdu", materializedUri) {
+                    newSubtitleFile(subf2mLabel, materializedUri) {
                         this.headers = dlHeaders
                     }
                 )
+                emitted++
+                if (emitted >= 2) break
             }
         } catch (e: CancellationException) {
             throw e
@@ -2338,4 +3856,3 @@ object UrduSubtitleEngine {
         }
     }
 }
-

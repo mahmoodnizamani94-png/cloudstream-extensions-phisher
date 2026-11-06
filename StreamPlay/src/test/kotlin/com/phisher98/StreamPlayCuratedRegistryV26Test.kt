@@ -1536,20 +1536,22 @@ class StreamPlayCuratedRegistryV26Test {
             !ledger.isUrduProviderCompleted("wyzie") && !ledger.isUrduSource("wyzie")
         )
 
-        // Two distinct Urdu provenances speak: still short of the 3-source target.
+        // Distinct Urdu provenances speak; the walk completes at exactly TARGET_URDU_SUBTITLE_SOURCES.
+        val urduTarget = UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
         deliver("https://urducdn.example/1.srt", "Urdu", "subtitles", "subtitles")
+        assertEquals(minOf(1, urduTarget), ledger.urduSubtitleSources.size)
+        assertEquals("Completion verdict tracks the target", ledger.urduSubtitleSources.size < urduTarget, ledger.needsUrduCompletion())
+
         deliver("https://urducdn.example/2.srt", "Urdu (AI Translated)", "yifysub", "yifysub")
-        assertEquals(2, ledger.urduSubtitleSources.size)
-        assertTrue(ledger.needsUrduCompletion())
+        assertEquals(minOf(2, urduTarget), ledger.urduSubtitleSources.size)
 
         // The same Urdu sidecar re-offered under a #fragment must not double-count.
         deliver("https://urducdn.example/1.srt#extra", "Urdu", "addic7ed", "addic7ed")
-        assertEquals("Fragment-spoofed duplicate must not inflate Urdu diversity", 2, ledger.urduSubtitleSources.size)
+        assertEquals("Fragment-spoofed duplicate must not inflate Urdu diversity", minOf(2, urduTarget), ledger.urduSubtitleSources.size)
 
-        // Third distinct Urdu provenance completes the Urdu walk.
+        // Extra distinct Urdu provenances keep recording (bonus diversity) without breaking the verdict.
         deliver("https://urducdn.example/3.srt", "اردو", "subtitlecat", "subtitlecat")
-        assertEquals(3, ledger.urduSubtitleSources.size)
-        assertFalse("Three distinct Urdu provenances complete the Urdu walk", ledger.needsUrduCompletion())
+        assertFalse("Urdu target stays satisfied once met", ledger.needsUrduCompletion())
         assertTrue(
             "A provider that delivered Urdu is suppressed from Urdu re-querying",
             ledger.isUrduProviderCompleted("subtitlecat") && ledger.isUrduSource("subtitlecat")

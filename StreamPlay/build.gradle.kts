@@ -40,7 +40,7 @@ cloudstream {
     language = "en"
     // All of these properties are optional, you can safely remove them
 
-     description = "#1 best extension based on MultiAPI"
+     description = "#1 SOTA Multi-API Extension • Instant 1-Tap English & Spoken Urdu (اردو) Subtitles (Verified Human Archives + Contextual Spoken AI) • Smart 720p/1080p Priority Engine"
      authors = listOf("Phisher98", "Hexated")
 
     /**

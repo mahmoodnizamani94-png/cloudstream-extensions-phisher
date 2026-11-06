@@ -34,6 +34,7 @@ import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.amap
@@ -52,6 +53,11 @@ import com.phisher98.SuperStreamExtractor.invokeSuperstream
 import com.phisher98.SuperStreamExtractor.invokeSuperstreamFeb
 import com.phisher98.SuperStreamExtractor.invokeWyZIESUBAPI
 import com.phisher98.SuperStreamExtractor.synthesizeSuperStreamUrduFallback
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -87,8 +93,17 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         private const val apiKey = BuildConfig.TMDB_API
         const val febbox="https://www.febbox.com"
 
+        private const val API_BASE_CACHE_TTL_MS = 900_000L
+        @Volatile private var cachedApiBase: String? = null
+        @Volatile private var cachedApiBaseTimestampMs: Long = 0L
+
         suspend fun getApiBase(): String {
-            return if (isOfficialAvailable()) {
+            val now = System.currentTimeMillis()
+            val cached = cachedApiBase
+            if (cached != null && now - cachedApiBaseTimestampMs < API_BASE_CACHE_TTL_MS) {
+                return cached
+            }
+            val resolved = if (isOfficialAvailable()) {
                 OFFICIAL_TMDB_URL
             } else {
                 val proxy = fetchProxyList().randomOrNull()
@@ -99,6 +114,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     OFFICIAL_TMDB_URL
                 }
             }
+            cachedApiBase = resolved
+            cachedApiBaseTimestampMs = System.currentTimeMillis()
+            return resolved
         }
 
         private suspend fun isOfficialAvailable(): Boolean = withTimeoutOrNull(5000) {
@@ -297,6 +315,12 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        val urduMode = isUrduSubtitleMode(context = null, sharedPref = sharedPref)
+        val subtitleModeBadge = if (urduMode) {
+            "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
+        } else {
+            "🇬🇧 Subtitles: English (Default)"
+        }
         if (url.contains("share_file_comment?fid")) {
             val jsonString = app.get(url, headers = mapOf("cookie" to (token ?: ""))).text
             val response = Gson().fromJson(jsonString, PersonalComments::class.java)
@@ -334,6 +358,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 ) {
                     this.posterUrl = media.thumb_big?.ifEmpty { "https://wallpapers.com/images/hd/netflix-background-gs7hjuwvv2g0e9fj.jpg" }
                     this.plot = "Added: ${media.add_time} | Updated: ${media.update_time}"
+                    this.tags = listOf(subtitleModeBadge)
                 }
             }
 
@@ -345,6 +370,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             ) {
                 this.posterUrl = media.thumb_big?.ifEmpty { "https://wallpapers.com/images/hd/netflix-background-gs7hjuwvv2g0e9fj.jpg" }
                 this.plot = "Added: ${media.add_time} | Updated: ${media.update_time} | Size: ${media.file_size}"
+                this.tags = listOf(subtitleModeBadge)
             }
         }
         val tmdbAPI = getApiBase()
@@ -377,6 +403,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
 
         val keywords = res.keywords?.results?.mapNotNull { it.name }.orEmpty()
             .ifEmpty { res.keywords?.keywords?.mapNotNull { it.name } }
+        val baseTags = (keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
+            ?.takeIf { it.isNotEmpty() } ?: genres).orEmpty()
+        val enrichedTags = listOf(subtitleModeBadge) + baseTags
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
             val name = cast.name ?: cast.originalName ?: return@mapNotNull null
@@ -395,6 +424,16 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             .ifEmpty {
                 res.videos?.results?.map { "https://www.youtube.com/watch?v=${it.key}" } ?: emptyList()
             }
+
+        if (isUrduSubtitleMode(sharedPref)) {
+            SuperStreamExtractor.prewarmSuperStreamUrduSubtitlesAsync(
+                imdbId = res.external_ids?.imdb_id,
+                title = title,
+                season = if (type == TvType.Movie) null else 1,
+                episode = if (type == TvType.Movie) null else 1,
+                expectedYear = year
+            )
+        }
 
         if (type == TvType.TvSeries) {
             val lastSeason = res.last_episode_to_air?.season_number
@@ -501,8 +540,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
                     this.plot = res.overview
-                    this.tags = keywords?.map { it.replaceFirstChar { it.titlecase() } }
-                        ?.takeIf { it.isNotEmpty() } ?: genres
+                    this.tags = enrichedTags
                     this.score = Score.from10(rating)
                     this.showStatus = getStatus(res.status)
                     this.recommendations = recommendations
@@ -517,8 +555,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     this.backgroundPosterUrl = bgPoster
                     this.year = year
                     this.plot = res.overview
-                    this.tags = keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
-                        ?.takeIf { it.isNotEmpty() } ?: genres
+                    this.tags = enrichedTags
                     this.score = Score.from10(rating)
                     this.showStatus = getStatus(res.status)
                     this.recommendations = recommendations
@@ -556,8 +593,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 this.year = year
                 this.plot = res.overview
                 this.duration = res.runtime
-                this.tags = keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
-                    ?.takeIf { it.isNotEmpty() } ?: genres
+                this.tags = enrichedTags
                 this.score = Score.from10(rating)
                 this.recommendations = recommendations
                 this.actors = actors
@@ -609,7 +645,11 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         }
         val urduMode = isUrduSubtitleMode(sharedPref)
         val urduSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
+        val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val englishDonorSubs = CopyOnWriteArrayList<SubtitleFile>()
+        // Completed as soon as 2 verified human Urdu sources arrived; Phase 3 awaits this signal
+        // (event-driven, parity with StreamPlay's EarlySatisfactionController) instead of polling.
+        val urduFloorSignal = CompletableDeferred<Unit>()
 
         val trackedSubtitleCallback: (SubtitleFile) -> Unit = { sub ->
             if (!urduMode) {
@@ -620,10 +660,38 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             } else {
                 when {
                     isUrduSubtitleCode(sub.lang) -> {
-                        val normalizedUrdu = if (sub.lang == "Urdu") sub else sub.copy(lang = "Urdu")
-                        urduSubsFound.incrementAndGet()
-                        earlyController.onSubtitleEmitted(normalizedUrdu)
-                        subtitleCallback(normalizedUrdu)
+                        val badge = extractSuperStreamUrduSourceBadge(sub.lang)
+                            ?: sub.headers?.get(SUPERSTREAM_SOURCE_HEADER)
+                        val canonicalKey = canonicalSuperStreamUrduSourceKey(badge)
+                            ?: canonicalSuperStreamUrduSourceKey(sub.lang)
+                        // Parity with StreamPlay's emitSubtitle: an Urdu track with no verified
+                        // canonical source (e.g. a video-provider sidecar) is rejected outright —
+                        // never emitted and never counted toward the Phase 5 subtitle floor.
+                        if (canonicalKey != null) {
+                            val formattedLabel = formatSuperStreamUrduSourceLabel(canonicalKey)
+                            val mergedHeaders = if (sub.headers?.get(SUPERSTREAM_SOURCE_HEADER) == canonicalKey) {
+                                sub.headers
+                            } else {
+                                (sub.headers.orEmpty() + (SUPERSTREAM_SOURCE_HEADER to canonicalKey))
+                            }
+                            @Suppress("DEPRECATION")
+                            val normalizedUrdu = if (sub.lang == formattedLabel && sub.headers == mergedHeaders) {
+                                sub
+                            } else {
+                                SubtitleFile(lang = formattedLabel, url = sub.url).apply {
+                                    headers = mergedHeaders
+                                }
+                            }
+                            if (canonicalKey != "urdu-neural-fallback" && canonicalKey != "subtitlecat") {
+                                urduSubtitleSources.add(canonicalKey)
+                                if (urduSubtitleSources.size >= 2) {
+                                    urduFloorSignal.complete(Unit)
+                                }
+                            }
+                            urduSubsFound.incrementAndGet()
+                            earlyController.onSubtitleEmitted(normalizedUrdu)
+                            subtitleCallback(normalizedUrdu)
+                        }
                     }
                     isEnglishSubtitleCode(sub.lang) -> {
                         englishDonorSubs.add(sub)
@@ -690,6 +758,8 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
         }
         else {
             val res = parseJson<LinkData>(data)
+            val resolvedTitle = res.title ?: res.orgTitle
+            val resolvedYear = res.airedYear ?: res.year
             val tasks = buildList {
                 add(PipelinedTask(
                     providerId = "SubtitleAPI",
@@ -728,8 +798,32 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                             trackedSubtitleCallback,
                         )
                     })
+                    add(PipelinedTask(
+                        providerId = "YifyUrdu",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = false
+                    ) {
+                        SuperStreamExtractor.invokeSuperStreamYifyUrdu(
+                            res.imdbId,
+                            res.season,
+                            res.episode,
+                            trackedSubtitleCallback,
+                        )
+                    })
+                    add(PipelinedTask(
+                        providerId = "OpenSubtitlesUrdu",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = false
+                    ) {
+                        SuperStreamExtractor.invokeSuperStreamOpenSubtitlesUrdu(
+                            res.imdbId,
+                            res.season,
+                            res.episode,
+                            trackedSubtitleCallback,
+                        )
+                    })
                 }
-                if (urduMode && (!res.imdbId.isNullOrBlank() || !res.title.isNullOrBlank() || !res.orgTitle.isNullOrBlank())) {
+                if (urduMode && (!res.imdbId.isNullOrBlank() || !resolvedTitle.isNullOrBlank())) {
                     add(PipelinedTask(
                         providerId = "SubDlUrdu",
                         initialTier = LatencyTier.TIER_1,
@@ -737,10 +831,53 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     ) {
                         invokeSubDlUrduKeyless(
                             imdbId = res.imdbId,
-                            title = res.title ?: res.orgTitle,
+                            title = resolvedTitle,
                             season = res.season,
                             episode = res.episode,
-                            expectedYear = res.airedYear ?: res.year,
+                            expectedYear = resolvedYear,
+                            subtitleCallback = trackedSubtitleCallback,
+                        )
+                    })
+                    add(PipelinedTask(
+                        providerId = "SubSourceUrdu",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = false
+                    ) {
+                        SuperStreamExtractor.invokeSuperStreamSubSourceUrdu(
+                            imdbId = res.imdbId,
+                            title = resolvedTitle,
+                            season = res.season,
+                            episode = res.episode,
+                            expectedYear = resolvedYear,
+                            subtitleCallback = trackedSubtitleCallback,
+                        )
+                    })
+                }
+                if (urduMode && !resolvedTitle.isNullOrBlank()) {
+                    add(PipelinedTask(
+                        providerId = "Subf2mUrdu",
+                        initialTier = LatencyTier.TIER_1,
+                        isVideo = false
+                    ) {
+                        SuperStreamExtractor.invokeSuperStreamSubf2mUrdu(
+                            title = resolvedTitle,
+                            season = res.season,
+                            episode = res.episode,
+                            expectedYear = resolvedYear,
+                            subtitleCallback = trackedSubtitleCallback,
+                        )
+                    })
+                    add(PipelinedTask(
+                        providerId = "SubtitleCatDonor",
+                        initialTier = LatencyTier.TIER_2,
+                        isVideo = false
+                    ) {
+                        SuperStreamExtractor.invokeSuperStreamSubtitleCatDonor(
+                            title = resolvedTitle,
+                            season = res.season,
+                            episode = res.episode,
+                            expectedYear = resolvedYear,
+                            imdbId = res.imdbId,
                             subtitleCallback = trackedSubtitleCallback,
                         )
                     })
@@ -783,23 +920,134 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 controller = earlyController
             )
 
-            if (urduMode && urduSubsFound.get() == 0 && englishDonorSubs.isNotEmpty()) {
+            // Phase 3: If early satisfaction cancelled before >= 2 distinct human Urdu sources arrived,
+            // run a fast bounded completion pass so the user gets multi-source Urdu diversity.
+            if (urduMode && urduSubtitleSources.size < 2 && (!res.imdbId.isNullOrBlank() || !resolvedTitle.isNullOrBlank())) {
+                withTimeoutOrNull(4_500L) {
+                    coroutineScope {
+                        val jobs = buildList {
+                            if ("subdl" !in urduSubtitleSources) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        invokeSubDlUrduKeyless(
+                                            imdbId = res.imdbId,
+                                            title = resolvedTitle,
+                                            season = res.season,
+                                            episode = res.episode,
+                                            expectedYear = resolvedYear,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("subsource" !in urduSubtitleSources) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        SuperStreamExtractor.invokeSuperStreamSubSourceUrdu(
+                                            imdbId = res.imdbId,
+                                            title = resolvedTitle,
+                                            season = res.season,
+                                            episode = res.episode,
+                                            expectedYear = resolvedYear,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("subf2m" !in urduSubtitleSources && !resolvedTitle.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        SuperStreamExtractor.invokeSuperStreamSubf2mUrdu(
+                                            title = resolvedTitle,
+                                            season = res.season,
+                                            episode = res.episode,
+                                            expectedYear = resolvedYear,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("subsense" !in urduSubtitleSources && !res.imdbId.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        invokeSubSenseUrdu(
+                                            res.imdbId,
+                                            res.season,
+                                            res.episode,
+                                            trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("wyziesub" !in urduSubtitleSources && !res.imdbId.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        invokeWyZIESUBAPI(
+                                            res.imdbId,
+                                            res.season,
+                                            res.episode,
+                                            trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("opensubtitles" !in urduSubtitleSources && !res.imdbId.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        SuperStreamExtractor.invokeSuperStreamOpenSubtitlesUrdu(
+                                            imdbId = res.imdbId,
+                                            season = res.season,
+                                            episode = res.episode,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("yify" !in urduSubtitleSources && res.season == null && !res.imdbId.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        SuperStreamExtractor.invokeSuperStreamYifyUrdu(
+                                            imdbId = res.imdbId,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                        }
+                        // Event-driven completion (parity with StreamPlay's EarlySatisfactionController):
+                        // stop as soon as either every harvester finished or 2 verified human Urdu
+                        // sources arrived (urduFloorSignal), cancelling the remaining slow harvesters.
+                        val allHarvestersDone = async { jobs.forEach { it.join() } }
+                        select<Unit> {
+                            allHarvestersDone.onAwait { }
+                            urduFloorSignal.onAwait { }
+                        }
+                        jobs.forEach { runCatching { it.cancel() } }
+                    }
+                }
+            }
+
+            // Phase 4: Contextual Spoken-Urdu Neural Fallback if 0 human Urdu sources returned
+            // (also consumes the verified SubtitleCat `-ur.srt` last-resort candidates, which do
+            // not require an English donor).
+            if (urduMode && urduSubtitleSources.isEmpty()) {
                 withTimeoutOrNull(8_000L) {
                     synthesizeSuperStreamUrduFallback(
                         englishSubs = englishDonorSubs,
                         season = res.season,
-                        episode = res.episode
+                        episode = res.episode,
+                        imdbId = res.imdbId
                     ) { urSub ->
-                        urduSubsFound.incrementAndGet()
-                        earlyController.onSubtitleEmitted(urSub)
-                        subtitleCallback(urSub)
+                        trackedSubtitleCallback(urSub)
                     }
                 }
-                if (urduSubsFound.get() == 0) {
-                    englishDonorSubs.forEach { enSub ->
-                        earlyController.onSubtitleEmitted(enSub)
-                        subtitleCallback(enSub)
-                    }
+            }
+
+            // Phase 5: Emergency English donor floor if both human Urdu and neural fallback failed (e.g. offline/rate-limited)
+            if (urduMode && urduSubsFound.get() == 0 && englishDonorSubs.isNotEmpty()) {
+                for (donor in englishDonorSubs.take(2)) {
+                    earlyController.onSubtitleEmitted(donor)
+                    subtitleCallback(donor)
                 }
             }
         }

@@ -309,4 +309,1192 @@ class SuperStreamUrduSubtitleTest {
             SuperStreamExtractor.parseSubDlUrduPageZips(subDlHtml, season = 1, episode = 2)
         )
     }
+
+    @Test
+    fun `SuperStream Urdu source labels cs_urdu cache filename and containsVerifiedUrduScript`() {
+        assertEquals("Urdu [SubDL]", formatSuperStreamUrduSourceLabel("subdl"))
+        assertEquals("Urdu [Wyzie]", formatSuperStreamUrduSourceLabel("wyziesub"))
+        assertEquals("Urdu [SubSense]", formatSuperStreamUrduSourceLabel("subsense"))
+        assertEquals("Urdu [OpenSubtitles]", formatSuperStreamUrduSourceLabel("subtitles"))
+        assertEquals("Urdu [Neural AI]", formatSuperStreamUrduSourceLabel("urdu-neural-fallback"))
+        assertNull(canonicalSuperStreamUrduSourceKey("vidlink"))
+        assertNull(canonicalSuperStreamUrduSourceKey("addic7ed"))
+
+        // Verify local cache filename uses cs_urdu_ and never contains "superstream" (which DownloadSubtitlePolicy bans)
+        val sampleSrt = "1\n00:00:01,000 --> 00:00:03,000\n\u200Fیہ اردو سب ٹائٹل ہے\u200F\n"
+        val uri = SuperStreamExtractor.writeLocalUrduSrtFile("filename-check", sampleSrt)
+        assertNotNull(uri)
+        assertFalse(
+            "Local Urdu cache URI must never contain 'superstream' so DownloadSubtitlePolicy does not ban it: $uri",
+            uri!!.lowercase().contains("superstream")
+        )
+        assertTrue(uri.contains("cs_urdu_"))
+        File(uri.removePrefix("file://")).delete()
+
+        // Verify containsVerifiedUrduScript rejects English-only files
+        val englishOnly = "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n2\n00:00:04,000 --> 00:00:06,000\nEnglish text\n"
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(englishOnly))
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(sampleSrt))
+    }
+
+    @Test
+    fun `containsVerifiedUrduScript accepts genuine Urdu cues and rejects Persian and Arabic multi-cue subtitle files`() {
+        val genuineUrduTwoCues = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            یہ اردو سب ٹائٹل ہے
+
+            2
+            00:00:04,000 --> 00:00:06,000
+            رُک جاؤ، ورنہ گولی مار دوں گا!
+        """.trimIndent()
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(genuineUrduTwoCues))
+
+        val persianMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            راشل، من کارم تموم شد
+
+            2
+            00:00:03,500 --> 00:00:05,500
+            باشه، فردا میبینمت
+
+            3
+            00:00:06,000 --> 00:00:08,500
+            کجا بودی؟ چرا انقدر دیر کردی؟
+
+            4
+            00:00:09,000 --> 00:00:11,500
+            خیلی خوب، اینجا منتظرم باش
+
+            5
+            00:00:12,000 --> 00:00:14,500
+            من دارم میرم خونه
+        """.trimIndent()
+        assertFalse(
+            "Persian (Farsi) multi-cue subtitle file must be rejected by containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(persianMultiCueSrt)
+        )
+
+        val arabicMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,500
+            مرحبًا، ماذا تفعل؟
+
+            2
+            00:00:04,000 --> 00:00:06,500
+            ذلك اليوم الذي ننتظره، ربما غدًا
+
+            3
+            00:00:07,000 --> 00:00:09,500
+            لماذا لم تخبرني؟ أين كنت؟
+
+            4
+            00:00:10,000 --> 00:00:12,500
+            تلك المشكلة التي كانت منذ البداية
+
+            5
+            00:00:13,000 --> 00:00:15,500
+            نحن لا نعرف كيف حدث ذلك
+        """.trimIndent()
+        assertFalse(
+            "Arabic multi-cue subtitle file must be rejected by containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(arabicMultiCueSrt)
+        )
+    }
+
+    @Test
+    fun `refineUrduToSpokenIdiom and adaptEnglishForSpokenUrduTranslation rewrite calques and colloquial idioms`() {
+        assertEquals("یا اللہ!", SuperStreamExtractor.refineUrduToSpokenIdiom("اوہ ، میرے گوش۔"))
+        assertEquals("یا خدا!", SuperStreamExtractor.refineUrduToSpokenIdiom("مسیح!"))
+        assertEquals("لعنت ہے!", SuperStreamExtractor.refineUrduToSpokenIdiom("گندگی!"))
+        assertEquals("ہرگز نہیں۔", SuperStreamExtractor.refineUrduToSpokenIdiom("کوئی راستہ نہیں ۔"))
+        assertEquals("بس کام ختم ہوا", SuperStreamExtractor.refineUrduToSpokenIdiom("یہ ایک لپیٹ ہے"))
+        assertEquals("شکریہ، براہِ کرم بیٹھیں۔", SuperStreamExtractor.refineUrduToSpokenIdiom("دھنیواد ، کرپیا بیٹھیں ۔"))
+
+        assertEquals("Oh God!", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("Oh, my God!"))
+        assertEquals("what on earth are you doing?", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("What the hell are you doing?"))
+        assertEquals("absolutely not!", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("No way!"))
+        assertEquals("you must be joking", SuperStreamExtractor.adaptEnglishForSpokenUrduTranslation("You're kidding me"))
+    }
+
+    @Test
+    fun `isBrokenSmtUrdu detects broken SMT dumps and scoreUrduSubtitleNaturalness ranks natural spoken Urdu higher than literal calques`() {
+        val brokenCues = (1..12).map { idx ->
+            SuperStreamExtractor.SuperStreamSrtCue(
+                timestamp = "00:00:%02d,000 --> 00:00:%02d,500".format(idx, idx + 1),
+                text = when (idx % 3) {
+                    0 -> "اس سے پہلے کہ تم یہ جانتے ہو کہ وہ ٹکڑے ٹکڑے کرنے کے ایک دوسرے کے ripping کے رہے کا"
+                    1 -> "میں نے کبھی نہیں دیکھا ہے wildlings اس طرح ایک کام کرو کے ہے"
+                    else -> "اپنے گھوڑے پر واپس حاصل کرنے کا ہے کی سے"
+                }
+            )
+        }
+        assertTrue(
+            "Broken SMT cues with embedded English tokens and ungrammatical terminals must be flagged by isBrokenSmtUrdu",
+            SuperStreamExtractor.isBrokenSmtUrdu(brokenCues)
+        )
+
+        val naturalSpokenCues = (1..10).map { idx ->
+            SuperStreamExtractor.SuperStreamSrtCue(
+                timestamp = "00:00:%02d,000 --> 00:00:%02d,500".format(idx, idx + 1),
+                text = "دیکھو یار، فکر نہ کرو، سب ٹھیک ہے اور ہم جلدی جاؤ گے۔"
+            )
+        }
+        val literalCalqueCues = (1..10).map { idx ->
+            SuperStreamExtractor.SuperStreamSrtCue(
+                timestamp = "00:00:%02d,000 --> 00:00:%02d,500".format(idx, idx + 1),
+                text = "اوہ میرے گوش، مقدس گندگی، یہ ایک لپیٹ ہے، دھنیواد کرپیا نمسکار"
+            )
+        }
+
+        assertFalse(SuperStreamExtractor.isBrokenSmtUrdu(naturalSpokenCues))
+        val naturalScore = SuperStreamExtractor.scoreUrduSubtitleNaturalness(naturalSpokenCues)
+        val calqueScore = SuperStreamExtractor.scoreUrduSubtitleNaturalness(literalCalqueCues)
+        assertTrue(
+            "Natural spoken Urdu ($naturalScore) must score significantly higher than literal calques ($calqueScore)",
+            naturalScore > calqueScore + 100
+        )
+    }
+
+    @Test
+    fun `parseSubDlUrduPageZips scopes to data-language urdu filters AI rows and ranks Tier-1A uploaders ahead of Tier-1C`() {
+        val nonUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <a href="https://dl.subdl.com/subtitle/3001-9001.zip">Download Persian</a>
+              </div>
+            </div>
+            <div data-language="indonesian">
+              <div class="sub-row">
+                <span>Movie.2024.Indonesian (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/3002-9002.zip">Download Indonesian</a>
+              </div>
+            </div>
+        """.trimIndent()
+        assertEquals(
+            emptyList<String>(),
+            SuperStreamExtractor.parseSubDlUrduPageZips(nonUrduAstroHtml)
+        )
+
+        val mixedUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <a href="https://dl.subdl.com/subtitle/1111-1111.zip">Persian</a>
+              </div>
+            </div>
+            <div data-language="urdu">
+              <div class="sub-row" data-ai-translated="true">
+                <span>Movie.2024.1080p.Urdu</span>
+                <a href="https://dl.subdl.com/subtitle/2222-2222.zip">AI Row 1</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.Urdu (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/2223-2223.zip">AI Row 2</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.WEBRip.Urdu by Black Gold</span>
+                <a href="https://dl.subdl.com/subtitle/3333-3333.zip">Tier 1C Black Gold</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.NF.WEB-DL.Urdu by malik_rehan</span>
+                <a href="https://dl.subdl.com/subtitle/4444-4444.zip">Tier 1A malik_rehan</a>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val zips = SuperStreamExtractor.parseSubDlUrduPageZips(mixedUrduAstroHtml)
+        assertEquals(
+            listOf(
+                "https://dl.subdl.com/subtitle/4444-4444.zip",
+                "https://dl.subdl.com/subtitle/3333-3333.zip"
+            ),
+            zips
+        )
+    }
+
+    @Test
+    fun `shouldMergeContinuationCues and splitTranslatedUrduProportionally merge split English sentences and preserve timestamps`() = runBlocking {
+        val text1 = "As we begin, I believe you have"
+        val text2 = "a statement to read into the record."
+        val text3 = "Thank you, Senator."
+
+        assertTrue(SuperStreamExtractor.shouldMergeContinuationCues(text1, text2))
+        assertFalse(SuperStreamExtractor.shouldMergeContinuationCues(text2, text3))
+
+        val fullUrdu = "جیسا کہ ہم آغاز کر رہے ہیں، میرا خیال ہے کہ آپ کے پاس ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"
+        val splitParts = SuperStreamExtractor.splitTranslatedUrduProportionally(
+            translated = fullUrdu,
+            parts = 2,
+            weights = listOf(text1.length, text2.length)
+        )
+        assertEquals(2, splitParts.size)
+        assertEquals(fullUrdu, "${splitParts[0]} ${splitParts[1]}")
+
+        val rawEnglishSrt = """
+            1
+            00:01:10,000 --> 00:01:12,500
+            As we begin, I believe you have
+
+            2
+            00:01:12,700 --> 00:01:15,200
+            a statement to read into the record.
+
+            3
+            00:01:18,000 --> 00:01:20,000
+            Thank you, Senator.
+        """.trimIndent()
+
+        var batchSent: List<String> = emptyList()
+        val translatedSrt = SuperStreamExtractor.translateEnglishSrtToUrdu(rawEnglishSrt) { batch ->
+            batchSent = batch
+            listOf(fullUrdu, "شکریہ، سینیٹر۔")
+        }
+        assertEquals(2, batchSent.size)
+        assertEquals("As we begin, I believe you have a statement to read into the record.", batchSent[0])
+        assertNotNull(translatedSrt)
+
+        val outCues = SuperStreamExtractor.parseSuperStreamCues(translatedSrt!!)
+        assertEquals(3, outCues.size)
+        assertEquals("00:01:10,000 --> 00:01:12,500", outCues[0].timestamp)
+        assertEquals("00:01:12,700 --> 00:01:15,200", outCues[1].timestamp)
+        assertEquals("00:01:18,000 --> 00:01:20,000", outCues[2].timestamp)
+    }
+
+    @Test
+    fun `2-cue Persian and Arabic files are deterministically rejected and 3-cue continuation chains and content-addressed cache work in SuperStream`() = runBlocking {
+        val twoCuePersian = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            کی اومدی؟ من اینجا منتظرت بودم
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            بگو چرا نرفتی خونه
+        """.trimIndent()
+        assertFalse(
+            "2-cue Persian file must be rejected by SuperStreamExtractor.containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(twoCuePersian)
+        )
+
+        val twoCueArabic = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            نحن ننتظر في البيت منذ الصباح
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            هل سمعت الخبر الجديد اليوم
+        """.trimIndent()
+        assertFalse(
+            "2-cue Arabic file must be rejected by SuperStreamExtractor.containsVerifiedUrduScript",
+            SuperStreamExtractor.containsVerifiedUrduScript(twoCueArabic)
+        )
+
+        val threeCueEnglishSrt = """
+            1
+            00:02:00,000 --> 00:02:02,000
+            When the storm finally arrived,
+            
+            2
+            00:02:02,200 --> 00:02:04,200
+            I realized that the old bridge
+            
+            3
+            00:02:04,400 --> 00:02:06,500
+            had already collapsed into the river.
+        """.trimIndent()
+
+        var capturedBatch: List<String> = emptyList()
+        val fullThreeCueUrdu = "جب طوفان بالآخر پہنچا تو مجھے احساس ہوا کہ پرانا پل پہلے ہی دریا میں گر چکا تھا۔"
+        val translatedThreeCue = SuperStreamExtractor.translateEnglishSrtToUrdu(threeCueEnglishSrt) { batch ->
+            capturedBatch = batch
+            listOf(fullThreeCueUrdu)
+        }
+        assertEquals(1, capturedBatch.size)
+        assertEquals(
+            "When the storm finally arrived, I realized that the old bridge had already collapsed into the river.",
+            capturedBatch[0]
+        )
+        assertNotNull(translatedThreeCue)
+        val splitCues = SuperStreamExtractor.parseSuperStreamCues(translatedThreeCue!!)
+        assertEquals(3, splitCues.size)
+
+        val uriA = SuperStreamExtractor.writeLocalUrduSrtFile(translatedThreeCue, "https://mirror1.example.com/sub.srt|S1E1")
+        val uriB = SuperStreamExtractor.writeLocalUrduSrtFile(translatedThreeCue, "https://mirror2.example.com/sub.srt|S1E1")
+        assertNotNull(uriA)
+        assertEquals(uriA, uriB)
+        assertTrue(uriA!!.contains("cs_urdu_cas_"))
+
+        // Verify full Tier-1A / Tier-1B / Tier-1C SubDL author ranking parity
+        assertEquals(100, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by Naveshta"))
+        assertEquals(100, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by faizybaba"))
+        assertEquals(50, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by community_translator"))
+        assertEquals(-40, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by blackgold"))
+        assertEquals(-40, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by akhaliq_655"))
+
+        // Verify LRU eviction stops at 64 files, never wipes the cache, and preserves foreign .srt files
+        val tmpDir = java.nio.file.Files.createTempDirectory("superstream_lru_test").toFile()
+        try {
+            val foreignFile = java.io.File(tmpDir, "foreign_user_subtitle.srt").apply {
+                writeText("1\n00:00:01,000 --> 00:00:02,000\nForeign subtitle\n")
+            }
+            val now = System.currentTimeMillis()
+            for (idx in 1..70) {
+                val f = java.io.File(tmpDir, "cs_urdu_cas_%04d.srt".format(idx))
+                f.writeText("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن $idx ہے\n")
+                f.setLastModified(now - (100 - idx) * 1000L)
+            }
+            SuperStreamExtractor.evictStaleAndExcessCacheFiles(tmpDir)
+            val remaining = tmpDir.listFiles { f -> f.name.startsWith("cs_urdu_") } ?: emptyArray()
+            assertEquals("LRU eviction of 70 files must retain exactly 64 newest files", 64, remaining.size)
+            assertTrue("Foreign non-cs_urdu_ .srt file must never be deleted", foreignFile.exists())
+            assertFalse(java.io.File(tmpDir, "cs_urdu_cas_0001.srt").exists())
+            assertTrue(java.io.File(tmpDir, "cs_urdu_cas_0070.srt").exists())
+        } finally {
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `YTS zip download URLs are constructed per source host`() {
+        // Round-1 finding (Gemini): yts-subs.com rows were previously rewritten onto the
+        // yifysubtitles.ch path shape. The two hosts do not share download paths.
+        assertEquals(
+            "https://subtitles.yts-subs.com/subtitles/movie-slug.zip",
+            SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yts-subs.com", "/subtitles/movie-slug/")
+        )
+        assertEquals(
+            "https://yifysubtitles.ch/subtitle/movie-slug.zip",
+            SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yifysubtitles.ch", "/subtitles/movie-slug")
+        )
+        assertNull("Non-/subtitles/ hrefs must fail closed", SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yts-subs.com", "/movie/foo"))
+        assertNull("Blank slugs must fail closed", SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yts-subs.com", "/subtitles/ "))
+    }
+
+    @Test
+    fun `SubDL API v1 candidates are AI-filtered, episode-matched and tier-ranked`() {
+        val json = """
+            {"subtitles":[
+              {"author":"blackgold","release_name":"Show S01E02","url":"/file/bulk.zip","ai_translated":false,"machine_translated":false},
+              {"author":"naveshta","release_name":"Show S01E02 720p","url":"/file/human1.zip","ai_translated":false,"machine_translated":false},
+              {"author":"goodguy","release_name":"Show S01E03","url":"/file/wrongep.zip","ai_translated":false,"machine_translated":false},
+              {"author":"someone","release_name":"(SUBDL AI) Show S01E02","url":"/file/ai.zip","ai_translated":false,"machine_translated":false},
+              {"author":"human2","release_name":"Show S01E02","url":"https://dl.subdl.com/file/human2.zip","ai_translated":true}
+            ]}
+        """.trimIndent()
+        val urls = SuperStreamExtractor.parseSuperStreamSubDlApiV1Candidates(json, season = 1, episode = 2)
+        assertTrue(
+            "The Tier-1A human uploader must rank first",
+            urls.firstOrNull()?.endsWith("/file/human1.zip") == true
+        )
+        assertFalse("AI-flagged entry (ai_translated=true) must be dropped", urls.any { it.contains("human2.zip") })
+        assertFalse("SUBDL AI-labelled release must be dropped", urls.any { it.contains("ai.zip") })
+        assertFalse("Wrong-episode release must be dropped", urls.any { it.contains("wrongep.zip") })
+        val bulkIndex = urls.indexOfFirst { it.contains("bulk.zip") }
+        assertTrue("Bulk-SMT uploader may survive as a tier-1C candidate", bulkIndex < 0 || bulkIndex > 0)
+    }
+
+    @Test
+    fun `Cross-module system property keys are honored by the SuperStream resolvers`() {
+        try {
+            System.setProperty("cloudstream.subdl.key", "test-subdl-key")
+            System.setProperty("cloudstream.subsource.key", "test-subsource-key")
+            assertEquals("test-subdl-key", SuperStreamExtractor.resolveSubDlApiKey())
+            assertEquals("test-subsource-key", SuperStreamExtractor.resolveSubSourceApiKey())
+        } finally {
+            System.clearProperty("cloudstream.subdl.key")
+            System.clearProperty("cloudstream.subsource.key")
+        }
+    }
+
+    @Test
+    fun `SubtitleCat detail parser extracts pre-cached Urdu srt links`() {
+        val html = """
+            <html><body>
+              <a id="download_orig" href="/subs/1/8/2/12345-movie-orig.srt">orig</a>
+              <a href="/subs/1/8/2/12345-movie-ur.srt">urdu</a>
+            </body></html>
+        """.trimIndent()
+        assertEquals(
+            "https://www.subtitlecat.com/subs/1/8/2/12345-movie-ur.srt",
+            SuperStreamExtractor.parseSuperStreamSubtitleCatUrduDetail(html)
+        )
+        assertEquals(
+            "https://www.subtitlecat.com/subs/1/2/3/67890-show-urd.srt",
+            SuperStreamExtractor.parseSuperStreamSubtitleCatUrduDetail(
+                """<html><body><a href="/subs/1/2/3/67890-show-urd.srt">urdu</a></body></html>"""
+            )
+        )
+        assertNull("Detail pages without a -ur.srt link must yield null", SuperStreamExtractor.parseSuperStreamSubtitleCatUrduDetail("<html><body><p>none</p></body></html>"))
+    }
+
+    @Test
+    fun `Persian and Arabic files with zero Urdu-distinctive glyphs are rejected even after typography normalization`() {
+        // Round-1 finding (Gemini): raw fa/ar orthography (ه/ك/ي) never matched the normalized
+        // exclusive scan, and Arabic هو/هم normalize INTO Urdu ہو/ہم. The raw + normalized scans
+        // together now deterministically reject both.
+        val persianSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nتو کجا رفتی؟\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nمن منتظرت بودم\n")
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianSrt))
+        val arabicSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nهو في البيت الآن\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nهل سمعت الخبر الجديد اليوم\n")
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(arabicSrt))
+        val urduSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ گھر بہت خوبصورت ہے\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nکل ہم بازار جائیں گے\n")
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(urduSrt))
+    }
+
+    @Test
+    fun `Canonical source key mapping never leaks arbitrary substrings into neural attribution`() {
+        // Round-1 finding (GLM): `norm.contains("ai")` matched inside arbitrary words ("detail").
+        assertEquals("urdu-neural-fallback", canonicalSuperStreamUrduSourceKey("urdu-neural-fallback"))
+        assertEquals("urdu-neural-fallback", canonicalSuperStreamUrduSourceKey("Urdu [Neural AI]"))
+        assertNull("'detail' contains ai but must NOT map to the neural source", canonicalSuperStreamUrduSourceKey("detail"))
+        assertNull("'certain' contains ai but must NOT map to the neural source", canonicalSuperStreamUrduSourceKey("certain"))
+        assertEquals("subdl", canonicalSuperStreamUrduSourceKey("Urdu [SubDL]"))
+        assertEquals("yify", canonicalSuperStreamUrduSourceKey("yts-subs"))
+    }
+
+    @Test
+    fun `SubtitleCat pre-cached Urdu candidates are scoped by imdb id season and episode`() {
+        SuperStreamExtractor.recordSuperStreamSubtitleCatPreCachedUrduCandidate(
+            urduUrl = "https://www.subtitlecat.com/subs/1/1/1/111-movie-ur.srt",
+            imdbId = "tt2222222",
+            season = 1,
+            episode = 2
+        )
+        val scoped = SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(
+            imdbId = "tt2222222",
+            season = 1,
+            episode = 2
+        )
+        assertEquals(1, scoped.size)
+        assertTrue(scoped[0].endsWith("111-movie-ur.srt"))
+        assertTrue("Consuming must remove the scoped entry", SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(imdbId = "tt2222222", season = 1, episode = 2).isEmpty())
+        val otherEpisode = SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(imdbId = "tt2222222", season = 1, episode = 3)
+        assertTrue("A different episode must not consume another title's scoped candidate", otherEpisode.isEmpty())
+    }
+
+    @Test
+    fun `Adversarially padded files are rejected by per-cue verification in SuperStream too`() {
+        // Round-2 finding (GLM): parity with StreamPlay's per-cue language verification.
+        val padding = listOf(
+            "او به مدرسه رفت", "برادرم دیروز آمد", "او گفت فردا می‌آید", "این کتاب نو است",
+            "آن‌ها در پارک قدم می‌زدند", "پدرم چای می‌خورد", "ما به بازار رفتیم", "او نامه نوشت",
+            "دوستم تلفن کرد", "هوا سرد شده است", "کتاب روی میز است", "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(padded))
+        val genuine = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(genuine))
+    }
+
+    @Test
+    fun `Token-free Persian padding with one Urdu line is rejected by the evidence-share gate in SuperStream too`() {
+        // Round-3 finding (GLM): the share gate is the list-independent defense; every padding
+        // line below was mechanically verified token-free against the compiled RAW and normalized
+        // patterns AND free of the structural orthography signals (no ZWNJ verb prefix, no
+// Arabic hamza letters), so ONLY the evidence-share gate rejects this file.
+        val padding = listOf(
+            "او به مدرسه رفت",
+            "سارا نان خرید",
+            "او نامه نوشت",
+            "حالت چطوره؟",
+            "دیر رسید",
+            "دوستم تلفن کرد",
+            "سارا کتاب خواند",
+            "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(padded))
+    }
+
+    @Test
+    fun `Persian homograph vocabulary and vocative-dense genuine Urdu behave identically to StreamPlay`() {
+        val persianHava = buildString {
+            for (i in 1..30) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("هوا سرد بود و باران می\u200Cبارید\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianHava))
+        val vocativeDense = buildString {
+            for (i in 1..12) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 13..24) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(vocativeDense))
+    }
+
+    @Test
+    fun `Cached payload trust helper rejects non-Urdu and broken content in SuperStream too`() {
+        val validUrdu = "1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے اور اچھی ہے\n\n2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n"
+        assertTrue(SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent(validUrdu))
+        assertFalse(
+            "Non-Urdu content must fail the cache trust gate",
+            SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("1\n00:00:01,000 --> 00:00:02,000\nplain english text\n")
+        )
+        assertFalse(
+            "Blank payload must fail the cache trust gate",
+            SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("")
+        )
+        assertFalse(
+            "Non-cue payload must fail the cache trust gate",
+            SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("جستجوی متن بدون تایم‌استمپ")
+        )
+    }
+    @Test
+    fun `Persian raha padding, ZWNJ verbs, Arabic hamza, and tiered share floors mirror StreamPlay`() {
+        assertEquals("رہا", SuperStreamExtractor.normalizeUrduTypography("رها"))
+        assertTrue(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا"))
+        assertFalse("Persian raw رها must never match the evidence list", SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رها"))
+        assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("اب"))
+        assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("سب"))
+        val rhaPadded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("رها شد\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(rhaPadded))
+        val zwnjPadded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("پدرم چای می\u200Cخورد\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(zwnjPadded))
+        val hamzaPadded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..7) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("أين أخي الآن؟\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(hamzaPadded))
+        val short3 = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nواہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nخوبصورت ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nشکریہ\n")
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(short3))
+        val vocativeDense = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 21..32) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(vocativeDense))
+        val short4pad = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..4) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("او به مدرسه رفت\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(short4pad))
+    }
+
+    @Test
+    fun `Adversarial colloquial-Persian corpus is rejected and genuine-Urdu corpus is accepted in SuperStream too`() {
+        val persianCorpus = listOf(
+            "یه لحظه صبر کن", "یه شب تمام روید", "یه جایی می‌رم که هیچکس نباشه",
+            "است یه بار دیگه فکر کن", "پدرم چای می‌خورد و روزنامه می‌خوند",
+            "او به مدرسه رفت و کتابش را جا گذاشت", "این خانه بزرگ‌تر از آن یکی است",
+            "أين أخي الآن؟ هل سمعت الخبر؟", "حالت چطوره؟ دیر رسیدی",
+            "دوستم تلفن کرد و گفت بیا", "سارا نان خرید و رفت", "رها شد و رفت"
+        )
+        val persianFile = buildString {
+            persianCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianFile))
+        val urduCorpus = listOf(
+            "یہ گھر بہت خوبصورت ہے اور تم اسے پسند کرو گے",
+            "کل ہم سب بازار جائیں گے اور ٹھیلوں سے خریداری کریں گے",
+            "میں نہیں جاؤں گا، تم یہاں رہو",
+            "وہ رہا ہے اور ہم اس کا انتظار کر رہے ہیں",
+            "یہ سؤال مؤثر ہے اور جائزہ لیا گیا",
+            "خدا حافظ، کل ملیں گے",
+            "بہت شکریہ، آپ کی مدد کے لیے",
+            "واہ! کیا بات ہے"
+        )
+        val urduFile = buildString {
+            urduCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(urduFile))
+    }
+    @Test
+    fun `Pure-Persian yeh files, dual counting, and gol-heh recall mirror StreamPlay`() {
+        val persianYeh = buildString {
+            val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+            for ((idx, line) in lines.withIndex()) {
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianYeh))
+        val inoculated = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("است یه\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(inoculated))
+        val standard = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nمیں پہلے ہی کہہ چکا تھا کہ میں نہیں آؤں گا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nتم بھی وہی کہو گے جو سب کہتے ہیں\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nہم نے پھر بھی اپنا فیصلہ سنایا\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nآخرکار سب کو میری بات ماننی پڑی\n")
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(standard))
+    }
+    private fun tokensOfPattern(pattern: String): List<String> {
+        val start = pattern.indexOf("])(") + 3
+        val end = listOf(pattern.lastIndexOf(")(?:$|"), pattern.lastIndexOf(")(?=$|")).filter { it >= 0 }.max()
+        return pattern.substring(start, end).split('|')
+            .filter { it.isNotBlank() }
+            .map { token ->
+                Regex("\\\\u([0-9A-Fa-f]{4})").replace(token) { m ->
+                    m.groupValues[1].toInt(16).toChar().toString()
+                }
+            }
+    }
+
+    @Test
+    fun `Derived-data self-test and collision sweep mirror StreamPlay`() {
+        val faTokens = tokensOfPattern(SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)
+        assertTrue(faTokens.size > 100)
+        for (token in faTokens) {
+            assertTrue(
+                "Raw fa/ar token must match its own regex: $token",
+                SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(token)
+            )
+        }
+        val evTokens = tokensOfPattern(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.pattern)
+        for (token in evTokens) {
+            assertTrue(
+                "Evidence token must match its own regex: $token",
+                SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(token)
+            )
+        }
+        val urduVocabulary = setOf(
+            "آؤ",
+            "آسمان",
+            "آنا",
+            "آنسو",
+            "آپ",
+            "آگے",
+            "آہستہ",
+            "البتہ",
+            "امن",
+            "امید",
+            "امیر",
+            "اندر",
+            "اوپر",
+            "اٹھنا",
+            "اپنی",
+            "اپنے",
+            "اچھا",
+            "بائیں",
+            "بات",
+            "باتیں",
+            "باد",
+            "بادشاہ",
+            "بادل",
+            "بارش",
+            "بالکل",
+            "باہر",
+            "بتاؤ",
+            "بددلی",
+            "بدصورت",
+            "برا",
+            "برادر",
+            "براہ",
+            "برسات",
+            "بعد",
+            "بلہ",
+            "بندوق",
+            "بندہ",
+            "بولنا",
+            "بوڑھا",
+            "بچنا",
+            "بچہ",
+            "بڑا",
+            "بکواس",
+            "بھئی",
+            "بھائی",
+            "بھابھی",
+            "بھاگنا",
+            "بھوک",
+            "بھیجنا",
+            "بہار",
+            "بہت",
+            "بہن",
+            "بہنوئی",
+            "بیت",
+            "بیماری",
+            "بین",
+            "بیوقوف",
+            "بیٹا",
+            "بیٹھنا",
+            "بیٹی",
+            "تبہ",
+            "تعجب",
+            "تلوار",
+            "تلک",
+            "تم",
+            "تمہاری",
+            "تن",
+            "تھا",
+            "تھوڑا",
+            "تھی",
+            "تھے",
+            "تیز",
+            "جاؤ",
+            "جائزہ",
+            "جائیں",
+            "جانا",
+            "جانم",
+            "جاگنا",
+            "جاہل",
+            "جج",
+            "جدا",
+            "جزء",
+            "جسم",
+            "جنگ",
+            "جواب",
+            "جوان",
+            "جھوٹ",
+            "جی",
+            "جینا",
+            "حاضر",
+            "حبیب",
+            "حتما",
+            "حتی",
+            "حسد",
+            "حوصلہ",
+            "حیا",
+            "حیرت",
+            "خالہ",
+            "خاموش",
+            "خاندان",
+            "خانہ",
+            "خبر",
+            "خبردار",
+            "خدا",
+            "خدایا",
+            "خزاں",
+            "خواب",
+            "خواهر",
+            "خوب",
+            "خوبصورت",
+            "خوشگل",
+            "خوشی",
+            "خوف",
+            "خیال",
+            "خیانت",
+            "خیلی",
+            "دائما",
+            "دائیں",
+            "دادا",
+            "دادی",
+            "دار",
+            "دانشمند",
+            "درد",
+            "دریا",
+            "دست",
+            "دشمن",
+            "دعا",
+            "دل",
+            "دلبر",
+            "دماغ",
+            "دن",
+            "دنیا",
+            "دوائی",
+            "دور",
+            "دوست",
+            "دکھ",
+            "دھوپ",
+            "دھوکا",
+            "دھکا",
+            "دینا",
+            "دیوانہ",
+            "دیکھنا",
+            "دیکھو",
+            "ذرا",
+            "رات",
+            "رب",
+            "رشتہ",
+            "رشتے",
+            "رفیق",
+            "روتا",
+            "روز",
+            "رونا",
+            "رکو",
+            "رہا",
+            "رہی",
+            "رہے",
+            "زخم",
+            "زم",
+            "زمین",
+            "زن",
+            "زندگی",
+            "زور",
+            "زیادہ",
+            "سؤال",
+            "ساتھی",
+            "ساس",
+            "سال",
+            "سب",
+            "ستارے",
+            "سجن",
+            "سر",
+            "سردی",
+            "سلام",
+            "سمجھنا",
+            "سننا",
+            "سنو",
+            "سنگتی",
+            "سوال",
+            "سورج",
+            "سونا",
+            "سوچو",
+            "سپاہی",
+            "سچ",
+            "سکھ",
+            "شام",
+            "شب",
+            "شرم",
+            "شفقت",
+            "شک",
+            "شہر",
+            "شیء",
+            "صبح",
+            "صحت",
+            "صدا",
+            "صنم",
+            "ضرورت",
+            "طاقت",
+            "طبعا",
+            "طبیعت",
+            "طریق",
+            "عاجزی",
+            "عاشق",
+            "عالم",
+            "عدالت",
+            "عزت",
+            "عزیز",
+            "عشق",
+            "عقلمند",
+            "علاج",
+            "علی",
+            "عوام",
+            "عورت",
+            "عین",
+            "غریب",
+            "غصہ",
+            "غلام",
+            "غم",
+            "غیر",
+            "فعلا",
+            "فقط",
+            "فوجی",
+            "فوق",
+            "فی",
+            "فیصلہ",
+            "قانون",
+            "قبل",
+            "قریب",
+            "قیدی",
+            "كيف",
+            "لمبا",
+            "لونڈا",
+            "لڑائی",
+            "لڑکا",
+            "لڑکی",
+            "لکھنا",
+            "لینا",
+            "لیکن",
+            "مؤثر",
+            "ما",
+            "ماء",
+            "مادر",
+            "ماموں",
+            "ماہ",
+            "محبت",
+            "محبوب",
+            "مخلوق",
+            "مدد",
+            "مرد",
+            "مردم",
+            "مرنا",
+            "مسکراہٹ",
+            "مضبوط",
+            "مع",
+            "معاف",
+            "معشوق",
+            "ملنا",
+            "ممتا",
+            "موسم",
+            "مگر",
+            "می",
+            "میری",
+            "نام",
+            "نانا",
+            "نانی",
+            "ناچنا",
+            "نحو",
+            "نفرت",
+            "نفسم",
+            "نہ",
+            "نہیں",
+            "نیا",
+            "نیند",
+            "نیچے",
+            "واقعا",
+            "والے",
+            "ورنہ",
+            "وزیر",
+            "وفا",
+            "وقار",
+            "وقت",
+            "وقتی",
+            "ولد",
+            "وہ",
+            "ٹوٹا",
+            "ٹھنڈی",
+            "ٹھیک",
+            "پانی",
+            "پاگل",
+            "پدر",
+            "پرانا",
+            "پوتا",
+            "پوتی",
+            "پولیس",
+            "پڑھنا",
+            "پکڑنا",
+            "پکڑو",
+            "پھر",
+            "پہلے",
+            "پہنچنا",
+            "پیاس",
+            "پیچھے",
+            "چاند",
+            "چاچا",
+            "چرا",
+            "چلنا",
+            "چلو",
+            "چون",
+            "چوڑا",
+            "چپ",
+            "چھوٹا",
+            "چھوڑنا",
+            "کا",
+            "کائنات",
+            "کار",
+            "کان",
+            "کرنا",
+            "کرو",
+            "کریں",
+            "کل",
+            "کم",
+            "کمزور",
+            "کند",
+            "کو",
+            "کوئی",
+            "کوچک",
+            "کچھ",
+            "کھانا",
+            "کھیلنا",
+            "کہ",
+            "کہنا",
+            "کی",
+            "کیجئے",
+            "کیف",
+            "کے",
+            "گانا",
+            "گرمی",
+            "گواہ",
+            "گھر",
+            "ہست",
+            "ہفتہ",
+            "ہم",
+            "ہمارا",
+            "ہمہ",
+            "ہمین",
+            "ہن",
+            "ہنسنا",
+            "ہو",
+            "ہوا",
+            "ہونا",
+            "ہی",
+            "ہیں",
+            "ہے",
+            "یار",
+            "یقین",
+            "یوم",
+            "یہ",
+        )
+        // Known formal limit (documented): do-chashmi (ھ) respellings of purged Persian tokens
+        // are not vocabulary-lockable — harmless by construction (dual counting makes any such
+        // cue evidence-bearing).
+        for (token in faTokens) {
+            assertFalse("fa/ar token must not BE an Urdu word: $token", token in urduVocabulary)
+            assertFalse(
+                "fa/ar token must not normalize into an Urdu word: $token",
+                SuperStreamExtractor.normalizeUrduTypography(token) in urduVocabulary
+            )
+        }
+    }
+
+    @Test
+    fun `Pipeline-level probes are rejected through materializeNormalizedUrduSubtitle in SuperStream too`() = runBlocking {
+        val probes = listOf(
+            buildString {
+                val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+                for ((idx, line) in lines.withIndex()) {
+                    append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                    append(line + "\n\n")
+                }
+            },
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                for (i in 2..13) {
+                    append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                    append("رها شد\n\n")
+                }
+            },
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                for (i in 2..13) {
+                    append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                    append("است یه\n\n")
+                }
+            },
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                append("2\n00:00:02,000 --> 00:00:03,000\nاو گفت یه\n\n")
+                append("3\n00:00:03,000 --> 00:00:04,000\nسارا دید یه\n")
+            }
+        )
+        for ((probeIdx, srt) in probes.withIndex()) {
+            val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+            server.createContext("/probe.srt") { exchange ->
+                fetchCount.incrementAndGet()
+                val bytes = srt.toByteArray(Charsets.UTF_8)
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+            server.start()
+            try {
+                SuperStreamExtractor.clearCachesForTest()
+                val url = "http://127.0.0.1:${server.address.port}/probe.srt?probe=$probeIdx&run=${System.nanoTime()}"
+                val result = SuperStreamExtractor.materializeNormalizedUrduSubtitle(url = url, sourceTag = "pipeline-probe")
+                assertNull("Pipeline probe #$probeIdx must be REJECTED through materialize", result)
+                assertEquals(
+                    "The pipeline must have fetched the probe content (non-vacuous rejection)",
+                    1,
+                    fetchCount.get()
+                )
+            } finally {
+                server.stop(0)
+                SuperStreamExtractor.clearCachesForTest()
+            }
+        }
+    }
+
+    @Test
+    fun `Formal Urdu with clashing loanwords and hamza fragments is accepted in SuperStream too`() {
+        val formal = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nاجلاس بعد از ظہر ہوگا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nفقط ارکان شرکت کریں گے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nعلی گڑھ کی تحریک الگ ہے\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nکل ہم نے یہ فیصلہ کیا تھا\n\n")
+            append("5\n00:00:05,000 --> 00:00:06,000\nہر نہ نہیں، مگر ہمت نہ ہارو\n\n")
+            append("6\n00:00:06,000 --> 00:00:07,000\nیہ ہفتہ قبل سے طے تھا\n\n")
+            append("7\n00:00:07,000 --> 00:00:08,000\nخدا حافظ، کل ملیں گے\n\n")
+            append("8\n00:00:08,000 --> 00:00:09,000\nشکریہ\n")
+        }
+        assertTrue(
+            "Formal Urdu dialogue with clashing loanwords must be accepted",
+            SuperStreamExtractor.containsVerifiedUrduScript(formal)
+        )
+        val hamzaFragments = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nعجیب شیء ہے یہ\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nایک جزء کافی ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nانشاء اللہ ہو جائے گا\n")
+        }
+        assertTrue(
+            "Hamza-loanword formal fragments must be accepted",
+            SuperStreamExtractor.containsVerifiedUrduScript(hamzaFragments)
+        )
+
+        // Round-7 finding (Gemini): غیر/عین/طریق + standalone انشاء اللہ regression.
+        val everydayLoanwords = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nغیر ضروری بات مت کرو\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nعین وقت پر پہنچے ہو\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nغیر قانونی کام منع ہے\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nعین ممکن ہے\n\n")
+            append("5\n00:00:05,000 --> 00:00:06,000\nغیر معمولی صورتحال ہے\n\n")
+            append("6\n00:00:06,000 --> 00:00:07,000\nشکریہ\n\n")
+            append("7\n00:00:07,000 --> 00:00:08,000\nانشاء اللہ!\n")
+        }
+        assertTrue(
+            "Everyday غیر/عین cues and standalone انشاء اللہ must be accepted",
+            SuperStreamExtractor.containsVerifiedUrduScript(everydayLoanwords)
+        )
+        // Round-8 (Gemini): discriminative ء test — passes ONLY when ء is exempted.
+        val hamzaDiscriminative = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nانشاء اللہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nماشاء اللہ!\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nیہ بہت اچھا ہے\n")
+        }
+        assertTrue(
+            "Standalone hamza exclamations must be neutral (ء exempted), so the file is accepted",
+            SuperStreamExtractor.containsVerifiedUrduScript(hamzaDiscriminative)
+        )
+    }
 }

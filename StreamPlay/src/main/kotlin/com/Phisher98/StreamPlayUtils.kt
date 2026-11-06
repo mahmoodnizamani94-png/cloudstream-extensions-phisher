@@ -686,8 +686,15 @@ fun cleanSubtitleLabel(raw: String?): String {
 
     text = Normalizer.normalize(text, Normalizer.Form.NFC).trim()
 
+    val urduSourceBadge = UrduSubtitleEngine.extractUrduSourceBadge(text)
+    if (urduSourceBadge != null) {
+        text = text.replace(Regex("""\s*[\[\(]\Q$urduSourceBadge\E[\]\)]""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*[-•]\s*\Q$urduSourceBadge\E$""", RegexOption.IGNORE_CASE), "")
+            .trim()
+    }
+
     text = text.replace(
-        Regex("""(\[(?:ai\s+translated|neural\s+ai)\]|\((?:ai\s+translated|neural\s+ai)\))""", RegexOption.IGNORE_CASE),
+        Regex("""(\[(?:ai\s+translated)\]|\((?:ai\s+translated)\))""", RegexOption.IGNORE_CASE),
         ""
     ).trim()
 
@@ -709,6 +716,10 @@ fun cleanSubtitleLabel(raw: String?): String {
         resolvedLang
     } else {
         cleanBase.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+    }
+
+    if (finalLang.equals("Urdu", ignoreCase = true) && urduSourceBadge != null) {
+        return UrduSubtitleEngine.formatUrduSourceLabel(urduSourceBadge, modifier)
     }
 
     return if (modifier != null) "$finalLang $modifier" else finalLang

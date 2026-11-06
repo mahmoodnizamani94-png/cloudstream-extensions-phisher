@@ -83,7 +83,13 @@ class WyzieSettingsFragment(
         resetButton.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#D32F2F"))
         resetButton.setTextColor(android.graphics.Color.WHITE)
 
-        val savedKey = sharedPref.getString("wyzie_key", null)
+        val savedKey = sharedPref.getString("wyzie_key", null)?.takeIf { it.isNotBlank() }
+            ?: sharedPref.getString("wyzie_api_key", null)?.takeIf { it.isNotBlank() }
+            ?: runCatching {
+                context?.getSharedPreferences("cloudstream_subtitle_mode_prefs", android.content.Context.MODE_PRIVATE)
+                    ?.getString("wyzie_key", null)
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: runCatching { System.getProperty("cloudstream.wyzie.key") }.getOrNull()?.takeIf { it.isNotBlank() }
         if (!savedKey.isNullOrEmpty()) {
             wyzieKeyInput.setText(savedKey)
         }
@@ -102,9 +108,23 @@ class WyzieSettingsFragment(
             if (key.isNotEmpty()) {
                 sharedPref.edit()?.apply {
                     putString("wyzie_key", key)
+                    putString("wyzie_api_key", key)
                     apply()
                 }
-                showToast("Wyzie key saved successfully. Restart the app.")
+                runCatching { System.setProperty("cloudstream.wyzie.key", key) }
+                context?.let { ctx ->
+                    listOf("StreamPlay", "SuperStream", "cloudstream_subtitle_mode_prefs").forEach { prefName ->
+                        runCatching {
+                            ctx.getSharedPreferences(prefName, android.content.Context.MODE_PRIVATE)
+                                ?.edit()?.apply {
+                                    putString("wyzie_key", key)
+                                    putString("wyzie_api_key", key)
+                                    apply()
+                                }
+                        }
+                    }
+                }
+                showToast("Wyzie key saved and active immediately across StreamPlay & SuperStream.")
                 dismiss()
             } else {
                 showToast("Please enter a valid key")
@@ -114,10 +134,24 @@ class WyzieSettingsFragment(
         resetButton.setOnClickListener {
             sharedPref.edit()?.apply {
                 remove("wyzie_key")
+                remove("wyzie_api_key")
                 apply()
             }
+            runCatching { System.clearProperty("cloudstream.wyzie.key") }
+            context?.let { ctx ->
+                listOf("StreamPlay", "SuperStream", "cloudstream_subtitle_mode_prefs").forEach { prefName ->
+                    runCatching {
+                        ctx.getSharedPreferences(prefName, android.content.Context.MODE_PRIVATE)
+                            ?.edit()?.apply {
+                                remove("wyzie_key")
+                                remove("wyzie_api_key")
+                                apply()
+                            }
+                    }
+                }
+            }
             wyzieKeyInput.setText("")
-            showToast("Wyzie key reset successfully. Restart the app.")
+            showToast("Wyzie key reset across StreamPlay & SuperStream.")
             dismiss()
         }
     }
