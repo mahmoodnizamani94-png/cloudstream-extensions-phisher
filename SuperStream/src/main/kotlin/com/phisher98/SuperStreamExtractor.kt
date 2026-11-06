@@ -91,8 +91,9 @@ private const val SUPERSTREAM_PERSISTENT_URL_CACHE_TTL_MS = 7L * 24L * 60L * 60L
 
 private val SUPERSTREAM_URDU_SCRIPT_REGEX =
     Regex("""[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]""")
+// Letters that exist in Urdu but NOT in standard Arabic or Persian (ٹ, ڈ, ڑ, ں, ے, ھ)
 private val SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX =
-    Regex("""[\u0679\u0688\u0691\u06BA\u06BE\u06C1\u06D2]""")
+    Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
 private val SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX = Regex(
     """(?:^|[\s\u200F\u200E"،۔؟!…])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|ہم|تم|آپ|کا|کے|کو|سے|پر|اور|یا|بھی|تو|جو|یہ|وہ|اس|ان|کیا|کیوں|کیسے|کہاں|جب|اب|پھر|ساتھ|لیے|بعد|پہلے|اگر|مگر|لیکن|کچھ|سب|کوئی|اپنے|اپنی|اپنا|گیا|گئی|گئے|رہا|رہی|رہے|ہو|ہوا|ہوئی|کریں|کرو|جاؤ|آؤ)(?=$|[\s\u200F\u200E"،۔؟!…])"""
 )
@@ -457,6 +458,14 @@ object SuperStreamExtractor : SuperStream() {
                                     episode = episode,
                                     subtitleCallback = {}
                                 )
+                            }
+                            if (season == null || season <= 0) {
+                                launch {
+                                    invokeSuperStreamYifyUrdu(
+                                        imdbId = cleanImdb,
+                                        subtitleCallback = {}
+                                    )
+                                }
                             }
                         }
                     }
@@ -960,6 +969,10 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
+    private val SUPERSTREAM_OPENSUBTITLES_AI_AUTHOR_REGEX = Regex(
+        """(?i)\b(ai[\s._-]*translated|auto[\s._-]*translated|machine[\s._-]*translated|subdl[\s._-]*ai|chatgpt|gpt[\s._-]*4|google[\s._-]*translate|deepl|black[\s._-]*gold|iamdesigora|tryray)\b"""
+    )
+
     suspend fun invokeSuperStreamOpenSubtitlesUrdu(
         imdbId: String? = null,
         season: Int? = null,
@@ -980,15 +993,45 @@ object SuperStreamExtractor : SuperStream() {
             val json = app.get(url, headers = headers, timeout = 6L).text
             if (!json.trim().startsWith("[")) return
             val arr = JSONArray(json)
-            var emitted = 0
+            data class Candidate(
+                val dlUrl: String,
+                val fromTrusted: Int,
+                val downloads: Long,
+                val rating: Double
+            )
+            val candidates = mutableListOf<Candidate>()
             for (i in 0 until arr.length()) {
-                if (emitted >= 2) break
                 val item = arr.optJSONObject(i) ?: continue
-                if (item.optInt("SubAutoTranslation", 0) == 1) continue
+                if (item.optString("SubAutoTranslation") == "1" || item.optInt("SubAutoTranslation", 0) == 1) continue
+                if (item.optString("AiTranslated") == "1" || item.optInt("AiTranslated", 0) == 1) continue
+                if (item.optString("MachineTranslated") == "1" || item.optInt("MachineTranslated", 0) == 1) continue
+                if (item.optString("SubHearingImpaired") == "1" || item.optInt("SubHearingImpaired", 0) == 1) continue
+                if (item.optString("SubBad") == "1" || item.optInt("SubBad", 0) == 1) continue
+                val metaText = buildString {
+                    append(item.optString("UserNickName")).append(' ')
+                    append(item.optString("SubTranslator")).append(' ')
+                    append(item.optString("SubAuthorComment")).append(' ')
+                    append(item.optString("SubFileName")).append(' ')
+                    append(item.optString("MovieReleaseName"))
+                }
+                if (SUPERSTREAM_OPENSUBTITLES_AI_AUTHOR_REGEX.containsMatchIn(metaText)) continue
                 val dlUrl = item.optString("SubDownloadLink").trim()
                 if (!dlUrl.startsWith("http", ignoreCase = true)) continue
+                val trusted = if (item.optString("SubFromTrusted") == "1" || item.optInt("SubFromTrusted", 0) == 1) 1 else 0
+                val downloads = item.optString("SubDownloadsCnt").toLongOrNull() ?: item.optLong("SubDownloadsCnt", 0L)
+                val rating = item.optString("SubRating").toDoubleOrNull() ?: item.optDouble("SubRating", 0.0)
+                candidates.add(Candidate(dlUrl, trusted, downloads, rating))
+            }
+            val sortedCandidates = candidates.sortedWith(
+                compareByDescending<Candidate> { it.fromTrusted }
+                    .thenByDescending { it.downloads }
+                    .thenByDescending { it.rating }
+            ).take(5)
+            var emitted = 0
+            for (cand in sortedCandidates) {
+                if (emitted >= 2) break
                 val materializedUri = materializeNormalizedUrduSubtitle(
-                    url = dlUrl,
+                    url = cand.dlUrl,
                     headers = headers,
                     season = season,
                     episode = episode,
@@ -1119,6 +1162,40 @@ object SuperStreamExtractor : SuperStream() {
         """(?i)\b(subdl[\s_]*ai|ai[\s_]*translated|auto[\s_]*translated|machine[\s_]*translated|chatgpt|google[\s_]*translate)\b"""
     )
 
+    private val SUPERSTREAM_SUBDL_TIER_1A_AUTHORS = listOf(
+        "naveshta",
+        "netflix",
+        "amzn",
+        "amazon",
+        "prime",
+        "zee5",
+        "sonyliv",
+        "tapmad",
+        "tamasha",
+        "faizybaba",
+        "moorninja",
+        "usmankhadim",
+        "h18o9",
+        "sunil kumar",
+        "urdu_official",
+        "malik_rehan",
+        "malik rehan",
+        "shabbir_umer",
+        "shabbir umer",
+        "urdu zone",
+        "urduzone"
+    )
+
+    private val SUPERSTREAM_SUBDL_TIER_1C_MACHINE_AUTHORS = listOf(
+        "blackgold",
+        "black gold",
+        "iamdesigora",
+        "desigora",
+        "akhaliq_655",
+        "saad.jan",
+        "tryray"
+    )
+
     internal fun isSubDlAiEntry(contextText: String, rawRowHtml: String = ""): Boolean {
         val combined = "$contextText $rawRowHtml"
         if (combined.contains("data-ai-translated", ignoreCase = true) ||
@@ -1135,17 +1212,13 @@ object SuperStreamExtractor : SuperStream() {
 
     internal fun scoreSubDlAuthorTier(text: String): Int {
         val lower = text.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("malik_rehan") || lower.contains("malik rehan") ||
-                lower.contains("shabbir_umer") || lower.contains("shabbir umer") ||
-                lower.contains("urdu zone") || lower.contains("urduzone") -> 100
-            lower.contains("netflix") || lower.contains("nf.web") || lower.contains("nf web") ||
-                lower.contains("amzn") || lower.contains("atvp") || lower.contains("dsnp") ||
-                lower.contains("web-dl") || lower.contains("webdl") || lower.contains("bluray") -> 50
-            lower.contains("black gold") || lower.contains("iamdesigora") ||
-                lower.contains("desigora") || lower.contains("tryray") -> -40
-            else -> 0
+        if (SUPERSTREAM_SUBDL_TIER_1C_MACHINE_AUTHORS.any { lower.contains(it) }) {
+            return -40
         }
+        if (SUPERSTREAM_SUBDL_TIER_1A_AUTHORS.any { lower.contains(it) }) {
+            return 100
+        }
+        return 50
     }
 
     internal fun parseSubDlUrduPageZips(
@@ -1322,6 +1395,10 @@ object SuperStreamExtractor : SuperStream() {
             val decodedEnglish = decodeAndNormalizeSubtitleBytes(rawBytes, season = season, episode = episode)
             if (decodedEnglish.length < 32) continue
             val urduSrt = translateEnglishSrtToUrdu(decodedEnglish) ?: continue
+            val synthesizedCues = parseSuperStreamCues(urduSrt)
+            if (synthesizedCues.isEmpty() || !containsVerifiedUrduScript(synthesizedCues) || isBrokenSmtUrdu(synthesizedCues)) {
+                continue
+            }
             val fileUri = writeLocalUrduSrtFile(urduSrt, cacheKey) ?: continue
             synthesizedUrduCache[cacheKey] = fileUri
             subtitleCallback(
@@ -1336,42 +1413,39 @@ object SuperStreamExtractor : SuperStream() {
 
     internal fun containsVerifiedUrduScript(content: String, minUrduCues: Int = 2): Boolean {
         val cues = parseSuperStreamCues(content)
-        return containsVerifiedUrduScript(cues, minUrduCues)
+        if (cues.isNotEmpty()) {
+            return containsVerifiedUrduScript(cues, minUrduCues)
+        }
+        val normalized = normalizeUrduTypography(content)
+        if (!SUPERSTREAM_URDU_SCRIPT_REGEX.containsMatchIn(normalized)) return false
+        val urduDistinctiveCount = SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.findAll(normalized).count()
+        val urduFunctionWordCount = SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX.findAll(normalized).count()
+        val persianArabicExclusiveCount = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(normalized).count()
+        if (urduDistinctiveCount == 0 && urduFunctionWordCount == 0) return false
+        if (persianArabicExclusiveCount >= 1 && persianArabicExclusiveCount > (urduDistinctiveCount + urduFunctionWordCount)) {
+            return false
+        }
+        return true
     }
 
     internal fun containsVerifiedUrduScript(cues: List<SuperStreamSrtCue>, minUrduCues: Int = 2): Boolean {
         if (cues.isEmpty()) return false
-        val normalizedSample = buildString {
-            val sampleSize = minOf(cues.size, 80)
-            for (i in 0 until sampleSize) {
-                append(normalizeUrduTypography(cues[i].text)).append(' ')
-            }
+        val urduCueCount = cues.count { SUPERSTREAM_URDU_SCRIPT_REGEX.containsMatchIn(it.text) }
+        val required = if (cues.size <= 4) 1 else minOf(minUrduCues, cues.size)
+        if (urduCueCount < required || (cues.size > 4 && urduCueCount * 100 < cues.size * 15)) {
+            return false
         }
-        var urduCueCount = 0
-        var distinctiveCharCueCount = 0
-        for (cue in cues) {
-            val normText = normalizeUrduTypography(cue.text)
-            if (SUPERSTREAM_URDU_SCRIPT_REGEX.containsMatchIn(normText)) {
-                urduCueCount++
-                if (SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.containsMatchIn(normText)) {
-                    distinctiveCharCueCount++
-                }
-            }
-        }
-        val required = minOf(minUrduCues, cues.size)
-        if (urduCueCount < required || (urduCueCount * 10 < cues.size)) return false
 
-        val urduFunctionMatches = SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX.findAll(normalizedSample).count()
-        val persianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(normalizedSample).count()
+        val combinedText = cues.joinToString("\n") { normalizeUrduTypography(it.text) }
+        val urduDistinctiveCount = SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.findAll(combinedText).count()
+        val urduFunctionMatches = SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX.findAll(combinedText).count()
+        val persianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(combinedText).count()
 
         // Deterministically reject Persian (fa) and Arabic (ar) across all cue counts
-        if (distinctiveCharCueCount == 0 && urduFunctionMatches == 0) {
+        if (urduDistinctiveCount == 0 && urduFunctionMatches == 0) {
             return false
         }
-        if (persianArabicMatches >= 1 && urduFunctionMatches == 0 && distinctiveCharCueCount == 0) {
-            return false
-        }
-        if (persianArabicMatches >= 2 && persianArabicMatches > urduFunctionMatches * 2) {
+        if (persianArabicMatches >= 1 && persianArabicMatches > (urduDistinctiveCount + urduFunctionMatches)) {
             return false
         }
         return true
@@ -2187,19 +2261,24 @@ object SuperStreamExtractor : SuperStream() {
         return aEndsContinuation && bStartsContinuation
     }
 
+    private fun extractLeadingAndTrailingTags(text: String): Pair<String, String> {
+        val trimmed = text.trim()
+        val leadingMatch = Regex("""^(?:(?i)<(?:i|b|u|s)\b[^>]*>|\{\\an[1-9]\})+""").find(trimmed)
+        val trailingMatch = Regex("""(?:(?i)</(?:i|b|u|s)>)+$""").find(trimmed)
+        return (leadingMatch?.value ?: "") to (trailingMatch?.value ?: "")
+    }
+
     internal fun splitTranslatedUrduProportionally(translated: String, parts: Int, weights: List<Int>): List<String> {
         if (parts <= 1) return listOf(translated)
         val clean = translated.trim()
-        val outerTagMatch = Regex("""^(<[biu]>)(.*)(</[biu]>)$""", RegexOption.DOT_MATCHES_ALL).matchEntire(clean)
-        val openTag = outerTagMatch?.groupValues?.get(1) ?: ""
-        val closeTag = outerTagMatch?.groupValues?.get(3) ?: ""
-        val innerClean = outerTagMatch?.groupValues?.get(2)?.trim() ?: clean
+        val (openTag, closeTag) = extractLeadingAndTrailingTags(clean)
+        val innerClean = clean.removePrefix(openTag).removeSuffix(closeTag).trim()
 
         val words = innerClean.split(Regex("""\s+""")).filter { it.isNotBlank() }
         if (words.size < parts) {
             return List(parts) { idx ->
                 val body = if (idx == 0) innerClean else words.lastOrNull() ?: innerClean
-                if (openTag.isNotEmpty()) "$openTag$body$closeTag" else body
+                if (openTag.isNotEmpty() || closeTag.isNotEmpty()) "$openTag$body$closeTag" else body
             }
         }
         val totalWeight = weights.sum().coerceAtLeast(1)
@@ -2212,13 +2291,26 @@ object SuperStreamExtractor : SuperStream() {
                 tail.ifBlank { words.last() }
             } else {
                 accumulatedWeight += weights.getOrElse(i) { 1 }
+                val minSplit = wordCursor + 1
+                val maxSplit = (words.size - (parts - 1 - i)).coerceAtLeast(minSplit)
                 val targetEnd = ((words.size.toDouble() * accumulatedWeight / totalWeight).toInt())
-                    .coerceIn(wordCursor + 1, words.size - (parts - 1 - i))
-                val slice = words.subList(wordCursor, targetEnd).joinToString(" ")
-                wordCursor = targetEnd
+                    .coerceIn(minSplit, maxSplit)
+                var bestEnd = targetEnd
+                for (offset in listOf(0, -1, 1)) {
+                    val cand = targetEnd + offset
+                    if (cand in minSplit..maxSplit) {
+                        val prevWord = words[cand - 1]
+                        if (prevWord.endsWith("،") || prevWord.endsWith(",")) {
+                            bestEnd = cand
+                            break
+                        }
+                    }
+                }
+                val slice = words.subList(wordCursor, bestEnd).joinToString(" ")
+                wordCursor = bestEnd
                 slice
             }
-            result.add(if (openTag.isNotEmpty()) "$openTag$segment$closeTag" else segment)
+            result.add(if (openTag.isNotEmpty() || closeTag.isNotEmpty()) "$openTag$segment$closeTag" else segment)
         }
         return result
     }
@@ -2251,7 +2343,7 @@ object SuperStreamExtractor : SuperStream() {
                     )
                     if (i + 2 < chunkCues.size &&
                         shouldMergeContinuationCues(combined12, chunkCues[i + 2]) &&
-                        (texts[0].length + texts[1].length + chunkCues[i + 2].text.length) <= 240
+                        (texts[0].length + texts[1].length + chunkCues[i + 2].text.length) <= 220
                     ) {
                         indices.add(i + 2)
                         texts.add(chunkCues[i + 2].text)
@@ -2294,10 +2386,15 @@ object SuperStreamExtractor : SuperStream() {
                         val cIdx = unit.cueIndices[0]
                         outCues[cIdx] = chunkCues[cIdx].copy(text = restored)
                     } else {
-                        val splitParts = splitTranslatedUrduProportionally(restored, unit.cueIndices.size, unit.weights)
+                        val plainRestored = SUPERSTREAM_PROTECTED_SUBTITLE_TOKEN_REGEX.replace(restored, "").trim()
+                        val splitParts = splitTranslatedUrduProportionally(plainRestored, unit.cueIndices.size, unit.weights)
                         for (pIdx in unit.cueIndices.indices) {
                             val cIdx = unit.cueIndices[pIdx]
-                            outCues[cIdx] = chunkCues[cIdx].copy(text = splitParts[pIdx])
+                            val origCue = chunkCues[cIdx]
+                            val (leadTag, trailTag) = extractLeadingAndTrailingTags(origCue.text)
+                            val partText = splitParts[pIdx]
+                            val wrapped = if (leadTag.isNotEmpty() || trailTag.isNotEmpty()) "$leadTag$partText$trailTag" else partText
+                            outCues[cIdx] = origCue.copy(text = wrapped)
                         }
                     }
                 }
@@ -2451,26 +2548,29 @@ object SuperStreamExtractor : SuperStream() {
         try {
             val now = System.currentTimeMillis()
             val files = baseDir.listFiles { f ->
-                f.isFile && f.name.startsWith("cs_urdu_") && f.name.endsWith(".srt")
+                f.isFile && f.name.startsWith("cs_urdu_", ignoreCase = true) && f.name.endsWith(".srt", ignoreCase = true)
             }?.toMutableList() ?: return
 
             val iterator = files.iterator()
             while (iterator.hasNext()) {
                 val f = iterator.next()
-                if (now - f.lastModified() > SUPERSTREAM_PERSISTENT_URL_CACHE_TTL_MS) {
+                val age = (now - f.lastModified()).coerceAtLeast(0L)
+                if (age > SUPERSTREAM_PERSISTENT_URL_CACHE_TTL_MS || f.length() == 0L) {
                     runCatching { f.delete() }
                     iterator.remove()
                 }
             }
 
+            var remainingCount = files.size
             var totalBytes = files.sumOf { it.length() }
-            if (files.size > MAX_DISK_CACHE_FILES || totalBytes > MAX_DISK_CACHE_BYTES) {
+            if (remainingCount > MAX_DISK_CACHE_FILES || totalBytes > MAX_DISK_CACHE_BYTES) {
                 files.sortBy { it.lastModified() }
                 for (f in files) {
-                    if (files.size <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) break
+                    if (remainingCount <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) break
                     val len = f.length()
                     if (runCatching { f.delete() }.getOrDefault(false)) {
-                        totalBytes -= len
+                        remainingCount--
+                        totalBytes = (totalBytes - len).coerceAtLeast(0L)
                     }
                 }
             }

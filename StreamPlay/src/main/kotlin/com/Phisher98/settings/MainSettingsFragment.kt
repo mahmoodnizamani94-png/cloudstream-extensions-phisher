@@ -221,7 +221,7 @@ class MainSettingsFragment(
                     strokeWidthDp = 1.5f,
                     strokeColorHex = "#3B82F6"
                 )
-                subtitleModeLabel.text = "Subtitle Mode: Default (English) • 7 English Sources"
+                subtitleModeLabel.text = "Subtitle Mode: Default (English) • 6 English Sources"
                 subtitleModeDesc?.text =
                     "Tap any pill below for instant 0ms switch to Urdu (\u0627\u0631\u062f\u0648) — ${UrduSubtitleEngine.sotaSourcesSummary()}"
                 subtitleModeStatusBadge?.apply {
@@ -240,7 +240,7 @@ class MainSettingsFragment(
                     isSelected = false
                 }
                 subtitleModeSourcesChips?.apply {
-                    text = "✓ 7 Verified English Harvesters • 5-Source Download Diversity • Instant 1-Tap Urdu Switch Above"
+                    text = "✓ 6 Verified English Harvesters • 5-Source Download Diversity • Instant 1-Tap Urdu Switch Above"
                     setTextColor(Color.parseColor("#93C5FD"))
                 }
             }
@@ -310,16 +310,14 @@ class MainSettingsFragment(
                         store.edit().apply {
                             putString("subdl_api_key", dlKey)
                             putString("subsource_api_key", ssKey)
-                            if (wyKey.isNotEmpty()) {
-                                putString("wyzie_key", wyKey)
-                                putString("wyzie_api_key", wyKey)
-                            }
+                            putString("wyzie_key", wyKey)
+                            putString("wyzie_api_key", wyKey)
                             apply()
                         }
                     }
-                    if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey)
-                    if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey)
-                    if (wyKey.isNotEmpty()) System.setProperty("cloudstream.wyzie.key", wyKey)
+                    if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey) else System.clearProperty("cloudstream.subdl.key")
+                    if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey) else System.clearProperty("cloudstream.subsource.key")
+                    if (wyKey.isNotEmpty()) System.setProperty("cloudstream.wyzie.key", wyKey) else System.clearProperty("cloudstream.wyzie.key")
                     Toast.makeText(ctx, "Subtitle API keys saved across StreamPlay & SuperStream", Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton("Cancel", null)
@@ -330,7 +328,7 @@ class MainSettingsFragment(
             val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
             val checkedItem = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) 1 else 0
             val options = arrayOf(
-                "🇬🇧 Default (English — 7 Verified English Sources)",
+                "🇬🇧 Default (English — 6 Verified English Sources)",
                 "🇵🇰 Urdu / \u0627\u0631\u062f\u0648 (${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Sources: SubDL, Subf2m, YTS-Subs, OpenSubtitles, SubSource, SubSense, Wyzie, SubtitleCat + Spoken Urdu AI)"
             )
             AlertDialog.Builder(ctx)

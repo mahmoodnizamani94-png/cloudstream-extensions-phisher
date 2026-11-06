@@ -1310,6 +1310,28 @@ class UrduSubtitleSotaTest {
         val ep2Candidates = UrduSubtitleEngine.consumeSubtitleCatOrigCandidates(imdbId = "tt1111111", season = 1, episode = 2)
         assertEquals(1, ep2Candidates.size)
         assertEquals("Show.S01E02-orig.srt", ep2Candidates[0].second)
+
+        // 6. LRU Eviction stops at exactly 64 files (never wipes the entire cache) and never touches foreign .srt files
+        val tmpDir = java.nio.file.Files.createTempDirectory("urdu_lru_test").toFile()
+        try {
+            val foreignFile = java.io.File(tmpDir, "foreign_user_subtitle.srt").apply {
+                writeText("1\n00:00:01,000 --> 00:00:02,000\nForeign subtitle\n")
+            }
+            val now = System.currentTimeMillis()
+            for (idx in 1..70) {
+                val f = java.io.File(tmpDir, "cs_urdu_cas_%04d.srt".format(idx))
+                f.writeText("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن $idx ہے\n")
+                f.setLastModified(now - (100 - idx) * 1000L)
+            }
+            UrduSubtitleEngine.evictStaleAndExcessCacheFiles(tmpDir)
+            val remainingUrduFiles = tmpDir.listFiles { f -> f.name.startsWith("cs_urdu_") } ?: emptyArray()
+            assertEquals("LRU eviction of 70 files must retain exactly 64 newest files", 64, remainingUrduFiles.size)
+            assertTrue("Foreign non-cs_urdu_ .srt file must never be deleted", foreignFile.exists())
+            assertFalse("Oldest file cs_urdu_cas_0001.srt must be evicted", java.io.File(tmpDir, "cs_urdu_cas_0001.srt").exists())
+            assertTrue("Newest file cs_urdu_cas_0070.srt must be retained", java.io.File(tmpDir, "cs_urdu_cas_0070.srt").exists())
+        } finally {
+            tmpDir.deleteRecursively()
+        }
     }
 }
 

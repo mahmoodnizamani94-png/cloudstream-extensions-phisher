@@ -978,6 +978,28 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                                     }
                                 })
                             }
+                            if ("opensubtitles" !in urduSubtitleSources && !res.imdbId.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        SuperStreamExtractor.invokeSuperStreamOpenSubtitlesUrdu(
+                                            imdbId = res.imdbId,
+                                            season = res.season,
+                                            episode = res.episode,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
+                            if ("yify" !in urduSubtitleSources && res.season == null && !res.imdbId.isNullOrBlank()) {
+                                add(async(Dispatchers.IO) {
+                                    runCatching {
+                                        SuperStreamExtractor.invokeSuperStreamYifyUrdu(
+                                            imdbId = res.imdbId,
+                                            subtitleCallback = trackedSubtitleCallback
+                                        )
+                                    }
+                                })
+                            }
                         }
                         jobs.awaitAll()
                     }

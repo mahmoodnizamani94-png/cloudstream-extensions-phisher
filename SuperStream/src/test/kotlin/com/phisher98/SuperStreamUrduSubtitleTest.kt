@@ -625,6 +625,31 @@ class SuperStreamUrduSubtitleTest {
         assertNotNull(uriA)
         assertEquals(uriA, uriB)
         assertTrue(uriA!!.contains("cs_urdu_cas_"))
+
+        // Verify full Tier-1A / Tier-1B / Tier-1C SubDL author ranking parity
+        assertEquals(100, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by Naveshta"))
+        assertEquals(100, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by faizybaba"))
+        assertEquals(50, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by community_translator"))
+        assertEquals(-40, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by blackgold"))
+        assertEquals(-40, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by akhaliq_655"))
+
+        // Verify LRU eviction stops at 64 files and never wipes the cache
+        val tmpDir = java.nio.file.Files.createTempDirectory("superstream_lru_test").toFile()
+        try {
+            val now = System.currentTimeMillis()
+            for (idx in 1..70) {
+                val f = java.io.File(tmpDir, "cs_urdu_cas_%04d.srt".format(idx))
+                f.writeText("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن $idx ہے\n")
+                f.setLastModified(now - (100 - idx) * 1000L)
+            }
+            SuperStreamExtractor.evictStaleAndExcessCacheFiles(tmpDir)
+            val remaining = tmpDir.listFiles { f -> f.name.startsWith("cs_urdu_") } ?: emptyArray()
+            assertEquals("LRU eviction of 70 files must retain exactly 64 newest files", 64, remaining.size)
+            assertFalse(java.io.File(tmpDir, "cs_urdu_cas_0001.srt").exists())
+            assertTrue(java.io.File(tmpDir, "cs_urdu_cas_0070.srt").exists())
+        } finally {
+            tmpDir.deleteRecursively()
+        }
     }
 }
 

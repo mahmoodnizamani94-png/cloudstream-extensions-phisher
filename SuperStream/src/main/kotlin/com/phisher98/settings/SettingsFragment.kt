@@ -252,15 +252,13 @@ class SettingsFragment(
                         store.edit {
                             putString("subdl_api_key", dlKey)
                             putString("subsource_api_key", ssKey)
-                            if (wyKey.isNotEmpty()) {
-                                putString("wyzie_key", wyKey)
-                                putString("wyzie_api_key", wyKey)
-                            }
+                            putString("wyzie_key", wyKey)
+                            putString("wyzie_api_key", wyKey)
                         }
                     }
-                    if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey)
-                    if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey)
-                    if (wyKey.isNotEmpty()) System.setProperty("cloudstream.wyzie.key", wyKey)
+                    if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey) else System.clearProperty("cloudstream.subdl.key")
+                    if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey) else System.clearProperty("cloudstream.subsource.key")
+                    if (wyKey.isNotEmpty()) System.setProperty("cloudstream.wyzie.key", wyKey) else System.clearProperty("cloudstream.wyzie.key")
                     Toast.makeText(ctx, "Subtitle API keys saved across SuperStream & StreamPlay", Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton("Cancel", null)

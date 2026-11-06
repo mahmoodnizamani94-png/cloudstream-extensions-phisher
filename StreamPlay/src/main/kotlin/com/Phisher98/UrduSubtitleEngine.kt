@@ -2094,7 +2094,9 @@ object UrduSubtitleEngine {
         try {
             val now = System.currentTimeMillis()
             val srtFiles = baseDir.listFiles { file ->
-                file.isFile && file.name.endsWith(".srt", ignoreCase = true)
+                file.isFile &&
+                    file.name.startsWith("cs_urdu_", ignoreCase = true) &&
+                    file.name.endsWith(".srt", ignoreCase = true)
             }?.toMutableList() ?: return
 
             val iterator = srtFiles.iterator()
@@ -2107,18 +2109,20 @@ object UrduSubtitleEngine {
                 }
             }
 
+            var remainingCount = srtFiles.size
             var totalBytes = srtFiles.sumOf { it.length() }
-            if (srtFiles.size <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) {
+            if (remainingCount <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) {
                 return
             }
 
             srtFiles.sortBy { it.lastModified() }
             for (f in srtFiles) {
-                if (srtFiles.size <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) {
+                if (remainingCount <= MAX_DISK_CACHE_FILES && totalBytes <= MAX_DISK_CACHE_BYTES) {
                     break
                 }
                 val len = f.length()
                 if (runCatching { f.delete() }.getOrDefault(false)) {
+                    remainingCount--
                     totalBytes = (totalBytes - len).coerceAtLeast(0L)
                 }
             }
@@ -2417,6 +2421,10 @@ object UrduSubtitleEngine {
             if (decodedEnglish.length < 32) continue
 
             val urduSrt = translateEnglishSrtToUrdu(decodedEnglish) ?: continue
+            val synthesizedCues = parseSubtitleCues(urduSrt)
+            if (synthesizedCues.isEmpty() || !containsVerifiedUrduScript(synthesizedCues) || isBrokenSmtUrdu(synthesizedCues)) {
+                continue
+            }
 
             // Always materialize locally to the verified UTF-8 .srt cache file (file:///...);
             // never upload machine-translated subtitles back onto SubtitleCat's public servers.

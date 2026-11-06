@@ -212,6 +212,7 @@ class StreamPlayStremioCatelog(
         val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: StreamPlay.companionSharedPref)
         val urduSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
         val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val emittedSubtitleUrls = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val englishDonorSubs = java.util.concurrent.CopyOnWriteArrayList<SubtitleFile>()
 
         val trackedSubCallback: (SubtitleFile) -> Unit = subCallback@{ rawSub ->
@@ -235,6 +236,7 @@ class StreamPlayStremioCatelog(
             val cleanedLang = cleanSubtitleLabel(sub.lang)
             if (!urduMode) {
                 if (isEnglishSubtitleLabel(cleanedLang)) {
+                    if (!emittedSubtitleUrls.add(sub.url)) return@subCallback
                     @Suppress("DEPRECATION")
                     val normalizedSub = if (sub.lang == cleanedLang) sub else SubtitleFile(lang = cleanedLang, url = sub.url).apply {
                         headers = sub.headers
@@ -254,6 +256,7 @@ class StreamPlayStremioCatelog(
                             ?: UrduSubtitleEngine.canonicalUrduSourceKey(cleanedLang)
                             ?: UrduSubtitleEngine.canonicalUrduSourceKey(StreamPlayShield.hostOf(sub.url))
                         if (canonicalSource != null) {
+                            if (!emittedSubtitleUrls.add(sub.url)) return@subCallback
                             val formattedLang = UrduSubtitleEngine.formatUrduSourceLabel(canonicalSource)
                             @Suppress("DEPRECATION")
                             val urSub = SubtitleFile(lang = formattedLang, url = sub.url).apply {
@@ -272,7 +275,9 @@ class StreamPlayStremioCatelog(
                         val enSub = if (sub.lang == cleanedLang) sub else SubtitleFile(lang = cleanedLang, url = sub.url).apply {
                             headers = sub.headers
                         }
-                        englishDonorSubs.add(enSub)
+                        if (englishDonorSubs.none { it.url == enSub.url }) {
+                            englishDonorSubs.add(enSub)
+                        }
                     }
                 }
             }
@@ -290,15 +295,15 @@ class StreamPlayStremioCatelog(
         val isMovieMedia = resolved.season == null || resolved.season <= 0
 
         val tasks = buildList {
-            add(PipelinedTask("SubtitleAPI", LatencyTier.TIER_1, isVideo = false) {
+            add(PipelinedTask("subtitles", LatencyTier.TIER_1, isVideo = false) {
                 invokeSubtitleAPI(imdb, resolved.season, resolved.episode, trackedSubCallback)
             })
-            add(PipelinedTask("WyZIESUB", LatencyTier.TIER_1, isVideo = false) {
+            add(PipelinedTask("wyziesub", LatencyTier.TIER_1, isVideo = false) {
                 invokeWYZIESubs(imdb, res.season, res.episode, trackedSubCallback)
             })
             if (urduMode) {
                 if (!imdb.isNullOrBlank() || !resolved.title.isNullOrBlank()) {
-                    add(PipelinedTask("SubDLUrdu", LatencyTier.TIER_1, isVideo = false) {
+                    add(PipelinedTask("subdl", LatencyTier.TIER_1, isVideo = false) {
                         UrduSubtitleEngine.invokeSubDlUrduKeyless(
                             imdbId = imdb,
                             title = resolved.title,
@@ -309,7 +314,7 @@ class StreamPlayStremioCatelog(
                             subtitleCallback = trackedSubCallback
                         )
                     })
-                    add(PipelinedTask("SubSourceUrdu", LatencyTier.TIER_1, isVideo = false) {
+                    add(PipelinedTask("subsource", LatencyTier.TIER_1, isVideo = false) {
                         UrduSubtitleEngine.invokeSubSourceUrdu(
                             imdbId = imdb,
                             title = resolved.title,
@@ -321,7 +326,7 @@ class StreamPlayStremioCatelog(
                             subtitleCallback = trackedSubCallback
                         )
                     })
-                    add(PipelinedTask("OpenSubtitlesLegacy", LatencyTier.TIER_1, isVideo = false) {
+                    add(PipelinedTask("opensubtitles", LatencyTier.TIER_1, isVideo = false) {
                         StreamPlayExtractor.invokeOpenSubtitlesLegacy(
                             id = imdb,
                             season = resolved.season,
@@ -332,17 +337,17 @@ class StreamPlayStremioCatelog(
                     })
                 }
                 if (!imdb.isNullOrBlank()) {
-                    add(PipelinedTask("SubSenseUrdu", LatencyTier.TIER_1, isVideo = false) {
+                    add(PipelinedTask("subsense", LatencyTier.TIER_1, isVideo = false) {
                         UrduSubtitleEngine.invokeSubSenseUrdu(imdb, resolved.season, resolved.episode, trackedSubCallback)
                     })
                     if (resolved.season == null) {
-                        add(PipelinedTask("YifySubs", LatencyTier.TIER_1, isVideo = false) {
+                        add(PipelinedTask("yify", LatencyTier.TIER_1, isVideo = false) {
                             StreamPlayExtractor.invokeYifySubs(imdb, trackedSubCallback)
                         })
                     }
                 }
                 if (!resolved.title.isNullOrBlank()) {
-                    add(PipelinedTask("Subf2mUrdu", LatencyTier.TIER_1, isVideo = false) {
+                    add(PipelinedTask("subf2m", LatencyTier.TIER_1, isVideo = false) {
                         UrduSubtitleEngine.invokeSubf2mUrdu(
                             title = resolved.title,
                             season = resolved.season,
@@ -352,7 +357,7 @@ class StreamPlayStremioCatelog(
                             subtitleCallback = trackedSubCallback
                         )
                     })
-                    add(PipelinedTask("SubtitleCat", LatencyTier.TIER_1, isVideo = false) {
+                    add(PipelinedTask("subtitlecat", LatencyTier.TIER_1, isVideo = false) {
                         StreamPlayExtractor.invokeSubtitleCat(
                             titles = listOf(resolved.title),
                             season = resolved.season,
@@ -416,9 +421,10 @@ class StreamPlayStremioCatelog(
 
         if (urduMode && countVerifiedHumanUrduSources() < 2) {
             val retryUrduTasks = tasks.filter { task ->
+                val canonicalTaskId = UrduSubtitleEngine.canonicalUrduSourceKey(task.providerId) ?: task.providerId.lowercase()
                 !task.isVideo &&
-                    task.providerId != "SubtitleCat" &&
-                    !urduSubtitleSources.contains(task.providerId.lowercase())
+                    canonicalTaskId != "subtitlecat" &&
+                    !urduSubtitleSources.contains(canonicalTaskId)
             }.map { it.copy(taskTimeoutMs = 4_500L) }
             if (retryUrduTasks.isNotEmpty()) {
                 val urduCompletionConfig = EarlySatisfactionConfig(
