@@ -727,6 +727,14 @@ object UrduSubtitleEngine {
                                     episode = targetEpisode
                                 ) {}
                             }
+                            launch {
+                                StreamPlayExtractor.invokeOpenSubtitlesLegacy(
+                                    id = cleanImdb,
+                                    season = targetSeason,
+                                    episode = targetEpisode,
+                                    title = cleanTitle
+                                ) {}
+                            }
                             if (targetSeason == null) {
                                 launch {
                                     StreamPlayExtractor.invokeYifySubs(

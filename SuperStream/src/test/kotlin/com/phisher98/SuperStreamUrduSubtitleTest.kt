@@ -633,9 +633,12 @@ class SuperStreamUrduSubtitleTest {
         assertEquals(-40, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by blackgold"))
         assertEquals(-40, SuperStreamExtractor.scoreSubDlAuthorTier("Uploaded by akhaliq_655"))
 
-        // Verify LRU eviction stops at 64 files and never wipes the cache
+        // Verify LRU eviction stops at 64 files, never wipes the cache, and preserves foreign .srt files
         val tmpDir = java.nio.file.Files.createTempDirectory("superstream_lru_test").toFile()
         try {
+            val foreignFile = java.io.File(tmpDir, "foreign_user_subtitle.srt").apply {
+                writeText("1\n00:00:01,000 --> 00:00:02,000\nForeign subtitle\n")
+            }
             val now = System.currentTimeMillis()
             for (idx in 1..70) {
                 val f = java.io.File(tmpDir, "cs_urdu_cas_%04d.srt".format(idx))
@@ -645,6 +648,7 @@ class SuperStreamUrduSubtitleTest {
             SuperStreamExtractor.evictStaleAndExcessCacheFiles(tmpDir)
             val remaining = tmpDir.listFiles { f -> f.name.startsWith("cs_urdu_") } ?: emptyArray()
             assertEquals("LRU eviction of 70 files must retain exactly 64 newest files", 64, remaining.size)
+            assertTrue("Foreign non-cs_urdu_ .srt file must never be deleted", foreignFile.exists())
             assertFalse(java.io.File(tmpDir, "cs_urdu_cas_0001.srt").exists())
             assertTrue(java.io.File(tmpDir, "cs_urdu_cas_0070.srt").exists())
         } finally {

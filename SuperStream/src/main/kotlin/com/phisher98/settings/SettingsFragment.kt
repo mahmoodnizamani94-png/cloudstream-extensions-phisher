@@ -157,7 +157,7 @@ class SettingsFragment(
                     isSelected = false
                 }
                 subtitleModeSourcesChips?.apply {
-                    text = "✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI"
+                    text = "✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat • Contextual AI"
                     setTextColor(Color.parseColor("#6EE7B7"))
                 }
             } else {
@@ -270,7 +270,7 @@ class SettingsFragment(
             val checkedItem = if (urduActive) 1 else 0
             val options = arrayOf(
                 "🇬🇧 Default — English Subtitles (Streams & Downloads)",
-                "🇵🇰 Urdu / \u0627\u0631\u062f\u0648 — 8 Verified Urdu Sources + Spoken Urdu AI (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI)"
+                "🇵🇰 Urdu / \u0627\u0631\u062f\u0648 — 8 Verified Urdu Sources + Spoken Urdu AI (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat • Contextual AI)"
             )
             AlertDialog.Builder(ctx)
                 .setTitle("Subtitle Mode • 8 Verified Urdu Sources + Spoken Urdu AI")

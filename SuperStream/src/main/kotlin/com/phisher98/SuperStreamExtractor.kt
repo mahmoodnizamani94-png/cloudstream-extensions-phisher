@@ -459,6 +459,14 @@ object SuperStreamExtractor : SuperStream() {
                                     subtitleCallback = {}
                                 )
                             }
+                            launch {
+                                invokeSuperStreamOpenSubtitlesUrdu(
+                                    imdbId = cleanImdb,
+                                    season = season,
+                                    episode = episode,
+                                    subtitleCallback = {}
+                                )
+                            }
                             if (season == null || season <= 0) {
                                 launch {
                                     invokeSuperStreamYifyUrdu(

@@ -211,7 +211,7 @@ class MainSettingsFragment(
                     isSelected = false
                 }
                 subtitleModeSourcesChips?.apply {
-                    text = "✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI"
+                    text = "✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat • Contextual AI"
                     setTextColor(Color.parseColor("#6EE7B7"))
                 }
             } else {
