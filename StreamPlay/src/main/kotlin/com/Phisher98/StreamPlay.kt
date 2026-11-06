@@ -1042,19 +1042,23 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) },
             isAnime = res.isAnime
         )
-        val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         UrduSubtitleEngine.consumeSubtitleCatOrigCandidates()
 
-        // Distinct sources that delivered an English subtitle, plus the raw count. The app downloads
-        // one English subtitle per source so that at least one matches the release on disk, which only
-        // works when the extension surfaces enough distinct sources in the first place.
-        val englishSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        val completedEnglishSubtitleProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        // Real bookkeeping behind the English/Urdu source-diversity contract (SubtitleSourceLedger):
+        // distinct provenances that delivered English subtitles count toward diversity, container
+        // providers that delivered are suppressed from re-querying, and `lang|canonical-url`
+        // (fragment-stripped) deduplication keeps one tracking entry per sidecar.
+        val subtitleLedger = SubtitleSourceLedger(
+            targetEnglishSources = if (res.isAnime) {
+                ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES
+            } else {
+                TARGET_ENGLISH_SUBTITLE_SOURCES
+            },
+            targetUrduSources = UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
+        )
         val englishSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        val completedUrduSubtitleProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val bestEnglishSubtitleUrls = java.util.concurrent.ConcurrentLinkedQueue<String>()
         val deferredNonUrduSubtitles = java.util.concurrent.ConcurrentLinkedQueue<SubtitleFile>()
 
@@ -1165,25 +1169,18 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             if (!urduMode && !isEnglish) {
                 return false
             }
-            val canonicalSubUrl = shieldedUrl.substringBefore('#').trim()
-            val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$canonicalSubUrl"
 
-            return if (emittedSubtitles.add(dedupeKey)) {
+            return if (subtitleLedger.markEmitted(cleanedLang, shieldedUrl)) {
                 subtitlesFound.incrementAndGet()
                 val explicitProvenance = sub.headers?.entries
                     ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
                     ?.value?.trim()?.takeIf { it.isNotBlank() }
-                val provenance = (explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) })
-                    .trim()
-                    .lowercase(java.util.Locale.ROOT)
-                val normalizedSourceKey = sourceKey.trim().lowercase(java.util.Locale.ROOT)
+                val provenance = subtitleLedger.normalizeProvenance(
+                    explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) }
+                ).orEmpty()
                 if (isEnglish) {
                     englishSubtitleCount.incrementAndGet()
-                    englishSubtitleSources.add(provenance)
-                    completedEnglishSubtitleProviders.add(provenance)
-                    if (normalizedSourceKey.isNotBlank()) {
-                        completedEnglishSubtitleProviders.add(normalizedSourceKey)
-                    }
+                    subtitleLedger.recordEnglishDelivery(provenance, sourceKey)
                     val origUrlHeader = sub.headers?.entries
                         ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Url", ignoreCase = true) }
                         ?.value?.trim()?.takeIf { it.isNotBlank() }
@@ -1198,11 +1195,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     }
                 }
                 if (isUrdu) {
-                    urduSubtitleSources.add(provenance)
-                    completedUrduSubtitleProviders.add(provenance)
-                    if (normalizedSourceKey.isNotBlank()) {
-                        completedUrduSubtitleProviders.add(normalizedSourceKey)
-                    }
+                    subtitleLedger.recordUrduDelivery(provenance, sourceKey)
                 }
                 @Suppress("DEPRECATION")
                 val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = shieldedUrl).apply {
@@ -1227,7 +1220,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         }
 
         fun flushDeferredSubtitles() {
-            if (urduMode && urduSubtitleSources.isNotEmpty()) {
+            if (urduMode && subtitleLedger.urduSubtitleSources.isNotEmpty()) {
                 deferredNonUrduSubtitles.clear()
                 return
             }
@@ -1590,28 +1583,26 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 TARGET_ENGLISH_SUBTITLE_SOURCES
             }
             val needsSubtitleCompletion = if (urduMode) {
-                urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
+                subtitleLedger.needsUrduCompletion()
             } else {
-                englishSubtitleSources.size < targetEnglishSubtitleSources
+                subtitleLedger.needsEnglishCompletion()
             }
             if (needsSubtitleCompletion) {
                 val retryableHarvests = subtitleHarvestTasks.filter { task ->
-                    val normalizedId = task.providerId.trim().lowercase(java.util.Locale.ROOT)
                     if (urduMode) {
-                        normalizedId !in urduSubtitleSources && normalizedId !in completedUrduSubtitleProviders
+                        !subtitleLedger.isUrduSource(task.providerId) && !subtitleLedger.isUrduProviderCompleted(task.providerId)
                     } else {
-                        normalizedId !in englishSubtitleSources && normalizedId !in completedEnglishSubtitleProviders
+                        !subtitleLedger.isEnglishSource(task.providerId) && !subtitleLedger.isEnglishProviderCompleted(task.providerId)
                     }
                 }
                 val remainingSlots = (MAX_SUBTITLE_COMPLETION_PROVIDERS - retryableHarvests.size).coerceAtLeast(0)
                 val completionProviders = (prioritizedPrimary + fallbackProviders)
                     .filter { provider -> provider.kind != ProviderKind.SUBTITLE }
                     .filter { provider ->
-                        val normalizedId = provider.id.trim().lowercase(java.util.Locale.ROOT)
                         if (urduMode) {
-                            normalizedId !in urduSubtitleSources && normalizedId !in completedUrduSubtitleProviders
+                            !subtitleLedger.isUrduSource(provider.id) && !subtitleLedger.isUrduProviderCompleted(provider.id)
                         } else {
-                            normalizedId !in englishSubtitleSources && normalizedId !in completedEnglishSubtitleProviders
+                            !subtitleLedger.isEnglishSource(provider.id) && !subtitleLedger.isEnglishProviderCompleted(provider.id)
                         }
                     }
                     .filter { provider ->
@@ -1623,8 +1614,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 if (retryableHarvests.isNotEmpty() || completionProviders.isNotEmpty()) {
                     Log.d(
                         TAG,
-                        "📝 Subtitle completion: ${englishSubtitleSources.size}/$targetEnglishSubtitleSources " +
-                            "English sources, ${urduSubtitleSources.size}/${UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES} Urdu sources; " +
+                        "📝 Subtitle completion: ${subtitleLedger.englishSubtitleSources.size}/$targetEnglishSubtitleSources " +
+                            "English sources, ${subtitleLedger.urduSubtitleSources.size}/${UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES} Urdu sources; " +
                             "querying ${retryableHarvests.size + completionProviders.size} more " +
                             "(${(retryableHarvests.map { it.providerId } + completionProviders.map { it.id }).joinToString()})"
                     )
@@ -1650,9 +1641,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         completionConfig,
                         extraCondition = {
                             if (urduMode) {
-                                urduSubtitleSources.size >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
+                                subtitleLedger.urduSubtitleSources.size >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
                             } else {
-                                englishSubtitleSources.size >= targetEnglishSubtitleSources
+                                subtitleLedger.englishSubtitleSources.size >= targetEnglishSubtitleSources
                             }
                         }
                     )
@@ -1707,7 +1698,8 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     Log.d(
                         TAG,
                         "📝 Subtitle completion finished: ${englishSubtitleCount.get()} English subtitles " +
-                            "from ${englishSubtitleSources.size} sources, ${urduSubtitleSources.size} Urdu sources"
+                            "from ${subtitleLedger.englishSubtitleSources.size} sources, " +
+                            "${subtitleLedger.urduSubtitleSources.size} Urdu sources"
                     )
                 }
             }
@@ -1716,7 +1708,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             // When Urdu mode is active and fewer than TARGET_URDU_SUBTITLE_SOURCES human Urdu subtitle
             // sources were found, translate the top English subtitle into timing-preserved RTL Urdu
             // within a strict timeout so every movie and episode is guaranteed Urdu subtitles.
-            if (urduMode && urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
+            if (urduMode && subtitleLedger.urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
                 withTimeoutOrNull(8_000L) {
                     UrduSubtitleEngine.synthesizeUrduFallbackFromEnglish(
                         imdbId = res.imdbId,

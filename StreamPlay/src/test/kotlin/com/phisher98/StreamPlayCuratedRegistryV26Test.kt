@@ -1427,50 +1427,55 @@ class StreamPlayCuratedRegistryV26Test {
         assertEquals("Movie/TV target English subtitle sources must remain 5", 5, TARGET_ENGLISH_SUBTITLE_SOURCES)
         assertEquals("Anime target English subtitle sources must be 6", 6, ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES)
 
-        // Verify that a single subtitle with explicit provenance (e.g. ZokoAnime from Animex)
-        // records exactly 1 lowercase provenance entry in englishSubtitleSources while tracking
-        // the provider id separately for Phase 3 completion filtering, and strips URL #fragments.
-        val englishSubtitleSources = mutableSetOf<String>()
-        val completedEnglishSubtitleProviders = mutableSetOf<String>()
-        val emittedSubtitleKeys = mutableSetOf<String>()
+        // Exercises the PRODUCTION SubtitleSourceLedger wired into StreamPlay + StreamPlayAnime —
+        // the exact markEmitted/recordEnglishDelivery calls the emission closures make — so the
+        // 6-source contract is proven against the real dedupe/provenance/completion logic, not a
+        // local transcription of it.
+        val ledger = SubtitleSourceLedger(targetEnglishSources = ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES)
 
-        fun simulateEmitSubtitle(url: String, lang: String, sourceKey: String) {
-            val cleanUrl = url.substringBefore('#').trim()
-            val dedupeKey = "${cleanUrl.lowercase()}|${lang.trim().lowercase()}"
-            if (!emittedSubtitleKeys.add(dedupeKey)) return
-            val explicitProvenance = Regex("""\[([^\[\]]+)\]\s*$""")
-                .find(lang.trim())
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-            val provenance = (explicitProvenance ?: sourceKey).trim().lowercase()
-            if (provenance.isNotBlank()) {
-                englishSubtitleSources.add(provenance)
-            }
-            if (sourceKey.isNotBlank()) {
-                completedEnglishSubtitleProviders.add(sourceKey.trim().lowercase())
+        fun deliverSubtitle(url: String, lang: String, provenanceHeader: String?, sourceKey: String) {
+            val cleanedLang = cleanSubtitleLabel(lang)
+            if (ledger.markEmitted(cleanedLang, url)) {
+                val provenance = ledger.normalizeProvenance(
+                    provenanceHeader ?: sourceKey.ifBlank { StreamPlayShield.hostOf(url) }
+                ).orEmpty()
+                if (isEnglishSubtitleLabel(cleanedLang)) {
+                    ledger.recordEnglishDelivery(provenance, sourceKey)
+                }
             }
         }
 
-        // Duplicate URL with #fragment must be deduplicated
-        simulateEmitSubtitle("https://sub.wyzie.ru/s/1.vtt", "English [Wyzie]", "wyzie")
-        simulateEmitSubtitle("https://sub.wyzie.ru/s/1.vtt#animepahe", "English [Wyzie]", "animepahe")
-        assertEquals("Fragment-spoofed duplicate subtitle URL must not inflate source count", 1, englishSubtitleSources.size)
+        // Duplicate URL with a #fragment routing suffix must be deduplicated by the ledger key
+        deliverSubtitle("https://sub.wyzie.ru/s/1.vtt", "English [Wyzie]", "wyzie", "wyzie")
+        deliverSubtitle("https://sub.wyzie.ru/s/1.vtt#animepahe", "English [Wyzie]", "animepahe", "animepahe")
+        assertEquals("Fragment-spoofed duplicate subtitle URL must not inflate source count", 1, ledger.englishSubtitleSources.size)
+        assertTrue(ledger.englishSubtitleSources.contains("wyzie"))
 
-        // Animex emitting ZokoAnime must count as 1 English subtitle source ("zokoanime"), not 2 ("animex" + "zokoanime")
-        simulateEmitSubtitle("https://zoko.example/sub1.vtt", "English [ZokoAnime]", "animex")
-        assertEquals("Single subtitle with explicit provenance must add exactly 1 source", 2, englishSubtitleSources.size)
-        assertTrue(englishSubtitleSources.contains("zokoanime"))
-        assertFalse("Container provider key must not double-count in englishSubtitleSources", englishSubtitleSources.contains("animex"))
-        assertTrue("Container provider key must be tracked in completedEnglishSubtitleProviders", completedEnglishSubtitleProviders.contains("animex"))
+        // Animex emitting ZokoAnime must count 1 provenance ("zokoanime") toward diversity while
+        // the container provider ("animex") is tracked separately for completion suppression.
+        deliverSubtitle("https://zoko.example/sub1.vtt", "English [ZokoAnime]", "zokoanime", "animex")
+        assertEquals("Single subtitle with explicit provenance must add exactly 1 source", 2, ledger.englishSubtitleSources.size)
+        assertTrue(ledger.isEnglishSource("zokoanime"))
+        assertFalse("Container provider key must not double-count toward diversity", ledger.isEnglishSource("animex"))
+        assertTrue("Container provider key must suppress re-querying", ledger.isEnglishProviderCompleted("animex"))
+
+        // Provenance normalization is lowercase and case-insensitive across surfaces
+        deliverSubtitle("https://anizone.to/sub/1.ass", "English (ASS) [AniZone]", "AniZone", "anizone")
+        assertTrue(ledger.isEnglishSource("anizone"))
+        assertFalse("Raw case variant must never be stored in the normalized source set", ledger.englishSubtitleSources.contains("AniZone"))
+        assertEquals(3, ledger.englishSubtitleSources.size)
 
         // Collect remaining distinct anime English subtitle sources up to 6
-        simulateEmitSubtitle("https://anizone.to/sub/1.ass", "English (ASS) [AniZone]", "anizone")
-        simulateEmitSubtitle("https://megaplay.buzz/sub/1.vtt", "English [MegaPlay]", "megaplay")
-        simulateEmitSubtitle("https://kaa.lt/sub/1.vtt", "English [KickAssAnime]", "animex")
-        simulateEmitSubtitle("https://subs.bright67.online/sub/1.srt", "English [CineSrc]", "cinesrc")
-        assertEquals("Six distinct anime English subtitle sources must be collected", 6, englishSubtitleSources.size)
+        deliverSubtitle("https://megaplay.buzz/sub/1.vtt", "English [MegaPlay]", "megaplay", "megaplay")
+        deliverSubtitle("https://kaa.lt/sub/1.vtt", "English [KickAssAnime]", "kickassanime", "animex")
+        deliverSubtitle("https://subs.bright67.online/sub/1.srt", "English [CineSrc]", "cinesrc", "cinesrc")
+        assertEquals("Six distinct anime English subtitle sources must be collected", 6, ledger.englishSubtitleSources.size)
+        assertFalse("6 sources must satisfy the anime completion target", ledger.needsEnglishCompletion())
+
+        // A provider whose fan-out delivered is never re-queried during completion
+        val providers = listOf("anizone", "megaplay", "animex", "cinesrc", "wyzie", "zokoanime", "vidlink", "kickassanime")
+        val pending = providers.filter { !ledger.isEnglishSource(it) && !ledger.isEnglishProviderCompleted(it) }
+        assertEquals("Only providers that never delivered English may be re-queried", listOf("vidlink"), pending)
     }
 
     @Test
@@ -1488,6 +1493,154 @@ class StreamPlayCuratedRegistryV26Test {
     fun testConstantHeightCinemaWidescreen720pAnd1080pClassification() {
         testConstantHeightAndConstantWidthWidescreenResolutionNormalization()
         testAllCinemaWidescreenAspectRatiosResolveAccurately()
+    }
+
+    @Test
+    fun testResolutionTruthIsTheSingleMappingForManifestAndTextLayers() {
+        // The manifest layer (StreamPlayExtractor.normalizeHlsResolutionToQuality) and the text
+        // layer (StreamLinkOptimizer.extractQualityFromText on exact `WxH` claims) must classify
+        // every dimension pair through the SAME ResolutionTruth bands — there is no second table
+        // left to drift apart (the former hand-maintained FHD/HD/SD/P360 WxH regex families were
+        // retired in favour of delegation).
+        val widths = listOf(
+            128, 344, 480, 640, 641, 659, 660, 700, 800, 840, 854, 860, 861, 900, 919, 920, 921,
+            1000, 1024, 1200, 1249, 1250, 1280, 1281, 1329, 1330, 1366, 1400, 1584, 1720, 1800,
+            1849, 1850, 1851, 1920, 1921, 1989, 1990, 1998, 2048, 2560, 2649, 2650, 2651, 2700,
+            3440, 3840
+        )
+        val heights = listOf(
+            144, 200, 240, 268, 320, 350, 353, 354, 356, 360, 372, 373, 400, 430, 466, 467, 468,
+            480, 492, 493, 534, 540, 550, 576, 600, 650, 690, 700, 720, 740, 741, 768, 800, 950,
+            1038, 1040, 1080, 1100, 1101, 1350, 1420, 1440, 1460, 2000, 2140, 2160, 2180
+        )
+        for (w in widths) {
+            for (h in heights) {
+                val dimension = StreamPlayExtractor.normalizeHlsResolutionToQuality(w, h, "", null)
+                // `x` is alphanumeric, so the explicit-numeric regex never fires inside a WxH
+                // claim: the text layer classifies EVERY exact dimension through ResolutionTruth,
+                // the same bands the manifest layer uses.
+                assertEquals(
+                    "Text layer and manifest layer must agree through ResolutionTruth for ${w}x${h}",
+                    dimension,
+                    StreamLinkOptimizer.extractQualityFromText("${w}x${h}")
+                )
+            }
+        }
+        // Explicit numeric tokens outside a WxH pair still fire before delegation.
+        assertEquals(Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("abc 720"))
+        assertEquals(Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("Movie 720p 1280x534"))
+        assertEquals(Qualities.P360.value, StreamLinkOptimizer.extractQualityFromText("Movie 360p"))
+
+        // Acceptance endpoints that the former regex families missed (1850x720, 2650x1080,
+        // DCI-scope 2048x1038, 856x480, 3440x1440) and the formerly conflicting regions
+        // (800-920x350-353, 1200-1249x460-467) now classify identically in both layers.
+        assertEquals(Qualities.P720.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1850, 720, ""))
+        assertEquals(Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("1850x720"))
+        assertEquals(Qualities.P1080.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(2650, 1080, ""))
+        assertEquals(Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("2650x1080"))
+        assertEquals(Qualities.P1080.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(2048, 1038, ""))
+        assertEquals(Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("2048x1038"))
+        assertEquals(Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("1998x1038"))
+        assertEquals(Qualities.P480.value, StreamLinkOptimizer.extractQualityFromText("856x480"))
+        assertEquals(Qualities.P1440.value, StreamLinkOptimizer.extractQualityFromText("3440x1440"))
+        for (w in listOf(800, 854, 900, 920)) {
+            for (h in listOf(350, 351, 352, 353)) {
+                assertEquals("Letterbox 360/480 conflict region must agree for ${w}x$h", StreamPlayExtractor.normalizeHlsResolutionToQuality(w, h, ""), StreamLinkOptimizer.extractQualityFromText("${w}x${h}"))
+            }
+        }
+        for (w in listOf(1200, 1249)) {
+            for (h in listOf(460, 461, 466, 467)) {
+                assertEquals("480/720 conflict region must agree for ${w}x$h", StreamPlayExtractor.normalizeHlsResolutionToQuality(w, h, ""), StreamLinkOptimizer.extractQualityFromText("${w}x${h}"))
+            }
+        }
+        // True-height 360 encodes at 854-width stay 360p; the 2.4:1 letterbox 356 stays 480p.
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(854, 360, ""))
+        assertEquals(Qualities.P360.value, StreamLinkOptimizer.extractQualityFromText("854x360"))
+        assertEquals(Qualities.P480.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(854, 356, ""))
+        assertEquals(Qualities.P480.value, StreamLinkOptimizer.extractQualityFromText("854x356"))
+        // Ultrawide 1080p beyond the 2650 guard snaps back to the 1080p rung, not 1440p.
+        assertEquals(Qualities.P1080.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(2700, 1080, ""))
+        assertEquals(Qualities.P720.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1366, 768, ""))
+        assertEquals(Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("1366x768"))
+    }
+
+    @Test
+    fun testCrossServerQualityGateDedupesKnownQualitiesAcrossServers() {
+        val gate = CrossServerQualityGate()
+        fun meowLink(quality: Int, url: String, name: String): ExtractorLink = createLink(
+            source = "MeowTV",
+            name = name,
+            url = url,
+            quality = quality,
+            type = ExtractorLinkType.M3U8
+        )
+
+        assertTrue(gate.allow(meowLink(Qualities.P480.value, "https://srv-a/480.m3u8", "MeowTV English [480p]")))
+        assertFalse("480p mirror from a later server must be deduplicated", gate.allow(meowLink(Qualities.P480.value, "https://srv-b/480.m3u8", "MeowTV English [480p]")))
+        assertTrue(gate.allow(meowLink(Qualities.P1080.value, "https://srv-a/1080.m3u8", "MeowTV English [1080p]")))
+        assertFalse("1080p mirror from a later server must be deduplicated", gate.allow(meowLink(Qualities.P1080.value, "https://srv-b/1080.m3u8", "MeowTV English [1080p]")))
+        assertTrue("720p always passes", gate.allow(meowLink(Qualities.P720.value, "https://srv-b/720.m3u8", "MeowTV English [720p]")))
+        assertTrue("a second 720p mirror must still pass (smallest-size selection)", gate.allow(meowLink(Qualities.P720.value, "https://srv-c/720.m3u8", "MeowTV English [720p]")))
+        assertTrue("Unknown/[Auto] lanes always pass", gate.allow(meowLink(Qualities.Unknown.value, "https://srv-d/master.m3u8", "MeowTV English [Auto]")))
+        assertTrue("a second Unknown lane must also pass", gate.allow(meowLink(Qualities.Unknown.value, "https://srv-e/master.m3u8", "MeowTV Auto")))
+    }
+
+    @Test
+    fun testVidLinkCdnPolicyIsTheSingleRefererSourceOfTruth() {
+        // Policy classification
+        assertEquals(VidLinkCdnPolicy.RefererMode.REQUIRE_FILMBOOM, VidLinkCdnPolicy.modeFor("https://bcdnxw.hakunaymatata.com/resource/720.mp4"))
+        assertEquals(VidLinkCdnPolicy.RefererMode.STRIP, VidLinkCdnPolicy.modeFor("https://sacdn.hakunaymatata.com/dash/i/index_web.mpd"))
+        assertEquals(VidLinkCdnPolicy.RefererMode.STRIP, VidLinkCdnPolicy.modeFor("https://bcdn.hakunaymatata.com/resource/1080.mp4"))
+        assertEquals(VidLinkCdnPolicy.RefererMode.THIRD_PARTY, VidLinkCdnPolicy.modeFor("https://proxy.vendor.example/v.mp4"))
+
+        // bcdnxw: filmboom proven default overrides vidlink/embed artifacts, keeps genuine filmboom referers
+        assertEquals("https://filmboom.top/", VidLinkCdnPolicy.effectiveReferer("https://bcdnxw.hakunaymatata.com/720.mp4", null))
+        assertEquals("https://filmboom.top/", VidLinkCdnPolicy.effectiveReferer("https://bcdnxw.hakunaymatata.com/720.mp4", "https://vidlink.pro/"))
+        assertEquals("https://filmboom.top/", VidLinkCdnPolicy.effectiveReferer("https://bcdnxw.hakunaymatata.com/720.mp4", "https://embed.example/x"))
+        assertEquals("https://filmboom.top/", VidLinkCdnPolicy.effectiveReferer("https://bcdnxw.hakunaymatata.com/720.mp4", "https://filmboom.top/"))
+
+        // bcdn/sacdn strip everything; third-party keeps only genuine third-party referers
+        assertEquals("", VidLinkCdnPolicy.effectiveReferer("https://sacdn.hakunaymatata.com/x.mpd", "https://filmboom.top/"))
+        assertEquals("", VidLinkCdnPolicy.effectiveReferer("https://proxy.vendor.example/v.mp4", "https://vidlink.pro/"))
+        assertEquals("", VidLinkCdnPolicy.effectiveReferer("https://proxy.vendor.example/v.mp4", ""))
+        assertEquals("https://mirror.example/v.mp4", VidLinkCdnPolicy.effectiveReferer("https://proxy.vendor.example/v.mp4", "https://mirror.example/v.mp4"))
+
+        // apply() end-to-end: REQUIRE_FILMBOOM, STRIP and THIRD_PARTY header rewrites
+        val filmboomHeaders = mutableMapOf("Referer" to "https://vidlink.pro/", "Origin" to "https://vidlink.pro")
+        VidLinkCdnPolicy.apply("https://bcdnxw.hakunaymatata.com/1080.mp4", filmboomHeaders)
+        assertEquals("https://filmboom.top/", filmboomHeaders["Referer"])
+        assertEquals("https://filmboom.top", filmboomHeaders["Origin"])
+
+        val stripHeaders = mutableMapOf("Referer" to "https://filmboom.top/", "Origin" to "https://filmboom.top", "Cookie" to "CloudFront-Policy=a")
+        VidLinkCdnPolicy.apply("https://sacdn.hakunaymatata.com/dash/x.mpd", stripHeaders)
+        assertFalse(stripHeaders.containsKey("Referer"))
+        assertFalse(stripHeaders.containsKey("Origin"))
+        assertEquals("CloudFront-Policy=a", stripHeaders["Cookie"])
+
+        val thirdPartyHeaders = mutableMapOf("Referer" to "https://filmboom.top/", "Origin" to "https://x.example")
+        VidLinkCdnPolicy.apply("https://proxy.vendor.example/v.mp4", thirdPartyHeaders)
+        assertFalse(thirdPartyHeaders.containsKey("Referer"))
+        assertEquals("https://x.example", thirdPartyHeaders["Origin"])
+
+        // Download + playback surfaces route through the SAME policy outcomes
+        assertEquals(
+            "https://filmboom.top/",
+            StreamLinkOptimizer.getEffectiveReferer("https://bcdnxw.hakunaymatata.com/720.mp4", "https://vidlink.pro/", emptyMap(), "vidlink", "Vidlink")
+        )
+        assertEquals(
+            "",
+            StreamLinkOptimizer.getEffectiveReferer("https://sacdn.hakunaymatata.com/x.mpd", "https://filmboom.top/", emptyMap(), "vidlink", "Vidlink")
+        )
+        val downloadHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = mapOf("Referer" to "https://vidlink.pro/"),
+            url = "https://bcdnxw.hakunaymatata.com/720.mp4",
+            referer = "https://vidlink.pro/",
+            linkType = ExtractorLinkType.VIDEO,
+            source = "vidlink",
+            name = "Vidlink [720p]"
+        )
+        assertEquals("https://filmboom.top/", downloadHeaders["Referer"])
+        assertEquals("https://filmboom.top", downloadHeaders["Origin"])
     }
 }
 

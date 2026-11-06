@@ -170,16 +170,18 @@ object StreamLinkOptimizer {
 
     // Quality Tag Regexes
     private val QUALITY_EXPLICIT_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(2160|1440|1080|720|576|540|480|360)\s*[pP]?(?:[^a-zA-Z0-9]|$)""")
-    private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|3840[xX]2160|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
-    private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|2560[xX]1440|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
-    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX](?:79[6-9]|8\d{2}|9\d{2}|10[0-7]\d|1080)|(?:199[0-9]|2[0-5]\d{2}|26[0-4]\d)[xX](?:10[4-9]\d|1080)|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
+    private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
+    private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
+    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     // Bare "HD"/"SD" are deliberately absent: they are marketing grades, not resolutions, and
     // mapping them to 720p/480p is exactly how a 360p file ends up labelled as 720p. Only an
-    // explicit numeric height (handled by QUALITY_EXPLICIT_REGEX) or an exact pixel dimension
-    // proves a resolution, and FHD/QHD/4K are kept because those acronyms have a single meaning.
-    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX](?:5[2-9]\d|6\d{2}|7[01]\d|720)|(?:133[0-9]|1[4-7]\d{2}|18[0-4]\d)[xX](?:69\d|7[0-3]\d|720))(?:[^a-zA-Z0-9]|$)""")
-    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(85[248][xX](?:35[2-9]|36\d|480)|(?:88[0-9]|9\d{2}|1[01]\d{2}|12[0-4]\d)[xX](?:4[6-8]\d|480))(?:[^a-zA-Z0-9]|$)""")
-    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX](?:26[4-9]|27\d|360)|(?:66[0-9]|7\d{2}|8[0-9]\d|900)[xX](?:3[56]\d|360))(?:[^a-zA-Z0-9]|$)""")
+    // explicit numeric height (QUALITY_EXPLICIT_REGEX), an unambiguous acronym (FHD/QHD/4K/UHD),
+    // or an exact `WxH` pixel dimension proves a resolution. Exact dimensions are classified by
+    // the shared ResolutionTruth bands — the SAME mapping StreamPlayExtractor applies to manifest
+    // declarations — so the text layer and the manifest layer can never disagree on `1850x720`,
+    // `2650x1080`, `2048x1038` or any other dimension (there are no hand-maintained WxH regex
+    // tables left to drift apart).
+    private val DIMENSION_PAIR_REGEX = Regex("""(?<![a-zA-Z0-9])(\d{3,4})[xX](\d{3,4})(?![a-zA-Z0-9])""")
     private val EXPLICIT_QUALITY_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:quality|res|resolution|height|q)=([0-9]{3,4})[pP]?(?:&|$)""")
     private val EMBEDDED_MEDIA_URL_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:file|url|path|src)=([^&]+)""")
 
@@ -716,29 +718,7 @@ object StreamLinkOptimizer {
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
             }
             isVidlink -> {
-                if (lowerUrl.contains("bcdnxw.hakunaymatata.com")) {
-                    val suppliedRef = headers.entries.firstOrNull {
-                        it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
-                    }?.value ?: referer?.takeIf { it.isNotBlank() }
-                    val effRef = if (suppliedRef != null && suppliedRef.startsWith("http", ignoreCase = true)) {
-                        suppliedRef
-                    } else {
-                        "https://filmboom.top/"
-                    }
-                    headers[HEADER_REFERER] = effRef
-                    headers[HEADER_ORIGIN] = getHostUrl(effRef) ?: "https://filmboom.top"
-                } else if (lowerUrl.contains("bcdn") || lowerUrl.contains("sacdn") || lowerUrl.contains("hakunaymatata")) {
-                    headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
-                    headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
-                } else {
-                    headers.entries.removeIf { (k, v) ->
-                        (k.equals(HEADER_REFERER, ignoreCase = true) || k.equals(HEADER_ORIGIN, ignoreCase = true)) &&
-                            (v.contains("vidlink.pro", ignoreCase = true) ||
-                                v.contains("filmboom.top", ignoreCase = true) ||
-                                v.contains("embed", ignoreCase = true) ||
-                                v.isBlank())
-                    }
-                }
+                VidLinkCdnPolicy.apply(lowerUrl, headers, linkReferer = referer)
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -1330,25 +1310,10 @@ object StreamLinkOptimizer {
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
             isVidlink -> {
-                if (lowerUrl.contains("bcdnxw.hakunaymatata.com")) {
-                    val suppliedRef = headers.entries.firstOrNull {
-                        it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
-                    }?.value ?: referer?.takeIf { it.isNotBlank() }
-                    if (suppliedRef != null && suppliedRef.startsWith("http", ignoreCase = true)) {
-                        suppliedRef
-                    } else {
-                        "https://filmboom.top/"
-                    }
-                } else if (lowerUrl.contains("bcdn") || lowerUrl.contains("sacdn") || lowerUrl.contains("hakunaymatata")) {
-                    ""
-                } else {
-                    headers.entries.firstOrNull {
-                        it.key.equals(HEADER_REFERER, ignoreCase = true) &&
-                            !it.value.contains("vidlink.pro", ignoreCase = true) &&
-                            !it.value.contains("filmboom.top", ignoreCase = true) &&
-                            !it.value.contains("embed", ignoreCase = true)
-                    }?.value ?: ""
-                }
+                val suppliedRef = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                VidLinkCdnPolicy.effectiveReferer(lowerUrl, suppliedRef)
             }
             isMeowTv -> {
                 val supplied = headers.entries.firstOrNull {
@@ -1823,10 +1788,25 @@ object StreamLinkOptimizer {
         if (FOUR_K_REGEX.containsMatchIn(text)) return Qualities.P2160.value
         if (QHD_REGEX.containsMatchIn(text)) return Qualities.P1440.value
         if (FHD_REGEX.containsMatchIn(text)) return Qualities.P1080.value
-        if (HD_REGEX.containsMatchIn(text)) return Qualities.P720.value
-        if (SD_REGEX.containsMatchIn(text)) return Qualities.P480.value
-        if (P360_REGEX.containsMatchIn(text)) return Qualities.P360.value
-        return Qualities.Unknown.value
+        return matchDimensionPairs(text)
+    }
+
+    /**
+     * Classifies every exact `WxH` dimension pair in [text] through the shared [ResolutionTruth]
+     * bands and returns the highest tier found. This replaces the former hand-maintained
+     * FHD/HD/SD/P360 WxH regex families: one mapping serves both the manifest layer and this text
+     * layer, so the two can never disagree.
+     */
+    private fun matchDimensionPairs(text: String): Int {
+        var best = 0
+        for (m in DIMENSION_PAIR_REGEX.findAll(text)) {
+            val w = m.groupValues[1].toIntOrNull() ?: continue
+            val h = m.groupValues[2].toIntOrNull() ?: continue
+            if (minOf(w, h) < 100 || maxOf(w, h) > 4320) continue
+            val q = ResolutionTruth.classifyDimensions(w, h)
+            if (q > 0 && q != Qualities.Unknown.value && q > best) best = q
+        }
+        return if (best > 0) best else Qualities.Unknown.value
     }
 
     // ==================== Audio Track Normalization ====================
@@ -2408,9 +2388,11 @@ object StreamLinkOptimizer {
     fun isBetterThan(
         candidate: ExtractorLink,
         current: ExtractorLink,
-        isAnime: Boolean = isAnimeStream(candidate) || isAnimeStream(current)
+        isAnime: Boolean? = null
     ): Boolean {
-        val effectiveIsAnime = isAnime || isAnimeStream(candidate) || isAnimeStream(current)
+        // `null` auto-detects anime from the stream headers/extractor data; an explicit
+        // true/false from the caller is authoritative and never silently overridden.
+        val effectiveIsAnime = isAnime ?: (isAnimeStream(candidate) || isAnimeStream(current))
         val sourceRank1 = getSourcePriorityRank(candidate)
         val sourceRank2 = getSourcePriorityRank(current)
         val rawQ1 = getEffectiveQuality(candidate)
@@ -2850,9 +2832,11 @@ object StreamLinkOptimizer {
     @JvmOverloads
     fun getStreamCompositeScore(
         link: ExtractorLink,
-        isAnime: Boolean = isAnimeStream(link)
+        isAnime: Boolean? = null
     ): Float {
-        val effectiveIsAnime = isAnime || isAnimeStream(link)
+        // `null` auto-detects anime from the stream headers/extractor data; an explicit
+        // true/false from the caller is authoritative and never silently overridden.
+        val effectiveIsAnime = isAnime ?: isAnimeStream(link)
         val sourceRank = getSourcePriorityRank(link)
         val rawQuality = getEffectiveQuality(link)
         val isUnknown = isUnknownQuality(link, rawQuality)
@@ -2978,7 +2962,13 @@ object StreamLinkOptimizer {
         return baseScore + effectiveTiebreaker
     }
 
-    fun streamPriorityComparator(isAnime: Boolean = false): Comparator<ExtractorLink> = Comparator { a, b ->
+    /**
+     * Builds the stream priority comparator. `isAnime = null` auto-detects the mode per
+     * comparison from the links' `X-StreamPlay-Anime` headers (used by the shared
+     * [STREAM_PRIORITY_COMPARATOR] that sorts extractor emissions for both surfaces);
+     * an explicit true/false pins the mode for surfaces that know it (the dispatchers).
+     */
+    fun streamPriorityComparator(isAnime: Boolean? = null): Comparator<ExtractorLink> = Comparator { a, b ->
         when {
             isBetterThan(a, b, isAnime) -> -1
             isBetterThan(b, a, isAnime) -> 1
@@ -2986,7 +2976,7 @@ object StreamLinkOptimizer {
         }
     }
 
-    val STREAM_PRIORITY_COMPARATOR: Comparator<ExtractorLink> = streamPriorityComparator(isAnime = false)
+    val STREAM_PRIORITY_COMPARATOR: Comparator<ExtractorLink> = streamPriorityComparator()
 
     /**
      * Determines whether candidate stream is strictly higher priority for user playback than current stream,
@@ -2996,7 +2986,7 @@ object StreamLinkOptimizer {
     fun isStreamBetter(
         candidate: ExtractorLink,
         current: ExtractorLink,
-        isAnime: Boolean = false
+        isAnime: Boolean? = null
     ): Boolean {
         return isBetterThan(candidate, current, isAnime)
     }

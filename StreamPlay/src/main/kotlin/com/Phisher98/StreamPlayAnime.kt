@@ -470,14 +470,15 @@ class StreamPlayAnime : MainAPI() {
             onUpgradeCallback = { link -> dispatcher.onLinkAccepted(link) },
             isAnime = true
         )
-        val emittedSubtitles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-        // Distinct anime sources that delivered an English subtitle, plus the raw count. The app
-        // keeps one English subtitle per source so at least one is in sync with the release on disk;
-        // the completion phase below tops this up when the sweep was satisfied too early.
-        val englishSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        val completedSubtitleProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        // Real bookkeeping behind the anime 6-source English subtitle contract (SubtitleSourceLedger):
+        // distinct provenances count toward diversity, container providers that delivered are
+        // suppressed from re-querying, and `lang|canonical-url` (fragment-stripped) deduplication
+        // keeps one tracking entry per sidecar.
+        val subtitleLedger = SubtitleSourceLedger(
+            targetEnglishSources = ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES
+        )
         val englishSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
 
         val dubStatus: String =
@@ -551,23 +552,16 @@ class StreamPlayAnime : MainAPI() {
                     Log.d("StreamPlayShield", "🛡 dropped blocked subtitle URL via ${StreamPlayShield.hostOf(url)}")
                 } else {
                     val cleanedLang = cleanSubtitleLabel(sub.lang)
-                    val canonicalSubUrl = url.substringBefore('#').trim()
-                    val key = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$canonicalSubUrl"
-                    if (emittedSubtitles.add(key)) {
+                    if (subtitleLedger.markEmitted(cleanedLang, url)) {
                         val explicitProvenance = sub.headers?.entries
                             ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
                             ?.value?.trim()?.takeIf { it.isNotBlank() }
-                        val provenance = (explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(url) })
-                            .trim()
-                            .lowercase(java.util.Locale.ROOT)
-                        val normalizedSourceKey = sourceKey.trim().lowercase(java.util.Locale.ROOT)
+                        val provenance = subtitleLedger.normalizeProvenance(
+                            explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(url) }
+                        ).orEmpty()
                         if (isEnglishSubtitleLabel(cleanedLang)) {
                             englishSubtitleCount.incrementAndGet()
-                            englishSubtitleSources.add(provenance)
-                            completedSubtitleProviders.add(provenance)
-                            if (normalizedSourceKey.isNotBlank()) {
-                                completedSubtitleProviders.add(normalizedSourceKey)
-                            }
+                            subtitleLedger.recordEnglishDelivery(provenance, sourceKey)
                         }
                         @Suppress("DEPRECATION")
                         val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = url).apply {
@@ -756,18 +750,17 @@ class StreamPlayAnime : MainAPI() {
             // with subtitles. When the sweep was satisfied before enough distinct sources spoke, the
             // remaining ones are asked again — subtitle-first, but with the normal emission paths, so
             // a source that also has a link to offer still contributes it.
-            if (englishSubtitleSources.size < ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES) {
+            if (subtitleLedger.needsEnglishCompletion()) {
                 val completionSources = (videoSources + subtitleOnlySources)
                     .filter { source ->
-                        val normalizedId = source.id.trim().lowercase(java.util.Locale.ROOT)
-                        normalizedId !in englishSubtitleSources && normalizedId !in completedSubtitleProviders
+                        !subtitleLedger.isEnglishSource(source.id) && !subtitleLedger.isEnglishProviderCompleted(source.id)
                     }
                     .take(MAX_SUBTITLE_COMPLETION_PROVIDERS)
 
                 if (completionSources.isNotEmpty()) {
                     Log.d(
                         "StreamPlayAnime",
-                        "📝 Anime subtitle completion: ${englishSubtitleSources.size}/$ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES " +
+                        "📝 Anime subtitle completion: ${subtitleLedger.englishSubtitleSources.size}/$ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES " +
                             "English sources; querying ${completionSources.size} more " +
                             "(${completionSources.joinToString { it.id }})"
                     )
@@ -791,7 +784,7 @@ class StreamPlayAnime : MainAPI() {
                     )
                     val completionController = EarlySatisfactionController(
                         completionConfig,
-                        extraCondition = { englishSubtitleSources.size >= ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES }
+                        extraCondition = { subtitleLedger.englishSubtitleSources.size >= ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES }
                     )
 
                     SpeculativePipeliner.executePipelined(
@@ -803,14 +796,14 @@ class StreamPlayAnime : MainAPI() {
                     Log.d(
                         "StreamPlayAnime",
                         "📝 Anime subtitle completion finished: ${englishSubtitleCount.get()} English " +
-                            "subtitles from ${englishSubtitleSources.size} sources"
+                            "subtitles from ${subtitleLedger.englishSubtitleSources.size} sources"
                     )
                 }
             }
         } finally {
             dispatcher.flush()
         }
-        animeLinksFound.get() > 0 || emittedSubtitles.isNotEmpty()
+        animeLinksFound.get() > 0 || subtitleLedger.hasAnyEmittedSubtitle()
     }
 
     fun getStatus(t: String?): ShowStatus {
