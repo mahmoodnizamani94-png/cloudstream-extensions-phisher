@@ -96,18 +96,23 @@ private val SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX =
     Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
 // Mechanically audited homograph-free Urdu function words (see StreamPlay's
 // URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX for the full audit rules) — identical token set.
+// Homograph-free Urdu function-word evidence, scanned on RAW cue text only (see StreamPlay's
+// URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX for the full audit rules) — identical token set.
 internal val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])"""
+    """(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])"""
 )
+
 
 
 // Structural (list-independent) Persian/Arabic orthography signals (see StreamPlay's
 // PERSIAN_ZWNJ_VERB_PREFIX_REGEX documentation) — identical in both engines.
-private val SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
-    Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(?:می|نمی)\u200C""")
-private val SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0624\u0626\u0629\u0621]""")
+internal val SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
+    Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(?:می|نمی)\u200C""")
+internal val SUPERSTREAM_PERSIAN_YEH_RAW_HEH_REGEX =
+    Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+internal val SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629\u0621]""")
 private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زن|ساعة|سنة|سوف|سيارة|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
+    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زن|ساعة|سنة|سوف|سيارة|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
 )
 
 
@@ -1649,7 +1654,7 @@ object SuperStreamExtractor : SuperStream() {
         val normalized = normalizeUrduTypography(content)
         if (!SUPERSTREAM_URDU_SCRIPT_REGEX.containsMatchIn(normalized)) return false
         val urduDistinctiveCount = SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.findAll(normalized).count()
-        val urduUnambiguousFunctionCount = SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(normalized).count()
+        val urduUnambiguousFunctionCount = SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(content).count()
         val persianArabicExclusiveCount = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.findAll(normalized).count()
         val rawPersianArabicExclusiveCount = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(content).count()
         if (urduDistinctiveCount == 0 && urduUnambiguousFunctionCount == 0) return false
@@ -1673,7 +1678,7 @@ object SuperStreamExtractor : SuperStream() {
         val rawText = cues.joinToString("\n") { it.text }
         val combinedText = normalizeUrduTypography(rawText)
         val urduDistinctiveCount = SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.findAll(combinedText).count()
-        val urduUnambiguousFunctionCount = SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(combinedText).count()
+        val urduUnambiguousFunctionCount = SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(rawText).count()
         val persianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.findAll(combinedText).count()
         val rawPersianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(rawText).count()
 
@@ -1703,14 +1708,18 @@ object SuperStreamExtractor : SuperStream() {
             var faArabicLeaningCues = 0
             for (cue in cues) {
                 val cueNormalized = normalizeUrduTypography(cue.text)
+                // Dual counting (parity with StreamPlay): evidence and fa/ar-leaning are recorded
+                // INDEPENDENTLY per cue — no precedence bucket can inoculate an fa/ar marker.
                 if (SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.containsMatchIn(cueNormalized) ||
-                    SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(cueNormalized)
+                    SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(cue.text)
                 ) {
                     urduEvidenceCues++
-                } else if (
+                }
+                if (
                     SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cue.text) ||
                     SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.containsMatchIn(cueNormalized) ||
                     SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX.containsMatchIn(cue.text) ||
+                    SUPERSTREAM_PERSIAN_YEH_RAW_HEH_REGEX.containsMatchIn(cue.text) ||
                     SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX.containsMatchIn(cue.text)
                 ) {
                     faArabicLeaningCues++

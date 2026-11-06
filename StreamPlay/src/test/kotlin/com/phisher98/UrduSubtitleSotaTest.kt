@@ -1642,10 +1642,11 @@ class UrduSubtitleSotaTest {
         // ACCEPT. The evidence token is now stored with do-chashmi heh (رھا) — which normalization
         // never produces — and the hamza-less Arabic spellings اب/سب were removed outright.
         assertEquals("رہا", UrduSubtitleEngine.normalizeUrduTypography("رها"))
-        assertFalse(
-            "The evidence list must NOT match the normalized Persian رها",
-            UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا")
-        )
+        // Evidence is matched on RAW cue text only: the gol-heh token رہا exists for recall, but
+        // Persian رها (raw heh U+0647) can never match it before normalization runs — the
+        // homograph class is closed by the scan policy, not by the token set.
+        assertTrue(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا"))
+        assertFalse("Persian raw رها must never match the evidence list", UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رها"))
         assertFalse(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("اب"))
         assertFalse(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("سب"))
         val padded = buildString {
@@ -1733,6 +1734,104 @@ class UrduSubtitleSotaTest {
             UrduSubtitleEngine.containsVerifiedUrduScript(short4pad)
         )
     }
+
+    @Test
+    fun `Adversarial colloquial-Persian corpus is rejected and genuine-Urdu corpus is accepted`() {
+        // Round-5 finding (GLM): handcrafted per-round probes kept being falsified; an embedded
+        // corpus guards the whole language-gate class in CI. The Persian corpus covers یه (the
+        // normalization homograph), می‌/نمی‌ ZWNJ verbs, است/هست, hamza letters, and token-free
+        // colloquial lines; the Urdu corpus covers standard + do-chashmi spellings and shared
+        // homograph vocabulary.
+        val persianCorpus = listOf(
+            "یه لحظه صبر کن", "یه شب تمام روید", "یه جایی می‌رم که هیچکس نباشه",
+            "است یه بار دیگه فکر کن", "پدرم چای می‌خورد و روزنامه می‌خوند",
+            "او به مدرسه رفت و کتابش را جا گذاشت", "این خانه بزرگ‌تر از آن یکی است",
+            "أين أخي الآن؟ هل سمعت الخبر؟", "حالت چطوره؟ دیر رسیدی",
+            "دوستم تلفن کرد و گفت بیا", "سارا نان خرید و رفت", "رها شد و رفت"
+        )
+        val persianFile = buildString {
+            persianCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(
+            "The colloquial-Persian corpus must be rejected (any evidence it earns is homograph or structural noise)",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianFile)
+        )
+        val urduCorpus = listOf(
+            "یہ گھر بہت خوبصورت ہے اور تم اسے پسند کرو گے",
+            "کل ہم سب بازار جائیں گے اور ٹھیلوں سے خریداری کریں گے",
+            "میں نہیں جاؤں گا، تم یہاں رہو",
+            "وہ رہا ہے اور ہم اس کا انتظار کر رہے ہیں",
+            "یہ سؤال مؤثر ہے اور جائزہ لیا گیا",
+            "خدا حافظ، کل ملیں گے",
+            "بہت شکریہ، آپ کی مدد کے لیے",
+            "واہ! کیا بات ہے"
+        )
+        val urduFile = buildString {
+            urduCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertTrue(
+            "The genuine-Urdu corpus (standard + do-chashmi spellings, shared homographs, formal loanwords) must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(urduFile)
+        )
+    }
+    @Test
+    fun `Pure-Persian colloquial yeh files are rejected via the raw-heh structural signal`() {
+        // Round-5 finding (GLM), probe (m): Persian colloquial یه normalizes into the Urdu evidence
+        // token یہ — a 100%-Persian file with zero tokens/ZWNJ/hamza/glyphs was ACCEPTED. Evidence
+        // now scans RAW cue text only (یہ cannot match یه), and word-initial ی + raw heh U+0647 is
+        // a structural Persian signal, so every cue here leans and the dominance rule rejects.
+        val persianYeh = buildString {
+            val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+            for ((idx, line) in lines.withIndex()) {
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(
+            "A 100%-Persian colloquial-yeh file must be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianYeh)
+        )
+    }
+
+    @Test
+    fun `Evidence precedence cannot inoculate fa-ar markers (dual counting regression)`() {
+        // Round-5 finding (GLM), probes (n)/(o): cues carrying BOTH a fa/ar marker and an evidence
+        // token were counted as evidence only (else-if precedence), so `است یه` per cue inoculated
+        // a Persian file. Dual counting records leaning independently — every cue here leans.
+        val inoculated = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("است یه\n\n")
+            }
+        }
+        assertFalse(
+            "است یه cues must lean fa/ar (dual counting), rejecting the file",
+            UrduSubtitleEngine.containsVerifiedUrduScript(inoculated)
+        )
+    }
+
+    @Test
+    fun `Standard gol-heh orthography retains full evidence recall`() {
+        // Round-5 finding (GLM), Probe2: the round-4 respell dropped standard gol-heh spellings
+        // (نہیں/پہلے) from evidence matching. Both spellings are now listed, and the
+        // normalization-colliding Arabic pronouns (هم/هو/هي) were removed from the fa/ar list so
+        // genuine ہم never leans fa/ar under dual counting.
+        val standard = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nمیں پہلے ہی کہہ چکا تھا کہ میں نہیں آؤں گا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nتم بھی وہی کہو گے جو سب کہتے ہیں\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nہم نے پھر بھی اپنا فیصلہ سنایا\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nآخرکار سب کو میری بات ماننی پڑی\n")
+        }
+        assertTrue(
+            "Standard gol-heh orthography must retain full evidence recall",
+            UrduSubtitleEngine.containsVerifiedUrduScript(standard)
+        )
+    }
 }
-
-

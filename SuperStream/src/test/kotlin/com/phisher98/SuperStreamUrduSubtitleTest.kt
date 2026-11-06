@@ -875,7 +875,8 @@ class SuperStreamUrduSubtitleTest {
     @Test
     fun `Persian raha padding, ZWNJ verbs, Arabic hamza, and tiered share floors mirror StreamPlay`() {
         assertEquals("رہا", SuperStreamExtractor.normalizeUrduTypography("رها"))
-        assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا"))
+        assertTrue(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا"))
+        assertFalse("Persian raw رها must never match the evidence list", SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رها"))
         assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("اب"))
         assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("سب"))
         val rhaPadded = buildString {
@@ -927,5 +928,66 @@ class SuperStreamUrduSubtitleTest {
             }
         }
         assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(short4pad))
+    }
+
+    @Test
+    fun `Adversarial colloquial-Persian corpus is rejected and genuine-Urdu corpus is accepted in SuperStream too`() {
+        val persianCorpus = listOf(
+            "یه لحظه صبر کن", "یه شب تمام روید", "یه جایی می‌رم که هیچکس نباشه",
+            "است یه بار دیگه فکر کن", "پدرم چای می‌خورد و روزنامه می‌خوند",
+            "او به مدرسه رفت و کتابش را جا گذاشت", "این خانه بزرگ‌تر از آن یکی است",
+            "أين أخي الآن؟ هل سمعت الخبر؟", "حالت چطوره؟ دیر رسیدی",
+            "دوستم تلفن کرد و گفت بیا", "سارا نان خرید و رفت", "رها شد و رفت"
+        )
+        val persianFile = buildString {
+            persianCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianFile))
+        val urduCorpus = listOf(
+            "یہ گھر بہت خوبصورت ہے اور تم اسے پسند کرو گے",
+            "کل ہم سب بازار جائیں گے اور ٹھیلوں سے خریداری کریں گے",
+            "میں نہیں جاؤں گا، تم یہاں رہو",
+            "وہ رہا ہے اور ہم اس کا انتظار کر رہے ہیں",
+            "یہ سؤال مؤثر ہے اور جائزہ لیا گیا",
+            "خدا حافظ، کل ملیں گے",
+            "بہت شکریہ، آپ کی مدد کے لیے",
+            "واہ! کیا بات ہے"
+        )
+        val urduFile = buildString {
+            urduCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(urduFile))
+    }
+    @Test
+    fun `Pure-Persian yeh files, dual counting, and gol-heh recall mirror StreamPlay`() {
+        val persianYeh = buildString {
+            val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+            for ((idx, line) in lines.withIndex()) {
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianYeh))
+        val inoculated = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("است یه\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(inoculated))
+        val standard = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nمیں پہلے ہی کہہ چکا تھا کہ میں نہیں آؤں گا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nتم بھی وہی کہو گے جو سب کہتے ہیں\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nہم نے پھر بھی اپنا فیصلہ سنایا\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nآخرکار سب کو میری بات ماننی پڑی\n")
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(standard))
     }
 }
