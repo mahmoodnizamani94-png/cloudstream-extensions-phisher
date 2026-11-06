@@ -1029,6 +1029,7 @@ class SuperStreamUrduSubtitleTest {
             "طریق", "عین", "غیر", "بین", "بیت", "یوم", "فوق", "مع", "ما", "چون",
             "ہمین", "کند", "ہست", "ہن", "ہمہ", "بلہ", "تلک",
             "ہن",
+            "کان", "چرا",
         )
         for (token in faTokens) {
             assertFalse("fa/ar token must not BE an Urdu word: $token", token in urduVocabulary)
@@ -1135,6 +1136,16 @@ class SuperStreamUrduSubtitleTest {
         assertTrue(
             "Everyday غیر/عین cues and standalone انشاء اللہ must be accepted",
             SuperStreamExtractor.containsVerifiedUrduScript(everydayLoanwords)
+        )
+        // Round-8 (Gemini): discriminative ء test — passes ONLY when ء is exempted.
+        val hamzaDiscriminative = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nانشاء اللہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nماشاء اللہ!\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nیہ بہت اچھا ہے\n")
+        }
+        assertTrue(
+            "Standalone hamza exclamations must be neutral (ء exempted), so the file is accepted",
+            SuperStreamExtractor.containsVerifiedUrduScript(hamzaDiscriminative)
         )
     }
 }

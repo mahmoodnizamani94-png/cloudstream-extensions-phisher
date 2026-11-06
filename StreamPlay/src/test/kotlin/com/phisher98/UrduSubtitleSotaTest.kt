@@ -1884,6 +1884,7 @@ class UrduSubtitleSotaTest {
             "طریق", "عین", "غیر", "بین", "بیت", "یوم", "فوق", "مع", "ما", "چون",
             "ہمین", "کند", "ہست", "ہن", "ہمہ", "بلہ", "تلک",
             "ہن",
+            "کان", "چرا",
         )
         for (token in tokensOf(UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)) {
             assertFalse(
@@ -1998,6 +1999,17 @@ class UrduSubtitleSotaTest {
         assertTrue(
             "Everyday غیر/عین cues and standalone انشاء اللہ must be accepted",
             UrduSubtitleEngine.containsVerifiedUrduScript(everydayLoanwords)
+        )
+        // Round-8 (Gemini): discriminative ء test — passes ONLY when ء is exempted. With ء in the
+        // signal, the two standalone hamza cues lean (2 > 1 dominance) and the 40% floor fires.
+        val hamzaDiscriminative = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nانشاء اللہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nماشاء اللہ!\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nیہ بہت اچھا ہے\n")
+        }
+        assertTrue(
+            "Standalone hamza exclamations must be neutral (ء exempted), so the file is accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(hamzaDiscriminative)
         )
     }
 }
