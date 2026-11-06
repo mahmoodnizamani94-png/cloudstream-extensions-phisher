@@ -94,13 +94,22 @@ private val SUPERSTREAM_URDU_SCRIPT_REGEX =
 // Letters that exist in Urdu but NOT in standard Arabic or Persian (ٹ, ڈ, ڑ, ں, ے, ھ)
 private val SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX =
     Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
-private val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اب|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رہا|رہی|رہے|ساتھ|سب|سے|لیے|میں|نہیں|وہ|پھر|پہلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])"""
+// Mechanically audited homograph-free Urdu function words (see StreamPlay's
+// URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX for the full audit rules) — identical token set.
+internal val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
+    """(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])"""
 )
 
+
+// Structural (list-independent) Persian/Arabic orthography signals (see StreamPlay's
+// PERSIAN_ZWNJ_VERB_PREFIX_REGEX documentation) — identical in both engines.
+private val SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
+    Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(?:می|نمی)\u200C""")
+private val SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0624\u0626\u0629\u0621]""")
 private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آسمان|آفتاب|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باران|باشد|باشه|باید|بدون|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|جنگل|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|درخت|دریا|دقیقه|دون|دیدم|دیدی|دیروز|دیوار|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زمین|زن|ساعة|ستاره|سر|سفید|سلام|سنة|سوف|سيارة|سیاه|شاید|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|عالم|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قشنگ|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منزل|منم|مهتاب|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نقره|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نگاه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|پنجره|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
+    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زن|ساعة|سنة|سوف|سيارة|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|هم|همه|همین|هن|هنا|هناك|هو|هي|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
 )
+
 
 
 // Same fa/ar marker set, but expressed in the glyphs `normalizeUrduTypography` produces
@@ -1700,7 +1709,9 @@ object SuperStreamExtractor : SuperStream() {
                     urduEvidenceCues++
                 } else if (
                     SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(cue.text) ||
-                    SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.containsMatchIn(cueNormalized)
+                    SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.containsMatchIn(cueNormalized) ||
+                    SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX.containsMatchIn(cue.text) ||
+                    SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX.containsMatchIn(cue.text)
                 ) {
                     faArabicLeaningCues++
                 }
@@ -1708,7 +1719,10 @@ object SuperStreamExtractor : SuperStream() {
             if (faArabicLeaningCues > urduEvidenceCues) {
                 return false
             }
-            if (urduEvidenceCues * 100 < urduCueCount * 40) {
+            // Share (parity with StreamPlay): 40% floor when any cue leans fa/ar, 30% when the file
+            // carries no fa/ar signal at all (pure neutral-padding defense).
+            val shareFloor = if (faArabicLeaningCues > 0) 40 else 30
+            if (urduEvidenceCues * 100 < urduCueCount * shareFloor) {
                 return false
             }
         }

@@ -1384,7 +1384,7 @@ class UrduSubtitleSotaTest {
         // rejects it.
         val padding = listOf(
             "او به مدرسه رفت",
-            "پدرم چای می\u200Cخورد",
+            "سارا نان خرید",
             "او نامه نوشت",
             "حالت چطوره؟",
             "دیر رسید",
@@ -1633,6 +1633,105 @@ class UrduSubtitleSotaTest {
             server.stop(0)
             UrduSubtitleEngine.clearCachesForTest()
         }
+    }
+
+    @Test
+    fun `Persian raha padding can no longer earn Urdu-evidence credit via the ra-ha homograph`() {
+        // Round-4 finding (GLM): normalizeUrduTypography("رها") == "رہا", and رہا was in the
+        // evidence list, so one Persian رها per cue flipped a fully-detected Persian file to
+        // ACCEPT. The evidence token is now stored with do-chashmi heh (رھا) — which normalization
+        // never produces — and the hamza-less Arabic spellings اب/سب were removed outright.
+        assertEquals("رہا", UrduSubtitleEngine.normalizeUrduTypography("رها"))
+        assertFalse(
+            "The evidence list must NOT match the normalized Persian رها",
+            UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا")
+        )
+        assertFalse(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("اب"))
+        assertFalse(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("سب"))
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("رها شد\n\n")
+            }
+        }
+        assertFalse(
+            "A رها-padded Persian file must be rejected by the share gate",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Persian ZWNJ verb prefixes are detected structurally without any token list`() {
+        // Structural orthography signal (list-independent): Urdu orthography never uses ZWNJ, so
+        // می\u200C / نمی\u200C verb prefixes flag Persian regardless of the curated token list.
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("پدرم چای می\u200Cخورد\n\n")
+            }
+        }
+        assertFalse(
+            "A ZWNJ-verb Persian body must be rejected via structural dominance",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Arabic hamza orthography is detected structurally without any token list`() {
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..7) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("أين أخي الآن؟\n\n")
+            }
+        }
+        assertFalse(
+            "An Arabic-hamza body must be rejected via structural dominance",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Short genuine Urdu snippets and vocative-dense files survive the tiered share floor`() {
+        // Round-4 finding (GLM): the 40% cliff rejected a 3-cue genuine snippet (1 evidence cue)
+        // and vocative-dense files beyond 50% bare-cue share. The floor is now 40% when any cue
+        // leans fa/ar and 30% when the file carries no fa/ar signal at all.
+        val short3 = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nواہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nخوبصورت ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nشکریہ\n")
+        }
+        assertTrue(
+            "A 3-cue genuine snippet with 1 evidence cue must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(short3)
+        )
+        val vocativeDense = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 21..32) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(
+            "A 62.5% bare-vocative file (37.5% evidence share, 0 fa/ar-leaning) must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(vocativeDense)
+        )
+        val short4pad = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..4) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("او به مدرسه رفت\n\n")
+            }
+        }
+        assertFalse(
+            "A 4-cue token-free padding file (25% evidence) must still be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(short4pad)
+        )
     }
 }
 

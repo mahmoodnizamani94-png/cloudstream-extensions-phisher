@@ -811,10 +811,11 @@ class SuperStreamUrduSubtitleTest {
     fun `Token-free Persian padding with one Urdu line is rejected by the evidence-share gate in SuperStream too`() {
         // Round-3 finding (GLM): the share gate is the list-independent defense; every padding
         // line below was mechanically verified token-free against the compiled RAW and normalized
-        // patterns, so ONLY the >= 40% evidence-share gate rejects this file.
+        // patterns AND free of the structural orthography signals (no ZWNJ verb prefix, no
+// Arabic hamza letters), so ONLY the evidence-share gate rejects this file.
         val padding = listOf(
             "او به مدرسه رفت",
-            "پدرم چای می\u200Cخورد",
+            "سارا نان خرید",
             "او نامه نوشت",
             "حالت چطوره؟",
             "دیر رسید",
@@ -871,5 +872,60 @@ class SuperStreamUrduSubtitleTest {
             SuperStreamExtractor.isSuperStreamTrustedCachedUrduContent("جستجوی متن بدون تایم‌استمپ")
         )
     }
+    @Test
+    fun `Persian raha padding, ZWNJ verbs, Arabic hamza, and tiered share floors mirror StreamPlay`() {
+        assertEquals("رہا", SuperStreamExtractor.normalizeUrduTypography("رها"))
+        assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا"))
+        assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("اب"))
+        assertFalse(SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("سب"))
+        val rhaPadded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("رها شد\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(rhaPadded))
+        val zwnjPadded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("پدرم چای می\u200Cخورد\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(zwnjPadded))
+        val hamzaPadded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..7) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("أين أخي الآن؟\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(hamzaPadded))
+        val short3 = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nواہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nخوبصورت ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nشکریہ\n")
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(short3))
+        val vocativeDense = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 21..32) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(vocativeDense))
+        val short4pad = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..4) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("او به مدرسه رفت\n\n")
+            }
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(short4pad))
+    }
 }
-
