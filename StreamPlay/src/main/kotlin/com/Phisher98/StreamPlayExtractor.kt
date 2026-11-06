@@ -928,7 +928,7 @@ object StreamPlayExtractor : StreamPlay() {
             val isMaskedMaster = srcUrl.contains("master.m3u8", ignoreCase = true) ||
                 srcUrl.contains("master.txt", ignoreCase = true) ||
                 srcUrl.substringBefore("?").endsWith(".txt", ignoreCase = true)
-            if (labeledQuality != Qualities.Unknown.value && !isMaskedMaster) {
+            if (linkType == ExtractorLinkType.VIDEO && labeledQuality != Qualities.Unknown.value && !isMaskedMaster) {
                 emitTopTierDualQualityStreamLinks(
                     source = "Animex",
                     baseName = baseName,
@@ -957,6 +957,8 @@ object StreamPlayExtractor : StreamPlay() {
                     url = srcUrl,
                     referer = referer,
                     headers = streamHeaders,
+                    declaredQuality = labeledQuality,
+                    durationHintSeconds = HLS_SIZE_HINT_SECONDS,
                     callback = countingCallback
                 )
             }
@@ -2409,7 +2411,13 @@ object StreamPlayExtractor : StreamPlay() {
             return
         }
         val declared = source.quality.takeIf { it > 0 && it != Qualities.Unknown.value }
-        val sizeSuffix = source.sizeMb?.takeIf { it > 0 }?.let { " [$it MB]" }.orEmpty()
+        val measuredMb = if (source.sizeMb == null && !manifest.isNullOrBlank()) {
+            measureHlsMediaPlaylistSizeMb(streamUrl, manifest, streamHeaders)
+        } else {
+            null
+        }
+        val effectiveSizeMb = source.sizeMb?.takeIf { it > 0 } ?: measuredMb?.takeIf { it > 0 }
+        val sizeSuffix = effectiveSizeMb?.let { " [$it MB]" }.orEmpty()
         val name = if (declared != null) {
             "$baseName [${vidsrcQualityTag(declared)}]$sizeSuffix"
         } else {
@@ -2417,7 +2425,7 @@ object StreamPlayExtractor : StreamPlay() {
         }
         emitTopTierDualQualityStreamLinks(
             source = "AnimePahe",
-            baseName = name,
+            baseName = baseName,
             url = streamUrl,
             referer = kwikReferer,
             headers = streamHeaders,
@@ -2498,6 +2506,15 @@ object StreamPlayExtractor : StreamPlay() {
                 ) ?: return@withTimeoutOrNull
                 val sources = animePaheParsePlaySources(playHtml)
                     .filter { if (wantDub) it.isDub else it.isOriginalAudio }
+                    .sortedWith(
+                        compareBy<AnimePahePlaySource> {
+                            when (it.quality) {
+                                Qualities.P720.value -> 0
+                                Qualities.P1080.value -> 1
+                                else -> 2
+                            }
+                        }.thenBy { it.sizeMb ?: Int.MAX_VALUE }
+                    )
                 if (sources.isEmpty()) return@withTimeoutOrNull
 
                 val companionTitles = (listOf(resolved.title) + titles)
@@ -2545,6 +2562,10 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
+    private const val ANIZONE_PLAYER_CACHE_TTL_MS = 10 * 60 * 1000L
+    private val aniZoneEpisodePlayerCache = java.util.concurrent.ConcurrentHashMap<String, Pair<AniZonePlayer, Long>>()
+    private val aniZoneEpisodePlayerInFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<AniZonePlayer?>>()
+
     /**
      * Harvests frame-synced external soft-subtitles (`SubsPlease`, `Erai-raws`, `HorribleSubs`,
      * `Kaizoku`) matching the resolved AnimePahe release so an AnimePahe download always carries
@@ -2567,8 +2588,6 @@ object StreamPlayExtractor : StreamPlay() {
                     preferredFansubs.any { fansub -> track.label.contains(fansub, ignoreCase = true) }
                 }
             } else {
-                // When AniZone has multiple English tracks (e.g. .srt + .ass or multiple fansub groups),
-                // emit the secondary track first under animepahe provenance so both tracks survive URL deduplication.
                 if (englishTracks.size > 1) englishTracks.drop(1) + englishTracks.first() else englishTracks
             }
             val subHeaders = ANIZONE_HEADERS + mapOf(
@@ -2577,10 +2596,10 @@ object StreamPlayExtractor : StreamPlay() {
             )
             val emitted = HashSet<String>()
             ordered.forEach { track ->
-                val distinctTrackUrl = if (track.url.contains('#')) track.url else "${track.url}#animepahe"
-                if (emitted.add(distinctTrackUrl)) {
+                val cleanTrackUrl = track.url.trim()
+                if (cleanTrackUrl.isNotBlank() && emitted.add(cleanTrackUrl)) {
                     subtitleCallback(
-                        newSubtitleFile(aniZoneNormalizeEnglishLabel(track), distinctTrackUrl) {
+                        newSubtitleFile(aniZoneNormalizeEnglishLabel(track), cleanTrackUrl) {
                             this.headers = subHeaders
                         }
                     )
@@ -2602,30 +2621,61 @@ object StreamPlayExtractor : StreamPlay() {
             .distinctBy { it.lowercase(Locale.ROOT) }
             .take(MAX_ANIME_SOURCE_TITLE_QUERIES)
         if (queries.isEmpty()) return null
-        var hit: AniZoneSearchHit? = null
-        for (query in queries) {
-            val html = withTimeoutOrNull(7_000L) {
-                cancellableGetText(
-                    "$ANIZONE_HOST/anime?search=${URLEncoder.encode(query, "UTF-8")}",
-                    headers = ANIZONE_HEADERS,
-                    timeoutSec = 6L
-                )
-            } ?: break
-            hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
-            if (hit != null) break
+        val cacheKey = "${queries.joinToString("|") { it.lowercase(Locale.ROOT) }}|${year ?: 0}|$episodeNumber|$isMovie"
+        val now = System.currentTimeMillis()
+        aniZoneEpisodePlayerCache[cacheKey]?.let { (cached, ts) ->
+            if (now - ts < ANIZONE_PLAYER_CACHE_TTL_MS) return cached
         }
-        val resolved = hit ?: return null
-        val baseUrl = resolved.url.trim()
-            .replaceFirst("http://", "https://")
-            .substringBefore('?')
-            .trimEnd('/')
-            .takeIf { it.startsWith("http", ignoreCase = true) }
-            ?: "$ANIZONE_HOST/anime/${resolved.slug}"
-        val pageUrl = "$baseUrl/$episodeNumber"
-        val pageHtml = withTimeoutOrNull(7_000L) {
-            cancellableGetText(pageUrl, headers = ANIZONE_HEADERS, timeoutSec = 6L)
-        } ?: return null
-        return aniZoneParsePlayer(pageHtml)
+        val newDeferred = kotlinx.coroutines.CompletableDeferred<AniZonePlayer?>()
+        val existingDeferred = aniZoneEpisodePlayerInFlight.putIfAbsent(cacheKey, newDeferred)
+        if (existingDeferred != null) {
+            return existingDeferred.await()
+        }
+        try {
+            var hit: AniZoneSearchHit? = null
+            for (query in queries) {
+                val html = withTimeoutOrNull(7_000L) {
+                    cancellableGetText(
+                        "$ANIZONE_HOST/anime?search=${URLEncoder.encode(query, "UTF-8")}",
+                        headers = ANIZONE_HEADERS,
+                        timeoutSec = 6L
+                    )
+                } ?: break
+                hit = pickAniZoneHit(aniZoneParseSearchItems(html), titles, year, isMovie)
+                if (hit != null) break
+            }
+            val resolved = hit ?: run {
+                newDeferred.complete(null)
+                return null
+            }
+            val baseUrl = resolved.url.trim()
+                .replaceFirst("http://", "https://")
+                .substringBefore('?')
+                .trimEnd('/')
+                .takeIf { it.startsWith("http", ignoreCase = true) }
+                ?: "$ANIZONE_HOST/anime/${resolved.slug}"
+            val pageUrl = "$baseUrl/$episodeNumber"
+            val pageHtml = withTimeoutOrNull(7_000L) {
+                cancellableGetText(pageUrl, headers = ANIZONE_HEADERS, timeoutSec = 6L)
+            } ?: run {
+                newDeferred.complete(null)
+                return null
+            }
+            val parsedPlayer = aniZoneParsePlayer(pageHtml)
+            if (parsedPlayer != null) {
+                if (aniZoneEpisodePlayerCache.size > 64) {
+                    aniZoneEpisodePlayerCache.clear()
+                }
+                aniZoneEpisodePlayerCache[cacheKey] = parsedPlayer to System.currentTimeMillis()
+            }
+            newDeferred.complete(parsedPlayer)
+            return parsedPlayer
+        } catch (t: Throwable) {
+            newDeferred.complete(null)
+            throw t
+        } finally {
+            aniZoneEpisodePlayerInFlight.remove(cacheKey, newDeferred)
+        }
     }
 
     /**
@@ -4227,7 +4277,26 @@ object StreamPlayExtractor : StreamPlay() {
                 suspend fun fetchDualEnvStreams(token: String): Pair<VidlinkStream?, VidlinkStream?> = coroutineScope {
                     val stdDeferred = async { fetchStreamForToken(token, "standard") }
                     val dashDeferred = async { fetchStreamForToken(token, "dash-hevc") }
-                    Pair(stdDeferred.await(), dashDeferred.await())
+                    val stdRes = stdDeferred.await()
+                    val stdQuals = stdRes?.qualities.orEmpty()
+                    val hasStd720 = stdQuals.entries.any { (k, v) ->
+                        (k.equals("720", ignoreCase = true) || k.equals("720p", ignoreCase = true)) &&
+                            !v.url.isNullOrBlank() && v.url.trim().startsWith("http", ignoreCase = true)
+                    }
+                    val hasStd1080 = stdQuals.entries.any { (k, v) ->
+                        (k.equals("1080", ignoreCase = true) || k.equals("1080p", ignoreCase = true)) &&
+                            !v.url.isNullOrBlank() && v.url.trim().startsWith("http", ignoreCase = true)
+                    }
+                    val hasStdEnSub = stdRes?.captions?.any {
+                        !it.url.isNullOrBlank() && cleanSubtitleLabel(it.language).contains("en", ignoreCase = true)
+                    } == true
+                    val dashRes = if (hasStd720 && hasStd1080 && hasStdEnSub) {
+                        dashDeferred.cancel()
+                        null
+                    } else {
+                        dashDeferred.await()
+                    }
+                    Pair(stdRes, dashRes)
                 }
 
                 // SOTA Phase 1: High-performance, offline-native XSalsa20-Poly1305 encryption.
@@ -4292,6 +4361,8 @@ object StreamPlayExtractor : StreamPlay() {
                 ): MutableMap<String, String> {
                     val result = mutableMapOf<String, String>()
                     val requiresFilmboomReferer = targetUrl.contains("bcdnxw.hakunaymatata.com", ignoreCase = true)
+                    val isStripRefererHost = targetUrl.contains("bcdn.hakunaymatata.com", ignoreCase = true) ||
+                        targetUrl.contains("sacdn.hakunaymatata.com", ignoreCase = true)
                     var suppliedRef: String? = null
                     var suppliedOrig: String? = null
                     inputHeaders?.forEach { (k, v) ->
@@ -4308,6 +4379,23 @@ object StreamPlayExtractor : StreamPlay() {
                     if (requiresFilmboomReferer) {
                         result["Referer"] = suppliedRef ?: "https://filmboom.top/"
                         result["Origin"] = suppliedOrig ?: "https://filmboom.top"
+                    } else if (!isStripRefererHost) {
+                        val ref = suppliedRef
+                        if (!ref.isNullOrBlank() &&
+                            !ref.contains("filmboom.top", ignoreCase = true) &&
+                            !ref.contains("vidlink.pro", ignoreCase = true) &&
+                            !ref.contains("embed", ignoreCase = true)
+                        ) {
+                            result["Referer"] = ref
+                        }
+                        val orig = suppliedOrig
+                        if (!orig.isNullOrBlank() &&
+                            !orig.contains("filmboom.top", ignoreCase = true) &&
+                            !orig.contains("vidlink.pro", ignoreCase = true) &&
+                            !orig.contains("embed", ignoreCase = true)
+                        ) {
+                            result["Origin"] = orig
+                        }
                     }
                     result["User-Agent"] = cronetUserAgent
                     result["Accept"] = "*/*"
@@ -4366,8 +4454,12 @@ object StreamPlayExtractor : StreamPlay() {
                 // 2. Collect direct MP4 stream qualities from standard/dash responses
                 val directQualitiesLinks = mutableListOf<ExtractorLink>()
                 val mergedQualities = buildMap {
-                    dashStream?.qualities?.let { putAll(it) }
-                    standardStream?.qualities?.let { putAll(it) }
+                    dashStream?.qualities
+                        ?.filterValues { !it.url.isNullOrBlank() && it.url.trim().startsWith("http", ignoreCase = true) }
+                        ?.let { putAll(it) }
+                    standardStream?.qualities
+                        ?.filterValues { !it.url.isNullOrBlank() && it.url.trim().startsWith("http", ignoreCase = true) }
+                        ?.let { putAll(it) }
                 }
                 mergedQualities.entries.forEach { (qualityKey, qualityObj) ->
                     val videoUrl = qualityObj.url?.trim()
@@ -4382,7 +4474,6 @@ object StreamPlayExtractor : StreamPlay() {
                             360 -> Qualities.P360.value
                             else -> StreamLinkOptimizer.extractQualityFromText(qualityKey).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
                         }
-                        val isDirectVideo = !videoUrl.contains(".m3u8", ignoreCase = true) && !videoUrl.contains(".mpd", ignoreCase = true)
 
                         val cleanVideoUrl = if (videoUrl.contains("headers=")) {
                             videoUrl.replace(Regex("""([?&])headers=[^&]*(&|$)"""), "$1").trimEnd('?', '&')
@@ -4390,6 +4481,11 @@ object StreamPlayExtractor : StreamPlay() {
                             videoUrl
                         }
                         if (cleanVideoUrl.startsWith("http", ignoreCase = true)) {
+                            val directLinkType = when {
+                                cleanVideoUrl.substringBefore('?').endsWith(".mpd", ignoreCase = true) -> ExtractorLinkType.DASH
+                                cleanVideoUrl.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
+                                else -> ExtractorLinkType.VIDEO
+                            }
                             val qualHeaders = sanitizeVidlinkHeaders(qualityObj.headers, cleanVideoUrl)
                             val effectiveReferer = qualHeaders["Referer"].orEmpty()
                             val effectiveQuality = when {
@@ -4403,16 +4499,16 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                             val sizeLabel = StreamLinkOptimizer.normalizeSizeLabel(qualityObj.size)
                             val displayName = if (sizeLabel != null) {
-                                "$directBaseName $effectiveQuality [$sizeLabel]"
+                                "$directBaseName [$effectiveQuality] [$sizeLabel]"
                             } else {
-                                "$directBaseName $effectiveQuality"
+                                "$directBaseName [$effectiveQuality]"
                             }
                             directQualitiesLinks.add(
                                 newExtractorLink(
                                     "Vidlink",
                                     displayName,
                                     url = cleanVideoUrl,
-                                    type = if (isDirectVideo) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+                                    type = directLinkType
                                 ) {
                                     this.referer = effectiveReferer
                                     this.quality = qual
@@ -4424,7 +4520,12 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-                val hasDirect720p = directQualitiesLinks.any { it.quality == Qualities.P720.value }
+                val hasDirect720p = directQualitiesLinks.any {
+                    it.quality == Qualities.P720.value || StreamLinkOptimizer.is720p(it)
+                }
+                val hasDirect1080p = directQualitiesLinks.any {
+                    it.quality == Qualities.P1080.value || StreamLinkOptimizer.is1080p(it)
+                }
                 if (hasDirect720p && directQualitiesLinks.isNotEmpty()) {
                     // Fast path: direct MP4 qualities already include a verified 720p link; emit immediately!
                     emitTopTierDualQualityStreamLinks(
@@ -4475,6 +4576,8 @@ object StreamPlayExtractor : StreamPlay() {
                     val playlistHeaders = sanitizeVidlinkHeaders(s.playlistHeaders, cleanPlaylistUrl)
                     if (effOrig.isNotBlank()) playlistHeaders["Origin"] = effOrig
                     if (effRef.isNotBlank()) playlistHeaders["Referer"] = effRef
+                    val finalEffRef = playlistHeaders["Referer"].orEmpty()
+                    val finalEffOrig = playlistHeaders["Origin"].orEmpty()
 
                     val isDashStream = s.type.equals("dash", ignoreCase = true) ||
                         cleanPlaylistUrl.substringBefore('?').endsWith(".mpd", ignoreCase = true)
@@ -4510,7 +4613,7 @@ object StreamPlayExtractor : StreamPlay() {
                                     url = v.url,
                                     type = linkType
                                 ) {
-                                    this.referer = effRef
+                                    this.referer = finalEffRef
                                     this.quality = v.quality
                                     this.headers = playlistHeaders
                                 }
@@ -4520,7 +4623,7 @@ object StreamPlayExtractor : StreamPlay() {
                                 generateM3u8(
                                     "Vidlink",
                                     cleanPlaylistUrl,
-                                    referer = effRef,
+                                    referer = finalEffRef,
                                     headers = playlistHeaders
                                 )
                             }.getOrNull()
@@ -4534,10 +4637,16 @@ object StreamPlayExtractor : StreamPlay() {
                             (s.playlistHeaders.orEmpty() + genLink.headers),
                             genLink.url
                         )
-                        if (effRef.isNotBlank()) finalHeaders["Referer"] = effRef
-                        if (effOrig.isNotBlank()) finalHeaders["Origin"] = effOrig
+                        if (finalEffRef.isNotBlank() && finalHeaders["Referer"].isNullOrBlank()) finalHeaders["Referer"] = finalEffRef
+                        if (finalEffOrig.isNotBlank() && finalHeaders["Origin"].isNullOrBlank()) finalHeaders["Origin"] = finalEffOrig
+                        val resolvedRef = finalHeaders["Referer"].orEmpty()
                         val linkName = if (isAnime && !genLink.name.contains("[Original]", ignoreCase = true)) {
-                            "${genLink.name}$animeTag"
+                            val badgeIdx = genLink.name.indexOf(" [")
+                            if (badgeIdx > 0) {
+                                genLink.name.substring(0, badgeIdx) + animeTag + genLink.name.substring(badgeIdx)
+                            } else {
+                                "${genLink.name}$animeTag"
+                            }
                         } else {
                             genLink.name
                         }
@@ -4547,7 +4656,7 @@ object StreamPlayExtractor : StreamPlay() {
                             genLink.url,
                             genLink.type
                         ) {
-                            this.referer = effRef
+                            this.referer = resolvedRef
                             this.quality = genLink.quality
                             this.headers = finalHeaders
                             this.extractorData = captionMeta
@@ -4555,15 +4664,20 @@ object StreamPlayExtractor : StreamPlay() {
                     }.orEmpty()
                 }
 
-                val playlistStreamsToParse = buildList {
-                    if (dashStream != null && !dashStream.playlist.isNullOrBlank()) {
-                        add(dashStream)
-                    }
-                    if (standardStream != null &&
-                        !standardStream.playlist.isNullOrBlank() &&
-                        standardStream.playlist.trim() != dashStream?.playlist?.trim()
-                    ) {
-                        add(standardStream)
+                // Only fetch adaptive playlists if direct MP4 streams did not already cover both 720p and 1080p
+                val playlistStreamsToParse = if (hasDirect720p && hasDirect1080p) {
+                    emptyList()
+                } else {
+                    buildList {
+                        if (dashStream != null && !dashStream.playlist.isNullOrBlank()) {
+                            add(dashStream)
+                        }
+                        if (standardStream != null &&
+                            !standardStream.playlist.isNullOrBlank() &&
+                            standardStream.playlist.trim() != dashStream?.playlist?.trim()
+                        ) {
+                            add(standardStream)
+                        }
                     }
                 }
 
@@ -4577,13 +4691,34 @@ object StreamPlayExtractor : StreamPlay() {
                     emptyList()
                 }
 
+                val directQualityTiers = directQualitiesLinks
+                    .map { it.quality }
+                    .filter { it > 0 && it != Qualities.Unknown.value }
+                    .toSet()
+
+                val uniquePlaylistLinks = parsedPlaylistLinks.distinctBy { link ->
+                    if (link.quality > 0 && link.quality != Qualities.Unknown.value) {
+                        "q:${link.quality}"
+                    } else {
+                        "u:${link.url}"
+                    }
+                }
+
                 if (!hasDirect720p) {
-                    val combinedLinks = directQualitiesLinks + parsedPlaylistLinks
+                    val nonOverlappingPlaylistLinks = uniquePlaylistLinks.filter { link ->
+                        link.quality == Qualities.Unknown.value || link.quality !in directQualityTiers
+                    }
+                    val combinedLinks = directQualitiesLinks + nonOverlappingPlaylistLinks
                     if (combinedLinks.isNotEmpty()) {
                         val firstLink = combinedLinks.first()
+                        val effectiveBaseName = when (firstLink.type) {
+                            ExtractorLinkType.DASH -> dashBaseName
+                            ExtractorLinkType.M3U8 -> hlsBaseName
+                            else -> directBaseName
+                        }
                         emitTopTierDualQualityStreamLinks(
                             source = "Vidlink",
-                            baseName = directBaseName,
+                            baseName = effectiveBaseName,
                             url = firstLink.url,
                             referer = firstLink.referer,
                             headers = firstLink.headers,
@@ -4607,25 +4742,37 @@ object StreamPlayExtractor : StreamPlay() {
                                 source = "Vidlink",
                                 baseName = if (isDash) dashBaseName else hlsBaseName,
                                 url = cleanUrl,
-                                referer = "",
+                                referer = fallbackHeaders["Referer"].orEmpty(),
                                 headers = fallbackHeaders,
                                 streamType = if (isDash) ExtractorLinkType.DASH else ExtractorLinkType.M3U8,
                                 callback = callback
                             )
                         }
                     }
-                } else if (parsedPlaylistLinks.isNotEmpty()) {
-                    val firstLink = parsedPlaylistLinks.first()
-                    emitTopTierDualQualityStreamLinks(
-                        source = "Vidlink",
-                        baseName = hlsBaseName,
-                        url = firstLink.url,
-                        referer = firstLink.referer,
-                        headers = firstLink.headers,
-                        streamType = firstLink.type,
-                        generatedLinks = parsedPlaylistLinks,
-                        callback = callback
-                    )
+                } else {
+                    val supplementalPlaylistLinks = uniquePlaylistLinks.filter { link ->
+                        link.quality != Qualities.P720.value &&
+                            !StreamLinkOptimizer.is720p(link) &&
+                            (link.quality == Qualities.Unknown.value || link.quality !in directQualityTiers)
+                    }
+                    if (supplementalPlaylistLinks.isNotEmpty()) {
+                        val firstLink = supplementalPlaylistLinks.first()
+                        val effectiveBaseName = when (firstLink.type) {
+                            ExtractorLinkType.DASH -> dashBaseName
+                            ExtractorLinkType.M3U8 -> hlsBaseName
+                            else -> directBaseName
+                        }
+                        emitTopTierDualQualityStreamLinks(
+                            source = "Vidlink",
+                            baseName = effectiveBaseName,
+                            url = firstLink.url,
+                            referer = firstLink.referer,
+                            headers = firstLink.headers,
+                            streamType = firstLink.type,
+                            generatedLinks = supplementalPlaylistLinks,
+                            callback = callback
+                        )
+                    }
                 }
 
                 // For non-anime Movie/TV streams without native English captions, harvest English
@@ -5500,30 +5647,97 @@ object StreamPlayExtractor : StreamPlay() {
                                 val masterEntries = payload.entries.filter { it.quality == Qualities.Unknown.value }
 
                                 if (discreteEntries.isNotEmpty()) {
-                                    val generated = discreteEntries.map { entry ->
-                                        val qTag = vidsrcQualityTag(entry.quality)
-                                        val sizeTag = entry.sizeMb?.let { " [$it MB]" }.orEmpty()
-                                        newExtractorLink(
-                                            "CineSrc",
-                                            "$baseName [$qTag]$sizeTag",
-                                            entry.url,
-                                            ExtractorLinkType.M3U8
-                                        ) {
-                                            this.referer = "$CINESRC_HOST/"
-                                            this.quality = entry.quality
-                                            this.headers = baseHeaders
-                                        }
+                                    val generated = coroutineScope {
+                                        discreteEntries.map { entry ->
+                                            async {
+                                                val cleanFilename = entry.url.substringBefore('#').substringBefore('?').substringAfterLast('/')
+                                                val isDirectVideo = Regex("""\.(?:mp4|mkv)$""", RegexOption.IGNORE_CASE).containsMatchIn(cleanFilename)
+                                                if (isDirectVideo) {
+                                                    val qTag = vidsrcQualityTag(entry.quality)
+                                                    val sizeTag = entry.sizeMb?.takeIf { it > 0 }?.let { " [$it MB]" }.orEmpty()
+                                                    listOf(
+                                                        newExtractorLink(
+                                                            "CineSrc",
+                                                            "$baseName [$qTag]$sizeTag",
+                                                            entry.url,
+                                                            ExtractorLinkType.VIDEO
+                                                        ) {
+                                                            this.referer = "$CINESRC_HOST/"
+                                                            this.quality = entry.quality
+                                                            this.headers = baseHeaders
+                                                        }
+                                                    )
+                                                } else {
+                                                    val manifestText = cancellableGetText(entry.url, headers = baseHeaders, timeoutSec = 4L)
+                                                    if (!manifestText.isNullOrBlank() && manifestText.contains("#EXT-X-STREAM-INF", ignoreCase = true)) {
+                                                        parseHlsMasterVariants(
+                                                            entry.url,
+                                                            manifestText,
+                                                            durationHintSeconds = durationHintSeconds
+                                                        ).map { v ->
+                                                            val qTag = vidsrcQualityTag(v.quality)
+                                                            val sizeTag = v.estimatedSizeMb?.let { " [$it MB]" }.orEmpty()
+                                                            newExtractorLink(
+                                                                "CineSrc",
+                                                                "$baseName [$qTag]$sizeTag",
+                                                                v.url,
+                                                                ExtractorLinkType.M3U8
+                                                            ) {
+                                                                this.referer = "$CINESRC_HOST/"
+                                                                this.quality = v.quality
+                                                                this.headers = baseHeaders
+                                                            }
+                                                        }
+                                                    } else if (!manifestText.isNullOrBlank() && manifestText.contains("#EXTM3U", ignoreCase = true)) {
+                                                        val effectiveMb = entry.sizeMb?.takeIf { it > 0 }
+                                                            ?: measureHlsMediaPlaylistSizeMb(entry.url, manifestText, baseHeaders)
+                                                        val qTag = vidsrcQualityTag(entry.quality)
+                                                        val sizeTag = if (effectiveMb != null && effectiveMb > 0) " [$effectiveMb MB]" else ""
+                                                        listOf(
+                                                            newExtractorLink(
+                                                                "CineSrc",
+                                                                "$baseName [$qTag]$sizeTag",
+                                                                entry.url,
+                                                                ExtractorLinkType.M3U8
+                                                            ) {
+                                                                this.referer = "$CINESRC_HOST/"
+                                                                this.quality = entry.quality
+                                                                this.headers = baseHeaders
+                                                            }
+                                                        )
+                                                    } else {
+                                                        val qTag = vidsrcQualityTag(entry.quality)
+                                                        val sizeTag = entry.sizeMb?.takeIf { it > 0 }?.let { " [$it MB]" }.orEmpty()
+                                                        listOf(
+                                                            newExtractorLink(
+                                                                "CineSrc",
+                                                                "$baseName [$qTag]$sizeTag",
+                                                                entry.url,
+                                                                ExtractorLinkType.M3U8
+                                                            ) {
+                                                                this.referer = "$CINESRC_HOST/"
+                                                                this.quality = entry.quality
+                                                                this.headers = baseHeaders
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }.awaitAll().flatten()
                                     }
-                                    emitTopTierDualQualityStreamLinks(
-                                        source = "CineSrc",
-                                        baseName = baseName,
-                                        url = discreteEntries.first().url,
-                                        referer = "$CINESRC_HOST/",
-                                        headers = baseHeaders,
-                                        streamType = ExtractorLinkType.M3U8,
-                                        generatedLinks = generated,
-                                        callback = callback
-                                    )
+                                    if (generated.isNotEmpty()) {
+                                        val firstLink = generated.first()
+                                        emitTopTierDualQualityStreamLinks(
+                                            source = "CineSrc",
+                                            baseName = baseName,
+                                            url = firstLink.url,
+                                            referer = "$CINESRC_HOST/",
+                                            headers = baseHeaders,
+                                            streamType = firstLink.type,
+                                            generatedLinks = generated,
+                                            callback = callback
+                                        )
+                                    }
                                 }
 
                                 for (master in masterEntries) {
@@ -6057,7 +6271,7 @@ object StreamPlayExtractor : StreamPlay() {
     private val HLS_MAP_BYTERANGE_REGEX = Regex("""#EXT-X-MAP:[^\r\n]*BYTERANGE="(\d+)@""", RegexOption.IGNORE_CASE)
     private val HLS_EXTINF_REGEX = Regex("""#EXTINF:\s*([0-9]+(?:\.[0-9]+)?)""", RegexOption.IGNORE_CASE)
     private val DASH_DURATION_REGEX = Regex(
-        """mediaPresentationDuration\s*=\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?"""",
+        """mediaPresentationDuration\s*=\s*"P(?:(\d+(?:\.\d+)?)D)?T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?"""",
         RegexOption.IGNORE_CASE
     )
     private val DASH_ADAPTATION_SET_REGEX = Regex(
@@ -6071,6 +6285,8 @@ object StreamPlayExtractor : StreamPlay() {
     private val DASH_WIDTH_ATTR_REGEX = Regex("""\bwidth\s*=\s*"(\d+)"""", RegexOption.IGNORE_CASE)
     private val DASH_HEIGHT_ATTR_REGEX = Regex("""\bheight\s*=\s*"(\d+)"""", RegexOption.IGNORE_CASE)
     private val DASH_BANDWIDTH_ATTR_REGEX = Regex("""\bbandwidth\s*=\s*"(\d+)"""", RegexOption.IGNORE_CASE)
+    private val DASH_MIME_TYPE_ATTR_REGEX = Regex("""\bmimeType\s*=\s*"([^"]+)"""", RegexOption.IGNORE_CASE)
+    private val DASH_CONTENT_TYPE_ATTR_REGEX = Regex("""\bcontentType\s*=\s*"([^"]+)"""", RegexOption.IGNORE_CASE)
 
     /**
      * Nominal episode length used only to turn a provider-declared HLS bandwidth into a ranking
@@ -6138,10 +6354,10 @@ object StreamPlayExtractor : StreamPlay() {
         return when {
             shortDim in 2140..2180 -> Qualities.P2160.value
             shortDim in 1420..1460 -> Qualities.P1440.value
-            shortDim in 1072..1088 -> Qualities.P1080.value
-            shortDim in 712..728 -> Qualities.P720.value
-            shortDim in 472..488 -> Qualities.P480.value
-            shortDim in 358..368 && longDim !in 840..860 -> Qualities.P360.value
+            shortDim in 1040..1100 && longDim <= 2650 -> Qualities.P1080.value
+            shortDim in 690..740 && longDim <= 1850 -> Qualities.P720.value
+            shortDim in 468..492 && longDim <= 1250 -> Qualities.P480.value
+            shortDim in 354..372 && longDim !in 840..860 && longDim <= 920 -> Qualities.P360.value
             shortDim >= 2000 || longDim >= 3600 -> Qualities.P2160.value
             shortDim >= 1350 || longDim >= 2400 -> Qualities.P1440.value
             shortDim in 950..1200 || longDim in 1800..2100 -> Qualities.P1080.value
@@ -6413,8 +6629,15 @@ object StreamPlayExtractor : StreamPlay() {
     /**
      * Parses a DASH `.mpd` manifest into verified resolution variants pinned via `#vid={quality}p`
      * fragments, computing deterministic file size estimates (`[XXX MB]`) from the MPD's
-     * `mediaPresentationDuration` (or [durationHintSeconds] fallback) and combined video + audio
-     * `<Representation>` bandwidths.
+     * `mediaPresentationDuration` (supporting optional days and fractional hours/minutes/seconds,
+     * or [durationHintSeconds] fallback) and combined video + audio `<Representation>` bandwidths.
+     *
+     * Attributes (`width`, `height`, `mimeType`) declared on `<AdaptationSet>` are inherited by
+     * child `<Representation>` tags when not overridden. When an MPD offers multiple bitrates at
+     * the same resolution tier (e.g. dual HEVC main/high bitrates at `1720x720`), representations
+     * are ordered ascending by bandwidth (`sortedBy { it.bandwidthBps }`) so `#vid={quality}p`
+     * deterministically selects the most storage/bandwidth-efficient encode per resolution tier,
+     * aligning with `DownloadSelectionPolicy`'s smallest-verified-size-first contract.
      */
     internal fun parseDashMasterVariants(
         masterUrl: String,
@@ -6428,20 +6651,24 @@ object StreamPlayExtractor : StreamPlay() {
         }
         val baseUrl = masterUrl.substringBefore('#')
         val mpdDurationSec = DASH_DURATION_REGEX.find(manifestText)?.let { m ->
-            val h = m.groupValues[1].toDoubleOrNull() ?: 0.0
-            val min = m.groupValues[2].toDoubleOrNull() ?: 0.0
-            val sec = m.groupValues[3].toDoubleOrNull() ?: 0.0
-            (h * 3600.0 + min * 60.0 + sec).takeIf { it > 0.0 }
+            val days = m.groupValues[1].toDoubleOrNull() ?: 0.0
+            val h = m.groupValues[2].toDoubleOrNull() ?: 0.0
+            val min = m.groupValues[3].toDoubleOrNull() ?: 0.0
+            val sec = m.groupValues[4].toDoubleOrNull() ?: 0.0
+            (days * 86400.0 + h * 3600.0 + min * 60.0 + sec).takeIf { it > 0.0 }
         }
         val effectiveDurationSec = mpdDurationSec
             ?: if (durationHintSeconds > 0.0) durationHintSeconds else HLS_SIZE_HINT_SECONDS
 
+        val adaptationSets = DASH_ADAPTATION_SET_REGEX.findAll(manifestText).toList()
         var audioBwBps = 0L
-        for (adaptMatch in DASH_ADAPTATION_SET_REGEX.findAll(manifestText)) {
+        for (adaptMatch in adaptationSets) {
             val attrs = adaptMatch.groupValues[1]
             val body = adaptMatch.groupValues[2]
-            val isAudioSet = attrs.contains("""contentType="audio"""", ignoreCase = true) ||
-                attrs.contains("""mimeType="audio/""", ignoreCase = true) ||
+            val setContentType = DASH_CONTENT_TYPE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.trim().orEmpty()
+            val setMimeType = DASH_MIME_TYPE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.trim().orEmpty()
+            val isAudioSet = setContentType.equals("audio", ignoreCase = true) ||
+                setMimeType.startsWith("audio/", ignoreCase = true) ||
                 body.contains("""mimeType="audio/""", ignoreCase = true)
             if (isAudioSet) {
                 for (repMatch in DASH_REPRESENTATION_TAG_REGEX.findAll(body)) {
@@ -6453,17 +6680,24 @@ object StreamPlayExtractor : StreamPlay() {
         }
 
         val variants = mutableListOf<HlsMasterVariant>()
-        for (repMatch in DASH_REPRESENTATION_TAG_REGEX.findAll(manifestText)) {
-            val repAttrs = repMatch.groupValues[1]
-            if (repAttrs.contains("""mimeType="audio/""", ignoreCase = true) ||
-                repAttrs.contains("""mimeType="text/""", ignoreCase = true) ||
-                repAttrs.contains("""mimeType="application/""", ignoreCase = true)
+        fun addRepresentationVariant(
+            repAttrs: String,
+            inheritedWidth: Int? = null,
+            inheritedHeight: Int? = null,
+            inheritedMimeType: String = ""
+        ) {
+            val repMimeType = DASH_MIME_TYPE_ATTR_REGEX.find(repAttrs)?.groupValues?.get(1)?.trim()
+                ?: inheritedMimeType
+            if (repMimeType.startsWith("audio/", ignoreCase = true) ||
+                repMimeType.startsWith("text/", ignoreCase = true) ||
+                repMimeType.startsWith("image/", ignoreCase = true) ||
+                repMimeType.startsWith("application/", ignoreCase = true)
             ) {
-                continue
+                return
             }
-            val width = DASH_WIDTH_ATTR_REGEX.find(repAttrs)?.groupValues?.get(1)?.toIntOrNull()
-            val height = DASH_HEIGHT_ATTR_REGEX.find(repAttrs)?.groupValues?.get(1)?.toIntOrNull()
-            if ((width ?: 0) <= 0 && (height ?: 0) <= 0) continue
+            val width = DASH_WIDTH_ATTR_REGEX.find(repAttrs)?.groupValues?.get(1)?.toIntOrNull() ?: inheritedWidth
+            val height = DASH_HEIGHT_ATTR_REGEX.find(repAttrs)?.groupValues?.get(1)?.toIntOrNull() ?: inheritedHeight
+            if ((width ?: 0) <= 0 && (height ?: 0) <= 0) return
 
             val bw = DASH_BANDWIDTH_ATTR_REGEX.find(repAttrs)?.groupValues?.get(1)?.toLongOrNull()
             val quality = normalizeHlsResolutionToQuality(width, height, baseUrl, null)
@@ -6480,6 +6714,40 @@ object StreamPlayExtractor : StreamPlay() {
                     estimatedSizeMb = estimatedMb
                 )
             )
+        }
+
+        if (adaptationSets.isNotEmpty()) {
+            for (adaptMatch in adaptationSets) {
+                val attrs = adaptMatch.groupValues[1]
+                val body = adaptMatch.groupValues[2]
+                val setContentType = DASH_CONTENT_TYPE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.trim().orEmpty()
+                val setMimeType = DASH_MIME_TYPE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.trim().orEmpty()
+                if (setContentType.equals("audio", ignoreCase = true) ||
+                    setContentType.equals("text", ignoreCase = true) ||
+                    setContentType.equals("image", ignoreCase = true) ||
+                    setContentType.equals("application", ignoreCase = true) ||
+                    setMimeType.startsWith("audio/", ignoreCase = true) ||
+                    setMimeType.startsWith("text/", ignoreCase = true) ||
+                    setMimeType.startsWith("image/", ignoreCase = true) ||
+                    setMimeType.startsWith("application/", ignoreCase = true)
+                ) {
+                    continue
+                }
+                val inheritedWidth = DASH_WIDTH_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toIntOrNull()
+                val inheritedHeight = DASH_HEIGHT_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toIntOrNull()
+                for (repMatch in DASH_REPRESENTATION_TAG_REGEX.findAll(body)) {
+                    addRepresentationVariant(
+                        repAttrs = repMatch.groupValues[1],
+                        inheritedWidth = inheritedWidth,
+                        inheritedHeight = inheritedHeight,
+                        inheritedMimeType = setMimeType
+                    )
+                }
+            }
+        } else {
+            for (repMatch in DASH_REPRESENTATION_TAG_REGEX.findAll(manifestText)) {
+                addRepresentationVariant(repAttrs = repMatch.groupValues[1])
+            }
         }
 
         val sorted = variants.sortedBy { it.bandwidthBps ?: Long.MAX_VALUE }
@@ -6721,6 +6989,8 @@ object StreamPlayExtractor : StreamPlay() {
 
                 val durationHintSeconds = resolveDurationHintSeconds(isMovie, isAnime = false)
                 var emitted720FromVidFast = false
+                var firstServerEmitted = false
+                val emittedQualities = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
                 for (i in 0 until servers.length()) {
                     currentCoroutineContext().ensureActive()
                     val serverObj = servers.optJSONObject(i) ?: continue
@@ -6753,6 +7023,7 @@ object StreamPlayExtractor : StreamPlay() {
                     val displayName = serverName.replaceFirstChar {
                         if (it.isLowerCase()) it.titlecase() else it.toString()
                     }
+                    var serverProducedAny = false
                     emitVerifiedStream(
                         source = "VidFast",
                         baseName = "VidFast $displayName",
@@ -6762,12 +7033,18 @@ object StreamPlayExtractor : StreamPlay() {
                         requireManifestVerification = true,
                         durationHintSeconds = durationHintSeconds,
                         callback = { link ->
-                            if (StreamLinkOptimizer.is720p(link) || link.quality == Qualities.P720.value) {
+                            val is720 = StreamLinkOptimizer.is720p(link) || link.quality == Qualities.P720.value
+                            if (is720) {
                                 emitted720FromVidFast = true
                             }
-                            callback(link)
+                            if (!firstServerEmitted || is720 || (link.quality > 0 && emittedQualities.add(link.quality))) {
+                                serverProducedAny = true
+                                if (link.quality > 0) emittedQualities.add(link.quality)
+                                callback(link)
+                            }
                         }
                     )
+                    if (serverProducedAny) firstServerEmitted = true
                     if (emitted720FromVidFast) return@withTimeoutOrNull
                 }
             }
@@ -6794,7 +7071,8 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int? = null,
         subtitleCallback: ((SubtitleFile) -> Unit)? = null,
         callback: (ExtractorLink) -> Unit,
-        imdbId: String? = null
+        imdbId: String? = null,
+        isAnime: Boolean = false
     ) {
         try {
             var effectiveTmdbId = if (tmdbId != null && tmdbId > 0) tmdbId else null
@@ -6804,7 +7082,7 @@ object StreamPlayExtractor : StreamPlay() {
             val id = effectiveTmdbId ?: return
             val isMovie = season == null || (season == 0 && episode == null)
             if (!isMovie && episode == null) return
-            val durationHintSeconds = resolveDurationHintSeconds(isMovie, isAnime = false)
+            val durationHintSeconds = resolveDurationHintSeconds(isMovie, isAnime = isAnime)
 
             withTimeoutOrNull(24_000L) {
                 val streamPath = if (isMovie) "/streams/movie/$id" else "/streams/tv/$id/$season/$episode"
@@ -6848,6 +7126,8 @@ object StreamPlayExtractor : StreamPlay() {
                     }
 
                     val streamsJob = async {
+                        var firstServerEmitted = false
+                        val emittedQualities = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
                         for ((server, useListParam) in MEOWTV_SERVERS) {
                             currentCoroutineContext().ensureActive()
 
@@ -6888,6 +7168,7 @@ object StreamPlayExtractor : StreamPlay() {
                             if (payloadEntries.isEmpty()) continue
 
                             var emitted720FromServer = false
+                            var serverProducedAny = false
                             for ((payloadN, payloadD) in payloadEntries) {
                                 // Primary 0ms offline decryption via WASM-extracted SHA-256 + XOR keystream;
                                 // enc-dec.app is retained strictly as a last-resort fallback.
@@ -6959,14 +7240,20 @@ object StreamPlayExtractor : StreamPlay() {
                                         requireManifestVerification = true,
                                         durationHintSeconds = durationHintSeconds,
                                         callback = { link ->
-                                            if (StreamLinkOptimizer.is720p(link) || link.quality == Qualities.P720.value) {
+                                            val is720 = StreamLinkOptimizer.is720p(link) || link.quality == Qualities.P720.value
+                                            if (is720) {
                                                 emitted720FromServer = true
                                             }
-                                            callback(link)
+                                            if (!firstServerEmitted || is720 || (link.quality > 0 && emittedQualities.add(link.quality))) {
+                                                serverProducedAny = true
+                                                if (link.quality > 0) emittedQualities.add(link.quality)
+                                                callback(link)
+                                            }
                                         }
                                     )
                                 }
                             }
+                            if (serverProducedAny) firstServerEmitted = true
                             if (emitted720FromServer) return@async
                         }
                     }

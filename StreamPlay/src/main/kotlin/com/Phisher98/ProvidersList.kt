@@ -202,7 +202,7 @@ private val providers by lazy {
         },
         Provider("meowtv", "MeowTV") { res, subtitleCallback, callback, _, _ ->
             if (!res.isAnime) {
-                invokeMeowTV(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId)
+                invokeMeowTV(res.id, res.season, res.episode, subtitleCallback, callback, res.imdbId, isAnime = res.isAnime)
             }
         },
         Provider("cineby", "Cineby") { res, subtitleCallback, callback, _, _ ->

@@ -172,14 +172,14 @@ object StreamLinkOptimizer {
     private val QUALITY_EXPLICIT_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(2160|1440|1080|720|576|540|480|360)\s*[pP]?(?:[^a-zA-Z0-9]|$)""")
     private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|3840[xX]2160|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|2560[xX]1440|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
-    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX](?:79[6-9]|8\d{2}|9\d{2}|10[0-7]\d|1080)|25[689]\d[xX]1080|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
+    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX](?:79[6-9]|8\d{2}|9\d{2}|10[0-7]\d|1080)|(?:199[0-9]|2[0-5]\d{2}|26[0-4]\d)[xX](?:10[4-9]\d|1080)|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     // Bare "HD"/"SD" are deliberately absent: they are marketing grades, not resolutions, and
     // mapping them to 720p/480p is exactly how a 360p file ends up labelled as 720p. Only an
     // explicit numeric height (handled by QUALITY_EXPLICIT_REGEX) or an exact pixel dimension
     // proves a resolution, and FHD/QHD/4K are kept because those acronyms have a single meaning.
-    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX](?:5[2-9]\d|6\d{2}|7[01]\d|720)|172[08][xX]720|1800[xX]720)(?:[^a-zA-Z0-9]|$)""")
-    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(85[248][xX](?:35[2-9]|36\d|480)|1200[xX]480)(?:[^a-zA-Z0-9]|$)""")
-    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX](?:26[4-9]|27\d|360)|864[xX]360)(?:[^a-zA-Z0-9]|$)""")
+    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX](?:5[2-9]\d|6\d{2}|7[01]\d|720)|(?:133[0-9]|1[4-7]\d{2}|18[0-4]\d)[xX](?:69\d|7[0-3]\d|720))(?:[^a-zA-Z0-9]|$)""")
+    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(85[248][xX](?:35[2-9]|36\d|480)|(?:88[0-9]|9\d{2}|1[01]\d{2}|12[0-4]\d)[xX](?:4[6-8]\d|480))(?:[^a-zA-Z0-9]|$)""")
+    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX](?:26[4-9]|27\d|360)|(?:66[0-9]|7\d{2}|8[0-9]\d|900)[xX](?:3[56]\d|360))(?:[^a-zA-Z0-9]|$)""")
     private val EXPLICIT_QUALITY_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:quality|res|resolution|height|q)=([0-9]{3,4})[pP]?(?:&|$)""")
     private val EMBEDDED_MEDIA_URL_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:file|url|path|src)=([^&]+)""")
 
@@ -727,9 +727,17 @@ object StreamLinkOptimizer {
                     }
                     headers[HEADER_REFERER] = effRef
                     headers[HEADER_ORIGIN] = getHostUrl(effRef) ?: "https://filmboom.top"
-                } else {
+                } else if (lowerUrl.contains("bcdn") || lowerUrl.contains("sacdn") || lowerUrl.contains("hakunaymatata")) {
                     headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
                     headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
+                } else {
+                    headers.entries.removeIf { (k, v) ->
+                        (k.equals(HEADER_REFERER, ignoreCase = true) || k.equals(HEADER_ORIGIN, ignoreCase = true)) &&
+                            (v.contains("vidlink.pro", ignoreCase = true) ||
+                                v.contains("filmboom.top", ignoreCase = true) ||
+                                v.contains("embed", ignoreCase = true) ||
+                                v.isBlank())
+                    }
                 }
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                 headers[HEADER_ACCEPT] = "*/*"
@@ -1331,8 +1339,15 @@ object StreamLinkOptimizer {
                     } else {
                         "https://filmboom.top/"
                     }
-                } else {
+                } else if (lowerUrl.contains("bcdn") || lowerUrl.contains("sacdn") || lowerUrl.contains("hakunaymatata")) {
                     ""
+                } else {
+                    headers.entries.firstOrNull {
+                        it.key.equals(HEADER_REFERER, ignoreCase = true) &&
+                            !it.value.contains("vidlink.pro", ignoreCase = true) &&
+                            !it.value.contains("filmboom.top", ignoreCase = true) &&
+                            !it.value.contains("embed", ignoreCase = true)
+                    }?.value ?: ""
                 }
             }
             isMeowTv -> {

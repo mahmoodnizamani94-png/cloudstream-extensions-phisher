@@ -1051,8 +1051,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         // one English subtitle per source so that at least one matches the release on disk, which only
         // works when the extension surfaces enough distinct sources in the first place.
         val englishSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val completedEnglishSubtitleProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val englishSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
         val urduSubtitleSources = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val completedUrduSubtitleProviders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val bestEnglishSubtitleUrls = java.util.concurrent.ConcurrentLinkedQueue<String>()
         val deferredNonUrduSubtitles = java.util.concurrent.ConcurrentLinkedQueue<SubtitleFile>()
 
@@ -1061,7 +1063,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             minQualityStreams = 6,
             qualityThreshold = Qualities.P720.value,
             highBitrateThresholdKbps = 2500,
-            minSubtitles = if (res.isAnime) ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES else 1,
+            minSubtitles = if (res.isAnime && !urduMode) ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES else 1,
             satisfyWithOneLinkIfSubsFound = false,
             requireSubtitles = true,
             requireDualQualities = false,
@@ -1163,19 +1165,24 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             if (!urduMode && !isEnglish) {
                 return false
             }
-            val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$shieldedUrl"
+            val canonicalSubUrl = shieldedUrl.substringBefore('#').trim()
+            val dedupeKey = "${cleanedLang.lowercase(java.util.Locale.ROOT)}|$canonicalSubUrl"
 
             return if (emittedSubtitles.add(dedupeKey)) {
                 subtitlesFound.incrementAndGet()
                 val explicitProvenance = sub.headers?.entries
                     ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
                     ?.value?.trim()?.takeIf { it.isNotBlank() }
-                val provenance = explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) }
+                val provenance = (explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(shieldedUrl) })
+                    .trim()
+                    .lowercase(java.util.Locale.ROOT)
+                val normalizedSourceKey = sourceKey.trim().lowercase(java.util.Locale.ROOT)
                 if (isEnglish) {
                     englishSubtitleCount.incrementAndGet()
                     englishSubtitleSources.add(provenance)
-                    if (sourceKey.isNotBlank()) {
-                        englishSubtitleSources.add(sourceKey)
+                    completedEnglishSubtitleProviders.add(provenance)
+                    if (normalizedSourceKey.isNotBlank()) {
+                        completedEnglishSubtitleProviders.add(normalizedSourceKey)
                     }
                     val origUrlHeader = sub.headers?.entries
                         ?.firstOrNull { it.key.equals("X-SubtitleCat-Orig-Url", ignoreCase = true) }
@@ -1192,6 +1199,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 }
                 if (isUrdu) {
                     urduSubtitleSources.add(provenance)
+                    completedUrduSubtitleProviders.add(provenance)
+                    if (normalizedSourceKey.isNotBlank()) {
+                        completedUrduSubtitleProviders.add(normalizedSourceKey)
+                    }
                 }
                 @Suppress("DEPRECATION")
                 val cleanedSubtitle = SubtitleFile(lang = cleanedLang, url = shieldedUrl).apply {
@@ -1585,13 +1596,23 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             }
             if (needsSubtitleCompletion) {
                 val retryableHarvests = subtitleHarvestTasks.filter { task ->
-                    if (urduMode) task.providerId !in urduSubtitleSources else task.providerId !in englishSubtitleSources
+                    val normalizedId = task.providerId.trim().lowercase(java.util.Locale.ROOT)
+                    if (urduMode) {
+                        normalizedId !in urduSubtitleSources && normalizedId !in completedUrduSubtitleProviders
+                    } else {
+                        normalizedId !in englishSubtitleSources && normalizedId !in completedEnglishSubtitleProviders
+                    }
                 }
                 val remainingSlots = (MAX_SUBTITLE_COMPLETION_PROVIDERS - retryableHarvests.size).coerceAtLeast(0)
                 val completionProviders = (prioritizedPrimary + fallbackProviders)
                     .filter { provider -> provider.kind != ProviderKind.SUBTITLE }
                     .filter { provider ->
-                        if (urduMode) provider.id !in urduSubtitleSources else provider.id !in englishSubtitleSources
+                        val normalizedId = provider.id.trim().lowercase(java.util.Locale.ROOT)
+                        if (urduMode) {
+                            normalizedId !in urduSubtitleSources && normalizedId !in completedUrduSubtitleProviders
+                        } else {
+                            normalizedId !in englishSubtitleSources && normalizedId !in completedEnglishSubtitleProviders
+                        }
                     }
                     .filter { provider ->
                         (FAST_PROVIDER_BOOST[provider.id] ?: 0f) >= TOP_TIER_BOOST_THRESHOLD

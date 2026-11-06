@@ -159,15 +159,23 @@ class ProvidersFragment(
             val chk = item.findViewById<CheckBox>(chkId)
             item.makeTvCompatible()
             chk.makeTvCompatible()
+            val isVidlinkMandatory = provider.id.equals("vidlink", ignoreCase = true)
             chk.text = provider.name
-            // Enabled if NOT in disabled list
-            chk.isChecked = !adapter.isDisabled(provider.id)
+            // Enabled if NOT in disabled list (VidLink is always enabled)
+            chk.isChecked = if (isVidlinkMandatory) true else !adapter.isDisabled(provider.id)
+            chk.isEnabled = !isVidlinkMandatory
 
-            item.setOnClickListener { chk.toggle() }
+            item.setOnClickListener {
+                if (!isVidlinkMandatory) chk.toggle()
+            }
 
             chk.setOnCheckedChangeListener { _, isChecked ->
-                // Checked → remove from disabled, Unchecked → add to disabled
-                adapter.setDisabled(provider.id, !isChecked)
+                if (isVidlinkMandatory) {
+                    chk.isChecked = true
+                } else {
+                    // Checked → remove from disabled, Unchecked → add to disabled
+                    adapter.setDisabled(provider.id, !isChecked)
+                }
             }
 
             container.addView(item)
@@ -272,7 +280,8 @@ class ProvidersFragment(
         val chkId = res.getIdentifier("chk_provider", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
         for (i in 0 until container.childCount) {
             val chk = container.getChildAt(i).findViewById<CheckBox>(chkId)
-            chk.isChecked = !adapter.isDisabled(providers[i].id)
+            val id = providers[i].id
+            chk.isChecked = if (id.equals("vidlink", ignoreCase = true)) true else !adapter.isDisabled(id)
         }
         updateProviderCount()
     }
@@ -286,18 +295,19 @@ class ProvidersFragment(
         initiallyDisabled: Set<String>,
         private val onChange: (Set<String>) -> Unit
     ) {
-        private val disabled = initiallyDisabled.toMutableSet()
+        private val disabled = initiallyDisabled.filterNot { it.equals("vidlink", ignoreCase = true) }.toMutableSet()
 
-        fun isDisabled(id: String) = id in disabled
+        fun isDisabled(id: String) = !id.equals("vidlink", ignoreCase = true) && id in disabled
 
         fun setDisabled(id: String, value: Boolean) {
+            if (id.equals("vidlink", ignoreCase = true)) return
             if (value) disabled.add(id) else disabled.remove(id)
             onChange(disabled)
         }
 
         fun setAll(value: Boolean) {
             disabled.clear()
-            if (!value) disabled.addAll(items.map { it.id })
+            if (!value) disabled.addAll(items.map { it.id }.filterNot { it.equals("vidlink", ignoreCase = true) })
             onChange(disabled)
         }
     }

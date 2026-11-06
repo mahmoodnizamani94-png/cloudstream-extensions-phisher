@@ -1373,4 +1373,121 @@ class StreamPlayCuratedRegistryV26Test {
         assertEquals(Qualities.P720.value, animeSorted.first().quality)
         assertEquals(Qualities.P1080.value, animeSorted.last().quality)
     }
+
+    @Test
+    fun testDashAdaptationSetAttributeInheritanceAndDayPrefixDuration() {
+        val mpdWithInheritedAttrs = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="P0DT1H30M0S">
+              <Period id="0">
+                <AdaptationSet id="0" mimeType="video/mp4" width="1920" height="800">
+                  <Representation id="v1080" bandwidth="2200000" />
+                </AdaptationSet>
+                <AdaptationSet id="1" mimeType="video/mp4" width="1720" height="720">
+                  <Representation id="v720" bandwidth="1100000" />
+                </AdaptationSet>
+                <AdaptationSet id="2" mimeType="audio/mp4" lang="en">
+                  <Representation id="a0" bandwidth="128000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+
+        val masterUrl = "https://sacdn.hakunaymatata.com/dash/movie_test2/index_web.mpd"
+        val variants = StreamPlayExtractor.parseDashMasterVariants(masterUrl, mpdWithInheritedAttrs)
+        assertEquals(2, variants.size)
+        val v720 = variants.firstOrNull { it.quality == Qualities.P720.value }
+        val v1080 = variants.firstOrNull { it.quality == Qualities.P1080.value }
+        assertNotNull("720p inherited from AdaptationSet must be extracted", v720)
+        assertNotNull("1080p inherited from AdaptationSet must be extracted", v1080)
+        assertEquals("$masterUrl#vid=720p", v720!!.url)
+        assertEquals("$masterUrl#vid=1080p", v1080!!.url)
+        assertTrue("P0DT1H30M0S duration must produce positive estimated size", (v720.estimatedSizeMb ?: 0) > 700)
+        assertTrue("1080p estimated size must exceed 720p estimated size", (v1080.estimatedSizeMb ?: 0) > (v720.estimatedSizeMb ?: 0))
+    }
+
+    @Test
+    fun testAllCinemaWidescreenAspectRatiosResolveAccurately() {
+        // 1.85:1, 2.00:1, 2.20:1, 2.39:1 in both normalizeHlsResolutionToQuality and extractQualityFromText
+        val fhdDims = listOf(1920 to 1038, 1998 to 1080, 2048 to 1080, 2160 to 1080, 2376 to 1080, 2580 to 1080)
+        for ((w, h) in fhdDims) {
+            assertEquals("Dimension ${w}x$h must normalize to 1080p", Qualities.P1080.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(w, h, "stream.m3u8"))
+            assertEquals("Text ${w}x$h must extract 1080p", Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("Movie ${w}x$h"))
+        }
+
+        val hdDims = listOf(1280 to 692, 1332 to 720, 1440 to 720, 1584 to 720, 1720 to 720, 1800 to 720)
+        for ((w, h) in hdDims) {
+            assertEquals("Dimension ${w}x$h must normalize to 720p", Qualities.P720.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(w, h, "stream.m3u8"))
+            assertEquals("Text ${w}x$h must extract 720p", Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("Movie ${w}x$h"))
+        }
+    }
+
+    @Test
+    fun testAnimeEnglishSubtitlesCollectSixTopSources() {
+        assertEquals("Movie/TV target English subtitle sources must remain 5", 5, TARGET_ENGLISH_SUBTITLE_SOURCES)
+        assertEquals("Anime target English subtitle sources must be 6", 6, ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES)
+
+        // Verify that a single subtitle with explicit provenance (e.g. ZokoAnime from Animex)
+        // records exactly 1 lowercase provenance entry in englishSubtitleSources while tracking
+        // the provider id separately for Phase 3 completion filtering, and strips URL #fragments.
+        val englishSubtitleSources = mutableSetOf<String>()
+        val completedEnglishSubtitleProviders = mutableSetOf<String>()
+        val emittedSubtitleKeys = mutableSetOf<String>()
+
+        fun simulateEmitSubtitle(url: String, lang: String, sourceKey: String) {
+            val cleanUrl = url.substringBefore('#').trim()
+            val dedupeKey = "${cleanUrl.lowercase()}|${lang.trim().lowercase()}"
+            if (!emittedSubtitleKeys.add(dedupeKey)) return
+            val explicitProvenance = Regex("""\[([^\[\]]+)\]\s*$""")
+                .find(lang.trim())
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val provenance = (explicitProvenance ?: sourceKey).trim().lowercase()
+            if (provenance.isNotBlank()) {
+                englishSubtitleSources.add(provenance)
+            }
+            if (sourceKey.isNotBlank()) {
+                completedEnglishSubtitleProviders.add(sourceKey.trim().lowercase())
+            }
+        }
+
+        // Duplicate URL with #fragment must be deduplicated
+        simulateEmitSubtitle("https://sub.wyzie.ru/s/1.vtt", "English [Wyzie]", "wyzie")
+        simulateEmitSubtitle("https://sub.wyzie.ru/s/1.vtt#animepahe", "English [Wyzie]", "animepahe")
+        assertEquals("Fragment-spoofed duplicate subtitle URL must not inflate source count", 1, englishSubtitleSources.size)
+
+        // Animex emitting ZokoAnime must count as 1 English subtitle source ("zokoanime"), not 2 ("animex" + "zokoanime")
+        simulateEmitSubtitle("https://zoko.example/sub1.vtt", "English [ZokoAnime]", "animex")
+        assertEquals("Single subtitle with explicit provenance must add exactly 1 source", 2, englishSubtitleSources.size)
+        assertTrue(englishSubtitleSources.contains("zokoanime"))
+        assertFalse("Container provider key must not double-count in englishSubtitleSources", englishSubtitleSources.contains("animex"))
+        assertTrue("Container provider key must be tracked in completedEnglishSubtitleProviders", completedEnglishSubtitleProviders.contains("animex"))
+
+        // Collect remaining distinct anime English subtitle sources up to 6
+        simulateEmitSubtitle("https://anizone.to/sub/1.ass", "English (ASS) [AniZone]", "anizone")
+        simulateEmitSubtitle("https://megaplay.buzz/sub/1.vtt", "English [MegaPlay]", "megaplay")
+        simulateEmitSubtitle("https://kaa.lt/sub/1.vtt", "English [KickAssAnime]", "animex")
+        simulateEmitSubtitle("https://subs.bright67.online/sub/1.srt", "English [CineSrc]", "cinesrc")
+        assertEquals("Six distinct anime English subtitle sources must be collected", 6, englishSubtitleSources.size)
+    }
+
+    @Test
+    fun testVidlinkDashMpd720pVariantExtractionAndSizing() {
+        testVidLinkDashMpdParsingAndWidescreen720pExtraction()
+        testDashAdaptationSetAttributeInheritanceAndDayPrefixDuration()
+    }
+
+    @Test
+    fun testVidlinkBcdnxwPreservesRefererWhileBcdnAndSacdnStripReferer() {
+        testVidLinkBcdnxwPreservesFilmboomRefererWhileBcdnAndSacdnStripReferer()
+    }
+
+    @Test
+    fun testConstantHeightCinemaWidescreen720pAnd1080pClassification() {
+        testConstantHeightAndConstantWidthWidescreenResolutionNormalization()
+        testAllCinemaWidescreenAspectRatiosResolveAccurately()
+    }
 }
+

@@ -30,7 +30,7 @@ android {
 cloudstream {
     language = "en"
     // All of these properties are optional, you can safely remove them
-     description = "SuperStream (Retrieve the cookie using Login with Google to properly utilize SuperStream."
+     description = "SuperStream (Retrieve the cookie using Login with Google to properly utilize SuperStream.)"
      authors = listOf("Phisher98")
 
     /**
