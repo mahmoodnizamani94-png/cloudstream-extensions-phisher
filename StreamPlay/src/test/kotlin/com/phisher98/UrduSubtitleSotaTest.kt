@@ -1834,4 +1834,150 @@ class UrduSubtitleSotaTest {
             UrduSubtitleEngine.containsVerifiedUrduScript(standard)
         )
     }
+    // ---- Round-7: derived-data self-tests + pipeline-level (materialize) probes ----
+
+    private fun tokensOf(pattern: String): List<String> {
+        val start = pattern.indexOf("])(") + 3
+        val end = listOf(pattern.lastIndexOf(")(?:$|"), pattern.lastIndexOf(")(?=$|")).filter { it >= 0 }.max()
+        return pattern.substring(start, end).split('|')
+            .filter { it.isNotBlank() }
+            .map { token ->
+                Regex("\\\\u([0-9A-Fa-f]{4})").replace(token) { m ->
+                    m.groupValues[1].toInt(16).toChar().toString()
+                }
+            }
+    }
+
+    @Test
+    fun `Every curated token matches its own regex (derived-data self-test)`() {
+        // Catches construction typos (e.g. the stray `]` that bound to the last alternation
+        // branch and silently required a literal bracket after it).
+        val faTokens = tokensOf(UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)
+        assertTrue(faTokens.size > 150)
+        for (token in faTokens) {
+            assertTrue(
+                "Raw fa/ar token must match its own regex: $token",
+                UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(token)
+            )
+        }
+        val evTokens = tokensOf(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.pattern)
+        assertTrue(evTokens.size > 40)
+        for (token in evTokens) {
+            assertTrue(
+                "Evidence token must match its own regex: $token",
+                UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(token)
+            )
+        }
+    }
+
+    @Test
+    fun `No fa-ar token collides with common Urdu vocabulary in raw or normalized form`() {
+        // Round-6 finding (both reviewers): the collision class (هم/هو/هي/بعد/فقط/جدا/کل/نہ/…)
+        // must stay closed by a CI-enforced sweep, not a one-off manual audit.
+        val urduVocabulary = setOf(
+            "ہم", "ہو", "ہی", "بعد", "قبل", "فقط", "جدا", "کل", "نہ", "ہفتہ", "ماہ", "البتہ",
+            "علی", "شیء", "جزء", "سؤال", "مؤثر", "جائزہ", "خانہ", "زن", "فی", "دنیا", "زندگی",
+            "دوست", "خدا", "سلام", "کار", "روز", "دل", "نام", "دست", "شہر", "مردم", "عشق",
+            "دشمن", "صدا", "عالم", "آسمان", "زمین", "دریا", "سر", "شب", "سال", "مادر", "پدر",
+            "برادر", "مرد", "بچے", "کام", "نہیں", "پھر", "پہلے", "رہا", "رہی", "رہے", "ہوا",
+            "یہ", "کے", "کا", "کو", "کی", "سے", "اور", "مگر", "لیکن", "براہ"
+        )
+        for (token in tokensOf(UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)) {
+            assertFalse(
+                "fa/ar token must not BE an Urdu word: $token",
+                token in urduVocabulary
+            )
+            assertFalse(
+                "fa/ar token must not normalize into an Urdu word: $token -> ${UrduSubtitleEngine.normalizeUrduTypography(token)}",
+                UrduSubtitleEngine.normalizeUrduTypography(token) in urduVocabulary
+            )
+        }
+    }
+
+    @Test
+    fun `Pipeline-level probes are rejected through materializeNormalizedUrduSubtitle`() = runBlocking {
+        // Round-6 finding (Gemini): the adversarial probes must be tested THROUGH the production
+        // pipeline (decode -> raw gate -> normalize), not just by calling the gate on raw strings.
+        val probes = listOf(
+            // (m) 100%-Persian colloquial-yeh file
+            buildString {
+                val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+                for ((idx, line) in lines.withIndex()) {
+                    append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                    append(line + "\n\n")
+                }
+            },
+            // (k) رها padding
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                for (i in 2..13) {
+                    append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                    append("رها شد\n\n")
+                }
+            },
+            // (n/o) است یه inoculation
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                for (i in 2..13) {
+                    append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                    append("است یه\n\n")
+                }
+            },
+            // cue-final یه (the missing $| anchor case)
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                append("2\n00:00:02,000 --> 00:00:03,000\nاو گفت یه\n\n")
+                append("3\n00:00:03,000 --> 00:00:04,000\nسارا دید یه\n")
+            }
+        )
+        for ((probeIdx, srt) in probes.withIndex()) {
+            val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+            server.createContext("/probe.srt") { exchange ->
+                fetchCount.incrementAndGet()
+                val bytes = srt.toByteArray(Charsets.UTF_8)
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+            server.start()
+            try {
+                UrduSubtitleEngine.clearCachesForTest()
+                val url = "http://127.0.0.1:${server.address.port}/probe.srt?probe=$probeIdx&run=${System.nanoTime()}"
+                val result = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "pipeline-probe")
+                assertNull("Pipeline probe #$probeIdx must be REJECTED through materialize", result)
+                assertEquals("The pipeline must have fetched the probe content", 1, fetchCount.get())
+            } finally {
+                server.stop(0)
+                UrduSubtitleEngine.clearCachesForTest()
+            }
+        }
+    }
+
+    @Test
+    fun `Formal Urdu with clashing loanwords and hamza fragments is accepted`() {
+        // Round-6 finding: بعد/فقط/جدا/کل/نہ/ہفتہ/علی/شیء/جزء cues must never lean fa/ar.
+        val formal = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nاجلاس بعد از ظہر ہوگا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nفقط ارکان شرکت کریں گے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nعلی گڑھ کی تحریک الگ ہے\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nکل ہم نے یہ فیصلہ کیا تھا\n\n")
+            append("5\n00:00:05,000 --> 00:00:06,000\nہر نہ نہیں، مگر ہمت نہ ہارو\n\n")
+            append("6\n00:00:06,000 --> 00:00:07,000\nیہ ہفتہ قبل سے طے تھا\n\n")
+            append("7\n00:00:07,000 --> 00:00:08,000\nخدا حافظ، کل ملیں گے\n\n")
+            append("8\n00:00:08,000 --> 00:00:09,000\nشکریہ\n")
+        }
+        assertTrue(
+            "Formal Urdu dialogue with clashing loanwords must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(formal)
+        )
+        val hamzaFragments = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nعجیب شیء ہے یہ\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nایک جزء کافی ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nانشاء اللہ ہو جائے گا\n")
+        }
+        assertTrue(
+            "Hamza-loanword formal fragments must be accepted (ء exempted from the Arabic signal)",
+            UrduSubtitleEngine.containsVerifiedUrduScript(hamzaFragments)
+        )
+    }
 }

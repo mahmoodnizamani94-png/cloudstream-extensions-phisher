@@ -99,7 +99,7 @@ private val SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX =
 // Homograph-free Urdu function-word evidence, scanned on RAW cue text only (see StreamPlay's
 // URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX for the full audit rules) — identical token set.
 internal val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])"""
+    """(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])"""
 )
 
 
@@ -109,10 +109,10 @@ internal val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
 internal val SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
     Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(?:می|نمی)\u200C""")
 internal val SUPERSTREAM_PERSIAN_YEH_RAW_HEH_REGEX =
-    Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+    Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
 internal val SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629\u0621]""")
-private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زن|ساعة|سنة|سوف|سيارة|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
+internal val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
+    """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برای|بشه|بفرمایید|بله|بودی|بيت|بين|تكون|تلك|تموم|توی|حتما|حتى|حقا|حياة|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|ربما|رجل|رفتم|رفتی|ساعة|سنة|سوف|سيارة|شدند|شما|شود|طبعا|طريق|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فوق|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كلمة|كيف|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|ماذا|مدينة|مرحبا|مرحبًا|مرسی|مع|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
 )
 
 
@@ -1628,8 +1628,15 @@ object SuperStreamExtractor : SuperStream() {
             } catch (_: Exception) {
                 null
             } ?: continue
-            val decodedUr = decodeAndNormalizeSubtitleBytes(rawBytes, season = season, episode = episode)
+            val decodedUr = decodeAndNormalizeSubtitleBytes(
+                rawBytes,
+                season = season,
+                episode = episode,
+                normalizeTypography = false
+            )
             if (decodedUr.isBlank()) continue
+            val rawUrCues = parseSuperStreamCues(decodedUr)
+            if (rawUrCues.isEmpty() || isBrokenSmtUrdu(rawUrCues) || !containsVerifiedUrduScript(rawUrCues)) continue
             val normalizedUr = normalizeUrduSubtitleText(decodedUr)
             val cues = parseSuperStreamCues(normalizedUr)
             if (!containsVerifiedUrduScript(cues) || isBrokenSmtUrdu(cues)) continue
@@ -1819,8 +1826,21 @@ object SuperStreamExtractor : SuperStream() {
                 return@withContext null
             }
 
-            val decoded = decodeAndNormalizeSubtitleBytes(rawBytes, season = season, episode = episode)
+            // Stage separation (parity with StreamPlay): decode RAW (no typography normalization)
+            // and run the language gate on raw cues first — orthography signals (raw heh, ZWNJ,
+            // hamza) must be intact, or Persian یه/رها arrive pre-converted.
+            val decoded = decodeAndNormalizeSubtitleBytes(
+                rawBytes,
+                season = season,
+                episode = episode,
+                normalizeTypography = false
+            )
             if (decoded.isBlank()) {
+                deferred.complete(null)
+                return@withContext null
+            }
+            val rawCues = parseSuperStreamCues(decoded)
+            if (rawCues.isEmpty() || isBrokenSmtUrdu(rawCues) || !containsVerifiedUrduScript(rawCues)) {
                 deferred.complete(null)
                 return@withContext null
             }
@@ -1990,13 +2010,17 @@ object SuperStreamExtractor : SuperStream() {
     internal fun decodeAndNormalizeSubtitleBytes(
         rawBytes: ByteArray,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        normalizeTypography: Boolean = true
     ): String {
         if (rawBytes.isEmpty()) return ""
         val bytes = inflateArchiveIfNeeded(rawBytes, season = season, episode = episode)
         if (bytes.isEmpty()) return ""
         val decoded = decodeSubtitleCharset(bytes)
-        return normalizeUrduTypography(decoded)
+        // Stage separation (parity with StreamPlay): language verification must run on RAW decoded
+        // text (normalizeTypography = false); typography normalization happens only after the raw
+        // gate passes.
+        return if (normalizeTypography) normalizeUrduTypography(decoded) else decoded
     }
 
     internal fun inflateAndDecodeSubtitleBytes(

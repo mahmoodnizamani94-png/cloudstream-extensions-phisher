@@ -471,7 +471,7 @@ object UrduSubtitleEngine {
     // and excludes shared homographs (تو/اگر/پر/ہو/ہم/ہوا). IDENTICAL to SuperStream's
     // SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.
     val URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|جب|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])(آؤ|آپ|اور|اپنا|اپنی|اپنے|بھی|تاکہ|تھا|تھی|تھے|جاؤ|جائیں|رھا|رھی|رھے|ساتھ|سے|لیے|میں|نھیں|وہ|پھر|پھلے|کا|کرو|کریں|کو|کوئی|کچھ|کہاں|کیا|کیجئے|کیسے|کیونکہ|کیوں|کے|گئی|گئے|گا|گی|گیا|گے|ہوں|ہیں|ہے|یہ|رہا|رہی|رہے|نہیں|پہلے)(?:$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
 
 
 
@@ -505,13 +505,13 @@ object UrduSubtitleEngine {
     // with goal heh (U+06C1), so this signal is Urdu-safe and catches the most common
     // colloquial Persian word even when every other signal is absent.
     val PERSIAN_YEH_RAW_HEH_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
     // Arabic-specific hamza/ta-marbuta letters. ؤ/ئ are EXCLUDED: Urdu uses them in formal
     // Arabic loanwords (سؤال، مؤثر، جائزہ، باعث), so including them would false-lean genuine
     // formal-Urdu cues.
     val ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629\u0621]""")
     val RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|البته|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برادر|برای|بشه|بعد|بعض|بفرمایید|بلد|بله|بنت|بودی|بيت|بين|تحت|تكون|تلك|تموم|توی|جدا|حب|حتما|حتى|حرب|حقا|حول|حياة|خانه|خلال|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|در|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|رب|ربما|رجل|رفتم|رفتی|روی|زن|ساعة|سنة|سوف|سيارة|شدند|شما|شود|ضد|طبعا|طريق|طعام|طفل|على|عن|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فقط|فوق|في|قبل|قد|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كل|كلمة|كيف|لا|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|مادر|ماذا|ماه|مثل|مدينة|مرحبا|مرحبًا|مرسی|مع|من|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|هفته|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])""")
+        Regex("""(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برای|بشه|بفرمایید|بله|بودی|بيت|بين|تكون|تلك|تموم|توی|حتما|حتى|حقا|حياة|خواهر|خوشگل|خونه|خیلی|دائما|دارد|دارم|دارند|داره|دارہ|داری|داریم|دخترم|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|ربما|رجل|رفتم|رفتی|ساعة|سنة|سوف|سيارة|شدند|شما|شود|طبعا|طريق|عند|عندما|عين|غدا|غدًا|غير|فردا|فعلا|فوق|قرمز|قليلا|كان|كانت|كانوا|كثيرا|كذلك|كلمة|كيف|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ما|ماء|ماذا|مدينة|مرحبا|مرحبًا|مرسی|مع|منذ|منم|می|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نحو|نمی|نمی\u200C|نمیدونم|نمیشه|نیست|های|هایی|هذا|هذه|هست|هستم|هستند|هستی|همه|همین|هن|هنا|هناك|هیچ|واقعا|وقتی|ولد|يد|يكون|يوم|پسرم|چرا|چطور|چقدر|چون|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کند|کنم|کنند|کنی|کنیم|کوچک|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])""")
 
 
 
@@ -522,19 +522,14 @@ object UrduSubtitleEngine {
     // are matched on RAW text only. Genuine Urdu ہم/ہو/ہی/بعد cues must never lean fa/ar, and
     // raw fa/ar text already leans via the raw scan, so excluding them from the normalized
     // scan costs nothing and closes the collision class by construction.
-    val URDU_AMBIGUOUS_NORMALIZED_EXCLUSIVE_TOKENS =
-        setOf("\u06C1\u0645", "\u06C1\u0648", "\u06C1\u06CC", "\u0628\u0639\u062F", "من", "لا", "قد", "علی", "جدا", "فقط")
-    val PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_TOKENS: List<String> =
-        RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern
-            .substringAfter("])(").substringBefore(")(?=")
-            .split('|')
-            .map { it.replace("\u0647", "\u06C1").replace("\u0643", "\u06A9").replace("\u064A", "\u06CC").replace("\u0649", "\u06CC") }
+    // The normalized-text scan is derived 1:1 from the RAW pattern (glyph replaces only) —
+    // byte-identical construction in both engines; the Urdu-shared purge happens in the RAW list.
     val PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
-        "(?:^|[\\s\\u200F\\u200E،,.!?;:'\\(\\)۔؟…])(" +
-            PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_TOKENS
-                .filter { it !in URDU_AMBIGUOUS_NORMALIZED_EXCLUSIVE_TOKENS }
-                .joinToString("|") +
-            "])(?=$|[\\s\\u200F\\u200E،,.!?;:'\\(\\)۔؟…])"
+        RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern
+            .replace("\u0647", "\u06C1")
+            .replace("\u0643", "\u06A9")
+            .replace("\u064A", "\u06CC")
+            .replace("\u0649", "\u06CC")
     )
 
 
@@ -1001,14 +996,18 @@ object UrduSubtitleEngine {
     fun decodeAndNormalizeUrduBytes(
         rawBytes: ByteArray,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        normalizeTypography: Boolean = true
     ): String {
         if (rawBytes.isEmpty()) return ""
         val bytes = inflateArchiveIfNeeded(rawBytes, season = season, episode = episode)
         if (bytes.isEmpty()) return ""
 
         val decoded = decodeSubtitleCharset(bytes)
-        return normalizeUrduTypography(decoded)
+        // Stage separation: language verification must run on RAW decoded text (normalizeTypography
+        // = false) so orthography signals (raw heh, ZWNJ, hamza) are intact; typography
+        // normalization happens only AFTER the raw gate passes.
+        return if (normalizeTypography) normalizeUrduTypography(decoded) else decoded
     }
 
     internal fun decodeSubtitleCharset(bytes: ByteArray): String {
@@ -2514,14 +2513,22 @@ object UrduSubtitleEngine {
                 return@withContext null
             }
 
-            val decoded = decodeAndNormalizeUrduBytes(rawBytes, season = season, episode = episode)
+            // Stage separation: decode RAW (no typography normalization) and run the language gate
+            // on raw cues first — orthography signals (raw heh, ZWNJ, hamza) must be intact, or
+            // Persian یه/رها arrive pre-converted and the raw-scan policy is nullified.
+            val decoded = decodeAndNormalizeUrduBytes(
+                rawBytes,
+                season = season,
+                episode = episode,
+                normalizeTypography = false
+            )
             if (decoded.isBlank()) {
                 newDeferred.complete(null)
                 return@withContext null
             }
 
             // Validate raw parsed cues before and after normalization so broken SMT files are rejected
-            val rawCues = parseSubtitleCues(normalizeUrduTypography(decoded))
+            val rawCues = parseSubtitleCues(decoded)
             if (rawCues.isEmpty() || isBrokenSmtUrdu(rawCues) || !containsVerifiedUrduScript(rawCues)) {
                 newDeferred.complete(null)
                 return@withContext null
@@ -2670,8 +2677,15 @@ object UrduSubtitleEngine {
         val preCachedUrUrls = consumeSubtitleCatPreCachedUrduCandidates(imdbId = imdbId, season = season, episode = episode)
         for (urUrl in preCachedUrUrls.take(2)) {
             val rawBytes = fetchRawBytes(urUrl, timeoutSec = 5L) ?: continue
-            val decodedUr = decodeAndNormalizeUrduBytes(rawBytes, season = season, episode = episode)
+            val decodedUr = decodeAndNormalizeUrduBytes(
+                rawBytes,
+                season = season,
+                episode = episode,
+                normalizeTypography = false
+            )
             if (decodedUr.isBlank()) continue
+            val rawUrCues = parseSubtitleCues(decodedUr)
+            if (rawUrCues.isEmpty() || isBrokenSmtUrdu(rawUrCues) || !containsVerifiedUrduScript(rawUrCues)) continue
             val normalizedUr = normalizeUrduSubtitleText(decodedUr)
             val cues = parseSubtitleCues(normalizedUr)
             if (!containsVerifiedUrduScript(cues) || isBrokenSmtUrdu(cues)) continue
