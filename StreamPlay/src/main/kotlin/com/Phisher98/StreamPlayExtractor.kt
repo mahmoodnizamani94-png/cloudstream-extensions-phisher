@@ -1270,7 +1270,12 @@ object StreamPlayExtractor : StreamPlay() {
         QUALITY_DIMENSION_REGEX.find(label)?.let { dimensionMatch ->
             val width = dimensionMatch.groupValues[1].toIntOrNull()
             val height = dimensionMatch.groupValues[2].toIntOrNull()
-            ResolutionTruth.classifyDimensions(width, height).takeIf { it > Qualities.Unknown.value }?.let { return it }
+            // `Qualities.Unknown.value` is 400 in CloudStream — numerically between 360p and
+            // 480p — so the guard must be `> 0 && != Unknown`; a plain `> Unknown` would reject
+            // every sub-480p classification (360/240/144) and let the height regex below match
+            // the WIDTH token of e.g. "720x360" as a false 720p claim.
+            ResolutionTruth.classifyDimensions(width, height)
+                .takeIf { it > 0 && it != Qualities.Unknown.value }?.let { return it }
         }
         QUALITY_KNOWN_HEIGHT_REGEX.find(label)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { height ->
             return when (height) {
@@ -4505,7 +4510,7 @@ object StreamPlayExtractor : StreamPlay() {
                             720 -> Qualities.P720.value
                             480 -> Qualities.P480.value
                             360 -> Qualities.P360.value
-                            else -> StreamLinkOptimizer.extractQualityFromText(qualityKey).takeIf { q -> q > Qualities.Unknown.value } ?: Qualities.Unknown.value
+                            else -> StreamLinkOptimizer.extractQualityFromText(qualityKey).takeIf { q -> q > 0 && q != Qualities.Unknown.value } ?: Qualities.Unknown.value
                         }
 
                         val cleanVideoUrl = if (videoUrl.contains("headers=")) {
@@ -6701,10 +6706,15 @@ object StreamPlayExtractor : StreamPlay() {
                 val timescale = DASH_TIMESCALE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: continue
                 val segDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: continue
                 val scopeEnd = templateMatches.getOrNull(index + 1)?.range?.first ?: manifestText.length
-                val scopedTimeline = DASH_SEGMENT_TIMELINE_REGEX.find(manifestText.substring(template.range.last + 1, scopeEnd)) ?: continue
-                val segmentCount = DASH_SEGMENT_ENTRY_REGEX.findAll(scopedTimeline.groupValues[1])
-                    .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
-                    .takeIf { it > 0 } ?: continue
+                val scopeText = manifestText.substring(template.range.last + 1, scopeEnd)
+                // MP4Box-style MPDs declare one AdaptationSet-level template with per-Representation
+                // timelines: count EVERY timeline in the template's scope and keep the LARGEST
+                // (a `.find` of only the first would undercount the longest video ladder).
+                val segmentCount = DASH_SEGMENT_TIMELINE_REGEX.findAll(scopeText)
+                    .maxOfOrNull { timeline ->
+                        DASH_SEGMENT_ENTRY_REGEX.findAll(timeline.groupValues[1])
+                            .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
+                    }?.takeIf { it > 0 } ?: continue
                 bestDurationSec = maxOf(bestDurationSec, segmentCount * segDuration / timescale.toDouble())
             }
             bestDurationSec.takeIf { it > 0.0 }

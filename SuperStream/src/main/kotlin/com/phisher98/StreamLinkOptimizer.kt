@@ -1695,7 +1695,9 @@ object StreamLinkOptimizer {
      * always decides before source rank, quality score, verified size, or transport — a lower-tier
      * source's 1080p mirror can never outrank a higher-tier source's 720p.
      *
-     * Tiebreakers after the tier: source rank -> quality score -> verified size (smallest first) ->
+     * Tiebreakers after the tier: for TOP-tier pairs, source rank -> quality score -> verified
+     * size (smallest first) -> direct byte stream; for SECONDARY pairs (both tiers 0) the
+     * AGENTS.md fallback ladder is resolution-first, so quality score decides before source rank.
      * direct byte stream over HLS/DASH -> bitrate -> endpoint -> video/HDR -> audio -> headers.
      */
     fun isBetterThan(

@@ -1513,15 +1513,24 @@ class StreamPlayCuratedRegistryV26Test {
         for (shortDim in 100..2200) {
             val longDims = listOf(shortDim, (shortDim * 185 / 100), (shortDim * 239 / 100))
             for (longDim in longDims) {
+                // classifyDimensions returns Unknown only when both dims are <= 0, so every pair
+                // in this sweep has a defined tier and all THREE consumers must agree exactly.
                 val expected = ResolutionTruth.classifyDimensions(longDim, shortDim)
-                val text = StreamLinkOptimizer.extractQualityFromText("${longDim}x${shortDim}")
-                if (expected == Qualities.Unknown.value) {
-                    assertTrue("Text layer may only match ResolutionTruth results", text == Qualities.Unknown.value || text == expected)
-                } else {
-                    assertEquals("Text layer must classify ${longDim}x${shortDim} through ResolutionTruth", expected, text)
-                }
+                assertEquals("Text layer must classify ${longDim}x${shortDim} through ResolutionTruth", expected, StreamLinkOptimizer.extractQualityFromText("${longDim}x${shortDim}"))
+                assertEquals("Provider-label layer must classify ${longDim}x${shortDim} through ResolutionTruth", expected, StreamPlayExtractor.providerLabelQuality("${longDim}x${shortDim}"))
             }
         }
+
+        // Sub-480p regression (Qualities.Unknown.value == 400): a WxH claim classifying below 480p
+        // must never fall through to the height regex, which can match the WIDTH token ("720x360"
+        // would otherwise inflate to a false 720p).
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.providerLabelQuality("720x360"))
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.providerLabelQuality("720x304"))
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.providerLabelQuality("640x268"))
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.providerLabelQuality("480x360"))
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.providerLabelQuality("854x360"))
+        assertEquals(Qualities.P144.value, StreamPlayExtractor.providerLabelQuality("320x180"))
+        assertEquals(Qualities.P240.value, StreamPlayExtractor.providerLabelQuality("480x270"))
     }
 
     @Test
