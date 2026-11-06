@@ -5,17 +5,18 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fillViewport="true"
-    android:layoutDirection="ltr">
+    android:layoutDirection="locale">
 
     <LinearLayout
         android:id="@+id/root_layout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="?android:attr/listPreferredItemPaddingStart"
-        android:paddingEnd="?android:attr/listPreferredItemPaddingEnd"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="18dp"
         android:paddingBottom="20dp"
-        tools:background="@color/cardview_dark_background">
+        tools:background="#0E1116">
 
         <!-- HEADER -->
         <LinearLayout
@@ -23,200 +24,205 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="20dp"
-            android:layout_marginBottom="6dp">
-
-            <TextView
-                android:id="@+id/tv_title"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Select Sources"
-                android:textSize="20sp"
-                android:textStyle="bold"
-                android:focusable="false"/>
-
-            <ImageButton
-                android:id="@+id/btn_save"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:padding="6dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:focusable="true"
-                android:contentDescription="Save"/>
-        </LinearLayout>
-
-        <!-- DIVIDER -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#33FFFFFF"
-            android:layout_marginBottom="12dp"/>
-
-        <!-- DESCRIPTION + COUNTER -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
             android:layout_marginBottom="12dp">
 
-            <TextView
-                android:id="@+id/tv_subtext"
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Enable or Disable Sources"
-                android:textSize="14sp"/>
+                android:orientation="vertical">
 
-            <TextView
-                android:id="@+id/tv_provider_count"
+                <TextView
+                    android:id="@+id/tv_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Enabled sources"
+                    android:textSize="20sp"
+                    android:textStyle="bold"
+                    android:textColor="#F1F5F9"
+                    android:focusable="false" />
+
+                <TextView
+                    android:id="@+id/tv_provider_count"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:accessibilityLiveRegion="polite"
+                    android:fontFeatureSettings="tnum"
+                    android:text="10 / 10 active · Saved automatically"
+                    android:textColor="#93C5FD"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_save"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="0 / 0 enabled"
+                android:layout_height="48dp"
+                android:minHeight="48dp"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:layout_marginStart="8dp"
+                android:text="Done"
+                android:textAllCaps="false"
+                android:textColor="#F1F5F9"
                 android:textSize="13sp"
-                android:alpha="0.8"
-                tools:text="18 / 32 enabled"/>
+                android:textStyle="bold"
+                android:focusable="true"
+                android:contentDescription="Close enabled sources"
+                android:nextFocusDown="@id/ext_search" />
         </LinearLayout>
 
-        <!-- SELECT ALL / NONE -->
+        <!-- SEARCH FIRST (Immediate access above fold with explicit label) -->
+        <TextView
+            android:id="@+id/label_search_providers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:labelFor="@id/ext_search"
+            android:text="Search sources"
+            android:textColor="#F1F5F9"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="6dp" />
+
+        <EditText
+            android:id="@+id/ext_search"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:autofillHints=""
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:layout_marginBottom="10dp"
+            android:hint="Filter by provider name"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#7C8B9E"
+            android:textSize="14sp"
+            android:inputType="textNoSuggestions"
+            android:imeOptions="actionSearch|flagNoExtractUi"
+            android:maxLines="1"
+            android:nextFocusUp="@id/btn_save"
+            android:nextFocusDown="@id/btn_select_all" />
+
+        <!-- ENABLE ALL / DISABLE ALL -->
         <LinearLayout
             android:id="@+id/buttons_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginBottom="14dp">
+            android:layout_marginBottom="8dp">
 
             <Button
                 android:id="@+id/btn_select_all"
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="SELECT ALL"
-                android:textAllCaps="true"
-                android:backgroundTint="#1F6FEB"
+                android:text="Enable all"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                android:textStyle="bold"
                 android:focusable="true"
-                android:nextFocusRight="@id/btn_deselect_all"/>
+                android:nextFocusUp="@id/ext_search"
+                android:nextFocusRight="@id/btn_deselect_all"
+                android:nextFocusDown="@id/btn_save_profile" />
 
             <Space
                 android:layout_width="8dp"
-                android:layout_height="wrap_content"/>
+                android:layout_height="wrap_content" />
 
             <Button
                 android:id="@+id/btn_deselect_all"
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="SELECT NONE"
-                android:textAllCaps="true"
-                android:backgroundTint="#BB2D3B"
+                android:text="Disable optional"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                android:textStyle="bold"
                 android:focusable="true"
-                android:nextFocusLeft="@id/btn_select_all"/>
+                android:nextFocusUp="@id/ext_search"
+                android:nextFocusLeft="@id/btn_select_all"
+                android:nextFocusDown="@id/btn_load_profile" />
         </LinearLayout>
 
-        <!-- DIVIDER -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#33FFFFFF"
-            android:layout_marginBottom="14dp"/>
-
-        <!-- PROFILE BUTTONS -->
+        <!-- PRESET BUTTONS -->
         <LinearLayout
             android:id="@+id/profile_buttons"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginBottom="14dp"
+            android:layout_marginBottom="12dp"
             android:gravity="center_vertical">
 
             <Button
                 android:id="@+id/btn_save_profile"
                 android:layout_width="0dp"
-                android:layout_height="56dp"
+                android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="SAVE PROFILE"
-                android:textAllCaps="true"
-                android:textAlignment="center"
-                android:gravity="center"
-                android:lineSpacingExtra="0dp"
-                android:maxLines="2"
-                android:backgroundTint="#1E88E5"
-                android:focusable="true"/>
+                android:text="Save preset"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:focusable="true"
+                android:nextFocusUp="@id/btn_select_all"
+                android:nextFocusRight="@id/btn_load_profile" />
 
             <Space
                 android:layout_width="8dp"
-                android:layout_height="wrap_content"/>
+                android:layout_height="wrap_content" />
 
             <Button
                 android:id="@+id/btn_load_profile"
                 android:layout_width="0dp"
-                android:layout_height="56dp"
+                android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="LOAD PROFILE"
-                android:textAllCaps="true"
-                android:textAlignment="center"
-                android:gravity="center"
-                android:lineSpacingExtra="0dp"
-                android:maxLines="2"
-                android:backgroundTint="#2E7D32"
-                android:focusable="true"/>
+                android:text="Load preset"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:focusable="true"
+                android:nextFocusUp="@id/btn_select_all"
+                android:nextFocusLeft="@id/btn_save_profile"
+                android:nextFocusRight="@id/btn_delete_profile" />
 
             <Space
                 android:layout_width="8dp"
-                android:layout_height="wrap_content"/>
+                android:layout_height="wrap_content" />
 
             <Button
                 android:id="@+id/btn_delete_profile"
                 android:layout_width="0dp"
-                android:layout_height="56dp"
+                android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="DELETE PROFILE"
-                android:textAllCaps="true"
-                android:textAlignment="center"
-                android:gravity="center"
-                android:lineSpacingExtra="0dp"
-                android:maxLines="2"
-                android:backgroundTint="#C62828"
+                android:text="Delete preset"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:textStyle="bold"
                 android:focusable="true"
-                android:nextFocusDown="@id/ext_search"/>
-
+                android:nextFocusUp="@id/btn_deselect_all"
+                android:nextFocusLeft="@id/btn_load_profile"
+                android:nextFocusDown="@id/list_container" />
         </LinearLayout>
 
-        <!-- DIVIDER -->
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="#33FFFFFF"
-            android:layout_marginBottom="12dp"/>
+            android:background="#283140"
+            android:layout_marginBottom="8dp" />
 
-        <!-- SEARCH -->
-        <LinearLayout
+        <TextView
+            android:id="@+id/tv_empty_providers"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="12dp">
-
-            <ImageView
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:src="@android:drawable/ic_menu_search"
-                android:layout_marginEnd="8dp"
-                android:focusable="false"/>
-
-            <EditText
-                android:id="@+id/ext_search"
-                android:layout_width="match_parent"
-                android:layout_height="40dp"
-                android:hint="Search sources..."
-                android:inputType="text"
-                android:imeOptions="actionSearch|flagNoExtractUi"
-                android:maxLines="1"
-                android:background="?android:attr/editTextBackground"
-                android:nextFocusUp="@id/btn_select_all"
-                android:nextFocusDown="@id/list_container"/>
-        </LinearLayout>
+            android:accessibilityLiveRegion="polite"
+            android:padding="24dp"
+            android:gravity="center"
+            android:text="No sources match your filter."
+            android:textColor="#94A3B8"
+            android:textSize="13sp"
+            android:visibility="gone" />
 
         <!-- PROVIDERS LIST -->
         <LinearLayout
@@ -224,7 +230,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:focusable="false"/>
+            android:focusable="false" />
 
     </LinearLayout>
 

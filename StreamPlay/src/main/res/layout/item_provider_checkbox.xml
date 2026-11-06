@@ -1,21 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical">
 
     <CheckBox
         android:id="@+id/chk_provider"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textSize="17sp"
+        android:minHeight="48dp"
+        android:textSize="15sp"
         android:text="Provider Name"
-        android:textColor="#FFFFFF"
-        android:padding="5dp"
-        android:layout_marginTop="5dp"
-        android:layout_marginBottom="5dp"
+        android:textColor="#F1F5F9"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
+        android:layout_marginTop="2dp"
+        android:layout_marginBottom="2dp"
         android:focusable="true"
-        android:clickable="true"
-        tools:ignore="TouchTargetSizeCheck" />
+        android:clickable="true" />
 </LinearLayout>

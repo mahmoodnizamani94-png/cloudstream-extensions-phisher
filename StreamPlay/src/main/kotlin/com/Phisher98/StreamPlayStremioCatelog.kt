@@ -595,11 +595,6 @@ class StreamPlayStremioCatelog(
                 context = null,
                 sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref
             )
-            val subtitleModeBadge = if (urduMode) {
-                "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
-            } else {
-                "🇬🇧 Subtitles: English (Default)"
-            }
             val parsedYear = yearNum?.split("–", "-")?.firstOrNull()?.trim()?.toIntOrNull()
             val isMovieEntry = videos.isNullOrEmpty()
             if (urduMode) {
@@ -613,10 +608,7 @@ class StreamPlayStremioCatelog(
                     sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref
                 )
             }
-            val enrichedTags = buildList {
-                add(subtitleModeBadge)
-                addAll(genre ?: genres)
-            }
+            val enrichedTags = (genre ?: genres)
             if (isMovieEntry) {
                 return provider.newMovieLoadResponse(
                     name,

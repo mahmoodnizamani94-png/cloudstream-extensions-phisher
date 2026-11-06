@@ -3,8 +3,12 @@ package com.phisher98
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.os.Bundle
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -16,9 +20,11 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.fragment.app.DialogFragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import androidx.fragment.app.DialogFragment
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity.showToast
 
@@ -30,20 +36,10 @@ class StreamPlayStremioCatelogFrag(
 
     override fun onStart() {
         super.onStart()
-        dialog?.window?.apply {
-            val displayMetrics = resources.displayMetrics
-            val maxDialogWidth = (500 * displayMetrics.density).toInt()
-            val width = if (displayMetrics.widthPixels > 0 && displayMetrics.widthPixels > maxDialogWidth) {
-                maxDialogWidth
-            } else {
-                (displayMetrics.widthPixels * 0.9f).toInt()
-            }
-            setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-        }
+        StreamPlayDesignTokens.configureDialogWindow(dialog, resources)
     }
-    private val PREF_KEY_LINKS = "streamplay_stremio_saved_links"
 
+    private val PREF_KEY_LINKS = "streamplay_stremio_saved_links"
     private val res = plugin.resources ?: throw Exception("Unable to access plugin resources")
 
     private fun getDrawable(name: String): Drawable {
@@ -57,10 +53,10 @@ class StreamPlayStremioCatelogFrag(
         return this.findViewById(id)
     }
 
-    @SuppressLint("UseCompatLoadingForDrawables")
-    private fun View.makeTvCompatible() {
-        val outlineId = res.getIdentifier("outline", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        this.background = res.getDrawable(outlineId, null)
+    private fun <T : View> View.findViewOrNull(name: String): T? {
+        val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
+        if (id == 0) return null
+        return runCatching { this.findViewById<T>(id) }.getOrNull()
     }
 
     private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
@@ -69,64 +65,71 @@ class StreamPlayStremioCatelogFrag(
         return inflater.inflate(layout, container, false)
     }
 
-    @SuppressLint("DiscouragedApi")
+    @SuppressLint("DiscouragedApi", "SetTextI18n")
     override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?,
+        inflater: LayoutInflater,
+        container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
         val view = getLayout("stremio_bottom_sheet_layout", inflater, container)
-        val drawableId = res.getIdentifier("dialog_background", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (drawableId != 0) {
-            view.background = res.getDrawable(drawableId, null)
-        }
+        view.background = StreamPlayDesignTokens.dialogSurfaceDrawable(resources)
 
-        listOf("addlinks", "showlinks", "saveIcon").forEach { name ->
-            val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-            if (id == 0) Log.w("StreamPlayStremioCatelogFrag", "View id '$name' not found")
-            else Log.d("StreamPlayStremioCatelogFrag", "View id '$name' -> $id")
-        }
+        val rowAddLink: View = view.findView("row_add_link")
+        val rowShowLinks: View = view.findView("row_show_links")
+        val savedLinksCountText: TextView = view.findView("saved_links_count_text")
+        val addlinks: ImageView = view.findView("addlinks")
+        val showlinks: ImageView = view.findView("showlinks")
+        val saveIcon: ImageView = view.findView("saveIcon")
 
-        // safe find helpers (throws clear exceptions if missing)
-        val addlinks: ImageView = try { view.findView("addlinks") } catch (e: Throwable) {
-            throw Exception("addlinks ImageView not found in bottom_sheet_layout", e)
+        val chevronDrawable = try {
+            getDrawable("chevron_right_icon")
+        } catch (_: Throwable) {
+            getDrawable("settings_icon")
         }
-        val showlinks: ImageView = try { view.findView("showlinks") } catch (e: Throwable) {
-            throw Exception("showlinks ImageView not found in bottom_sheet_layout", e)
-        }
-        val saveIcon: ImageView = try { view.findView("saveIcon") } catch (e: Throwable) {
-            throw Exception("saveIcon ImageView not found in bottom_sheet_layout", e)
-        }
-
-        addlinks.setImageDrawable(getDrawable("settings_icon"))
-        showlinks.setImageDrawable(getDrawable("settings_icon"))
+        addlinks.setImageDrawable(chevronDrawable.constantState?.newDrawable()?.mutate() ?: chevronDrawable)
+        showlinks.setImageDrawable(chevronDrawable.constantState?.newDrawable()?.mutate() ?: chevronDrawable)
         saveIcon.setImageDrawable(getDrawable("save_icon"))
 
-        addlinks.makeTvCompatible()
-        showlinks.makeTvCompatible()
-        saveIcon.makeTvCompatible()
+        rowAddLink.background = StreamPlayDesignTokens.interactiveRowDrawable(resources)
+        rowShowLinks.background = StreamPlayDesignTokens.interactiveRowDrawable(resources)
+        saveIcon.background = StreamPlayDesignTokens.iconButtonDrawable(resources)
 
-        // ---------- ADD dialog ----------
-        addlinks.setOnClickListener {
+        fun refreshSavedCount() {
+            val count = loadLinks().size
+            savedLinksCountText.text = when (count) {
+                0 -> "No catalog feeds saved"
+                1 -> "1 catalog feed configured"
+                else -> "$count catalog feeds configured"
+            }
+        }
+        refreshSavedCount()
+
+        val openAddDialog = View.OnClickListener {
             val dialogView = getLayout("streamio_addon_addlinks", inflater, container)
+            dialogView.background = StreamPlayDesignTokens.dialogSurfaceDrawable(resources)
             val etName: EditText
             val etLink: EditText
             try {
                 etName = dialogView.findView("etName")
                 etLink = dialogView.findView("etLink")
             } catch (t: Throwable) {
-                Toast.makeText(requireContext(), "Dialog fields not found", Toast.LENGTH_SHORT).show()
-                Log.e("SettingsBottomFragment", "Missing dialog views $t")
-                return@setOnClickListener
+                Log.e("StreamPlayStremioCatelogFrag", "Missing dialog views $t")
+                return@OnClickListener
             }
 
+            dialogView.findViewOrNull<View>("radioGroup")?.visibility = View.GONE
+
+            etName.background = StreamPlayDesignTokens.inputFieldDrawable(resources)
+            etLink.background = StreamPlayDesignTokens.inputFieldDrawable(resources)
 
             val dlg = AlertDialog.Builder(requireContext())
                 .setView(dialogView)
-                .setPositiveButton("Save", null)
+                .setPositiveButton("Save catalog", null)
                 .setNegativeButton("Cancel", null)
                 .create()
 
             dlg.setOnShowListener {
+                StreamPlayDesignTokens.configureDialogWindow(dlg, resources, maxHeightFraction = 0.85f)
                 val btnSave = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
                 btnSave.setOnClickListener {
                     val name = etName.text.toString().trim()
@@ -134,7 +137,7 @@ class StreamPlayStremioCatelogFrag(
                     val type = "StremioC"
 
                     if (link.isEmpty()) {
-                        showToast("Please enter a link")
+                        showToast("Enter a catalog manifest URL")
                         return@setOnClickListener
                     }
 
@@ -147,7 +150,7 @@ class StreamPlayStremioCatelogFrag(
                     }
 
                     if (!valid) {
-                        showToast("Enter a valid URL (http/https)")
+                        showToast("Enter a valid URL (http or https)")
                         return@setOnClickListener
                     }
 
@@ -156,11 +159,12 @@ class StreamPlayStremioCatelogFrag(
                         val list = loadLinks().toMutableList()
                         list.add(0, item)
                         saveLinks(list)
-                        Toast.makeText(requireContext(), "Link saved", Toast.LENGTH_SHORT).show()
+                        refreshSavedCount()
+                        Toast.makeText(requireContext(), "Catalog manifest saved", Toast.LENGTH_SHORT).show()
                         dlg.dismiss()
                     } catch (e: Throwable) {
-                        Log.e("SettingsBottomFragment", "Failed to save link $e")
-                        showToast("Failed to save link")
+                        Log.e("StreamPlayStremioCatelogFrag", "Failed to save link $e")
+                        showToast("Failed to save catalog manifest")
                     }
                 }
             }
@@ -168,18 +172,20 @@ class StreamPlayStremioCatelogFrag(
             dlg.show()
         }
 
-        // ---------- SHOW list dialog ----------
-        showlinks.setOnClickListener {
+        val openListDialog = View.OnClickListener {
             val dialogView = getLayout("stremio_dialog_list_links", inflater, container)
+            dialogView.background = StreamPlayDesignTokens.dialogSurfaceDrawable(resources)
             val dlg = AlertDialog.Builder(requireContext())
                 .setView(dialogView)
-                .setPositiveButton("Close", null)
+                .setPositiveButton("Done", null)
                 .create()
+            dlg.setOnShowListener {
+                StreamPlayDesignTokens.configureDialogWindow(dlg, resources, maxHeightFraction = 0.85f)
+            }
 
             val rv: RecyclerView = dialogView.findView("rvLinks")
             val tvNoLinks: TextView = dialogView.findView("tvNoLinks")
             val list = loadLinks().toMutableList()
-            Log.d("SettingsBottomFragment", "Loaded ${list.size} saved links")
 
             if (list.isEmpty()) {
                 tvNoLinks.visibility = View.VISIBLE
@@ -191,59 +197,63 @@ class StreamPlayStremioCatelogFrag(
                 rv.layoutManager = LinearLayoutManager(requireContext())
 
                 val adapter = LinksAdapter(list) { itemToDelete ->
-                    val updatedList = loadLinks().toMutableList()
+                    val backupList = loadLinks().toList()
+                    val updatedList = backupList.toMutableList()
                     val removed = updatedList.removeAll { it.id == itemToDelete.id }
 
                     if (removed) {
                         saveLinks(updatedList)
+                        refreshSavedCount()
                         (rv.adapter as? LinksAdapter)?.remove(itemToDelete)
-                        showToast("Deleted")
                         if (updatedList.isEmpty()) {
                             tvNoLinks.visibility = View.VISIBLE
                             rv.visibility = View.GONE
                         }
+                        AlertDialog.Builder(requireContext())
+                            .setTitle("Catalog removed")
+                            .setMessage("Removed \"${itemToDelete.name}\". Undo?")
+                            .setPositiveButton("Undo") { _, _ ->
+                                saveLinks(backupList)
+                                refreshSavedCount()
+                                list.clear()
+                                list.addAll(backupList)
+                                rv.adapter?.notifyDataSetChanged()
+                                tvNoLinks.visibility = View.GONE
+                                rv.visibility = View.VISIBLE
+                            }
+                            .setNegativeButton("Keep removed", null)
+                            .show()
                     }
                 }
-
 
                 rv.adapter = adapter
             }
             dlg.show()
         }
 
+        rowAddLink.setOnClickListener(openAddDialog)
+        rowShowLinks.setOnClickListener(openListDialog)
 
-        // ---------- SAVE & RESTART ----------
         saveIcon.setOnClickListener {
             val context = this.context ?: return@setOnClickListener
 
             AlertDialog.Builder(context)
-                .setTitle("Save & Reload")
-                .setMessage("Changes have been saved. Do you want to restart the app to apply them?")
-                .setPositiveButton("Yes") { _, _ ->
+                .setTitle("Restart to apply catalogs")
+                .setMessage("Saved catalog feeds take effect after restarting CloudStream. Restart now?")
+                .setPositiveButton("Restart app") { _, _ ->
                     dismiss()
-                    restartApp()
+                    StreamPlayDesignTokens.restartHostApp(requireContext())
                 }
-                .setNegativeButton("No", null)
+                .setNegativeButton("Later", null)
                 .show()
         }
 
         return view
     }
 
-
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {}
-
-    private fun restartApp() {
-        val context = requireContext().applicationContext
-        val packageManager = context.packageManager
-        val intent = packageManager.getLaunchIntentForPackage(context.packageName)
-        val componentName = intent?.component
-
-        if (componentName != null) {
-            val restartIntent = Intent.makeRestartActivityTask(componentName)
-            context.startActivity(restartIntent)
-            Runtime.getRuntime().exit(0)
-        }
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        StreamPlayDesignTokens.applyWindowInsetsPadding(view)
     }
 
     data class LinkItem(
@@ -259,30 +269,25 @@ class StreamPlayStremioCatelogFrag(
 
         return try {
             val arr = org.json.JSONArray(json)
-
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
-
                 list.add(
                     LinkItem(
-                        id   = obj.optLong("id", System.currentTimeMillis()),
+                        id = obj.optLong("id", System.currentTimeMillis()),
                         name = obj.optString("name", ""),
                         link = obj.optString("link", ""),
-                        type = obj.optString("type", "StremioX")
+                        type = obj.optString("type", "StremioC")
                     )
                 )
             }
-
             list
         } catch (_: Exception) {
             mutableListOf()
         }
     }
 
-
     private fun saveLinks(list: List<LinkItem>) {
         val arr = org.json.JSONArray()
-
         for (item in list) {
             val obj = org.json.JSONObject().apply {
                 put("id", item.id)
@@ -292,7 +297,6 @@ class StreamPlayStremioCatelogFrag(
             }
             arr.put(obj)
         }
-
         sharedPref.edit { putString(PREF_KEY_LINKS, arr.toString()) }
     }
 
@@ -311,17 +315,21 @@ class StreamPlayStremioCatelogFrag(
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val layoutId = res.getIdentifier("stremio_item_saved_link", "layout", BuildConfig.LIBRARY_PACKAGE_NAME)
             val v = layoutInflater.inflate(res.getLayout(layoutId), parent, false)
+            v.background = StreamPlayDesignTokens.elevatedCardDrawable(resources)
             return VH(v)
         }
 
         override fun onBindViewHolder(holder: VH, position: Int) {
             val item = items[position]
-
             holder.tvName.text = item.name
             holder.tvLink.text = item.link
-            holder.tvType.text = item.type
-
+            holder.tvType.text = "Catalog"
+            runCatching {
+                holder.btnDelete.setImageDrawable(getDrawable("delete_icon"))
+            }
+            holder.btnDelete.background = StreamPlayDesignTokens.iconButtonDrawable(resources)
             holder.btnDelete.setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 onDelete(item)
             }
         }

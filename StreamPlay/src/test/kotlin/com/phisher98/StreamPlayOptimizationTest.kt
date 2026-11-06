@@ -310,10 +310,10 @@ class StreamPlayOptimizationTest {
         assertEquals(StreamPlayConcurrency.MAX_PROVIDER_CONCURRENCY, StreamPlayConcurrency.normalizeConcurrency(200))
         assertEquals(32, StreamPlayConcurrency.normalizeConcurrency(32))
 
-        assertEquals("Slow internet saver", StreamPlayConcurrency.concurrencyLabel(10))
+        assertEquals("Stable", StreamPlayConcurrency.concurrencyLabel(10))
         assertEquals("Balanced", StreamPlayConcurrency.concurrencyLabel(24))
         assertEquals("Fast", StreamPlayConcurrency.concurrencyLabel(48))
-        assertEquals("Max speed", StreamPlayConcurrency.concurrencyLabel(80))
+        assertEquals("Max", StreamPlayConcurrency.concurrencyLabel(80))
     }
 
     @Test

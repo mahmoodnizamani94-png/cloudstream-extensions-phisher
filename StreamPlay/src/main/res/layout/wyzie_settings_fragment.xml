@@ -1,104 +1,183 @@
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="#121212"
-    android:padding="16dp">
+    android:layout_height="wrap_content"
+    android:scrollbars="vertical"
+    android:fadeScrollbars="false"
+    android:fillViewport="true"
+    android:layoutDirection="locale">
 
-    <ScrollView
+    <LinearLayout
+        android:id="@+id/cardContainer"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_marginTop="8dp">
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Subtitle API keys"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Six subtitle sources work without keys. Add optional keys below to enable Wyzie, SubSource, and direct SubDL access."
+            android:textSize="13sp"
+            android:lineSpacingExtra="2dp"
+            android:textColor="#94A3B8"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Wyzie Key Section -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:labelFor="@id/wyzieKeyInput"
+            android:text="Wyzie API key"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9"
+            android:layout_marginBottom="6dp" />
+
+        <EditText
+            android:id="@+id/wyzieKeyInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:autofillHints=""
+            android:hint="Paste key from sub.wyzie.ru"
+            android:textColorHint="#7C8B9E"
+            android:textColor="#F1F5F9"
+            android:inputType="textNoSuggestions"
+            android:singleLine="true"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:textSize="14sp"
+            android:layout_marginBottom="8dp"
+            android:background="@null"
+            android:nextFocusDown="@id/getKeyButton" />
+
+        <Button
+            android:id="@+id/getKeyButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minHeight="48dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:layout_marginBottom="14dp"
+            android:text="Get free Wyzie key"
+            android:textAllCaps="false"
+            android:textColor="#F1F5F9"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:nextFocusUp="@id/wyzieKeyInput"
+            android:nextFocusDown="@id/subDlKeyInput" />
+
+        <!-- SubDL Key Section -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:labelFor="@id/subDlKeyInput"
+            android:text="SubDL API key"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9"
+            android:layout_marginBottom="6dp" />
+
+        <EditText
+            android:id="@+id/subDlKeyInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:autofillHints=""
+            android:hint="Optional · api.subdl.com"
+            android:textColorHint="#7C8B9E"
+            android:textColor="#F1F5F9"
+            android:inputType="textNoSuggestions"
+            android:singleLine="true"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:textSize="14sp"
+            android:layout_marginBottom="14dp"
+            android:background="@null"
+            android:nextFocusUp="@id/getKeyButton"
+            android:nextFocusDown="@id/subSourceKeyInput" />
+
+        <!-- SubSource Key Section -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:labelFor="@id/subSourceKeyInput"
+            android:text="SubSource API key"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9"
+            android:layout_marginBottom="6dp" />
+
+        <EditText
+            android:id="@+id/subSourceKeyInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:autofillHints=""
+            android:hint="Optional · api.subsource.net"
+            android:textColorHint="#7C8B9E"
+            android:textColor="#F1F5F9"
+            android:inputType="textNoSuggestions"
+            android:singleLine="true"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:textSize="14sp"
+            android:layout_marginBottom="18dp"
+            android:background="@null"
+            android:nextFocusUp="@id/subDlKeyInput"
+            android:nextFocusDown="@id/saveButton" />
+
+        <!-- Bottom Button Row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingBottom="24dp">
+            android:orientation="horizontal">
 
-            <!-- Card Layout Wrapper using standard LinearLayout (Programmatic Background) -->
-            <LinearLayout
-                android:id="@+id/cardContainer"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="20dp"
-                android:layout_marginBottom="16dp">
+            <Button
+                android:id="@+id/saveButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="Save keys"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:nextFocusUp="@id/subSourceKeyInput"
+                android:nextFocusRight="@id/resetButton" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Wyzie Key Management"
-                    android:textSize="18sp"
-                    android:textStyle="bold"
-                    android:textColor="#FFFFFF" />
+            <Space
+                android:layout_width="10dp"
+                android:layout_height="wrap_content" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Enter your Wyzie key below or redeem a new one from the store."
-                    android:textSize="14sp"
-                    android:textColor="#AAAAAA"
-                    android:layout_marginTop="6dp"
-                    android:layout_marginBottom="18dp" />
-
-                <!-- Get Key Button -->
-                <Button
-                    android:id="@+id/getKeyButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:text="Get Wyzie Key"
-                    android:textColor="#FFFFFF"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:layout_marginBottom="16dp" />
-
-                <!-- Key Input EditText -->
-                <EditText
-                    android:id="@+id/wyzieKeyInput"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:hint="Paste Wyzie Key here"
-                    android:textColorHint="#777777"
-                    android:textColor="#FFFFFF"
-                    android:inputType="text"
-                    android:padding="14dp"
-                    android:textSize="15sp"
-                    android:layout_marginBottom="16dp"
-                    android:background="@null" />
-
-                <!-- Bottom Button Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/saveButton"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_weight="1"
-                        android:text="Save Key"
-                        android:textColor="#FFFFFF"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <Space
-                        android:layout_width="12dp"
-                        android:layout_height="wrap_content" />
-
-                    <Button
-                        android:id="@+id/resetButton"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_weight="1"
-                        android:text="Reset"
-                        android:textColor="#FFFFFF"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-            </LinearLayout>
+            <Button
+                android:id="@+id/resetButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="Clear keys"
+                android:textAllCaps="false"
+                android:textColor="#FCA5A5"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:nextFocusUp="@id/subSourceKeyInput"
+                android:nextFocusLeft="@id/saveButton" />
         </LinearLayout>
-    </ScrollView>
-</RelativeLayout>
+    </LinearLayout>
+</ScrollView>

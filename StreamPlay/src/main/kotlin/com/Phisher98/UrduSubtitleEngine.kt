@@ -235,17 +235,17 @@ object UrduSubtitleEngine {
     }
 
     /**
-     * Returns a concise summary of the active SOTA Urdu architecture for UI dialogs and subtitles settings.
+     * Returns a concise summary of the active Urdu subtitle sources.
      */
     fun sotaSourcesSummary(): String =
-        "$TOTAL_URDU_SOTA_SOURCES SOTA Sources (SubDL, SubSource, Wyzie, SubSense, YTS-Subs, Subf2m, SubtitleCat, OpenSubtitles) + Neural AI"
+        "$TOTAL_URDU_SOTA_SOURCES Urdu sources (SubDL, SubSource, Wyzie, SubSense, YTS-Subs, Subf2m, SubtitleCat, OpenSubtitles)"
 
     @Volatile
     private var appContextRef: android.content.Context? = null
 
     enum class SubtitleMode(val id: String, val displayLabel: String) {
-        DEFAULT(MODE_DEFAULT, "Default (English)"),
-        URDU(MODE_URDU, "Urdu (\u0627\u0631\u062f\u0648)");
+        DEFAULT(MODE_DEFAULT, "English"),
+        URDU(MODE_URDU, "Urdu \u2067\u0627\u0631\u062f\u0648\u2069");
 
         companion object {
             fun fromId(raw: String?): SubtitleMode? {
@@ -2701,7 +2701,7 @@ object UrduSubtitleEngine {
     }
 
     // =========================================================================
-    // 4. Human Urdu Harvesters (SubDL Keyless + API v1, SubSource API v1, SubSense, Subf2m)
+    // 4. Human Urdu Subtitle Providers (SubDL Keyless + API v1, SubSource API v1, SubSense, Subf2m)
     // =========================================================================
 
     /**

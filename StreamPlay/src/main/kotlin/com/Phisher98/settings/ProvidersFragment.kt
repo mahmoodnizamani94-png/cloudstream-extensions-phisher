@@ -2,28 +2,32 @@ package com.phisher98
 
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
-import android.graphics.drawable.Drawable
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.RequiresApi
 import androidx.core.content.edit
-import androidx.fragment.app.DialogFragment
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isNotEmpty
-import androidx.core.widget.addTextChangedListener
-import com.lagradost.cloudstream3.CommonActivity.showToast
 import androidx.core.view.isVisible
+import androidx.core.widget.CompoundButtonCompat
+import androidx.core.widget.addTextChangedListener
+import androidx.fragment.app.DialogFragment
+import com.lagradost.cloudstream3.CommonActivity.showToast
 
-
-private val PREFS_PROFILES = "provider_profiles"
+private const val PREFS_PROFILES = "provider_profiles"
 
 class ProvidersFragment(
     private val plugin: StreamPlayPlugin,
@@ -32,7 +36,7 @@ class ProvidersFragment(
 ) : DialogFragment() {
 
     private val res = plugin.resources ?: throw Exception("Unable to access plugin resources")
-    private lateinit var btnSave: ImageButton
+    private lateinit var btnSave: TextView
     private lateinit var btnSelectAll: Button
     private lateinit var btnDeselectAll: Button
     private lateinit var adapter: ProviderAdapter
@@ -43,20 +47,14 @@ class ProvidersFragment(
 
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (id == 0) throw Exception("View ID $name not found.")
+        if (id == 0) throw IllegalStateException("View ID $name not found.")
         return this.findViewById(id)
     }
 
-    @SuppressLint("UseCompatLoadingForDrawables")
-    private fun getDrawable(name: String): Drawable {
-        val id = res.getIdentifier(name, "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        return res.getDrawable(id, null) ?: throw Exception("Drawable $name not found")
-    }
-
-    @SuppressLint("UseCompatLoadingForDrawables")
-    private fun View.makeTvCompatible() {
-        val outlineId = res.getIdentifier("outline", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        this.background = res.getDrawable(outlineId, null)
+    private fun <T : View> View.findViewOrNull(name: String): T? {
+        val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
+        if (id == 0) return null
+        return runCatching { this.findViewById<T>(id) }.getOrNull()
     }
 
     private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
@@ -67,68 +65,58 @@ class ProvidersFragment(
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val view = getLayout("fragment_providers", inflater, container)
-        val drawableId = res.getIdentifier("dialog_background", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (drawableId != 0) {
-            view.background = res.getDrawable(drawableId, null)
-        }
+        view.background = StreamPlayDesignTokens.dialogSheetDrawable(resources.displayMetrics.density)
         return view
     }
 
     override fun onStart() {
         super.onStart()
-        dialog?.window?.apply {
-            val displayMetrics = resources.displayMetrics
-            val maxDialogWidth = (500 * displayMetrics.density).toInt()
-            val width = if (displayMetrics.widthPixels > 0 && displayMetrics.widthPixels > maxDialogWidth) {
-                maxDialogWidth
-            } else {
-                (displayMetrics.widthPixels * 0.9f).toInt()
-            }
-            setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-        }
+        StreamPlayDesignTokens.configureDialogWindow(dialog, resources)
     }
+
     @SuppressLint("SetTextI18n")
     private fun updateProviderCount() {
         val enabled = providers.count { !adapter.isDisabled(it.id) }
         val total = providers.size
-        tvProviderCount.text = "$enabled / $total enabled"
+        tvProviderCount.text = "$enabled / $total active · Saved automatically"
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
     @SuppressLint("SetTextI18n")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        val density = resources.displayMetrics.density
+        StreamPlayDesignTokens.applyWindowInsetsPadding(view)
+
         tvProviderCount = view.findView("tv_provider_count")
+        val tvEmpty = view.findViewOrNull<TextView>("tv_empty_providers")
         btnSave = view.findView("btn_save")
-        btnSave.setImageDrawable(getDrawable("save_icon"))
-        btnSave.makeTvCompatible()
+        StreamPlayDesignTokens.styleButton(btnSave, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
 
         btnSelectAll = view.findView("btn_select_all")
         btnDeselectAll = view.findView("btn_deselect_all")
-        btnSelectAll.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#1F6FEB"))
-        btnSelectAll.setTextColor(android.graphics.Color.WHITE)
-        btnDeselectAll.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#BB2D3B"))
-        btnDeselectAll.setTextColor(android.graphics.Color.WHITE)
+        StreamPlayDesignTokens.styleButton(btnSelectAll, density, StreamPlayDesignTokens.ButtonVariant.PRIMARY)
+        StreamPlayDesignTokens.styleButton(btnDeselectAll, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
+        StreamPlayDesignTokens.applyDirectionalFocus(btnSelectAll, btnDeselectAll)
+
         container = view.findView("list_container")
-        container.makeTvCompatible()
         providers = buildProviders().sortedBy { it.name.lowercase() }
 
-        //Search
+        val chkId = res.getIdentifier("chk_provider", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
 
         val etSearch = view.findView<EditText>("ext_search")
+        etSearch.background = StreamPlayDesignTokens.inputWellDrawable(density)
         etSearch.addTextChangedListener { text ->
             val query = text.toString().lowercase().trim()
-            val chkId = res.getIdentifier("chk_provider", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
+            var visibleCount = 0
             for (i in 0 until container.childCount) {
                 val item = container.getChildAt(i)
                 val chk = item.findViewById<CheckBox>(chkId)
-                item.visibility = if (query.isEmpty() || chk.text.toString().lowercase().contains(query)) {
-                    View.VISIBLE
-                } else {
-                    View.GONE
-                }
+                val matches = query.isEmpty() || chk.text.toString().lowercase().contains(query)
+                item.visibility = if (matches) View.VISIBLE else View.GONE
+                if (matches) visibleCount++
             }
+            tvEmpty?.visibility = if (visibleCount == 0) View.VISIBLE else View.GONE
         }
 
         etSearch.setOnEditorActionListener { _, _, _ ->
@@ -142,7 +130,6 @@ class ProvidersFragment(
             true
         }
 
-        // --- Load disabled providers ---
         val savedDisabled = getOrInitializeDisabledProviders(sharedPref)
 
         adapter = ProviderAdapter(providers, savedDisabled) { disabled ->
@@ -151,17 +138,24 @@ class ProvidersFragment(
             updateProviderCount()
         }
 
-        val chkId = res.getIdentifier("chk_provider", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-
-        // --- Add provider items ---
         providers.forEach { provider ->
             val item = getLayout("item_provider_checkbox", layoutInflater, container)
             val chk = item.findViewById<CheckBox>(chkId)
-            item.makeTvCompatible()
-            chk.makeTvCompatible()
             val isVidlinkMandatory = provider.id.equals("vidlink", ignoreCase = true)
-            chk.text = provider.name
-            // Enabled if NOT in disabled list (VidLink is always enabled)
+
+            chk.background = StreamPlayDesignTokens.listItemDrawable(density)
+            CompoundButtonCompat.setButtonTintList(
+                chk,
+                StreamPlayDesignTokens.compoundButtonTintList()
+            )
+            chk.text = if (isVidlinkMandatory) {
+                "${provider.name} · Always enabled (primary source)"
+            } else {
+                provider.name
+            }
+            chk.setTextColor(
+                if (isVidlinkMandatory) StreamPlayDesignTokens.ACCENT_SOFT else StreamPlayDesignTokens.TEXT_PRIMARY
+            )
             chk.isChecked = if (isVidlinkMandatory) true else !adapter.isDisabled(provider.id)
             chk.isEnabled = !isVidlinkMandatory
 
@@ -169,59 +163,70 @@ class ProvidersFragment(
                 if (!isVidlinkMandatory) chk.toggle()
             }
 
-            chk.setOnCheckedChangeListener { _, isChecked ->
+            chk.setOnCheckedChangeListener { buttonView, isChecked ->
                 if (isVidlinkMandatory) {
                     chk.isChecked = true
                 } else {
-                    // Checked → remove from disabled, Unchecked → add to disabled
+                    buttonView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     adapter.setDisabled(provider.id, !isChecked)
                 }
             }
 
             container.addView(item)
-            updateProviderCount()
         }
+        updateProviderCount()
+
         container.post {
             if (container.isNotEmpty()) {
                 val firstItem = container.getChildAt(0)
                 firstItem.isFocusable = true
-                firstItem.requestFocusFromTouch()
                 firstItem.nextFocusUpId = btnSave.id
             }
         }
 
-        btnSelectAll.setOnClickListener { adapter.setAll(true) }
-        btnDeselectAll.setOnClickListener { adapter.setAll(false) }
+        btnSelectAll.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            adapter.setAll(true)
+        }
+        btnDeselectAll.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            adapter.setAll(false)
+        }
         btnSave.setOnClickListener { dismissFragment() }
-
-
-        //Profile
 
         val btnSaveProfile = view.findView<Button>("btn_save_profile")
         val btnLoadProfile = view.findView<Button>("btn_load_profile")
         val btnDeleteProfile = view.findView<Button>("btn_delete_profile")
 
-        btnSaveProfile.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#1E88E5"))
-        btnSaveProfile.setTextColor(android.graphics.Color.WHITE)
-        btnLoadProfile.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#2E7D32"))
-        btnLoadProfile.setTextColor(android.graphics.Color.WHITE)
-        btnDeleteProfile.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#C62828"))
-        btnDeleteProfile.setTextColor(android.graphics.Color.WHITE)
+        StreamPlayDesignTokens.styleButton(btnSaveProfile, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
+        StreamPlayDesignTokens.styleButton(btnLoadProfile, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
+        StreamPlayDesignTokens.styleButton(btnDeleteProfile, density, StreamPlayDesignTokens.ButtonVariant.DANGER)
+        StreamPlayDesignTokens.applyDirectionalFocus(btnSaveProfile, btnLoadProfile)
+        StreamPlayDesignTokens.applyDirectionalFocus(btnLoadProfile, btnDeleteProfile)
 
         btnSaveProfile.setOnClickListener {
-            val input = android.widget.EditText(requireContext())
+            val padH = StreamPlayDesignTokens.dpToPx(density, 14f)
+            val padV = StreamPlayDesignTokens.dpToPx(density, 12f)
+            val input = EditText(requireContext()).apply {
+                hint = "Preset name (e.g. Fast 720p)"
+                setSingleLine()
+                setTextColor(StreamPlayDesignTokens.TEXT_PRIMARY)
+                setHintTextColor(StreamPlayDesignTokens.TEXT_MUTED)
+                background = StreamPlayDesignTokens.inputWellDrawable(density)
+                setPadding(padH, padV, padH, padV)
+            }
 
             val dialog = android.app.AlertDialog.Builder(requireContext())
-                .setTitle("Save Profile")
-                .setMessage("Enter a name for your profile:")
+                .setTitle("Save source preset")
+                .setMessage("Name this source selection:")
                 .setView(input)
-                .setPositiveButton("Save") { _, _ ->
+                .setPositiveButton("Save preset") { _, _ ->
                     val name = input.text.toString().trim()
                     if (name.isNotEmpty()) {
                         saveProfile(name)
-                        showMessage("Profile \"$name\" saved.")
+                        showMessage("Preset \"$name\" saved.")
                     } else {
-                        showMessage("Profile name cannot be empty.")
+                        showMessage("Enter a preset name.")
                     }
                 }
                 .setNegativeButton("Cancel", null)
@@ -235,33 +240,45 @@ class ProvidersFragment(
             dialog.show()
         }
 
-
         btnLoadProfile.setOnClickListener {
             val profiles = getAllProfiles().keys.toTypedArray()
             if (profiles.isEmpty()) {
-                showToast("No profiles saved.")
+                showToast("No saved presets yet. Use Save preset to create one.")
                 return@setOnClickListener
             }
 
             android.app.AlertDialog.Builder(requireContext())
-                .setTitle("Select Profile")
+                .setTitle("Load source preset")
                 .setItems(profiles) { _, which ->
                     loadProfile(profiles[which])
                 }
+                .setNegativeButton("Cancel", null)
                 .show()
         }
-
 
         btnDeleteProfile.setOnClickListener {
             val profiles = getAllProfiles().keys.toTypedArray()
             if (profiles.isEmpty()) {
-                showToast("No profiles to delete.")
+                showToast("No saved presets to delete.")
                 return@setOnClickListener
             }
             val dialog = android.app.AlertDialog.Builder(requireContext())
-                .setTitle("Delete Profile")
+                .setTitle("Delete source preset")
                 .setItems(profiles) { _, which ->
-                    deleteProfile(profiles[which])
+                    val selectedName = profiles[which]
+                    val backupSet = getAllProfiles()[selectedName]
+                    deleteProfile(selectedName)
+                    if (backupSet != null) {
+                        android.app.AlertDialog.Builder(requireContext())
+                            .setTitle("Preset \"$selectedName\" deleted")
+                            .setMessage("Would you like to undo and restore this preset?")
+                            .setPositiveButton("Undo") { _, _ ->
+                                restoreProfile(selectedName, backupSet)
+                                showMessage("Preset \"$selectedName\" restored.")
+                            }
+                            .setNegativeButton("Keep deleted", null)
+                            .show()
+                    }
                 }
                 .setNegativeButton("Cancel", null)
                 .create()
@@ -314,35 +331,18 @@ class ProvidersFragment(
 
     private fun saveProfile(name: String) {
         val disabled = sharedPref.getStringSet(PREFS_DISABLED, emptySet()) ?: emptySet()
+        restoreProfile(name, disabled)
+    }
+
+    private fun restoreProfile(name: String, disabled: Set<String>) {
         val allProfiles = getAllProfiles().toMutableMap()
         allProfiles[name] = disabled
-
-        // Convert to a JSON-like string for compact storage
-        val encoded = allProfiles.entries.joinToString("|") { (key, value) ->
-            "$key:${value.joinToString(",")}"
-        }
-        sharedPref.edit { putString(PREFS_PROFILES, encoded) }
+        sharedPref.edit { putString(PREFS_PROFILES, encodeProfilesMap(allProfiles)) }
     }
 
     private fun getAllProfiles(): Map<String, Set<String>> {
         val encoded = sharedPref.getString(PREFS_PROFILES, "") ?: return emptyMap()
-        if (encoded.isEmpty()) return emptyMap()
-
-        return buildMap {
-            encoded.split("|").forEach { entry ->
-                val separatorIndex = entry.indexOf(':')
-                if (separatorIndex < 0) return@forEach
-
-                val name = entry.substring(0, separatorIndex)
-                val idsPart = entry.substring(separatorIndex + 1)
-                val ids = if (idsPart.isEmpty()) {
-                    emptySet()
-                } else {
-                    idsPart.split(",").toSet()
-                }
-                put(name, ids)
-            }
-        }
+        return decodeProfilesMap(encoded)
     }
 
     private fun loadProfile(name: String) {
@@ -354,22 +354,46 @@ class ProvidersFragment(
             updateUI()
         }
         updateUI()
-        showMessage("Profile \"$name\" loaded.")
+        showMessage("Preset \"$name\" loaded.")
     }
 
     private fun deleteProfile(name: String) {
         val allProfiles = getAllProfiles().toMutableMap()
         if (allProfiles.remove(name) != null) {
-            val encoded = allProfiles.entries.joinToString("|") { (key, value) ->
-                "$key:${value.joinToString(",")}"
-            }
-            sharedPref.edit { putString(PREFS_PROFILES, encoded) }
-            showMessage("Profile \"$name\" deleted.")
-        } else {
-            showMessage("Profile not found.")
+            sharedPref.edit { putString(PREFS_PROFILES, encodeProfilesMap(allProfiles)) }
         }
     }
 
+    companion object {
+        internal fun encodeProfilesMap(profiles: Map<String, Set<String>>): String {
+            return profiles.entries.joinToString("|") { (key, value) ->
+                val encodedKey = java.net.URLEncoder.encode(key, "UTF-8")
+                "$encodedKey:${value.joinToString(",")}"
+            }
+        }
+
+        internal fun decodeProfilesMap(encoded: String): Map<String, Set<String>> {
+            if (encoded.isEmpty()) return emptyMap()
+            return buildMap {
+                encoded.split("|").forEach { entry ->
+                    val separatorIndex = entry.indexOf(':')
+                    if (separatorIndex < 0) return@forEach
+
+                    val rawName = entry.substring(0, separatorIndex)
+                    val name = runCatching {
+                        java.net.URLDecoder.decode(rawName, "UTF-8")
+                    }.getOrDefault(rawName)
+                    val idsPart = entry.substring(separatorIndex + 1)
+                    val ids = if (idsPart.isEmpty()) {
+                        emptySet()
+                    } else {
+                        idsPart.split(",").toSet()
+                    }
+                    put(name, ids)
+                }
+            }
+        }
+    }
 
     private fun showMessage(msg: String) {
         android.widget.Toast.makeText(requireContext(), msg, android.widget.Toast.LENGTH_SHORT).show()

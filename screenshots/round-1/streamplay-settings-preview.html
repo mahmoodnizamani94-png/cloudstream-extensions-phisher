@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>StreamPlay Settings — Round 1 Architecture &amp; Token System</title>
+<style>
+  :root {
+    --surface-canvas: #0E1116;
+    --surface-card: #171C24;
+    --surface-card-pressed: #212834;
+    --surface-track: #0B0E13;
+    --surface-overlay: #1D2430;
+    --border-subtle: #283140;
+    --border-focus: #E2E8F0;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --text-muted: #7C8B9E;
+    --accent-primary: #2563EB;
+    --accent-soft: #93C5FD;
+    --danger-surface: #3B181E;
+    --danger-border: #7F1D1D;
+    --danger-text: #FCA5A5;
+    --radius-dialog: 20px;
+    --radius-card: 14px;
+    --radius-track: 12px;
+    --radius-segment: 9px;
+    --radius-button: 10px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Roboto", "Noto Sans Arabic", sans-serif;
+    --font-mono: "JetBrains Mono", "Roboto Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: #07090D;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .workbench-bar {
+    width: 100%;
+    max-width: 1120px;
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 12px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .workbench-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .workbench-title h1 {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+  }
+
+  .workbench-title p {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+
+  .control-cluster {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .chip-btn {
+    min-height: 34px;
+    padding: 6px 11px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-canvas);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .chip-btn.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: #FFFFFF;
+  }
+
+  .stage-grid {
+    width: 100%;
+    max-width: 1120px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+    gap: 20px;
+    align-items: start;
+  }
+
+  .stage-grid.single-stage {
+    display: flex;
+    justify-content: center;
+  }
+
+  /* Android Dialog Sheet (StreamPlayDesignTokens.dialogSheetDrawable) */
+  .dialog-sheet {
+    width: 100%;
+    max-width: 500px;
+    background: var(--surface-canvas);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-dialog);
+    padding: 18px 16px 20px 16px;
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.65);
+  }
+
+  .dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .dialog-header-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .dialog-title {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    color: var(--text-primary);
+  }
+
+  .dialog-subtitle {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+  }
+
+  .icon-btn {
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
+    border-radius: var(--radius-button);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .icon-btn:hover {
+    background: var(--surface-card-pressed);
+  }
+
+  .icon-btn:focus-visible,
+  .icon-btn.tv-focused {
+    background: var(--surface-card-pressed);
+    border: 2px solid var(--border-focus);
+    outline: none;
+  }
+
+  .hairline-divider {
+    height: 1px;
+    width: 100%;
+    background: var(--border-subtle);
+    margin-bottom: 16px;
+  }
+
+  .section-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    padding-inline: 2px;
+  }
+
+  /* Hero Subtitle Control Card (subtitle_mode_button) */
+  .subtitle-mode-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-card);
+    padding: 16px;
+    margin-bottom: 8px;
+  }
+
+  .subtitle-mode-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .subtitle-mode-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .card-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .card-meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.35;
+  }
+
+  .secondary-action-btn {
+    min-height: 48px;
+    padding: 0 12px;
+    border-radius: var(--radius-button);
+    background: var(--surface-overlay);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .secondary-action-btn:focus-visible,
+  .secondary-action-btn.tv-focused {
+    background: #283242;
+    border: 2px solid var(--border-focus);
+    outline: none;
+  }
+
+  /* Segmented Control Track (outer 12dp = inner 9dp + 3dp padding) */
+  .segment-track {
+    margin-top: 12px;
+    min-height: 48px;
+    background: var(--surface-track);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-track);
+    padding: 3px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .segment-pill {
+    min-height: 42px;
+    padding: 0 10px;
+    border-radius: var(--radius-segment);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .segment-pill.active {
+    background: var(--accent-primary);
+    color: #FFFFFF;
+  }
+
+  .segment-pill:focus-visible,
+  .segment-pill.tv-focused {
+    border: 2px solid var(--border-focus);
+    outline: none;
+  }
+
+  .sources-line {
+    margin-top: 10px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-muted);
+  }
+
+  /* Interactive Setting Row */
+  .setting-row {
+    width: 100%;
+    min-height: 58px;
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-card);
+    padding: 12px 14px 12px 16px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+  }
+
+  .setting-row.section-end {
+    margin-bottom: 20px;
+  }
+
+  .setting-row.last-row {
+    margin-bottom: 0;
+  }
+
+  .setting-row:hover {
+    background: var(--surface-card-pressed);
+  }
+
+  .setting-row:focus-visible,
+  .setting-row.tv-focused {
+    background: var(--surface-card-pressed);
+    border: 2px solid var(--border-focus);
+    outline: none;
+  }
+
+  .row-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .row-title {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--text-primary);
+  }
+
+  .row-desc {
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--text-secondary);
+  }
+
+  .row-trailing {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .row-value {
+    font-size: 13px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-soft);
+  }
+
+  .row-value.muted {
+    color: var(--text-muted);
+  }
+
+  .chevron-icon {
+    width: 20px;
+    height: 20px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  [dir="rtl"] .chevron-icon {
+    transform: scaleX(-1);
+  }
+
+  /* Sub-Dialog 1: Provider Concurrency (concurrency_bottom_sheet.xml) */
+  .stepper-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-card);
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .stepper-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: var(--radius-button);
+    background: var(--surface-overlay);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 26px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .stepper-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    flex: 1;
+  }
+
+  .stepper-val {
+    font-size: 44px;
+    font-weight: 700;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+  }
+
+  .stepper-mode {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent-soft);
+  }
+
+  .preset-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .preset-btn {
+    min-height: 48px;
+    border-radius: var(--radius-button);
+    background: var(--surface-overlay);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .preset-btn.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: #FFFFFF;
+  }
+
+  .concurrency-hint {
+    margin: 14px 0 16px 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+
+  /* Sub-Dialog 2: Subtitle API Keys (wyzie_settings_fragment.xml) */
+  .inner-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-card);
+    padding: 16px;
+  }
+
+  .field-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+
+  .input-well {
+    width: 100%;
+    min-height: 48px;
+    border-radius: var(--radius-button);
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-track);
+    color: var(--text-primary);
+    font-size: 14px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+  }
+
+  .input-well::placeholder {
+    color: var(--text-muted);
+  }
+
+  .input-well:focus {
+    border: 2px solid var(--accent-primary);
+    outline: none;
+  }
+
+  .btn-row {
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn {
+    flex: 1;
+    min-height: 48px;
+    border-radius: var(--radius-button);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 14px;
+  }
+
+  .btn-primary {
+    background: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
+    color: #FFFFFF;
+  }
+
+  .btn-danger {
+    background: var(--danger-surface);
+    border: 1px solid var(--danger-border);
+    color: var(--danger-text);
+  }
+</style>
+</head>
+<body>
+
+<header class="workbench-bar" id="workbenchBar">
+  <div class="workbench-title">
+    <h1>StreamPlay Settings — Round 1 Architecture &amp; Token System</h1>
+    <p>Canvas #0E1116 · Card #171C24 · Track #0B0E13 · Primary #F1F5F9 (15.8:1) · Secondary #94A3B8 (6.4:1) · Muted #7C8B9E (4.6:1)</p>
+  </div>
+  <div class="control-cluster">
+    <button class="chip-btn active" id="btnModeEn" onclick="setSubtitleMode('en')">Mode: English</button>
+    <button class="chip-btn" id="btnModeUr" onclick="setSubtitleMode('ur')">Mode: Urdu &#x2067;اردو&#x2069;</button>
+    <button class="chip-btn active" id="btnDirLtr" onclick="setDirection('ltr')">LTR</button>
+    <button class="chip-btn" id="btnDirRtl" onclick="setDirection('rtl')">RTL Mirror</button>
+    <button class="chip-btn" id="btnTvFocus" onclick="toggleTvFocus()">TV D-Pad Focus</button>
+  </div>
+</header>
+
+<main class="stage-grid" id="stageGrid">
+  <!-- Main Settings Sheet (fragment_main_settings.xml) -->
+  <section class="dialog-sheet" id="mainSettingsSheet" dir="ltr" aria-label="StreamPlay Settings">
+    <div class="dialog-header">
+      <div class="dialog-header-copy">
+        <h2 class="dialog-title">StreamPlay</h2>
+        <p class="dialog-subtitle">Playback, subtitles, and source settings</p>
+      </div>
+      <button class="icon-btn" id="saveIcon" aria-label="Restart app to reload catalog plugins">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+          <polyline points="17 21 17 13 7 13 7 21"/>
+          <polyline points="7 3 7 8 15 8"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="hairline-divider"></div>
+
+    <!-- SECTION 1: Subtitles & language -->
+    <div class="section-label">Subtitles &amp; language</div>
+
+    <div class="subtitle-mode-card" id="subtitle_mode_button">
+      <div class="subtitle-mode-header">
+        <div class="subtitle-mode-copy">
+          <div class="card-title" id="subtitle_mode_label">Subtitles</div>
+          <div class="card-meta" id="subtitle_mode_desc">English default · 6 sources ready</div>
+        </div>
+        <button class="secondary-action-btn" id="subtitle_api_keys_btn">API keys</button>
+      </div>
+
+      <div class="segment-track" id="subtitle_mode_pill_track" role="radiogroup" aria-label="Subtitle language priority">
+        <button class="segment-pill active" id="subtitle_mode_pill_default" role="radio" aria-checked="true" onclick="setSubtitleMode('en')">
+          English
+        </button>
+        <button class="segment-pill" id="subtitle_mode_pill_urdu" role="radio" aria-checked="false" onclick="setSubtitleMode('ur')">
+          Urdu &nbsp;&#x2067;اردو&#x2069;
+        </button>
+      </div>
+
+      <div class="sources-line" id="subtitle_mode_sources_chips">
+        6 sources ready (OpenSubtitles, SubDL, SubSource, Subf2m, YTS, SubtitleCat)
+      </div>
+    </div>
+
+    <!-- 1. Catalog & audio language -->
+    <div class="setting-row" id="languageRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Catalog &amp; audio language</div>
+        <div class="row-desc">TMDB metadata and default track</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value" id="languageValue">en-US</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 2. Subtitle API keys -->
+    <div class="setting-row section-end" id="wyzieRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Subtitle API keys</div>
+        <div class="row-desc">Wyzie, SubDL, and SubSource credentials</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value" id="wyzieValue">2 keys active</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- SECTION 2: Playback & sources -->
+    <div class="section-label">Playback &amp; sources</div>
+
+    <!-- 3. Enabled sources -->
+    <div class="setting-row" id="toggleprovidersRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Enabled sources</div>
+        <div class="row-desc">Choose which providers StreamPlay queries</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value" id="providersValue">92 / 92</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 4. Provider concurrency -->
+    <div class="setting-row section-end" id="performanceRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Provider concurrency</div>
+        <div class="row-desc">Parallel requests per search</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value" id="performanceValue">16 · Balanced</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- SECTION 3: Addons & extensions -->
+    <div class="section-label">Addons &amp; extensions</div>
+
+    <!-- 5. Active extensions -->
+    <div class="setting-row" id="featureRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Active extensions</div>
+        <div class="row-desc">StreamPlay, StreamPlay Anime, and catalogs</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value" id="featureValue">2 active</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 6. Stremio stream addons -->
+    <div class="setting-row" id="stremioaddonstreamsRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Stremio stream addons</div>
+        <div class="row-desc">External HTTPS, torrent, and debrid manifests</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value" id="stremioStreamsValue">2 linked</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 7. Stremio catalog addons -->
+    <div class="setting-row last-row" id="stremioaddonsRow" tabindex="0">
+      <div class="row-copy">
+        <div class="row-title">Stremio catalog addons</div>
+        <div class="row-desc">Custom home page metadata feeds</div>
+      </div>
+      <div class="row-trailing">
+        <span class="row-value muted" id="stremioCatalogsValue">None</span>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6L15 12L9 18"/>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sub-Dialogs Sheet (concurrency_bottom_sheet.xml + wyzie_settings_fragment.xml) -->
+  <section class="dialog-sheet" id="subDialogsSheet" dir="ltr" aria-label="StreamPlay Sub-Dialogs">
+    <div style="margin-bottom: 20px;">
+      <h2 class="dialog-title" style="font-size: 18px;">Provider concurrency</h2>
+      <p class="dialog-subtitle" style="font-size: 13px; margin-top: 4px; margin-bottom: 16px;">Parallel provider tasks launched per search</p>
+
+      <div class="stepper-card">
+        <button class="stepper-btn" onclick="stepConcurrency(-4)" aria-label="Decrease concurrency by 4">−</button>
+        <div class="stepper-center">
+          <div class="stepper-val" id="tv_value">16</div>
+          <div class="stepper-mode" id="tv_mode">Balanced (Recommended)</div>
+        </div>
+        <button class="stepper-btn" onclick="stepConcurrency(4)" aria-label="Increase concurrency by 4">+</button>
+      </div>
+
+      <div class="preset-row">
+        <button class="preset-btn" id="preset_low" onclick="setConcurrency(8)">8 · Stable</button>
+        <button class="preset-btn active" id="preset_balanced" onclick="setConcurrency(16)">16 · Balanced</button>
+        <button class="preset-btn" id="preset_fast" onclick="setConcurrency(32)">32 · Fast</button>
+      </div>
+
+      <p class="concurrency-hint">
+        8 to 12 keeps slow connections stable. 16 is balanced for most phones and TVs. 32+ races more providers simultaneously.
+      </p>
+
+      <button class="btn btn-primary" style="width: 100%;">Done</button>
+    </div>
+
+    <div class="hairline-divider"></div>
+
+    <div class="inner-card">
+      <h2 class="dialog-title" style="font-size: 18px;">Subtitle API keys</h2>
+      <p class="dialog-subtitle" style="font-size: 13px; margin-top: 4px; margin-bottom: 16px;">
+        Six subtitle sources work without keys. Add optional keys below to unlock Wyzie, SubSource, and SubDL JSON tiers across StreamPlay and SuperStream.
+      </p>
+
+      <div class="field-header-row">
+        <label class="field-label" style="margin-bottom: 0;" for="wyzieKeyInput">Wyzie API key (sub.wyzie.ru)</label>
+        <button class="secondary-action-btn" id="getKeyButton">Redeem free key</button>
+      </div>
+      <input class="input-well" id="wyzieKeyInput" type="text" value="wyz_live_98f2a4c1d7e0b3" placeholder="Paste Wyzie key" />
+
+      <label class="field-label" for="subDlKeyInput">SubDL API key (optional, api.subdl.com)</label>
+      <input class="input-well" id="subDlKeyInput" type="text" value="sdl_v1_48b019c7e2a" placeholder="Paste SubDL API key" />
+
+      <label class="field-label" for="subSourceKeyInput">SubSource API key (optional, api.subsource.net)</label>
+      <input class="input-well" id="subSourceKeyInput" type="text" placeholder="Paste SubSource API key" style="margin-bottom: 16px;" />
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="saveButton">Save keys</button>
+        <button class="btn btn-danger" id="resetButton">Clear keys</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  let currentConcurrency = 16;
+
+  function setSubtitleMode(mode) {
+    const pillEn = document.getElementById('subtitle_mode_pill_default');
+    const pillUr = document.getElementById('subtitle_mode_pill_urdu');
+    const desc = document.getElementById('subtitle_mode_desc');
+    const chips = document.getElementById('subtitle_mode_sources_chips');
+    const btnModeEn = document.getElementById('btnModeEn');
+    const btnModeUr = document.getElementById('btnModeUr');
+
+    if (mode === 'ur') {
+      pillEn.classList.remove('active');
+      pillEn.setAttribute('aria-checked', 'false');
+      pillUr.classList.add('active');
+      pillUr.setAttribute('aria-checked', 'true');
+      desc.textContent = 'Urdu (\u2067اردو\u2069) active · 8 of 8 sources ready';
+      chips.textContent = '8 of 8 sources ready (SubDL, Subf2m, YTS, OpenSubtitles, SubSense, SubtitleCat, SubSource, Wyzie) + neural fallback';
+      btnModeEn.classList.remove('active');
+      btnModeUr.classList.add('active');
+    } else {
+      pillUr.classList.remove('active');
+      pillUr.setAttribute('aria-checked', 'false');
+      pillEn.classList.add('active');
+      pillEn.setAttribute('aria-checked', 'true');
+      desc.textContent = 'English default · 6 sources ready';
+      chips.textContent = '6 sources ready (OpenSubtitles, SubDL, SubSource, Subf2m, YTS, SubtitleCat)';
+      btnModeUr.classList.remove('active');
+      btnModeEn.classList.add('active');
+    }
+  }
+
+  function setDirection(dir) {
+    document.getElementById('mainSettingsSheet').setAttribute('dir', dir);
+    document.getElementById('subDialogsSheet').setAttribute('dir', dir);
+    document.getElementById('btnDirLtr').classList.toggle('active', dir === 'ltr');
+    document.getElementById('btnDirRtl').classList.toggle('active', dir === 'rtl');
+  }
+
+  function toggleTvFocus() {
+    const btn = document.getElementById('btnTvFocus');
+    const active = btn.classList.toggle('active');
+    document.getElementById('subtitle_mode_pill_urdu').classList.toggle('tv-focused', active);
+    document.getElementById('performanceRow').classList.toggle('tv-focused', active);
+  }
+
+  function setConcurrency(val) {
+    currentConcurrency = Math.max(4, Math.min(48, val));
+    document.getElementById('tv_value').textContent = String(currentConcurrency);
+    const tier = currentConcurrency <= 10 ? 'Stable' : (currentConcurrency <= 20 ? 'Balanced' : 'Fast');
+    const modeDesc = currentConcurrency === 16 ? 'Balanced (Recommended)' : `${tier} mode`;
+    document.getElementById('tv_mode').textContent = modeDesc;
+    document.getElementById('performanceValue').textContent = `${currentConcurrency} · ${tier}`;
+    document.getElementById('preset_low').classList.toggle('active', currentConcurrency === 8);
+    document.getElementById('preset_balanced').classList.toggle('active', currentConcurrency === 16);
+    document.getElementById('preset_fast').classList.toggle('active', currentConcurrency === 32);
+  }
+
+  function stepConcurrency(delta) {
+    setConcurrency(currentConcurrency + delta);
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('mode') === 'ur') setSubtitleMode('ur');
+  if (params.get('dir') === 'rtl') setDirection('rtl');
+  if (params.get('tv') === '1') toggleTvFocus();
+  if (params.get('chrome') === '0') {
+    document.getElementById('workbenchBar').style.display = 'none';
+  }
+  if (params.get('sheet') === 'main') {
+    document.getElementById('subDialogsSheet').style.display = 'none';
+    document.getElementById('stageGrid').classList.add('single-stage');
+  } else if (params.get('sheet') === 'sub') {
+    document.getElementById('mainSettingsSheet').style.display = 'none';
+    document.getElementById('stageGrid').classList.add('single-stage');
+  }
+</script>
+</body>
+</html>

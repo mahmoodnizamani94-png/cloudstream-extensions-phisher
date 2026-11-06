@@ -186,11 +186,18 @@ object StreamPlayConcurrency {
     fun normalizeConcurrency(value: Int): Int =
         value.coerceIn(MIN_PROVIDER_CONCURRENCY, MAX_PROVIDER_CONCURRENCY)
 
-    fun concurrencyLabel(value: Int): String = when {
-        value <= 12 -> "Slow internet saver"
-        value <= 32 -> "Balanced"
+    fun concurrencyLabel(value: Int): String = concurrencyTier(value)
+
+    /**
+     * Canonical short tier vocabulary ("Stable", "Balanced", "Fast", "Max") shared across
+     * MainSettingsFragment, ConcurrencyBottomSheet, and preset chips so preset 8 -> "Stable",
+     * preset 16 -> "Balanced", preset 32 -> "Fast", and >64 -> "Max".
+     */
+    fun concurrencyTier(value: Int): String = when {
+        value <= 12 -> "Stable"
+        value <= 24 -> "Balanced"
         value <= 64 -> "Fast"
-        else -> "Max speed"
+        else -> "Max"
     }
 
     fun shouldStopSlowInternetSearch(

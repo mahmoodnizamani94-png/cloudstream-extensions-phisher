@@ -3,20 +3,26 @@ package com.phisher98.settings
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
 import android.content.res.Resources
-import android.graphics.drawable.Drawable
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Switch
+import android.widget.TextView
 import androidx.core.content.edit
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.DialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.phisher98.BuildConfig
 import com.phisher98.StreamPlay
 import com.phisher98.StreamPlayAnime
+import com.phisher98.StreamPlayDesignTokens
 import com.phisher98.StreamPlayPlugin
 import com.phisher98.StreamPlayStremioCatelog
 import com.phisher98.StreamPlayStremioCatelogFrag
@@ -29,17 +35,7 @@ class ToggleFragment(
 
     override fun onStart() {
         super.onStart()
-        dialog?.window?.apply {
-            val displayMetrics = resources.displayMetrics
-            val maxDialogWidth = (500 * displayMetrics.density).toInt()
-            val width = if (displayMetrics.widthPixels > 0 && displayMetrics.widthPixels > maxDialogWidth) {
-                maxDialogWidth
-            } else {
-                (displayMetrics.widthPixels * 0.9f).toInt()
-            }
-            setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-        }
+        StreamPlayDesignTokens.configureDialogWindow(dialog, resources)
     }
 
     private val res: Resources = plugin.resources ?: throw Exception("Unable to access plugin resources")
@@ -52,23 +48,16 @@ class ToggleFragment(
         return inflater.inflate(layout, container, false)
     }
 
-
-    @SuppressLint("UseCompatLoadingForDrawables")
-    private fun getDrawable(name: String): Drawable {
-        val id = res.getIdentifier(name, "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        return res.getDrawable(id, null)
-            ?: throw Resources.NotFoundException("Drawable $name not found.")
-    }
-
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
         if (id == 0) throw Resources.NotFoundException("View ID $name not found.")
         return this.findViewById(id)
     }
 
-    private fun View.makeTvCompatible() {
-        val outlineId = res.getIdentifier("outline", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        this.background = res.getDrawable(outlineId, null)
+    private fun <T : View> View.findViewOrNull(name: String): T? {
+        val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
+        if (id == 0) return null
+        return runCatching { this.findViewById<T>(id) }.getOrNull()
     }
 
     private fun loadStremioLinks(): List<StreamPlayStremioCatelogFrag.LinkItem> {
@@ -79,10 +68,8 @@ class ToggleFragment(
 
         return try {
             val arr = org.json.JSONArray(json)
-
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
-
                 list.add(
                     StreamPlayStremioCatelogFrag.LinkItem(
                         id = obj.optLong("id", System.currentTimeMillis()),
@@ -92,32 +79,30 @@ class ToggleFragment(
                     )
                 )
             }
-
             list
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    @SuppressLint("UseSwitchCompatOrMaterialCode", "SetTextI18n")
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val root = getLayout("fragment_toggle_extensions", inflater, container)
-        val drawableId = res.getIdentifier("dialog_background", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (drawableId != 0) {
-            root.background = res.getDrawable(drawableId, null)
-        }
+        val density = resources.displayMetrics.density
+        root.background = StreamPlayDesignTokens.dialogSurfaceDrawable(resources)
+
         val extensionList = root.findView<LinearLayout>("toggle_list_container")
+        val subtitleCount = root.findViewOrNull<TextView>("subtitle_count")
         val stremioLinks = loadStremioLinks()
         val apis = buildList {
             add(StreamPlay(sharedPref))
             add(StreamPlayAnime())
-            if (stremioLinks.isNotEmpty())
-            {
+            if (stremioLinks.isNotEmpty()) {
                 stremioLinks.forEach { link ->
                     add(
                         StreamPlayStremioCatelog(
-                            link.link,   // mainUrl
-                            link.name,   // unique name shown in UI
+                            link.link,
+                            link.name,
                             sharedPref
                         )
                     )
@@ -128,17 +113,43 @@ class ToggleFragment(
         val savedKey = "enabled_plugins_saved"
         val savedSet = sharedPref.getStringSet(savedKey, null)
         val defaultEnabled = apis.map { it.name }.toSet()
-        val currentSet = savedSet?.toSet() ?: defaultEnabled
+        val activeNames = (savedSet?.toSet() ?: defaultEnabled).toMutableSet()
 
+        fun persistAndRefreshCount() {
+            sharedPref.edit {
+                putStringSet(savedKey, activeNames.toSet())
+            }
+            subtitleCount?.text =
+                "${activeNames.size} of ${apis.size} active · Saved automatically"
+        }
+
+        val toggleItemId = res.getIdentifier("toggle_item", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
 
         for (api in apis) {
             val toggleItem = getLayout("list_toggle_item", inflater, container)
-            val toggleSwitch = toggleItem.findView<Switch>("toggle_item")
-            toggleItem.makeTvCompatible()
+            val toggleSwitch = toggleItem.findViewById<Switch>(toggleItemId)
+            toggleItem.background = StreamPlayDesignTokens.interactiveRowDrawable(resources)
             toggleSwitch.text = api.name
-            toggleSwitch.isChecked = currentSet.contains(api.name)
+            toggleSwitch.setTextColor(StreamPlayDesignTokens.TEXT_PRIMARY)
+            toggleSwitch.isChecked = activeNames.contains(api.name)
+            toggleSwitch.thumbTintList = StreamPlayDesignTokens.switchThumbTintList()
+            toggleSwitch.trackTintList = StreamPlayDesignTokens.switchTrackTintList()
 
-            toggleSwitch.makeTvCompatible()
+            toggleSwitch.setOnCheckedChangeListener { buttonView, isChecked ->
+                if (!isChecked && activeNames.size <= 1 && activeNames.contains(api.name)) {
+                    buttonView.isChecked = true
+                    buttonView.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                    showToast("At least one extension must remain enabled")
+                    return@setOnCheckedChangeListener
+                }
+                buttonView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                if (isChecked) {
+                    activeNames.add(api.name)
+                } else {
+                    activeNames.remove(api.name)
+                }
+                persistAndRefreshCount()
+            }
 
             toggleItem.setOnClickListener {
                 toggleSwitch.isChecked = !toggleSwitch.isChecked
@@ -147,38 +158,20 @@ class ToggleFragment(
             extensionList.addView(toggleItem)
         }
 
+        persistAndRefreshCount()
 
-        val saveBtn = root.findView<ImageView>("saveIcon")
-        saveBtn.setImageDrawable(getDrawable("save_icon"))
-        saveBtn.makeTvCompatible()
+        val saveBtn = root.findView<TextView>("saveIcon")
+        StreamPlayDesignTokens.styleButton(saveBtn, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
 
         saveBtn.setOnClickListener {
-            val enabledPluginNames = mutableListOf<String>()
-
-            for (i in 0 until extensionList.childCount) {
-                val toggleItem = extensionList.getChildAt(i)
-                val toggleSwitch = toggleItem.findViewById<Switch>(
-                    res.getIdentifier("toggle_item", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-                )
-                if (toggleSwitch.isChecked) {
-                    enabledPluginNames.add(toggleSwitch.text.toString())
-                }
-            }
-
-            if (enabledPluginNames.isEmpty()) {
-                showToast("At least one extension must stay enabled")
-                return@setOnClickListener
-            }
-
-            sharedPref.edit {
-                putStringSet(savedKey, enabledPluginNames.toSet())
-                commit()
-            }
-
-            showToast("Settings saved")
             dismiss()
         }
         return root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        StreamPlayDesignTokens.applyWindowInsetsPadding(view)
     }
 
     override fun onDismiss(dialog: android.content.DialogInterface) {

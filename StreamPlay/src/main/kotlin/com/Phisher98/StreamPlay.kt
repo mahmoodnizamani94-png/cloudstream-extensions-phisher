@@ -463,11 +463,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val data = parseJson<Data>(url)
         val type = getType(data.type)
         val urduMode = UrduSubtitleEngine.isUrduMode(context = null, sharedPref = sharedPref ?: companionSharedPref)
-        val subtitleModeBadge = if (urduMode) {
-            "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
-        } else {
-            "🇬🇧 Subtitles: English (Default)"
-        }
 
         val cacheKey = "metadata_${data.id}_${data.type}_${langCode}_${if (urduMode) "urdu" else "en"}"
         StreamPlayCache.getCachedLoadResponse(cacheKey)?.let { return it }
@@ -575,7 +570,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             .ifEmpty { res.keywords?.keywords?.mapNotNull { it.name } }
         val baseTags = (keywords?.map { word -> word.replaceFirstChar { it.titlecase() } }
             ?.takeIf { it.isNotEmpty() } ?: genres).orEmpty()
-        val enrichedTags = listOf(subtitleModeBadge) + baseTags
+        val enrichedTags = baseTags
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
             val name = cast.name ?: cast.originalName ?: return@mapNotNull null
