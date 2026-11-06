@@ -655,5 +655,131 @@ class SuperStreamUrduSubtitleTest {
             tmpDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `YTS zip download URLs are constructed per source host`() {
+        // Round-1 finding (Gemini): yts-subs.com rows were previously rewritten onto the
+        // yifysubtitles.ch path shape. The two hosts do not share download paths.
+        assertEquals(
+            "https://subtitles.yts-subs.com/subtitles/movie-slug.zip",
+            SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yts-subs.com", "/subtitles/movie-slug/")
+        )
+        assertEquals(
+            "https://yifysubtitles.ch/subtitle/movie-slug.zip",
+            SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yifysubtitles.ch", "/subtitles/movie-slug")
+        )
+        assertNull("Non-/subtitles/ hrefs must fail closed", SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yts-subs.com", "/movie/foo"))
+        assertNull("Blank slugs must fail closed", SuperStreamExtractor.buildSuperStreamYtsZipUrl("https://yts-subs.com", "/subtitles/ "))
+    }
+
+    @Test
+    fun `SubDL API v1 candidates are AI-filtered, episode-matched and tier-ranked`() {
+        val json = """
+            {"subtitles":[
+              {"author":"blackgold","release_name":"Show S01E02","url":"/file/bulk.zip","ai_translated":false,"machine_translated":false},
+              {"author":"naveshta","release_name":"Show S01E02 720p","url":"/file/human1.zip","ai_translated":false,"machine_translated":false},
+              {"author":"goodguy","release_name":"Show S01E03","url":"/file/wrongep.zip","ai_translated":false,"machine_translated":false},
+              {"author":"someone","release_name":"(SUBDL AI) Show S01E02","url":"/file/ai.zip","ai_translated":false,"machine_translated":false},
+              {"author":"human2","release_name":"Show S01E02","url":"https://dl.subdl.com/file/human2.zip","ai_translated":true}
+            ]}
+        """.trimIndent()
+        val urls = SuperStreamExtractor.parseSuperStreamSubDlApiV1Candidates(json, season = 1, episode = 2)
+        assertTrue(
+            "The Tier-1A human uploader must rank first",
+            urls.firstOrNull()?.endsWith("/file/human1.zip") == true
+        )
+        assertFalse("AI-flagged entry (ai_translated=true) must be dropped", urls.any { it.contains("human2.zip") })
+        assertFalse("SUBDL AI-labelled release must be dropped", urls.any { it.contains("ai.zip") })
+        assertFalse("Wrong-episode release must be dropped", urls.any { it.contains("wrongep.zip") })
+        val bulkIndex = urls.indexOfFirst { it.contains("bulk.zip") }
+        assertTrue("Bulk-SMT uploader may survive as a tier-1C candidate", bulkIndex < 0 || bulkIndex > 0)
+    }
+
+    @Test
+    fun `Cross-module system property keys are honored by the SuperStream resolvers`() {
+        try {
+            System.setProperty("cloudstream.subdl.key", "test-subdl-key")
+            System.setProperty("cloudstream.subsource.key", "test-subsource-key")
+            assertEquals("test-subdl-key", SuperStreamExtractor.resolveSubDlApiKey())
+            assertEquals("test-subsource-key", SuperStreamExtractor.resolveSubSourceApiKey())
+        } finally {
+            System.clearProperty("cloudstream.subdl.key")
+            System.clearProperty("cloudstream.subsource.key")
+        }
+    }
+
+    @Test
+    fun `SubtitleCat detail parser extracts pre-cached Urdu srt links`() {
+        val html = """
+            <html><body>
+              <a id="download_orig" href="/subs/1/8/2/12345-movie-orig.srt">orig</a>
+              <a href="/subs/1/8/2/12345-movie-ur.srt">urdu</a>
+            </body></html>
+        """.trimIndent()
+        assertEquals(
+            "https://www.subtitlecat.com/subs/1/8/2/12345-movie-ur.srt",
+            SuperStreamExtractor.parseSuperStreamSubtitleCatUrduDetail(html)
+        )
+        assertEquals(
+            "https://www.subtitlecat.com/subs/1/2/3/67890-show-urd.srt",
+            SuperStreamExtractor.parseSuperStreamSubtitleCatUrduDetail(
+                """<html><body><a href="/subs/1/2/3/67890-show-urd.srt">urdu</a></body></html>"""
+            )
+        )
+        assertNull("Detail pages without a -ur.srt link must yield null", SuperStreamExtractor.parseSuperStreamSubtitleCatUrduDetail("<html><body><p>none</p></body></html>"))
+    }
+
+    @Test
+    fun `Persian and Arabic files with zero Urdu-distinctive glyphs are rejected even after typography normalization`() {
+        // Round-1 finding (Gemini): raw fa/ar orthography (ه/ك/ي) never matched the normalized
+        // exclusive scan, and Arabic هو/هم normalize INTO Urdu ہو/ہم. The raw + normalized scans
+        // together now deterministically reject both.
+        val persianSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nتو کجا رفتی؟\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nمن منتظرت بودم\n")
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(persianSrt))
+        val arabicSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nهو في البيت الآن\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nهل سمعت الخبر الجديد اليوم\n")
+        }
+        assertFalse(SuperStreamExtractor.containsVerifiedUrduScript(arabicSrt))
+        val urduSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ گھر بہت خوبصورت ہے\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nکل ہم بازار جائیں گے\n")
+        }
+        assertTrue(SuperStreamExtractor.containsVerifiedUrduScript(urduSrt))
+    }
+
+    @Test
+    fun `Canonical source key mapping never leaks arbitrary substrings into neural attribution`() {
+        // Round-1 finding (GLM): `norm.contains("ai")` matched inside arbitrary words ("detail").
+        assertEquals("urdu-neural-fallback", canonicalSuperStreamUrduSourceKey("urdu-neural-fallback"))
+        assertEquals("urdu-neural-fallback", canonicalSuperStreamUrduSourceKey("Urdu [Neural AI]"))
+        assertNull("'detail' contains ai but must NOT map to the neural source", canonicalSuperStreamUrduSourceKey("detail"))
+        assertNull("'certain' contains ai but must NOT map to the neural source", canonicalSuperStreamUrduSourceKey("certain"))
+        assertEquals("subdl", canonicalSuperStreamUrduSourceKey("Urdu [SubDL]"))
+        assertEquals("yify", canonicalSuperStreamUrduSourceKey("yts-subs"))
+    }
+
+    @Test
+    fun `SubtitleCat pre-cached Urdu candidates are scoped by imdb id season and episode`() {
+        SuperStreamExtractor.recordSuperStreamSubtitleCatPreCachedUrduCandidate(
+            urduUrl = "https://www.subtitlecat.com/subs/1/1/1/111-movie-ur.srt",
+            imdbId = "tt2222222",
+            season = 1,
+            episode = 2
+        )
+        val scoped = SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(
+            imdbId = "tt2222222",
+            season = 1,
+            episode = 2
+        )
+        assertEquals(1, scoped.size)
+        assertTrue(scoped[0].endsWith("111-movie-ur.srt"))
+        assertTrue("Consuming must remove the scoped entry", SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(imdbId = "tt2222222", season = 1, episode = 2).isEmpty())
+        val otherEpisode = SuperStreamExtractor.consumeSuperStreamSubtitleCatPreCachedUrduCandidates(imdbId = "tt2222222", season = 1, episode = 3)
+        assertTrue("A different episode must not consume another title's scoped candidate", otherEpisode.isEmpty())
+    }
 }
 

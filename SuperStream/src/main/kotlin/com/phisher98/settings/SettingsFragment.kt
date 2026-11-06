@@ -31,6 +31,7 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.phisher98.BuildConfig
 import com.phisher98.MODE_DEFAULT
 import com.phisher98.MODE_URDU
+import com.phisher98.SuperStreamExtractor
 import com.phisher98.SuperStreamPlugin
 import com.phisher98.isUrduSubtitleMode
 import com.phisher98.setSubtitleMode
@@ -217,17 +218,17 @@ class SettingsFragment(
             }
             val subDlInput = EditText(ctx).apply {
                 hint = "Optional SubDL API Key (api.subdl.com)"
-                setText(sharedPref.getString("subdl_api_key", null).orEmpty())
+                setText(runCatching { SuperStreamExtractor.resolveSubDlApiKey() }.getOrNull().orEmpty())
                 setSingleLine()
             }
             val subSourceInput = EditText(ctx).apply {
                 hint = "Optional SubSource API Key (api.subsource.net)"
-                setText(sharedPref.getString("subsource_api_key", null).orEmpty())
+                setText(runCatching { SuperStreamExtractor.resolveSubSourceApiKey() }.getOrNull().orEmpty())
                 setSingleLine()
             }
             val wyzieInput = EditText(ctx).apply {
                 hint = "Optional Wyzie API Key (sub.wyzie.ru)"
-                setText((sharedPref.getString("wyzie_key", null) ?: sharedPref.getString("wyzie_api_key", null)).orEmpty())
+                setText(runCatching { SuperStreamExtractor.resolveWyzieApiKey() }.getOrNull().orEmpty())
                 setSingleLine()
             }
             container.addView(subDlInput)

@@ -189,7 +189,8 @@ fun canonicalSuperStreamUrduSourceKey(raw: String?): String? {
         norm.contains("subtitlecat") -> "subtitlecat"
         norm.contains("opensubtitles") -> "opensubtitles"
         norm == "subtitles" || norm.contains("strem.io") || norm.contains("subtitleapi") -> "subtitles"
-        norm.contains("neural") || norm.contains("ai") || norm.contains("fallback") -> "urdu-neural-fallback"
+        norm.contains("urdu-neural") || norm.contains("neural-ai") || norm.contains("neural ai") ||
+            norm.contains("spoken-ai") || norm.contains("spoken ai") || norm == "neural" -> "urdu-neural-fallback"
         else -> null
     }
 }

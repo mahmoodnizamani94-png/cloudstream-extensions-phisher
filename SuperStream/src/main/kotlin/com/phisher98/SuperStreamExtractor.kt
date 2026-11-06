@@ -94,11 +94,20 @@ private val SUPERSTREAM_URDU_SCRIPT_REGEX =
 // Letters that exist in Urdu but NOT in standard Arabic or Persian (ٹ, ڈ, ڑ, ں, ے, ھ)
 private val SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX =
     Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
-private val SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX = Regex(
-    """(?:^|[\s\u200F\u200E"،۔؟!…])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|ہم|تم|آپ|کا|کے|کو|سے|پر|اور|یا|بھی|تو|جو|یہ|وہ|اس|ان|کیا|کیوں|کیسے|کہاں|جب|اب|پھر|ساتھ|لیے|بعد|پہلے|اگر|مگر|لیکن|کچھ|سب|کوئی|اپنے|اپنی|اپنا|گیا|گئی|گئے|رہا|رہی|رہے|ہو|ہوا|ہوئی|کریں|کرو|جاؤ|آؤ)(?=$|[\s\u200F\u200E"،۔؟!…])"""
+private val SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX = Regex(
+    """(?:^|[\s\u200F\u200E"،۔؟!…])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|آپ|کا|کے|کو|سے|اور|یہ|وہ|کیا|کیوں|کیسے|کہاں|جب|اب|پھر|ساتھ|لیے|پہلے|کچھ|سب|کوئی|اپنے|اپنی|اپنا|گیا|گئی|گئے|رہا|رہی|رہے|ہوا|ہوئی|کریں|کرو|جاؤ|آؤ|بھی|ہوں)(?=$|[\s\u200F\u200E"،۔؟!…])"""
 )
 private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
     """(?:^|[\s\u200F\u200E"،۔؟!…])(است|نیست|هست|هستم|هستی|هستند|می\u200C|نمی\u200C|های|هایی|برای|خیلی|چون|چرا|کجا|اینجا|آنجا|شما|آنها|ایشان|دیگه|همین|الان|باید|شاید|دارم|داری|دارد|داریم|دارند|کردم|کردی|کردیم|کردند|شود|شدند|بشه|میشه|نمیشه|نمیدونم|میدونم|میخوام|میخوای|میخواد|منم|توی|روی|چیه|چیزی|وقتی|اون|اونا|اینو|اونو|بابا|مامان|آقا|خانم|بله|آره|نه|چشم|مرسی|ممنون|بفرمایید|پدر|مادر|برادر|خواهر|پسرم|دخترم|کنم|کنی|کند|کنیم|کنند|گفتم|گفتی|گفتند|رفتم|رفتی|آمدم|آمدی|دیدم|دیدی|بدون|همه|هیچ|کدام|چطور|چقدر|هرگز|البته|حتما|واقعا|درست|بزرگ|کوچک|قشنگ|خوشگل|امروز|دیروز|فردا|شب|روز|ساعت|دقیقه|سال|ماه|هفته|زندگی|مرگ|عشق|دوست|دشمن|جنگ|صلح|خانه|اتاق|ماشین|خیابان|شهر|کشور|دنیا|جهان|خدا|مردم|بچه|پسر|دختر|زن|مرد|پیر|جوان|آب|نان|غذا|کار|پول|دست|پا|سر|چشم|دل|قلب|نام|اسم|حرف|سخن|صدا|نگاه|راه|در|دیوار|پنجره|آسمان|زمین|دریا|کوه|جنگل|درخت|گل|باران|برف|باد|آفتاب|مهتاب|ستاره|آتش|خاک|سنگ|آهن|طلا|نقره|رنگ|سفید|سیاه|سرخ|قرمز|آبی|سبز|زرد|هذا|هذه|ذلك|تلك|الذي|التي|الذين|ربما|لماذا|كيف|أين|نحن|أنتم|هم|ليس|ليست|كان|كانت|يكون|تكون|على|إلى|عن|مع|في|من|أن|إن|قد|لم|لن|لا|ما|هو|هي|هم|هن|أنت|أنا|عند|تحت|فوق|بين|قبل|بعد|حتى|منذ|خلال|حول|ضد|نحو|دون|سوف|كل|بعض|غير|أي|مثل|كذلك|أيضا|فقط|رب|إله|ناس|رجل|امرأة|ولد|بنت|طفل|بيت|منزل|سيارة|طريق|مدينة|بلد|عالم|حياة|موت|حب|حرب|سلام|ماء|طعام|عمل|مال|يد|رجل|رأس|عين|قلب|اسم|كلمة|صوت|يوم|ليلة|ساعة|سنة|شهر|أسبوع|أمس|غدا|الآن|هنا|هناك|جدا|كثيرا|قليلا|طبعا|فعلا|حقا|أبدا|دائما|أحيانا)(?=$|[\s\u200F\u200E"،۔؟!…])"""
+)
+// Same fa/ar marker set, but expressed in the glyphs `normalizeUrduTypography` produces
+// (ه→ہ ك→ک ي/ى→ی) so the normalized-text scan stays in exact 1:1 correspondence with the raw scan.
+private val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX = Regex(
+    SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern
+        .replace("ه", "ہ")
+        .replace("ك", "ک")
+        .replace("ي", "ی")
+        .replace("ى", "ی")
 )
 private val SUPERSTREAM_ARABIC_PRESENTATION_FORMS_REGEX =
     Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
@@ -194,11 +203,56 @@ object SuperStreamExtractor : SuperStream() {
     private val subDlSlugCache = ConcurrentHashMap<String, String>()
     private val translationBatchSemaphore = Semaphore(4)
 
+    // Deferred SubtitleCat pre-cached `-ur.srt` candidates, recorded by `invokeSuperStreamSubtitleCatDonor`
+    // and consumed ONLY as a verified last-resort Phase 4 fallback (never a Phase 1 human Urdu track),
+    // scoped by (imdbId, season, episode) exactly like StreamPlay's `pendingSubtitleCatUrduFallbackByMedia`.
+    private val pendingSubtitleCatUrduFallbackByMedia = ConcurrentHashMap<String, MutableSet<String>>()
+
+    private fun superStreamMediaDonorKey(imdbId: String?, season: Int?, episode: Int?): String {
+        val cleanImdb = imdbId?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: "global"
+        return "$cleanImdb|S${season ?: 0}E${episode ?: 0}"
+    }
+
+    fun recordSuperStreamSubtitleCatPreCachedUrduCandidate(
+        urduUrl: String,
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ) {
+        if (urduUrl.isBlank()) return
+        val cleanUrl = urduUrl.trim()
+        pendingSubtitleCatUrduFallbackByMedia
+            .computeIfAbsent(superStreamMediaDonorKey(imdbId, season, episode)) { ConcurrentHashMap.newKeySet() }
+            .add(cleanUrl)
+        if (!imdbId.isNullOrBlank()) {
+            pendingSubtitleCatUrduFallbackByMedia
+                .computeIfAbsent(superStreamMediaDonorKey(null, season, episode)) { ConcurrentHashMap.newKeySet() }
+                .add(cleanUrl)
+        }
+    }
+
+    internal fun consumeSuperStreamSubtitleCatPreCachedUrduCandidates(
+        imdbId: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ): List<String> {
+        val result = LinkedHashSet<String>()
+        val mediaKey = superStreamMediaDonorKey(imdbId, season, episode)
+        pendingSubtitleCatUrduFallbackByMedia.remove(mediaKey)?.let { result.addAll(it) }
+        if (!imdbId.isNullOrBlank()) {
+            pendingSubtitleCatUrduFallbackByMedia
+                .remove(superStreamMediaDonorKey(null, season, episode))
+                ?.let { result.addAll(it) }
+        }
+        return result.toList()
+    }
+
     internal fun clearCachesForTest() {
         synthesizedUrduCache.clear()
         materializedUrduCache.clear()
         materializationInFlight.clear()
         subDlSlugCache.clear()
+        pendingSubtitleCatUrduFallbackByMedia.clear()
     }
 
     suspend fun invokeSuperstream(
@@ -406,14 +460,16 @@ object SuperStreamExtractor : SuperStream() {
     }
 
     internal fun resolveSubDlApiKey(): String? {
-        val sysKey = System.getProperty("subdl.api.key")?.trim()?.takeIf { it.isNotBlank() }
+        val sysKey = System.getProperty("cloudstream.subdl.key")?.trim()?.takeIf { it.isNotBlank() }
+            ?: System.getProperty("subdl.api.key")?.trim()?.takeIf { it.isNotBlank() }
             ?: runCatching { System.getenv("SUBDL_API_KEY") }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
         if (sysKey != null) return sysKey
         return readCrossModuleSharedPref("subdl_api_key")
     }
 
     internal fun resolveSubSourceApiKey(): String? {
-        val sysKey = System.getProperty("subsource.api.key")?.trim()?.takeIf { it.isNotBlank() }
+        val sysKey = System.getProperty("cloudstream.subsource.key")?.trim()?.takeIf { it.isNotBlank() }
+            ?: System.getProperty("subsource.api.key")?.trim()?.takeIf { it.isNotBlank() }
             ?: runCatching { System.getenv("SUBSOURCE_API_KEY") }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
         if (sysKey != null) return sysKey
         return readCrossModuleSharedPref("subsource_api_key")
@@ -701,37 +757,29 @@ object SuperStreamExtractor : SuperStream() {
                     app.get(apiUrl, headers = SUBTITLE_HEADERS, timeout = 5L).text
                 }.getOrNull()
                 if (!apiJson.isNullOrBlank()) {
-                    val apiRoot = runCatching { JSONObject(apiJson) }.getOrNull()
-                    val subsArr = apiRoot?.optJSONArray("subtitles") ?: apiRoot?.optJSONArray("data")
-                    if (subsArr != null && subsArr.length() > 0) {
-                        var apiEmitted = 0
-                        for (i in 0 until subsArr.length()) {
-                            if (apiEmitted >= 2) break
-                            val item = subsArr.optJSONObject(i) ?: continue
-                            if (item.optBoolean("ai_translated", false) || item.optBoolean("machine_translated", false)) continue
-                            val rawUrl = item.optString("url").ifBlank { item.optString("download_url") }.trim()
-                            if (rawUrl.isBlank()) continue
-                            val fullUrl = if (rawUrl.startsWith("http", ignoreCase = true)) rawUrl else "$SUBDL_DL_HOST/${rawUrl.trimStart('/')}"
-                            val dlHeaders = mapOf(
-                                "User-Agent" to (SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0"),
-                                "Referer" to "$SUBDL_WEB_HOST/"
-                            )
-                            val materializedUri = materializeNormalizedUrduSubtitle(
-                                url = fullUrl,
-                                headers = dlHeaders,
-                                season = season,
-                                episode = episode,
-                                sourceTag = "subdl"
-                            ) ?: continue
-                            subtitleCallback.invoke(
-                                newSubtitleFile(formatSuperStreamUrduSourceLabel("subdl"), materializedUri) {
-                                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subdl")
-                                }
-                            )
-                            apiEmitted++
-                        }
-                        if (apiEmitted > 0) return
+                    val rankedUrls = parseSuperStreamSubDlApiV1Candidates(apiJson, season, episode)
+                    var apiEmitted = 0
+                    for (fullUrl in rankedUrls) {
+                        if (apiEmitted >= 2) break
+                        val dlHeaders = mapOf(
+                            "User-Agent" to (SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0"),
+                            "Referer" to "$SUBDL_WEB_HOST/"
+                        )
+                        val materializedUri = materializeNormalizedUrduSubtitle(
+                            url = fullUrl,
+                            headers = dlHeaders,
+                            season = season,
+                            episode = episode,
+                            sourceTag = "subdl"
+                        ) ?: continue
+                        subtitleCallback.invoke(
+                            newSubtitleFile(formatSuperStreamUrduSourceLabel("subdl"), materializedUri) {
+                                this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subdl")
+                            }
+                        )
+                        apiEmitted++
                     }
+                    if (apiEmitted > 0) return
                 }
             }
 
@@ -935,6 +983,24 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
+    /**
+     * Maps a YTS/YIFY row link to the correct zip download URL for its host: `yts-subs.com`
+     * serves zips from `subtitles.yts-subs.com/subtitles/<slug>.zip` while `yifysubtitles.ch`
+     * serves them from `yifysubtitles.ch/subtitle/<slug>.zip`. The two hosts do not share
+     * download paths, so the source host decides the shape.
+     */
+    internal fun buildSuperStreamYtsZipUrl(sourceHost: String, href: String): String? {
+        val cleanHref = href.trim()
+        if (!cleanHref.startsWith("/subtitles/")) return null
+        val slug = cleanHref.removePrefix("/subtitles/").removeSuffix("/").trim()
+        if (slug.isBlank()) return null
+        return if (sourceHost.trim().endsWith("yifysubtitles.ch")) {
+            "https://yifysubtitles.ch/subtitle/$slug.zip"
+        } else {
+            "https://subtitles.yts-subs.com/subtitles/$slug.zip"
+        }
+    }
+
     suspend fun invokeSuperStreamYifyUrdu(
         imdbId: String? = null,
         season: Int? = null,
@@ -954,9 +1020,7 @@ object SuperStreamExtractor : SuperStream() {
                     val langText = row.select("span.sub-lang, td.flag-cell").text().trim()
                     if (!isUrduSubtitleCode(langText)) continue
                     val href = row.selectFirst("a[href*=/subtitles/]")?.attr("href")?.trim() ?: continue
-                    val zipUrl = if (href.startsWith("/subtitles/")) {
-                        "https://yifysubtitles.ch/subtitle/${href.removePrefix("/subtitles/").removeSuffix("/")}.zip"
-                    } else continue
+                    val zipUrl = buildSuperStreamYtsZipUrl(host, href) ?: continue
                     val materializedUri = materializeNormalizedUrduSubtitle(
                         url = zipUrl,
                         headers = SUBTITLE_HEADERS,
@@ -1058,11 +1122,21 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
+    /**
+     * SubtitleCat donor harvester. Emits the verified English `-orig.srt` donor immediately
+     * (feeding Phase 4 neural translation) and records SubtitleCat's pre-cached `-ur.srt` via
+     * `recordSuperStreamSubtitleCatPreCachedUrduCandidate` as a VERIFIED LAST-RESORT Phase 4
+     * fallback only — never as a Phase 1 human Urdu track (the `-ur.srt` files are literal
+     * Google-Translate dumps until proven otherwise by `containsVerifiedUrduScript` +
+     * `isBrokenSmtUrdu` at consumption time). When [expectedYear] is provided, search rows whose
+     * text carries the year are preferred so multi-version titles resolve to the right cut.
+     */
     suspend fun invokeSuperStreamSubtitleCatDonor(
         title: String? = null,
         season: Int? = null,
         episode: Int? = null,
         expectedYear: Int? = null,
+        imdbId: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
         val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return
@@ -1074,8 +1148,19 @@ object SuperStreamExtractor : SuperStream() {
             }
             val searchUrl = "https://www.subtitlecat.com/index.php?search=${URLEncoder.encode(query, "UTF-8")}"
             val doc = app.get(searchUrl, headers = SUBTITLE_HEADERS, timeout = 5L).document
-            val detailPath = doc.select("table.sub-table tbody tr a[href^=subs/], a[href^=/subs/]")
-                .firstOrNull { a -> subtitleEpisodeMatches(a.text(), season, episode) }
+            val rows = doc.select("table.sub-table tbody tr a[href^=subs/], a[href^=/subs/]").toList()
+            val episodeMatching = rows.filter { subtitleEpisodeMatches(it.text(), season, episode) }
+            val candidates = if (episodeMatching.isNotEmpty()) {
+                if (expectedYear != null && expectedYear > 0) {
+                    val yearMatching = episodeMatching.filter { it.text().contains(expectedYear.toString()) }
+                    if (yearMatching.isNotEmpty()) yearMatching else episodeMatching
+                } else {
+                    episodeMatching
+                }
+            } else {
+                emptyList()
+            }
+            val detailPath = candidates.firstOrNull()
                 ?.attr("href")?.trim()?.trimStart('/') ?: return
             val detailDoc = app.get("https://www.subtitlecat.com/$detailPath", headers = SUBTITLE_HEADERS, timeout = 5L).document
             val origHref = detailDoc.selectFirst("a[id=download_orig][href], a[href$=-orig.srt]")
@@ -1085,6 +1170,15 @@ object SuperStreamExtractor : SuperStream() {
             } else {
                 "https://www.subtitlecat.com/${origHref.trimStart('/')}"
             }
+            // Record the pre-cached `-ur.srt` (State A) strictly as a last-resort Phase 4 candidate.
+            parseSuperStreamSubtitleCatUrduDetail(detailDoc.html())?.let { urUrl ->
+                recordSuperStreamSubtitleCatPreCachedUrduCandidate(
+                    urduUrl = urUrl,
+                    imdbId = imdbId,
+                    season = season,
+                    episode = episode
+                )
+            }
             subtitleCallback.invoke(
                 newSubtitleFile("English [SubtitleCat]", fullOrigUrl) {
                     this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "subtitlecat")
@@ -1093,6 +1187,80 @@ object SuperStreamExtractor : SuperStream() {
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Extracts SubtitleCat's pre-cached Urdu `-ur.srt`/`-urd.srt` link from a detail page,
+     * mirroring StreamPlay's `parseSubtitleCatUrduDetail` selectors.
+     */
+    internal fun parseSuperStreamSubtitleCatUrduDetail(body: String): String? {
+        val document = org.jsoup.Jsoup.parse(body)
+        val directUr = document.selectFirst("a#download_ur[href], a#download_urd[href]")
+            ?.attr("href")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val href = directUr ?: document.select("a[href]")
+            .asSequence()
+            .map { it.attr("href").trim() }
+            .firstOrNull { value ->
+                val path = value.substringBefore('?').lowercase(Locale.ROOT)
+                path.endsWith("-ur.srt") || path.endsWith("-urd.srt")
+            }
+            ?: return null
+        val absolute = if (href.startsWith("http://", ignoreCase = true) || href.startsWith("https://", ignoreCase = true)) {
+            href
+        } else {
+            "https://www.subtitlecat.com/${href.removePrefix("/")}"
+        }
+        return absolute.replace(" ", "%20")
+    }
+
+    /**
+     * Parses SubDL Official API v1 JSON and returns ranked download URLs, best human-uploader tier
+     * first: drops `ai_translated`/`machine_translated` entries, drops AI/bulk-SMT uploaders via
+     * `isSubDlAiEntry`, keeps only releases matching the requested season/episode
+     * (`subDlEpisodeMatches`), and ranks survivors by `scoreSubDlAuthorTier`. Mirrors the
+     * filtering StreamPlay applies in `parseSubDlApiV1Zips` so both surfaces behave identically.
+     */
+    internal fun parseSuperStreamSubDlApiV1Candidates(
+        jsonBody: String,
+        season: Int?,
+        episode: Int?
+    ): List<String> {
+        if (jsonBody.isBlank()) return emptyList()
+        return try {
+            val apiRoot = JSONObject(jsonBody)
+            val subsArr = apiRoot.optJSONArray("subtitles") ?: apiRoot.optJSONArray("data") ?: return emptyList()
+            val scored = LinkedHashMap<String, Int>()
+            for (i in 0 until subsArr.length()) {
+                val item = subsArr.optJSONObject(i) ?: continue
+                if (item.optBoolean("ai_translated", false) || item.optBoolean("machine_translated", false)) continue
+                val rawUrl = item.optString("url").ifBlank { item.optString("download_url") }.trim()
+                if (rawUrl.isBlank()) continue
+                val contextText = buildString {
+                    for (key in listOf("author", "user", "uploader", "release_name", "name", "title")) {
+                        val value = item.optString(key)
+                        if (!value.isNullOrBlank()) {
+                            append(value)
+                            append(' ')
+                        }
+                    }
+                }.trim()
+                if (isSubDlAiEntry(contextText)) continue
+                if (!subDlEpisodeMatches(contextText, season, episode)) continue
+                val fullUrl = if (rawUrl.startsWith("http", ignoreCase = true)) {
+                    rawUrl
+                } else {
+                    "$SUBDL_DL_HOST/${rawUrl.trimStart('/')}"
+                }
+                val tierScore = scoreSubDlAuthorTier(contextText)
+                val existing = scored[fullUrl]
+                if (existing == null || tierScore > existing) scored[fullUrl] = tierScore
+            }
+            scored.entries.sortedByDescending { it.value }.map { it.key }
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
@@ -1360,9 +1528,9 @@ object SuperStreamExtractor : SuperStream() {
         englishSubs: List<SubtitleFile>,
         season: Int? = null,
         episode: Int? = null,
+        imdbId: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ): Boolean = withContext(Dispatchers.IO) {
-        if (englishSubs.isEmpty()) return@withContext false
         for (candidate in englishSubs.take(3)) {
             val enUrl = candidate.url.trim()
             if (!enUrl.startsWith("http", ignoreCase = true)) continue
@@ -1394,7 +1562,9 @@ object SuperStreamExtractor : SuperStream() {
                 }
             }
             val rawBytes = try {
-                app.get(enUrl, headers = SUBTITLE_HEADERS, timeout = 6L).okhttpResponse.body.bytes()
+                app.get(enUrl, headers = SUBTITLE_HEADERS, timeout = 6L).okhttpResponse.body.byteStream().use { stream ->
+                    readBoundedStreamOrOverflow(stream)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -1416,6 +1586,40 @@ object SuperStreamExtractor : SuperStream() {
             )
             return@withContext true
         }
+        // Last-resort Phase 4 fallback: if SubtitleCat had a pre-cached `-ur.srt` for this title,
+        // refine and emit it — but only after full Urdu-script + broken-SMT verification (a raw
+        // Google-Translate dump never reaches the player). Runs even without English donors so
+        // the Urdu floor holds offline of donor availability, mirroring StreamPlay's Phase 4.
+        val preCachedUrUrls = consumeSuperStreamSubtitleCatPreCachedUrduCandidates(
+            imdbId = imdbId,
+            season = season,
+            episode = episode
+        )
+        for (urUrl in preCachedUrUrls.take(2)) {
+            val rawBytes = try {
+                app.get(urUrl, headers = SUBTITLE_HEADERS, timeout = 5L).okhttpResponse.body.byteStream().use { stream ->
+                    readBoundedStreamOrOverflow(stream)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            val decodedUr = decodeAndNormalizeSubtitleBytes(rawBytes, season = season, episode = episode)
+            if (decodedUr.isBlank()) continue
+            val normalizedUr = normalizeUrduSubtitleText(decodedUr)
+            val cues = parseSuperStreamCues(normalizedUr)
+            if (!containsVerifiedUrduScript(cues) || isBrokenSmtUrdu(cues)) continue
+            val cacheKey = "subcat_ur_fallback|$urUrl|S${season ?: 0}E${episode ?: 0}"
+            val fileUri = writeLocalUrduSrtFile(normalizedUr, cacheKey) ?: continue
+            synthesizedUrduCache[cacheKey] = fileUri
+            subtitleCallback(
+                newSubtitleFile(formatSuperStreamUrduSourceLabel("urdu-neural-fallback"), fileUri) {
+                    this.headers = mapOf(SUPERSTREAM_SOURCE_HEADER to "urdu-neural-fallback")
+                }
+            )
+            return@withContext true
+        }
         false
     }
 
@@ -1427,10 +1631,14 @@ object SuperStreamExtractor : SuperStream() {
         val normalized = normalizeUrduTypography(content)
         if (!SUPERSTREAM_URDU_SCRIPT_REGEX.containsMatchIn(normalized)) return false
         val urduDistinctiveCount = SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.findAll(normalized).count()
-        val urduFunctionWordCount = SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX.findAll(normalized).count()
-        val persianArabicExclusiveCount = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(normalized).count()
-        if (urduDistinctiveCount == 0 && urduFunctionWordCount == 0) return false
-        if (persianArabicExclusiveCount >= 1 && persianArabicExclusiveCount > (urduDistinctiveCount + urduFunctionWordCount)) {
+        val urduUnambiguousFunctionCount = SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(normalized).count()
+        val persianArabicExclusiveCount = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.findAll(normalized).count()
+        val rawPersianArabicExclusiveCount = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(content).count()
+        if (urduDistinctiveCount == 0 && urduUnambiguousFunctionCount == 0) return false
+        if (rawPersianArabicExclusiveCount >= 1 && urduDistinctiveCount == 0) return false
+        if (persianArabicExclusiveCount >= 1 &&
+            (urduDistinctiveCount == 0 || persianArabicExclusiveCount > (urduDistinctiveCount + urduUnambiguousFunctionCount))
+        ) {
             return false
         }
         return true
@@ -1444,16 +1652,26 @@ object SuperStreamExtractor : SuperStream() {
             return false
         }
 
-        val combinedText = cues.joinToString("\n") { normalizeUrduTypography(it.text) }
+        val rawText = cues.joinToString("\n") { it.text }
+        val combinedText = normalizeUrduTypography(rawText)
         val urduDistinctiveCount = SUPERSTREAM_URDU_DISTINCTIVE_CHARS_REGEX.findAll(combinedText).count()
-        val urduFunctionMatches = SUPERSTREAM_URDU_CORE_FUNCTION_WORDS_REGEX.findAll(combinedText).count()
-        val persianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(combinedText).count()
+        val urduUnambiguousFunctionCount = SUPERSTREAM_URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(combinedText).count()
+        val persianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_NORMALIZED_REGEX.findAll(combinedText).count()
+        val rawPersianArabicMatches = SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(rawText).count()
 
-        // Deterministically reject Persian (fa) and Arabic (ar) across all cue counts
-        if (urduDistinctiveCount == 0 && urduFunctionMatches == 0) {
+        // Deterministically reject Persian (fa) and Arabic (ar) across all cue counts.
+        // Genuine Urdu almost always carries distinctive glyphs (ٹ ڈ ڑ ں ے ھ); fa/ar never do, so
+        // evidence built purely from shared homographs (ہو/ہم/تو/اگر/... after normalization) or
+        // from raw fa/ar orthography (هو/هم/هست/...) with zero distinctive glyphs is not Urdu.
+        if (urduDistinctiveCount == 0 && urduUnambiguousFunctionCount == 0) {
             return false
         }
-        if (persianArabicMatches >= 1 && persianArabicMatches > (urduDistinctiveCount + urduFunctionMatches)) {
+        if (rawPersianArabicMatches >= 1 && urduDistinctiveCount == 0) {
+            return false
+        }
+        if (persianArabicMatches >= 1 &&
+            (urduDistinctiveCount == 0 || persianArabicMatches > (urduDistinctiveCount + urduUnambiguousFunctionCount))
+        ) {
             return false
         }
         return true
@@ -1521,7 +1739,9 @@ object SuperStreamExtractor : SuperStream() {
 
         try {
             val rawBytes = try {
-                app.get(cleanUrl, headers = headers, timeout = 8L).okhttpResponse.body.bytes()
+                app.get(cleanUrl, headers = headers, timeout = 8L).okhttpResponse.body.byteStream().use { stream ->
+                    readBoundedStreamOrOverflow(stream)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -2075,6 +2295,25 @@ object SuperStreamExtractor : SuperStream() {
         return out.toByteArray()
     }
 
+    /**
+     * Strict variant of `readBoundedStream` for raw subtitle downloads: returns null when the
+     * response exceeds `SUPERSTREAM_MAX_INFLATE_BYTES` instead of silently truncating (a
+     * truncated `.srt`/`.zip` payload would be decoded into a corrupted subtitle), so oversized
+     * responses are rejected without ever buffering more than the cap into heap memory.
+     */
+    private fun readBoundedStreamOrOverflow(input: java.io.InputStream): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val read = input.read(buf)
+            if (read <= 0) return out.toByteArray()
+            total += read
+            if (total > SUPERSTREAM_MAX_INFLATE_BYTES) return null
+            out.write(buf, 0, read)
+        }
+    }
+
     internal data class SuperStreamSrtCue(val timestamp: String, val text: String)
 
     internal fun parseSuperStreamCues(rawContent: String): List<SuperStreamSrtCue> {
@@ -2517,7 +2756,13 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
-    private fun translateBatchViaGoogle(endpoint: String, texts: List<String>): List<String>? {
+    /**
+     * Cancellable batch translation: the HTTP call is enqueued (never a blocking `execute()` on
+     * the caller thread) and the in-flight call is cancelled when the awaiting coroutine is
+     * cancelled, so `withTimeoutOrNull` expiry in Phase 4 tears the socket down promptly instead
+     * of leaking a blocked read for the remainder of the request timeout.
+     */
+    private suspend fun translateBatchViaGoogle(endpoint: String, texts: List<String>): List<String>? {
         return try {
             val formBuilder = FormBody.Builder(Charsets.UTF_8)
             for (text in texts) {
@@ -2529,11 +2774,30 @@ object SuperStreamExtractor : SuperStream() {
                 .header("User-Agent", SUBTITLE_HEADERS["User-Agent"] ?: "Mozilla/5.0")
                 .header("Accept", "application/json, text/plain, */*")
                 .build()
-            app.baseClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val body = resp.body.string()
-                parseGoogleBatchResponse(body, expectedCount = texts.size)
+            suspendCancellableCoroutine { cont ->
+                val call = app.baseClient.newCall(req)
+                cont.invokeOnCancellation { runCatching { call.cancel() } }
+                call.enqueue(object : okhttp3.Callback {
+                    override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                        response.use { resp ->
+                            val parsed = if (!resp.isSuccessful) {
+                                null
+                            } else {
+                                runCatching {
+                                    parseGoogleBatchResponse(resp.body.string(), expectedCount = texts.size)
+                                }.getOrNull()
+                            }
+                            if (cont.isActive) cont.resume(parsed, onCancellation = null)
+                        }
+                    }
+
+                    override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                        if (cont.isActive) cont.resume(null, onCancellation = null)
+                    }
+                })
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -2586,6 +2850,34 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
+    /**
+     * Atomic single-shot cache write (`.tmp` sibling + `ATOMIC_MOVE` rename, `renameTo` fallback)
+     * so readers sharing this cache directory — including StreamPlay's engine — can never observe
+     * a partially written `.srt`. Returns false without leaving temporary files behind on failure.
+     */
+    private fun writeSuperStreamCacheFileAtomically(file: File, payloadBytes: ByteArray): Boolean {
+        val tmp = File(file.parentFile, "${file.name}.${System.nanoTime()}.tmp")
+        return try {
+            tmp.writeBytes(payloadBytes)
+            try {
+                java.nio.file.Files.move(
+                    tmp.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                if (!tmp.renameTo(file)) {
+                    runCatching { tmp.delete() }
+                    return false
+                }
+            }
+            true
+        } catch (_: Exception) {
+            runCatching { tmp.delete() }
+            false
+        }
+    }
+
     internal fun writeLocalUrduSrtFile(urduSrtContent: String, urlCacheKey: String? = null): String? {
         if (urduSrtContent.isBlank()) return null
         return try {
@@ -2600,13 +2892,17 @@ object SuperStreamExtractor : SuperStream() {
             val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
             val payloadBytes = bom + urduSrtContent.toByteArray(StandardCharsets.UTF_8)
             if (!file.exists() || file.length() <= 64L) {
-                file.writeBytes(payloadBytes)
+                if (!writeSuperStreamCacheFileAtomically(file, payloadBytes)) return null
             } else {
                 runCatching { file.setLastModified(System.currentTimeMillis()) }
             }
             if (!urlCacheKey.isNullOrBlank()) {
                 resolvePersistentUrlCacheFile(urlCacheKey)?.let { urlFile ->
-                    runCatching { urlFile.writeBytes(payloadBytes) }
+                    if (urlFile.exists() && urlFile.isFile && urlFile.length() > 64L) {
+                        runCatching { urlFile.setLastModified(System.currentTimeMillis()) }
+                    } else {
+                        writeSuperStreamCacheFileAtomically(urlFile, payloadBytes)
+                    }
                 }
             }
             evictStaleAndExcessCacheFiles(baseDir)

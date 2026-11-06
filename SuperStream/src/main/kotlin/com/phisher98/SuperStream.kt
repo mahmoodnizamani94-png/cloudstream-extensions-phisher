@@ -55,8 +55,8 @@ import com.phisher98.SuperStreamExtractor.invokeWyZIESUBAPI
 import com.phisher98.SuperStreamExtractor.synthesizeSuperStreamUrduFallback
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -660,26 +660,31 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                             ?: sub.headers?.get(SUPERSTREAM_SOURCE_HEADER)
                         val canonicalKey = canonicalSuperStreamUrduSourceKey(badge)
                             ?: canonicalSuperStreamUrduSourceKey(sub.lang)
-                        val formattedLabel = formatSuperStreamUrduSourceLabel(canonicalKey)
-                        val mergedHeaders = if (canonicalKey == null || sub.headers?.get(SUPERSTREAM_SOURCE_HEADER) == canonicalKey) {
-                            sub.headers
-                        } else {
-                            (sub.headers.orEmpty() + (SUPERSTREAM_SOURCE_HEADER to canonicalKey))
-                        }
-                        @Suppress("DEPRECATION")
-                        val normalizedUrdu = if (sub.lang == formattedLabel && sub.headers == mergedHeaders) {
-                            sub
-                        } else {
-                            SubtitleFile(lang = formattedLabel, url = sub.url).apply {
-                                headers = mergedHeaders
+                        // Parity with StreamPlay's emitSubtitle: an Urdu track with no verified
+                        // canonical source (e.g. a video-provider sidecar) is rejected outright —
+                        // never emitted and never counted toward the Phase 5 subtitle floor.
+                        if (canonicalKey != null) {
+                            val formattedLabel = formatSuperStreamUrduSourceLabel(canonicalKey)
+                            val mergedHeaders = if (sub.headers?.get(SUPERSTREAM_SOURCE_HEADER) == canonicalKey) {
+                                sub.headers
+                            } else {
+                                (sub.headers.orEmpty() + (SUPERSTREAM_SOURCE_HEADER to canonicalKey))
                             }
+                            @Suppress("DEPRECATION")
+                            val normalizedUrdu = if (sub.lang == formattedLabel && sub.headers == mergedHeaders) {
+                                sub
+                            } else {
+                                SubtitleFile(lang = formattedLabel, url = sub.url).apply {
+                                    headers = mergedHeaders
+                                }
+                            }
+                            if (canonicalKey != "urdu-neural-fallback" && canonicalKey != "subtitlecat") {
+                                urduSubtitleSources.add(canonicalKey)
+                            }
+                            urduSubsFound.incrementAndGet()
+                            earlyController.onSubtitleEmitted(normalizedUrdu)
+                            subtitleCallback(normalizedUrdu)
                         }
-                        if (canonicalKey != null && canonicalKey != "urdu-neural-fallback" && canonicalKey != "subtitlecat") {
-                            urduSubtitleSources.add(canonicalKey)
-                        }
-                        urduSubsFound.incrementAndGet()
-                        earlyController.onSubtitleEmitted(normalizedUrdu)
-                        subtitleCallback(normalizedUrdu)
                     }
                     isEnglishSubtitleCode(sub.lang) -> {
                         englishDonorSubs.add(sub)
@@ -865,6 +870,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                             season = res.season,
                             episode = res.episode,
                             expectedYear = resolvedYear,
+                            imdbId = res.imdbId,
                             subtitleCallback = trackedSubtitleCallback,
                         )
                     })
@@ -1001,18 +1007,28 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                                 })
                             }
                         }
-                        jobs.awaitAll()
+                        // Break out immediately once TARGET (2) verified human Urdu sources arrived,
+                        // cancelling the remaining slow harvesters (parity with StreamPlay's
+                        // EarlySatisfactionController-driven Phase 3), instead of awaiting every job.
+                        while (jobs.any { it.isActive }) {
+                            if (urduSubtitleSources.size >= 2) break
+                            delay(100)
+                        }
+                        jobs.forEach { it.cancel() }
                     }
                 }
             }
 
             // Phase 4: Contextual Spoken-Urdu Neural Fallback if 0 human Urdu sources returned
-            if (urduMode && urduSubtitleSources.isEmpty() && englishDonorSubs.isNotEmpty()) {
+            // (also consumes the verified SubtitleCat `-ur.srt` last-resort candidates, which do
+            // not require an English donor).
+            if (urduMode && urduSubtitleSources.isEmpty()) {
                 withTimeoutOrNull(8_000L) {
                     synthesizeSuperStreamUrduFallback(
                         englishSubs = englishDonorSubs,
                         season = res.season,
-                        episode = res.episode
+                        episode = res.episode,
+                        imdbId = res.imdbId
                     ) { urSub ->
                         trackedSubtitleCallback(urSub)
                     }

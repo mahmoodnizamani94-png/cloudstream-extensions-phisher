@@ -447,13 +447,23 @@ object UrduSubtitleEngine {
     val URDU_DISTINCTIVE_CHARS_REGEX =
         Regex("""[\u0679\u0688\u0691\u06BA\u06D2\u06BE]""")
 
-    // Core Urdu grammatical function words (excluding "کی" which is Persian for "when/who")
-    val URDU_CORE_FUNCTION_WORDS_REGEX =
-        Regex("""(?:^|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|کے|کا|کو|سے|پر|تم|آپ|یہ|وہ|کیا|اور|تو|بھی|تاکہ|کیونکہ|اگر|لیکن|مگر|یا|ہو|ہوں|گے|گی|گا)(?:$|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])""")
+    // Urdu function words that have NO Persian/Arabic homograph. Homographs shared with Persian and
+    // Arabic (تو / یا / اگر / مگر / لیکن / پر / ہو / ہم / تم — identical after `normalizeUrduTypography`
+    // collapses ه/ك/ي/ى into ہ/ک/ی) are deliberately excluded so a homograph-only match can never
+    // satisfy the script gate on its own.
+    val URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])(ہے|ہیں|تھا|تھی|تھے|نہیں|میں|کے|کا|کو|سے|اور|یہ|وہ|کیا|بھی|تاکہ|کیونکہ|ہوں|گے|گی|گا|آپ|گیا|گئی|گئے|رہا|رہی|رہے|ہوئی|ہوا|ہوئے|اپنا|اپنی|اپنے|کچھ|کوئی|جب|اب|پھر|ساتھ|لیے|پہلے|کیوں|کیسے|کہاں|جائیں|کیجئے)(?:$|[\s\u200F\u200E،۔!؟"'\(\)\[\]\-])""")
 
     // Exclusive Persian (fa) and Arabic (ar) markers (recognizing normalized ی/ک/ہ variants as well)
     val PERSIAN_ARABIC_EXCLUSIVE_REGEX =
         Regex("""(?:^|[\s\u200F\u200E،.!?])(می|نمی|باشه|باشہ|چرا|خیلی|دارم|داری|داره|دارہ|اینجا|آنجا|میبینمت|تموم|خونه|خونہ|کجا|بودی|فردا|انقدر|ہست|نیست|مرحبًا|مرحبا|هذا|ہذا|هذه|ہذہ|ذلك|ذلک|تلك|تلک|الذي|الذی|التي|التی|ماذا|لماذا|نحن|أين|این|کیف|ربما|غدًا|غدا)(?:$|[\s\u200F\u200E،.!?])""")
+
+    // Persian/Arabic orthography as it appears in RAW (pre-normalization) cue text: ه ك ي ى spellings
+    // plus core Arabic/Persian function words. `normalizeUrduTypography` rewrites ه/ك/ي/ى into Urdu
+    // glyphs (ہ/ک/ی), which would otherwise turn Arabic هو/هم into the Urdu words ہو/ہم and mask the
+    // source language; this regex is therefore applied to the raw text BEFORE normalization.
+    val RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX =
+        Regex("""(?:^|[\s\u200F\u200E،,.!?;:"'\(\)])(است|نیست|هست|هستم|هستی|هستند|می\u200C|نمی\u200C|های|هایی|برای|خیلی|چون|چرا|کجا|اینجا|آنجا|شما|باشد|باید|شاید|دارم|داری|دارد|دارند|شود|بشه|میشه|نمیشه|میخوام|خانه|همه|هیچ|وقتی|الان|امروز|دیروز|فردا|بزرگ|کوچک|هذا|هذه|ذلك|تلك|الذي|التي|الذين|ربما|لماذا|كيف|أين|نحن|أنتم|كان|كانت|كانوا|يكون|تكون|على|إلى|عن|في|أن|إن|قد|لكن|هو|هي|هن|أنت|أنا|عند|قبل|حتى|منذ|سوف|كل|بعض|مثل|فقط|جدا|الآن|هنا|هناك|كذلك|أيضا|ليلة|ساعة|أسبوع|أمس|غدا|يوم|عندما|ليس|ليست|أو)(?:$|[\s\u200F\u200E،,.!?;:"'\(\)])""")
 
     private val ARABIC_PRESENTATION_FORMS_REGEX =
         Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
@@ -2148,6 +2158,36 @@ object UrduSubtitleEngine {
      * keyed by the SHA-256 of the normalized Urdu `.srt` payload so identical subtitle payloads downloaded
      * from different mirrors deduplicate to a single on-disk `.srt` file.
      */
+    /**
+     * Atomic single-shot cache write: payloads land in a unique `.tmp` sibling first and are then
+     * moved into place with `ATOMIC_MOVE` (falling back to `renameTo` on filesystems without
+     * atomic rename support), so a concurrent reader — or the other module sharing this cache
+     * directory — can never observe a partially written `.srt`. Returns false without leaving
+     * any temporary file behind when the write fails.
+     */
+    private fun writeUrduCacheFileAtomically(file: File, payloadBytes: ByteArray): Boolean {
+        val tmp = File(file.parentFile, "${file.name}.${System.nanoTime()}.tmp")
+        return try {
+            tmp.writeBytes(payloadBytes)
+            try {
+                java.nio.file.Files.move(
+                    tmp.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                if (!tmp.renameTo(file)) {
+                    runCatching { tmp.delete() }
+                    return false
+                }
+            }
+            true
+        } catch (_: Exception) {
+            runCatching { tmp.delete() }
+            false
+        }
+    }
+
     fun writeUrduLocalCacheFile(keySeed: String, urduSrtContent: String, customFileName: String? = null): String? {
         if (urduSrtContent.isBlank()) return null
         return try {
@@ -2162,7 +2202,7 @@ object UrduSubtitleEngine {
             // Include UTF-8 BOM so ExoPlayer / external players unconditionally detect UTF-8
             val bomBytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
             val contentBytes = urduSrtContent.toByteArray(StandardCharsets.UTF_8)
-            file.writeBytes(bomBytes + contentBytes)
+            if (!writeUrduCacheFileAtomically(file, bomBytes + contentBytes)) return null
             evictStaleAndExcessCacheFiles(baseDir)
             toCanonicalFileUri(file)
         } catch (_: Exception) {
@@ -2175,9 +2215,16 @@ object UrduSubtitleEngine {
      * - Requires `>= 15%` (or at least 1 cue for short test snippets `<= 4` cues) to contain `URDU_ARABIC_SCRIPT_REGEX`.
      * - Deterministically blocks Persian (`fa`) and Arabic (`ar`) false positives across ALL file sizes:
      *   - Requires at least 1 match of `URDU_DISTINCTIVE_CHARS_REGEX` (`ٹ`, `ڈ`, `ڑ`, `ں`, `ے`, `ھ`) OR
-     *     at least 1 match of `URDU_CORE_FUNCTION_WORDS_REGEX` (`ہے`, `ہیں`, `تھا`, `نہیں`, `میں`, `کے`, `کا`, `کو`, `سے`, `پر`, `تم`, `آپ`, `یہ`, `وہ`, `کیا`, `اور`, `تو`, `بھی`, etc.).
-     *   - Rejects when `PERSIAN_ARABIC_EXCLUSIVE_REGEX` matches and there are zero distinctive Urdu characters/words,
-     *     or when Persian/Arabic exclusive tokens outnumber Urdu markers (`persianArabicExclusiveCount > urduDistinctiveCount + urduFunctionWordCount`).
+     *     at least 1 match of `URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX` — Urdu function words with no
+     *     Persian/Arabic homograph (`ہے`, `ہیں`, `تھا`, `نہیں`, `میں`, `کے`, `کا`, `کو`, `سے`, `اور`, `یہ`, `وہ`, `کیا`, ...).
+     *     Shared fa/ar homographs (`تو`, `یا`, `اگر`, `پر`, `ہو`, `ہم`, ...) that normalize identically
+     *     to Urdu words can never satisfy the gate on their own.
+     *   - Rejects when `RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX` matches the RAW cue text (pre-normalization
+     *     `ه ك ي ى` orthography, incl. Arabic `هو`/`هم`/`في` and Persian `هست`/`خانه`) and there are zero
+     *     Urdu-distinctive characters.
+     *   - Rejects when `PERSIAN_ARABIC_EXCLUSIVE_REGEX` matches and there are zero distinctive Urdu
+     *     characters, or when Persian/Arabic exclusive tokens outnumber Urdu markers
+     *     (`persianArabicExclusiveCount > urduDistinctiveCount + urduUnambiguousFunctionCount`).
      */
     fun containsVerifiedUrduScript(cues: List<SrtCue>): Boolean {
         if (cues.isEmpty()) return false
@@ -2186,18 +2233,30 @@ object UrduSubtitleEngine {
             return false
         }
 
-        val combinedText = cues.joinToString("\n") { normalizeUrduTypography(it.text) }
+        val rawText = cues.joinToString("\n") { it.text }
+        val combinedText = normalizeUrduTypography(rawText)
         val urduDistinctiveCount = URDU_DISTINCTIVE_CHARS_REGEX.findAll(combinedText).count()
-        val urduFunctionWordCount = URDU_CORE_FUNCTION_WORDS_REGEX.findAll(combinedText).count()
+        val urduUnambiguousFunctionCount = URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(combinedText).count()
         val persianArabicExclusiveCount = PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(combinedText).count()
+        val rawPersianArabicExclusiveCount = RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(rawText).count()
 
-        val hasUrduMarkers = urduDistinctiveCount >= 1 || urduFunctionWordCount >= 1
+        val hasUrduMarkers = urduDistinctiveCount >= 1 || urduUnambiguousFunctionCount >= 1
         if (!hasUrduMarkers) {
             return false
         }
 
-        // If Persian/Arabic exclusive words outnumber Urdu markers, reject deterministically
-        if (persianArabicExclusiveCount >= 1 && persianArabicExclusiveCount > (urduDistinctiveCount + urduFunctionWordCount)) {
+        // Persian/Arabic orthography visible in the raw text (before typography normalization) with zero
+        // Urdu-distinctive glyphs is deterministically not Urdu (Arabic هو/هم normalize INTO Urdu ہو/ہم,
+        // so the raw scan is the only trustworthy signal for shared-glyph languages).
+        if (rawPersianArabicExclusiveCount >= 1 && urduDistinctiveCount == 0) {
+            return false
+        }
+
+        // If Persian/Arabic exclusive words outnumber Urdu markers, reject deterministically; a
+        // zero-distinctive file can never outweigh even one exclusive fa/ar marker.
+        if (persianArabicExclusiveCount >= 1 &&
+            (urduDistinctiveCount == 0 || persianArabicExclusiveCount > (urduDistinctiveCount + urduUnambiguousFunctionCount))
+        ) {
             return false
         }
 
@@ -2213,11 +2272,17 @@ object UrduSubtitleEngine {
         val normalized = normalizeUrduTypography(rawContent)
         if (!URDU_ARABIC_SCRIPT_REGEX.containsMatchIn(normalized)) return false
         val urduDistinctiveCount = URDU_DISTINCTIVE_CHARS_REGEX.findAll(normalized).count()
-        val urduFunctionWordCount = URDU_CORE_FUNCTION_WORDS_REGEX.findAll(normalized).count()
+        val urduUnambiguousFunctionCount = URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.findAll(normalized).count()
         val persianArabicExclusiveCount = PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(normalized).count()
-        val hasUrduMarkers = urduDistinctiveCount >= 1 || urduFunctionWordCount >= 1
+        val rawPersianArabicExclusiveCount = RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.findAll(rawContent).count()
+        val hasUrduMarkers = urduDistinctiveCount >= 1 || urduUnambiguousFunctionCount >= 1
         if (!hasUrduMarkers) return false
-        if (persianArabicExclusiveCount >= 1 && persianArabicExclusiveCount > (urduDistinctiveCount + urduFunctionWordCount)) {
+        if (rawPersianArabicExclusiveCount >= 1 && urduDistinctiveCount == 0) {
+            return false
+        }
+        if (persianArabicExclusiveCount >= 1 &&
+            (urduDistinctiveCount == 0 || persianArabicExclusiveCount > (urduDistinctiveCount + urduUnambiguousFunctionCount))
+        ) {
             return false
         }
         return true

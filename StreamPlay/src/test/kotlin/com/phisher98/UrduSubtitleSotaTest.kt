@@ -1333,6 +1333,122 @@ class UrduSubtitleSotaTest {
             tmpDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `Persian subtitle whose only Urdu evidence is shared homographs is rejected even after typography normalization`() {
+        // Gemini round-1 repro: normalizeUrduTypography leaves تو/کجا untouched, and the old gate
+        // compared strict inequality, so a Persian file with zero Urdu-distinctive glyphs passed.
+        val persianSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nتو کجا رفتی؟\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nمن منتظرت بودم\n")
+        }
+        assertFalse(
+            "Persian homograph-only file must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianSrt)
+        )
+    }
+
+    @Test
+    fun `Arabic file that normalizes into Urdu homographs is rejected by the raw-orthography scan`() {
+        // Gemini round-1 repro: Arabic هو/هم normalize INTO the Urdu words ہو/ہم, so the normalized
+        // scan alone cannot catch it; RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX sees the raw orthography.
+        val arabicSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nهو في البيت الآن\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nهل سمعت الخبر الجديد اليوم\n")
+        }
+        assertFalse(
+            "Arabic file normalizing into Urdu homographs must be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(arabicSrt)
+        )
+    }
+
+    @Test
+    fun `Persian raw orthography (هست) is rejected by the raw scan before normalization`() {
+        val persianSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nتو خوب هستی\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nاین خانه بزرگ است\n")
+        }
+        assertFalse(
+            "Persian raw-orthography file must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianSrt)
+        )
+    }
+
+    @Test
+    fun `Genuine Urdu subtitles containing shared homographs are still accepted`() {
+        // Urdu fixture deliberately contains homographs (تم، کیا، اور) alongside distinctive glyphs
+        // (ٹ، ں، ے، ھ) — the tightened gate must never reject genuine spoken Urdu.
+        val urduSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:03,000\nیہ گھر بہت خوبصورت ہے اور تم اسے پسند کرو گے\n\n")
+            append("2\n00:00:03,000 --> 00:00:05,000\nکل ہم سب بازار جائیں گے اور ٹھیلوں سے خریداری کریں گے\n")
+        }
+        assertTrue(
+            "Genuine Urdu with shared fa/ar homographs must still be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(urduSrt)
+        )
+    }
+
+    @Test
+    fun `Cache writes are atomic with no temporary files left behind`() {
+        val urduSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n")
+        }
+        val returnedUri = UrduSubtitleEngine.writeUrduLocalCacheFile("atomic_write_test", urduSrt)
+        assertNotNull("writeUrduLocalCacheFile must return a file URI", returnedUri)
+        val path = returnedUri!!.removePrefix("file://").removePrefix("file:")
+        val file = java.io.File(path)
+        try {
+            assertTrue("Cached .srt must exist", file.exists() && file.isFile)
+            val bytes = file.readBytes()
+            assertEquals("Cached .srt must start with the UTF-8 BOM", 0xEF, bytes[0].toInt() and 0xFF)
+            assertTrue("Cached .srt must contain the Urdu payload", String(bytes, Charsets.UTF_8).contains("سبٹائٹل"))
+            val tmpLeftovers = file.parentFile?.listFiles { f -> f.name.endsWith(".tmp") } ?: emptyArray()
+            assertEquals("Atomic write must leave no .tmp files behind", 0, tmpLeftovers.size)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `Concurrent materializations of the same URL coalesce into a single network fetch`() = runBlocking {
+        val urduSrt = buildString {
+            for (i in 1..40) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو سبٹائٹل لائن $i ہے، اور یہ بہت خوبصورت ہے\n\n")
+            }
+        }
+        val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+        server.createContext("/sub.srt") { exchange ->
+            fetchCount.incrementAndGet()
+            val bytes = urduSrt.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "application/octet-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            UrduSubtitleEngine.clearCachesForTest()
+            // Unique query string per run so no stale URL-index disk entry from an earlier run
+            // can answer the request without touching the network.
+            val url = "http://127.0.0.1:${server.address.port}/sub.srt?run=${System.nanoTime()}"
+            val results = coroutineScope {
+                (1..24).map {
+                    async { UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "coalesce-test") }
+                }.awaitAll()
+            }
+            assertTrue("Every coalesced caller must receive a materialized URI", results.all { it != null && it == results[0] })
+            assertEquals(
+                "SingleFlight must coalesce 24 concurrent materializations into exactly 1 network fetch",
+                1,
+                fetchCount.get()
+            )
+        } finally {
+            server.stop(0)
+            UrduSubtitleEngine.clearCachesForTest()
+        }
+    }
 }
 
 
