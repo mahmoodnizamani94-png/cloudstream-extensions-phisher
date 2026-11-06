@@ -236,7 +236,7 @@ class SettingsFragment(
 
             AlertDialog.Builder(ctx)
                 .setTitle("Optional Subtitle API Keys (Cross-Module)")
-                .setMessage("All 8 Urdu sources work out-of-the-box without keys. Adding optional SubDL, SubSource, or Wyzie API keys unlocks direct JSON API tiers across both SuperStream and StreamPlay.")
+                .setMessage("6 of 8 Urdu sources (SubDL, SubSense, Subf2m, YTS-Subs, OpenSubtitles, SubtitleCat) work keylessly out-of-the-box. Adding SubSource or Wyzie API keys activates those 2 key-gated sources, and an optional SubDL key unlocks its official API v1 JSON tier across both SuperStream and StreamPlay.")
                 .setView(container)
                 .setPositiveButton("Save Keys") { _, _ ->
                     val dlKey = subDlInput.text?.toString()?.trim().orEmpty()

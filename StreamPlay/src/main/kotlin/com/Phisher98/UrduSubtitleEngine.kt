@@ -48,7 +48,7 @@ import java.util.zip.ZipInputStream
  * RTL BiDi Sanitization, and Timing-Preserved Neural Translation Pipeline.
  *
  * Designed for StreamPlay so that:
- * 1. Human Urdu subtitles from SubDL, SubSource, SubSense, Subf2m, OpenSubtitles, YTS-Subs, and SubtitleCat
+ * 1. Human Urdu subtitles from SubDL, SubSource, Wyzie, SubSense, Subf2m, OpenSubtitles, YTS-Subs, and SubtitleCat
  *    are harvested concurrently (with AI/SMT filtering and Spoken-Human Uploader Quality Ranking).
  * 2. Legacy Urdu encodings (`Windows-1256` / `CP1256`, `UTF-16LE/BE`, BOM-prefixed `UTF-8`),
  *    compressed payloads (`GZIP`, multi-entry `ZIP` with season/episode-aware and naturalness-scored selection),
