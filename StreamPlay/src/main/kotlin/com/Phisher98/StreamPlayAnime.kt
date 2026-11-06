@@ -489,7 +489,7 @@ class StreamPlayAnime : MainAPI() {
             minQualityStreams = 4,
             qualityThreshold = Qualities.P720.value,
             highBitrateThresholdKbps = 2500,
-            minSubtitles = 1,
+            minSubtitles = ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES,
             satisfyWithOneLinkIfSubsFound = false,
             requireSubtitles = true,
             requireDualQualities = false,
@@ -750,7 +750,7 @@ class StreamPlayAnime : MainAPI() {
             // with subtitles. When the sweep was satisfied before enough distinct sources spoke, the
             // remaining ones are asked again — subtitle-first, but with the normal emission paths, so
             // a source that also has a link to offer still contributes it.
-            if (englishSubtitleSources.size < TARGET_ENGLISH_SUBTITLE_SOURCES) {
+            if (englishSubtitleSources.size < ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES) {
                 val completionSources = (videoSources + subtitleOnlySources)
                     .filter { source -> source.id !in englishSubtitleSources }
                     .take(MAX_SUBTITLE_COMPLETION_PROVIDERS)
@@ -758,7 +758,7 @@ class StreamPlayAnime : MainAPI() {
                 if (completionSources.isNotEmpty()) {
                     Log.d(
                         "StreamPlayAnime",
-                        "📝 Anime subtitle completion: ${englishSubtitleSources.size}/$TARGET_ENGLISH_SUBTITLE_SOURCES " +
+                        "📝 Anime subtitle completion: ${englishSubtitleSources.size}/$ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES " +
                             "English sources; querying ${completionSources.size} more " +
                             "(${completionSources.joinToString { it.id }})"
                     )
@@ -782,7 +782,7 @@ class StreamPlayAnime : MainAPI() {
                     )
                     val completionController = EarlySatisfactionController(
                         completionConfig,
-                        extraCondition = { englishSubtitleSources.size >= TARGET_ENGLISH_SUBTITLE_SOURCES }
+                        extraCondition = { englishSubtitleSources.size >= ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES }
                     )
 
                     SpeculativePipeliner.executePipelined(

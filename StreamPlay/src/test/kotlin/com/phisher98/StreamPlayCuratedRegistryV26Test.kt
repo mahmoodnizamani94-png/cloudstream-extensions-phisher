@@ -1153,4 +1153,224 @@ class StreamPlayCuratedRegistryV26Test {
         assertFalse("Null dates must never be upcoming", isUpcoming(null))
         assertTrue("Far future dates must still be marked upcoming", isUpcoming("2099-12-31"))
     }
+
+    @Test
+    fun testVidLinkDashMpdParsingAndWidescreen720pExtraction() {
+        val mpdXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT2H28M7.5S">
+              <Period id="0" start="PT0.0S">
+                <AdaptationSet id="0" contentType="video">
+                  <Representation id="0" mimeType="video/mp4" codecs="hev1.1.6.L120.90" bandwidth="1592836" width="1920" height="1080" />
+                  <Representation id="1" mimeType="video/mp4" codecs="hev1.1.6.L120.90" bandwidth="882679" width="1920" height="1080" />
+                  <Representation id="2" mimeType="video/mp4" codecs="hev1.1.6.L93.90" bandwidth="1008565" width="1720" height="720" />
+                  <Representation id="3" mimeType="video/mp4" codecs="hev1.1.6.L93.90" bandwidth="558380" width="1720" height="720" />
+                  <Representation id="4" mimeType="video/mp4" codecs="hev1.1.6.L90.90" bandwidth="233591" width="854" height="480" />
+                </AdaptationSet>
+                <AdaptationSet id="1" contentType="audio" lang="eng">
+                  <Representation id="5" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="128000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+
+        val masterUrl = "https://sacdn.hakunaymatata.com/dash/movie_test/index_web.mpd"
+        val variants = StreamPlayExtractor.parseDashMasterVariants(masterUrl, mpdXml)
+        assertEquals("Must extract 480p, 720p, and 1080p unique tiers", 3, variants.size)
+
+        val v720 = variants.firstOrNull { it.quality == Qualities.P720.value }
+        assertNotNull("720p variant must be extracted from 1720x720 DASH representation", v720)
+        assertEquals("$masterUrl#vid=720p", v720!!.url)
+        assertEquals(558380L, v720.bandwidthBps)
+        assertTrue("720p estimated size must be positive and include audio", (v720.estimatedSizeMb ?: 0) in 700..760)
+
+        val v1080 = variants.firstOrNull { it.quality == Qualities.P1080.value }
+        assertNotNull("1080p variant must be extracted", v1080)
+        assertEquals("$masterUrl#vid=1080p", v1080!!.url)
+        assertTrue("1080p estimated size must exceed 720p estimated size", (v1080.estimatedSizeMb ?: 0) > (v720.estimatedSizeMb ?: 0))
+    }
+
+    @Test
+    fun testVidLinkBcdnxwPreservesFilmboomRefererWhileBcdnAndSacdnStripReferer() {
+        val bcdnxwUrl = "https://bcdnxw.hakunaymatata.com/resource/abc123.mp4?Expires=1793973608"
+        val bcdnxwHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = mapOf(
+                "Referer" to "https://filmboom.top/",
+                "Origin" to "https://filmboom.top"
+            ),
+            url = bcdnxwUrl,
+            referer = "https://filmboom.top/",
+            linkType = ExtractorLinkType.VIDEO,
+            source = "Vidlink",
+            name = "Vidlink 720p"
+        )
+        assertEquals("https://filmboom.top/", bcdnxwHeaders["Referer"])
+        assertEquals("https://filmboom.top", bcdnxwHeaders["Origin"])
+        assertEquals(
+            "https://filmboom.top/",
+            StreamLinkOptimizer.getEffectiveReferer(
+                url = bcdnxwUrl,
+                referer = "https://filmboom.top/",
+                headers = bcdnxwHeaders,
+                source = "Vidlink",
+                name = "Vidlink 720p"
+            )
+        )
+
+        val sacdnUrl = "https://sacdn.hakunaymatata.com/dash/movie/index_web.mpd#vid=720p"
+        val sacdnHeaders = StreamLinkOptimizer.buildDownloadHeaders(
+            existingHeaders = mapOf(
+                "Cookie" to "CloudFront-Policy=abc;CloudFront-Signature=def",
+                "Referer" to "https://vidlink.pro/"
+            ),
+            url = sacdnUrl,
+            referer = "",
+            linkType = ExtractorLinkType.DASH,
+            source = "Vidlink",
+            name = "Vidlink DASH [720p]"
+        )
+        assertNull("sacdn must strip Referer", sacdnHeaders["Referer"])
+        assertNull("sacdn must strip Origin", sacdnHeaders["Origin"])
+        assertEquals("CloudFront-Policy=abc;CloudFront-Signature=def", sacdnHeaders["Cookie"])
+        assertEquals("", StreamLinkOptimizer.getEffectiveReferer(sacdnUrl, "", sacdnHeaders, "Vidlink", "Vidlink DASH [720p]"))
+    }
+
+    @Test
+    fun testConstantHeightAndConstantWidthWidescreenResolutionNormalization() {
+        // Constant-height widescreen (e.g. Gladiator II 1720x720, 1800x720, 2580x1080, 1200x480, 864x360)
+        assertEquals(Qualities.P720.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1720, 720, "v720.m3u8"))
+        assertEquals(Qualities.P720.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1800, 720, "v720.m3u8"))
+        assertEquals(Qualities.P1080.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(2580, 1080, "v1080.m3u8"))
+        assertEquals(Qualities.P480.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1200, 480, "v480.m3u8"))
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(864, 360, "v360.m3u8"))
+
+        // Constant-width widescreen (e.g. 1280x534, 1920x800, 854x356, 640x268)
+        assertEquals(Qualities.P720.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1280, 534, "v720.m3u8"))
+        assertEquals(Qualities.P1080.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(1920, 800, "v1080.m3u8"))
+        assertEquals(Qualities.P480.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(854, 356, "v480.m3u8"))
+        assertEquals(Qualities.P360.value, StreamPlayExtractor.normalizeHlsResolutionToQuality(640, 268, "v360.m3u8"))
+
+        // Text extraction for cinema widescreen dimensions
+        assertEquals(Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("Stream 1280x534"))
+        assertEquals(Qualities.P720.value, StreamLinkOptimizer.extractQualityFromText("Stream 1720x720"))
+        assertEquals(Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("Stream 1920x800"))
+        assertEquals(Qualities.P1080.value, StreamLinkOptimizer.extractQualityFromText("Stream 2580x1080"))
+    }
+
+    @Test
+    fun testAnimeTargetEnglishSubtitleSourcesContract() {
+        assertEquals("Movie/TV target English subtitle sources must remain 5", 5, TARGET_ENGLISH_SUBTITLE_SOURCES)
+        assertEquals("Anime target English subtitle sources must be 6 (5-6 distinct sources)", 6, ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES)
+    }
+
+    @Test
+    fun testEndToEndMovieTvAndAnime720pTopSourceHierarchy() {
+        // Movie/TV hierarchy when VidLink 720p comes from dash-hevc (.mpd#vid=720p) alongside direct 1080p
+        val vidlinkDash720 = createLink(
+            source = "Vidlink",
+            name = "Vidlink DASH [720p] [727 MB]",
+            url = "https://sacdn.hakunaymatata.com/dash/movie_27205/index_web.mpd#vid=720p",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.DASH
+        )
+        val meow720 = createLink(
+            source = "MeowTV",
+            name = "MeowTV English [720p] [690 MB]",
+            url = "https://img1.hscow.com/hls_mps/210544560/720/index_287.m3u8",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8
+        )
+        val vidlinkDirect1080 = createLink(
+            source = "Vidlink",
+            name = "Vidlink 1080p [2.56 GB]",
+            url = "https://bcdnxw.hakunaymatata.com/resource/1080.mp4",
+            quality = Qualities.P1080.value,
+            type = ExtractorLinkType.VIDEO
+        )
+        val cineby720 = createLink(
+            source = "Cineby",
+            name = "Cineby Yeti [720p] [650 MB]",
+            url = "https://sun.paleoak.top/file2/720.m3u8",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8
+        )
+        val cinesrc720 = createLink(
+            source = "CineSrc",
+            name = "CineSrc [720p] [640 MB]",
+            url = "https://nebula.bright67.online/hls2/720/master.txt",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8
+        )
+        val vidrift720 = createLink(
+            source = "VidRift",
+            name = "VidRift Direct [720p] [600 MB]",
+            url = "https://edge.reelvault.click/selfhost/720.m3u8",
+            quality = Qualities.P720.value,
+            type = ExtractorLinkType.M3U8
+        )
+
+        val movieSorted = listOf(vidrift720, cinesrc720, cineby720, vidlinkDirect1080, meow720, vidlinkDash720)
+            .sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+        assertEquals(
+            listOf(
+                "Vidlink DASH [720p] [727 MB]",
+                "MeowTV English [720p] [690 MB]",
+                "Vidlink 1080p [2.56 GB]",
+                "Cineby Yeti [720p] [650 MB]",
+                "CineSrc [720p] [640 MB]",
+                "VidRift Direct [720p] [600 MB]"
+            ),
+            movieSorted.map { it.name }
+        )
+
+        // Anime hierarchy: all top-tier 720p sources strictly beat all 1080p sources in exact chain order
+        fun createAnimeLink(source: String, name: String, url: String, quality: Int): ExtractorLink {
+            @Suppress("DEPRECATION")
+            return ExtractorLink(
+                source = source,
+                name = name,
+                url = url,
+                referer = "",
+                quality = quality,
+                type = ExtractorLinkType.M3U8,
+                headers = mapOf("X-StreamPlay-Anime" to "true")
+            )
+        }
+
+        val animeVidlink720 = createAnimeLink("Vidlink", "Vidlink [Sub] [Original] [720p] [220 MB]", "https://sacdn.hakunaymatata.com/dash/tv/index_web.mpd#vid=720p", Qualities.P720.value)
+        val animeCineby720 = createAnimeLink("Cineby", "Cineby [Sub] [Original] [720p] [210 MB]", "https://sun.paleoak.top/file2/720.m3u8", Qualities.P720.value)
+        val animeCineSrc720 = createAnimeLink("CineSrc", "CineSrc [Sub] [Original] [720p] [205 MB]", "https://nebula.bright67.online/hls2/720/master.txt", Qualities.P720.value)
+        val animeMegaPlay720 = createAnimeLink("MegaPlay", "MegaPlay [Sub] [Original] [720p] [200 MB]", "https://fetch.nexabloom.top/hls/720.m3u8", Qualities.P720.value)
+        val animeAniZone720 = createAnimeLink("AniZone", "AniZone [Sub] [Original] [720p] [195 MB]", "https://suzaku.xin-cdn.xyz/e/720.m3u8", Qualities.P720.value)
+        val animePahe720 = createAnimeLink("AnimePahe", "AnimePahe [Sub] [Original] [720p] [190 MB]", "https://uwucdn.top/e/720.m3u8", Qualities.P720.value)
+        val animeAnimex720 = createAnimeLink("Animex", "Animex [Sub] [Original] [720p] [185 MB]", "https://hls.krussdomi.com/e/720.m3u8", Qualities.P720.value)
+        val animeVidlink1080 = createAnimeLink("Vidlink", "Vidlink [Sub] [Original] [1080p] [420 MB]", "https://bcdn.hakunaymatata.com/bt/1080.mp4", Qualities.P1080.value)
+
+        val animeSorted = listOf(
+            animeVidlink1080,
+            animeAnimex720,
+            animePahe720,
+            animeAniZone720,
+            animeMegaPlay720,
+            animeCineSrc720,
+            animeCineby720,
+            animeVidlink720
+        ).sortedWith(StreamLinkOptimizer.STREAM_PRIORITY_COMPARATOR)
+
+        assertEquals(
+            listOf(
+                "Vidlink",
+                "Cineby",
+                "CineSrc",
+                "MegaPlay",
+                "AniZone",
+                "AnimePahe",
+                "Animex",
+                "Vidlink"
+            ),
+            animeSorted.map { it.source }
+        )
+        assertEquals(Qualities.P720.value, animeSorted.first().quality)
+        assertEquals(Qualities.P1080.value, animeSorted.last().quality)
+    }
 }

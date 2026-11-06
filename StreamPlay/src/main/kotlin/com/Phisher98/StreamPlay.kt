@@ -67,6 +67,14 @@ const val TOP_TIER_BOOST_THRESHOLD = 85f
 const val TARGET_ENGLISH_SUBTITLE_SOURCES = 5
 
 /**
+ * How many distinct high-quality English subtitle sources the extension surfaces per Anime episode
+ * (5-6 distinct sources across AniZone, MegaPlay, KickAssAnime, Animex/ZokoAnime, CineSrc, Cineby,
+ * and VidLink so at least one English subtitle is guaranteed to be frame-synced with the Japanese
+ * original audio release).
+ */
+const val ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES = 6
+
+/**
  * Upper bound on how many top-tier providers the subtitle completion phase re-queries.
  *
  * Only providers that have not already delivered an English subtitle are eligible, so this caps the
@@ -1053,7 +1061,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             minQualityStreams = 6,
             qualityThreshold = Qualities.P720.value,
             highBitrateThresholdKbps = 2500,
-            minSubtitles = 1,
+            minSubtitles = if (res.isAnime) ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES else 1,
             satisfyWithOneLinkIfSubsFound = false,
             requireSubtitles = true,
             requireDualQualities = false,
@@ -1565,10 +1573,15 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             // In Default mode, the app downloads one English subtitle per source so that at least one
             // is in sync with the release on disk. In Urdu mode, we ensure Urdu subtitle sources (plus
             // English donor candidates if human Urdu is scarce) have had a chance to complete.
+            val targetEnglishSubtitleSources = if (res.isAnime) {
+                ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES
+            } else {
+                TARGET_ENGLISH_SUBTITLE_SOURCES
+            }
             val needsSubtitleCompletion = if (urduMode) {
                 urduSubtitleSources.size < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
             } else {
-                englishSubtitleSources.size < TARGET_ENGLISH_SUBTITLE_SOURCES
+                englishSubtitleSources.size < targetEnglishSubtitleSources
             }
             if (needsSubtitleCompletion) {
                 val retryableHarvests = subtitleHarvestTasks.filter { task ->
@@ -1589,7 +1602,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                 if (retryableHarvests.isNotEmpty() || completionProviders.isNotEmpty()) {
                     Log.d(
                         TAG,
-                        "📝 Subtitle completion: ${englishSubtitleSources.size}/$TARGET_ENGLISH_SUBTITLE_SOURCES " +
+                        "📝 Subtitle completion: ${englishSubtitleSources.size}/$targetEnglishSubtitleSources " +
                             "English sources, ${urduSubtitleSources.size}/${UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES} Urdu sources; " +
                             "querying ${retryableHarvests.size + completionProviders.size} more " +
                             "(${(retryableHarvests.map { it.providerId } + completionProviders.map { it.id }).joinToString()})"
@@ -1618,7 +1631,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                             if (urduMode) {
                                 urduSubtitleSources.size >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
                             } else {
-                                englishSubtitleSources.size >= TARGET_ENGLISH_SUBTITLE_SOURCES
+                                englishSubtitleSources.size >= targetEnglishSubtitleSources
                             }
                         }
                     )

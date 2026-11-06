@@ -389,6 +389,8 @@ data class VidlinkStream(
     @SerializedName("id") val id: String? = null,
     @SerializedName("type") val type: String? = null,
     @SerializedName("playlist") val playlist: String? = null,
+    @SerializedName("playlistHeaders") val playlistHeaders: Map<String, String>? = null,
+    @SerializedName("requiresProxy") val requiresProxy: Boolean? = null,
     @SerializedName("qualities") val qualities: Map<String, VidlinkQuality>? = null,
     @SerializedName("captions") val captions: List<VidlinkCaption>? = null
 )

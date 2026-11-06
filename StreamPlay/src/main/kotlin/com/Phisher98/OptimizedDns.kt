@@ -376,7 +376,9 @@ open class OptimizedDns(
             "kwik.si",
             "uwucdn.top",
             "owocdn.top",
-            "bcdn.hakunaymatata.com"
+            "bcdn.hakunaymatata.com",
+            "sacdn.hakunaymatata.com",
+            "bcdnxw.hakunaymatata.com"
         )
 
         private val bootstrapClient: OkHttpClient by lazy {

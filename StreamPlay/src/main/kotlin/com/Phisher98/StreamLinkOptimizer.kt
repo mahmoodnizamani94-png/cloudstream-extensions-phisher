@@ -172,14 +172,14 @@ object StreamLinkOptimizer {
     private val QUALITY_EXPLICIT_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(2160|1440|1080|720|576|540|480|360)\s*[pP]?(?:[^a-zA-Z0-9]|$)""")
     private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|3840[xX]2160|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|2560[xX]1440|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
-    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX]1080|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
+    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX](?:79[6-9]|8\d{2}|9\d{2}|10[0-7]\d|1080)|25[689]\d[xX]1080|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     // Bare "HD"/"SD" are deliberately absent: they are marketing grades, not resolutions, and
     // mapping them to 720p/480p is exactly how a 360p file ends up labelled as 720p. Only an
     // explicit numeric height (handled by QUALITY_EXPLICIT_REGEX) or an exact pixel dimension
     // proves a resolution, and FHD/QHD/4K are kept because those acronyms have a single meaning.
-    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX]720)(?:[^a-zA-Z0-9]|$)""")
-    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(854[xX]480)(?:[^a-zA-Z0-9]|$)""")
-    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX]360)(?:[^a-zA-Z0-9]|$)""")
+    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX](?:5[2-9]\d|6\d{2}|7[01]\d|720)|172[08][xX]720|1800[xX]720)(?:[^a-zA-Z0-9]|$)""")
+    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(85[248][xX](?:35[2-9]|36\d|480)|1200[xX]480)(?:[^a-zA-Z0-9]|$)""")
+    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX](?:26[4-9]|27\d|360)|864[xX]360)(?:[^a-zA-Z0-9]|$)""")
     private val EXPLICIT_QUALITY_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:quality|res|resolution|height|q)=([0-9]{3,4})[pP]?(?:&|$)""")
     private val EMBEDDED_MEDIA_URL_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:file|url|path|src)=([^&]+)""")
 
@@ -716,8 +716,21 @@ object StreamLinkOptimizer {
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
             }
             isVidlink -> {
-                headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
-                headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
+                if (lowerUrl.contains("bcdnxw.hakunaymatata.com")) {
+                    val suppliedRef = headers.entries.firstOrNull {
+                        it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                    }?.value ?: referer?.takeIf { it.isNotBlank() }
+                    val effRef = if (suppliedRef != null && suppliedRef.startsWith("http", ignoreCase = true)) {
+                        suppliedRef
+                    } else {
+                        "https://filmboom.top/"
+                    }
+                    headers[HEADER_REFERER] = effRef
+                    headers[HEADER_ORIGIN] = getHostUrl(effRef) ?: "https://filmboom.top"
+                } else {
+                    headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
+                    headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
+                }
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -1308,7 +1321,20 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.net")
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
-            isVidlink -> ""
+            isVidlink -> {
+                if (lowerUrl.contains("bcdnxw.hakunaymatata.com")) {
+                    val suppliedRef = headers.entries.firstOrNull {
+                        it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                    }?.value ?: referer?.takeIf { it.isNotBlank() }
+                    if (suppliedRef != null && suppliedRef.startsWith("http", ignoreCase = true)) {
+                        suppliedRef
+                    } else {
+                        "https://filmboom.top/"
+                    }
+                } else {
+                    ""
+                }
+            }
             isMeowTv -> {
                 val supplied = headers.entries.firstOrNull {
                     it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
@@ -2082,9 +2108,11 @@ object StreamLinkOptimizer {
                 .trim()
 
             val isM3u8 = (streamType == ExtractorLinkType.M3U8) || url.contains(".m3u8", ignoreCase = true)
+            val isDash = (streamType == ExtractorLinkType.DASH) || url.contains(".mpd", ignoreCase = true)
+            val isAdaptive = isM3u8 || isDash
             val detectedQ = extractQualityFromText(baseName, url)
 
-            val (finalQuality, finalName) = if (isM3u8 && (detectedQ <= 0 || detectedQ == Qualities.Unknown.value)) {
+            val (finalQuality, finalName) = if (isAdaptive && (detectedQ <= 0 || detectedQ == Qualities.Unknown.value)) {
                 val autoName = if (cleanBaseName.contains("[Auto]", ignoreCase = true)) cleanBaseName else "$cleanBaseName [Auto]"
                 Qualities.Unknown.value to autoName
             } else {
@@ -2114,7 +2142,11 @@ object StreamLinkOptimizer {
                     url = url,
                     referer = referer,
                     quality = finalQuality,
-                    type = streamType ?: (if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO),
+                    type = streamType ?: when {
+                        isDash -> ExtractorLinkType.DASH
+                        isM3u8 -> ExtractorLinkType.M3U8
+                        else -> ExtractorLinkType.VIDEO
+                    },
                     headers = headers,
                     extractorData = mergeExtractorData(null)
                 )
@@ -2361,8 +2393,9 @@ object StreamLinkOptimizer {
     fun isBetterThan(
         candidate: ExtractorLink,
         current: ExtractorLink,
-        isAnime: Boolean = false
+        isAnime: Boolean = isAnimeStream(candidate) || isAnimeStream(current)
     ): Boolean {
+        val effectiveIsAnime = isAnime || isAnimeStream(candidate) || isAnimeStream(current)
         val sourceRank1 = getSourcePriorityRank(candidate)
         val sourceRank2 = getSourcePriorityRank(current)
         val rawQ1 = getEffectiveQuality(candidate)
@@ -2388,7 +2421,7 @@ object StreamLinkOptimizer {
             isBelow720 = isBelow720_1,
             isAbove1080 = isAbove1080_1,
             link = candidate,
-            isAnime = isAnime
+            isAnime = effectiveIsAnime
         )
         val tierMult2 = getPrimaryStreamTierMultiplier(
             sourceRank = sourceRank2,
@@ -2398,7 +2431,7 @@ object StreamLinkOptimizer {
             isBelow720 = isBelow720_2,
             isAbove1080 = isAbove1080_2,
             link = current,
-            isAnime = isAnime
+            isAnime = effectiveIsAnime
         )
         if (tierMult1 != tierMult2) {
             return tierMult1 > tierMult2
@@ -2802,8 +2835,9 @@ object StreamLinkOptimizer {
     @JvmOverloads
     fun getStreamCompositeScore(
         link: ExtractorLink,
-        isAnime: Boolean = false
+        isAnime: Boolean = isAnimeStream(link)
     ): Float {
+        val effectiveIsAnime = isAnime || isAnimeStream(link)
         val sourceRank = getSourcePriorityRank(link)
         val rawQuality = getEffectiveQuality(link)
         val isUnknown = isUnknownQuality(link, rawQuality)
@@ -2829,7 +2863,7 @@ object StreamLinkOptimizer {
             isBelow720 = isBelow720,
             isAbove1080 = isAbove1080,
             link = link,
-            isAnime = isAnime
+            isAnime = effectiveIsAnime
         )
         val verifiedSizeBytes = parseSizeBytes(link.name)?.takeIf { it in 1L..MAX_REASONABLE_STREAM_BYTES }
         val isDirect = isDirectMp4Stream(link)
