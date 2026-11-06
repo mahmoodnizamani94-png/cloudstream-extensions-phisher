@@ -1027,6 +1027,8 @@ class SuperStreamUrduSubtitleTest {
             "برادر", "مرد", "بچے", "کام", "نہیں", "پھر", "پہلے", "رہا", "رہی", "رہے", "ہوا",
             "یہ", "کے", "کا", "کو", "کی", "سے", "اور", "مگر", "لیکن", "براہ",
             "طریق", "عین", "غیر", "بین", "بیت", "یوم", "فوق", "مع", "ما", "چون",
+            "ہمین", "کند", "ہست", "ہن", "ہمہ", "بلہ", "تلک",
+            "ہن",
         )
         for (token in faTokens) {
             assertFalse("fa/ar token must not BE an Urdu word: $token", token in urduVocabulary)
@@ -1068,8 +1070,10 @@ class SuperStreamUrduSubtitleTest {
             }
         )
         for ((probeIdx, srt) in probes.withIndex()) {
+            val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
             val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
             server.createContext("/probe.srt") { exchange ->
+                fetchCount.incrementAndGet()
                 val bytes = srt.toByteArray(Charsets.UTF_8)
                 exchange.sendResponseHeaders(200, bytes.size.toLong())
                 exchange.responseBody.use { it.write(bytes) }
@@ -1080,6 +1084,11 @@ class SuperStreamUrduSubtitleTest {
                 val url = "http://127.0.0.1:${server.address.port}/probe.srt?probe=$probeIdx&run=${System.nanoTime()}"
                 val result = SuperStreamExtractor.materializeNormalizedUrduSubtitle(url = url, sourceTag = "pipeline-probe")
                 assertNull("Pipeline probe #$probeIdx must be REJECTED through materialize", result)
+                assertEquals(
+                    "The pipeline must have fetched the probe content (non-vacuous rejection)",
+                    1,
+                    fetchCount.get()
+                )
             } finally {
                 server.stop(0)
                 SuperStreamExtractor.clearCachesForTest()
