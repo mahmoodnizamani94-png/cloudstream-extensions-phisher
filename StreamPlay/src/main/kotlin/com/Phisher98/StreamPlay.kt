@@ -1678,7 +1678,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             // soon as `humanUrduCount >= 2`.
             val humanUrduCountBeforePhase3 = countVerifiedHumanUrduSources()
             val needsSubtitleCompletion = if (urduMode) {
-                humanUrduCountBeforePhase3 < 2
+                humanUrduCountBeforePhase3 < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
             } else {
                 englishSubtitleSources.size < TARGET_ENGLISH_SUBTITLE_SOURCES
             }
@@ -1715,7 +1715,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     Log.d(
                         TAG,
                         "📝 Subtitle completion: ${englishSubtitleSources.size}/$TARGET_ENGLISH_SUBTITLE_SOURCES " +
-                            "English sources, $humanUrduCountBeforePhase3/2 verified human Urdu sources; " +
+                            "English sources, $humanUrduCountBeforePhase3/${UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES} verified human Urdu sources; " +
                             "querying ${retryableHarvests.size + completionProviders.size} more " +
                             "(${(retryableHarvests.map { it.providerId } + completionProviders.map { it.id }).joinToString()})"
                     )
@@ -1741,7 +1741,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         completionConfig,
                         extraCondition = {
                             if (urduMode) {
-                                countVerifiedHumanUrduSources() >= 2
+                                countVerifiedHumanUrduSources() >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
                             } else {
                                 englishSubtitleSources.size >= TARGET_ENGLISH_SUBTITLE_SOURCES
                             }

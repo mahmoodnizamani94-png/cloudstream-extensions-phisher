@@ -1002,7 +1002,7 @@ class StreamPlayAnime : MainAPI() {
                             "subtitles from ${englishSubtitleSources.size} sources"
                     )
                 }
-            } else if (urduMode && humanUrduBeforeCompletion < 2) {
+            } else if (urduMode && humanUrduBeforeCompletion < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
                 val retryUrduSources = subtitleOnlySources.filter { source ->
                     source.id != "kickassanime" &&
                         source.id != "subtitlecat" &&
@@ -1027,7 +1027,7 @@ class StreamPlayAnime : MainAPI() {
                     )
                     val urduCompletionController = EarlySatisfactionController(
                         urduCompletionConfig,
-                        extraCondition = { countVerifiedHumanUrduSources() >= 2 }
+                        extraCondition = { countVerifiedHumanUrduSources() >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES }
                     )
                     SpeculativePipeliner.executePipelined(
                         tasks = retryUrduSources.map { taskFor(it).copy(taskTimeoutMs = 4_500L) },

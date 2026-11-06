@@ -419,7 +419,7 @@ class StreamPlayStremioCatelog(
             controller = earlyController
         )
 
-        if (urduMode && countVerifiedHumanUrduSources() < 2) {
+        if (urduMode && countVerifiedHumanUrduSources() < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
             val retryUrduTasks = tasks.filter { task ->
                 val canonicalTaskId = UrduSubtitleEngine.canonicalUrduSourceKey(task.providerId) ?: task.providerId.lowercase()
                 !task.isVideo &&
@@ -444,7 +444,7 @@ class StreamPlayStremioCatelog(
                 )
                 val urduCompletionController = EarlySatisfactionController(
                     urduCompletionConfig,
-                    extraCondition = { countVerifiedHumanUrduSources() >= 2 }
+                    extraCondition = { countVerifiedHumanUrduSources() >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES }
                 )
                 SpeculativePipeliner.executePipelined(
                     tasks = retryUrduTasks,

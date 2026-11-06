@@ -140,7 +140,7 @@ class SettingsFragment(
                 )
                 subtitleModeLabel.text = "Subtitle Mode: Urdu (\u0627\u0631\u062f\u0648) • 8 Verified Urdu Sources + Spoken Urdu AI"
                 subtitleModeDesc?.text =
-                    "Active: 8 Verified Urdu Sources + Spoken Urdu AI (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI)"
+                    "Active: 8 Verified Urdu Sources + Spoken Urdu AI (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat • Contextual AI)"
                 subtitleModeStatusBadge?.apply {
                     text = "URDU SOTA ACTIVE"
                     setTextColor(Color.parseColor("#34D399"))

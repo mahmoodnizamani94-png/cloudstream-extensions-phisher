@@ -80,7 +80,7 @@ object UrduSubtitleEngine {
     const val SUBTITLE_MODE_SYS_PROP = "cloudstream.subtitle.mode"
     const val MODE_DEFAULT = "default"
     const val MODE_URDU = "urdu"
-    const val TARGET_URDU_SUBTITLE_SOURCES = 3
+    const val TARGET_URDU_SUBTITLE_SOURCES = 2
     const val TOTAL_URDU_SOTA_SOURCES = 8
 
     data class UrduSourceDescriptor(
@@ -679,8 +679,9 @@ object UrduSubtitleEngine {
      * Speculative Detail-Page Pre-Warming Entry Point (`prewarmUrduSubtitlesAsync`):
      * Uses a bounded background `CoroutineScope(SupervisorJob() + Dispatchers.IO)` and a
      * `ConcurrentHashMap<String, Long>` deduplication guard (10-minute cooldown per media key)
-     * to speculatively warm the SubDL / SubSense / YTS-Subs Urdu subtitle cache in the background
-     * when the user opens a Movie/Series detail page (`load()`) while `isUrduMode()` is active.
+     * to speculatively warm the SubDL, SubSense, OpenSubtitles, and YTS-Subs (movies) Urdu subtitle
+     * caches in the background when the user opens a Movie/Series detail page (`load()`) while
+     * `isUrduMode()` is active.
      */
     fun prewarmUrduSubtitlesAsync(
         imdbId: String?,

@@ -91,7 +91,7 @@
                         android:id="@+id/subtitle_mode_desc"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="8 Verified Urdu Sources (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI)"
+                        android:text="8 Verified Urdu Sources (SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat) + Spoken Urdu AI"
                         android:textSize="13sp"
                         android:textColor="#CBD5E1"
                         android:layout_marginTop="4dp" />
@@ -155,7 +155,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
-                        android:text="✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • Contextual AI"
+                        android:text="✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat • Contextual AI"
                         android:textColor="#94A3B8"
                         android:textSize="11sp" />
                 </LinearLayout>
