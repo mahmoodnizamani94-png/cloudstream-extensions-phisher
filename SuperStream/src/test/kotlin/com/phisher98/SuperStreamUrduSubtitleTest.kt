@@ -1377,6 +1377,9 @@ class SuperStreamUrduSubtitleTest {
             "یوم",
             "یہ",
         )
+        // Known formal limit (documented): do-chashmi (ھ) respellings of purged Persian tokens
+        // are not vocabulary-lockable — harmless by construction (dual counting makes any such
+        // cue evidence-bearing).
         for (token in faTokens) {
             assertFalse("fa/ar token must not BE an Urdu word: $token", token in urduVocabulary)
             assertFalse(

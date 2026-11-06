@@ -111,6 +111,10 @@ internal val SUPERSTREAM_PERSIAN_ZWNJ_VERB_PREFIX_REGEX =
 internal val SUPERSTREAM_PERSIAN_YEH_RAW_HEH_REGEX =
     Regex("""(?:^|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])\u06CC\u0647(?=$|[\s\u200F\u200E،,.!?؟;:'\(\)\[\]\-۔…])""")
 internal val SUPERSTREAM_ARABIC_ORTHOGRAPHY_REGEX = Regex("""[\u0623\u0625\u0629]""")
+    // Deliberate asymmetric-frequency keeps (acknowledged): مرحبا (common Urdu greeting),
+    // نیست (نیست و نابود idiom), and فردا (formal Urdu) remain — Persian-recall value
+    // outweighs their rare Urdu-register leaning; the dominance/share floors absorb the
+    // rare cue in realistic dialogue (probe-verified).
 internal val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX = Regex(
     """(?:^|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])(آره|آمدم|آمدی|آنجا|آنها|أبدا|أحيانا|أسبوع|أمس|أن|أنا|أنت|أنتم|أو|أي|أيضا|أين|إله|إلى|إن|اتاق|است|الآن|الان|التي|الذي|الذين|امرأة|امروز|انقدر|اون|اونا|اونو|ایشان|این|اینجا|اینو|باشد|باشه|باید|برای|بشه|بفرمایید|بودی|تكون|تموم|توی|حقا|حياة|خونه|دارد|دارم|دارند|داره|داری|داریم|دخترم|دقیقه|دون|دیدم|دیدی|دیروز|دیگه|ذلك|رأس|ربما|رجل|رفتم|رفتی|ساعة|سنة|سوف|سيارة|شدند|شما|شود|عند|عندما|غدا|غدًا|فردا|قرمز|قليلا|كانت|كانوا|كثيرا|كذلك|كلمة|لكن|لم|لماذا|لن|ليس|ليست|ليلة|ماذا|مدينة|مرحبا|مرحبًا|مرسی|منذ|منم|می\u200C|میبینمت|میخواد|میخوام|میخوای|میدونم|میشه|ناس|نحن|نمی|نمی\u200C|نمیدونم|نمیشه|نیست|های|هایی|هذا|هذه|هستم|هستند|هستی|هنا|هناك|هیچ|يد|يكون|پسرم|چطور|چقدر|چیزی|چیه|کجا|کدام|کردم|کردند|کردی|کردیم|کنم|کنند|کنی|کنیم|گفتم|گفتند|گفتی)(?=$|[\s\u200F\u200E،,.!?;:'\(\)۔؟…])"""
 )
@@ -1846,8 +1850,11 @@ object SuperStreamExtractor : SuperStream() {
             }
             val normalized = normalizeUrduSubtitleText(decoded)
             val parsedCues = parseSuperStreamCues(normalized)
-            // Full cue-list gate on the normalized text (parity with StreamPlay's second stage —
-            // the String overload is aggregate-only and skips the per-cue dominance/share rules).
+            // Full cue-list gate on the normalized text (parity with StreamPlay's second stage).
+            // For parseable content the String overload already delegated to the same cue-list
+            // gate; parsing explicitly and reusing the parsed cues makes the second stage
+            // explicit here and strictly stronger for unparseable-normalized content (empty cue
+            // list now rejects deterministically instead of falling back to the aggregate scan).
             if (!containsVerifiedUrduScript(parsedCues) || isBrokenSmtUrdu(parsedCues)) {
                 deferred.complete(null)
                 return@withContext null
