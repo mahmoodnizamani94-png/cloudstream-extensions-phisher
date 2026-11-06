@@ -1256,7 +1256,8 @@ object StreamPlayExtractor : StreamPlay() {
     /**
      * Resolves a provider quality label without inventing a resolution.
      *
-     * Exact pixel dimensions are read from their **height** (`1280x720` is 720p, never 1280p),
+     * Exact pixel dimensions are classified through the shared [ResolutionTruth] bands
+     * (`1280x720` is 720p, never 1280p; `1920x800` letterbox is 1080p; `1280x534` is 720p),
      * known numeric heights are normalized, and only the unambiguous acronyms `FHD`/`QHD`/`2K`/
      * `4K`/`UHD` are accepted. Marketing grades such as `HD`, `SD` and `high` stay Unknown so the
      * host measures the media instead of inheriting an inflated label.
@@ -1266,8 +1267,10 @@ object StreamPlayExtractor : StreamPlay() {
         if (label.isBlank() || label.equals("auto", true) || label.equals("hls", true) || label.equals("default", true)) {
             return Qualities.Unknown.value
         }
-        QUALITY_DIMENSION_REGEX.find(label)?.groupValues?.getOrNull(2)?.toIntOrNull()?.let { height ->
-            if (height in 144..2160) return height
+        QUALITY_DIMENSION_REGEX.find(label)?.let { dimensionMatch ->
+            val width = dimensionMatch.groupValues[1].toIntOrNull()
+            val height = dimensionMatch.groupValues[2].toIntOrNull()
+            ResolutionTruth.classifyDimensions(width, height).takeIf { it > Qualities.Unknown.value }?.let { return it }
         }
         QUALITY_KNOWN_HEIGHT_REGEX.find(label)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { height ->
             return when (height) {
@@ -2635,9 +2638,10 @@ object StreamPlayExtractor : StreamPlay() {
         if (queries.isEmpty()) return null
         val cacheKey = "${queries.joinToString("|") { it.lowercase(Locale.ROOT) }}|${year ?: 0}|$episodeNumber|$isMovie"
         aniZoneEpisodePlayerCache.get(cacheKey)?.let { return it }
-        // SingleFlight coalescing: concurrent callers share one resolution; a cancelled or failed
-        // leader hands the flight to the next waiter (no poisoned false-null), and failures are
-        // never written into the TTL cache so the next call re-resolves.
+        // SingleFlight coalescing: concurrent callers share one resolution. A cancelled leader
+        // hands the flight to the next waiter (no poisoned false-null); a FAILED leader records
+        // the failure and every waiter receives it via getOrThrow — either way failures are
+        // never written into the TTL cache, so the next call re-resolves.
         return aniZoneEpisodePlayerSingleFlight.execute(cacheKey) {
             aniZoneEpisodePlayerCache.get(cacheKey)?.let { return@execute it }
             var hit: AniZoneSearchHit? = null
@@ -6685,27 +6689,25 @@ object StreamPlayExtractor : StreamPlay() {
             ?.sum()
             ?.takeIf { it > 0.0 }
         ?: run {
-            // Attribute-order independent: match the SegmentTemplate TAG first, then locate
-            // `timescale` and `duration` anywhere inside it (`duration` before `timescale` in
-            // real MPDs must not defeat the fallback).
-            val templateTag = DASH_SEGMENT_TEMPLATE_TAG_REGEX.findAll(manifestText)
-                .firstOrNull {
-                    DASH_TIMESCALE_ATTR_REGEX.find(it.groupValues[1]) != null &&
-                        DASH_SEGMENT_DURATION_ATTR_REGEX.find(it.groupValues[1]) != null
-                } ?: return@run null
-            val timescale = DASH_TIMESCALE_ATTR_REGEX.find(templateTag.groupValues[1])
-                ?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: return@run null
-            val segDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(templateTag.groupValues[1])
-                ?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: return@run null
-            // Repeat counts are summed per SegmentTimeline and the LARGEST timeline (the video
-            // ladder's) drives the estimate — summing `<S>` entries across every audio + video
-            // timeline in the MPD would multiply the duration.
-            val segmentCount = DASH_SEGMENT_TIMELINE_REGEX.findAll(manifestText)
-                .maxOfOrNull { timeline ->
-                    DASH_SEGMENT_ENTRY_REGEX.findAll(timeline.groupValues[1])
-                        .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
-                }?.takeIf { it > 0 } ?: return@run null
-            (segmentCount * segDuration / timescale.toDouble()).takeIf { it > 0.0 }
+            // Fully scoped SegmentTemplate pairing: each template's `timescale`/`duration`
+            // (attribute-order independent) is paired with the SegmentTimeline in its OWN scope
+            // (up to the next `<SegmentTemplate>`), so an audio template declared first can never
+            // lend its timing to the video ladder. The video ladder wins via the max duration
+            // (the most-segmented timeline), which is the size-dominant representation.
+            var bestDurationSec = 0.0
+            val templateMatches = DASH_SEGMENT_TEMPLATE_TAG_REGEX.findAll(manifestText).toList()
+            for ((index, template) in templateMatches.withIndex()) {
+                val attrs = template.groupValues[1]
+                val timescale = DASH_TIMESCALE_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: continue
+                val segDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 } ?: continue
+                val scopeEnd = templateMatches.getOrNull(index + 1)?.range?.first ?: manifestText.length
+                val scopedTimeline = DASH_SEGMENT_TIMELINE_REGEX.find(manifestText.substring(template.range.last + 1, scopeEnd)) ?: continue
+                val segmentCount = DASH_SEGMENT_ENTRY_REGEX.findAll(scopedTimeline.groupValues[1])
+                    .sumOf { (it.groupValues[1].toLongOrNull() ?: 0L) + 1L }
+                    .takeIf { it > 0 } ?: continue
+                bestDurationSec = maxOf(bestDurationSec, segmentCount * segDuration / timescale.toDouble())
+            }
+            bestDurationSec.takeIf { it > 0.0 }
         }
         val effectiveDurationSec = mpdDurationSec
             ?: if (durationHintSeconds > 0.0) durationHintSeconds else HLS_SIZE_HINT_SECONDS

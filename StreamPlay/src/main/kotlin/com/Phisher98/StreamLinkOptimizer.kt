@@ -1802,8 +1802,8 @@ object StreamLinkOptimizer {
         for (m in DIMENSION_PAIR_REGEX.findAll(text)) {
             val w = m.groupValues[1].toIntOrNull() ?: continue
             val h = m.groupValues[2].toIntOrNull() ?: continue
-            // `\d{3,4}` guarantees both dimensions are >= 100; only implausible giants are skipped.
-            if (maxOf(w, h) > 4320) continue
+            // `\d{3,4}` bounds both dimensions to 100..9999; every regex match is a plausible
+            // dimension claim and ResolutionTruth classifies it honestly.
             val q = ResolutionTruth.classifyDimensions(w, h)
             if (q > 0 && q != Qualities.Unknown.value && q > best) best = q
         }
@@ -2434,6 +2434,16 @@ object StreamLinkOptimizer {
         if (tierMult1 != tierMult2) {
             return tierMult1 > tierMult2
         }
+        if (tierMult1 == 0 && tierMult2 == 0) {
+            // Secondary bucket (tier 0): the AGENTS.md fallback ladder is resolution-first
+            // (720p -> 1080p -> 480p -> 360p -> Unknown -> 2160p), so quality decides before
+            // source rank. Top-tier pairs keep rank before quality below.
+            val secScore1 = getQualityPriorityScore(q1)
+            val secScore2 = getQualityPriorityScore(q2)
+            if (secScore1 != secScore2) {
+                return secScore1 > secScore2
+            }
+        }
         if (sourceRank1 != sourceRank2) {
             return sourceRank1 > sourceRank2
         }
@@ -2785,9 +2795,9 @@ object StreamLinkOptimizer {
      *    - Lower SD (e.g. 360p, 240p) -> Score 5000 + quality (e.g. 360p = 5360, 240p = 5240)
      * 4. Above 1080p (Tier 4: 1440p, 2160p/4K, 4320p/8K - Priority #4) -> Score 4000 - (quality - 1080) [clamped to min 1000]
      *    (1440p = 3640, 2160p/4K = 2920)
-     * 5. Unknown -> Score 0
+     * 5. Unknown -> Score 4500 (AGENTS.md §1 ladder: Unknown outranks 2160p inside tier #6)
      *
-     * Strict User Monotonicity: 720p > 1080p > below 720p (480p > 576p > 360p > 240p) > above 1080p (1440p > 4K) > Unknown
+     * Strict User Monotonicity: 720p > 1080p > below 720p (480p > 576p > 360p > 240p) > Unknown > above 1080p (1440p > 4K)
      */
     fun getQualityPriorityScore(quality: Int): Int {
         return when {
@@ -2956,7 +2966,7 @@ object StreamLinkOptimizer {
                 }
                 else -> 0f
             }
-            secQualityTerm + laneBonus
+            secQualityTerm + (sourceRank * 1f) + laneBonus
         }
 
         val effectiveTiebreaker = if (sourceRank == VIDRIFT_SOURCE_RANK || verifiedSizeBytes != null) 0f else tiebreaker

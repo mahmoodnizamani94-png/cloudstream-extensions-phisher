@@ -315,6 +315,52 @@ class SuperStreamOptimizerParityTest {
     }
 
     @Test
+    fun testSecondaryBucketIsResolutionFirstAndUnknownOutranks2160p() {
+        // AGENTS.md §1.6 fallback ladder: within the secondary bucket (tierMultiplier == 0) the
+        // ordering is resolution-first (720p -> 1080p -> 480p -> ... -> Unknown -> 2160p), so a
+        // lower-ranked source's 720p mirror outranks a higher-ranked source's 480p.
+        fun secondaryLink(source: String, quality: Int): ExtractorLink {
+            val tag = when (quality) {
+                Qualities.P720.value -> "720p"
+                Qualities.P480.value -> "480p"
+                Qualities.P2160.value -> "4K"
+                else -> "Auto"
+            }
+            return createSourceLink(
+                source = source,
+                name = "$source [$tag]",
+                url = "https://cdn.example/${source.lowercase()}/$quality.m3u8",
+                quality = quality,
+                type = ExtractorLinkType.M3U8
+            )
+        }
+
+        val showflix720 = secondaryLink("ShowFlix", Qualities.P720.value)
+        val moviebox480 = secondaryLink("MovieBox", Qualities.P480.value)
+        assertTrue(
+            "ShowFlix 720p must outrank MovieBox 480p inside the secondary bucket (AGENTS.md ladder)",
+            StreamLinkOptimizer.isBetterThan(showflix720, moviebox480)
+        )
+        assertFalse(
+            "MovieBox 480p must not outrank ShowFlix 720p",
+            StreamLinkOptimizer.isBetterThan(moviebox480, showflix720)
+        )
+        // Equal quality inside the bucket: the higher source rank decides.
+        val showflix720b = secondaryLink("ShowFlix", Qualities.P720.value).let {
+            createSourceLink(source = "MovieBox", name = "MovieBox [720p]", url = "https://cdn.example/moviebox/720-b.m3u8", quality = Qualities.P720.value, type = ExtractorLinkType.M3U8)
+        }
+        assertTrue("Same-quality secondary: higher source rank wins", StreamLinkOptimizer.isBetterThan(showflix720b, showflix720))
+
+        // Unknown outranks 2160p inside tier #6 (AGENTS.md ladder) — aligned with the StreamPlay twin.
+        assertEquals(4500, StreamLinkOptimizer.getQualityPriorityScore(Qualities.Unknown.value))
+        assertEquals(4500, StreamLinkOptimizer.getQualityPriorityScore(0))
+        assertTrue(
+            "Unknown must outrank 2160p (AGENTS.md ladder)",
+            StreamLinkOptimizer.getQualityPriorityScore(Qualities.Unknown.value) > StreamLinkOptimizer.getQualityPriorityScore(Qualities.P2160.value)
+        )
+    }
+
+    @Test
     fun testTwinSourceFilesAreByteIdenticalWithStreamPlay() {
         // The ResolutionTruth and VidLinkCdnPolicy single-source-of-truth modules must be byte
         // identical across the StreamPlay and SuperStream twins so the parity proven here at the

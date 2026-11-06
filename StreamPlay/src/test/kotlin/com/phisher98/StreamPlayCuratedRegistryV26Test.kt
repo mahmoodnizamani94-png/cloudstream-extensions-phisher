@@ -1477,6 +1477,54 @@ class StreamPlayCuratedRegistryV26Test {
     }
 
     @Test
+    fun testDashEmptyAttrsAdaptationSetShape() {
+        // 4. Empty-attrs paired `<AdaptationSet>` (a shape the contract names explicitly) and a
+        //    self-closing set directly before it — neither may swallow the other's representations.
+        val emptyAttrsMpd = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <MPD mediaPresentationDuration="PT30M">
+              <Period id="0">
+                <AdaptationSet mimeType="video/mp4"/>
+                <Representation id="v720" bandwidth="1100000" width="1720" height="720"/>
+                <Representation id="v1080" bandwidth="2200000" width="1920" height="800"/>
+                <AdaptationSet mimeType="audio/mp4" lang="en">
+                  <Representation id="a0" bandwidth="128000"/>
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val emptyAttrsVariants = StreamPlayExtractor.parseDashMasterVariants(
+            "https://sacdn.hakunaymatata.com/dash/empty/index.mpd",
+            emptyAttrsMpd
+        )
+        assertNotNull("Empty-attrs AdaptationSet reps must be parsed (720p)", emptyAttrsVariants.firstOrNull { it.quality == Qualities.P720.value })
+        assertNotNull("Empty-attrs AdaptationSet reps must be parsed (1080p)", emptyAttrsVariants.firstOrNull { it.quality == Qualities.P1080.value })
+        val ea720 = emptyAttrsVariants.firstOrNull { it.quality == Qualities.P720.value }!!
+        // 30 min root duration, video 1.1 Mbps + 128 kbps median audio.
+        val eaExpectedMb = ((1_100_000L + 128_000L) / 8.0) * (30 * 60) / (1024.0 * 1024.0)
+        assertEquals("Root duration + median audio pairing must hold for the empty-attrs shape", eaExpectedMb.toInt(), ea720.estimatedSizeMb)
+    }
+
+    @Test
+    fun testResolutionTruthExhaustiveShortDimSweepAgreesWithTextLayer() {
+        // Exhaustive short-dimension sweep across every band and edge: for each shortDim in
+        // 100..2200 at three aspect shapes (square, 1.85:1, 2.39:1), the text layer must classify
+        // exactly what ResolutionTruth classifies (delegation leaves no room for drift).
+        for (shortDim in 100..2200) {
+            val longDims = listOf(shortDim, (shortDim * 185 / 100), (shortDim * 239 / 100))
+            for (longDim in longDims) {
+                val expected = ResolutionTruth.classifyDimensions(longDim, shortDim)
+                val text = StreamLinkOptimizer.extractQualityFromText("${longDim}x${shortDim}")
+                if (expected == Qualities.Unknown.value) {
+                    assertTrue("Text layer may only match ResolutionTruth results", text == Qualities.Unknown.value || text == expected)
+                } else {
+                    assertEquals("Text layer must classify ${longDim}x${shortDim} through ResolutionTruth", expected, text)
+                }
+            }
+        }
+    }
+
+    @Test
     fun testTtlBoundedCacheEvictionPolicy() {
         var now = 1_000_000L
         val cache = TtlBoundedCache<String, Int>(ttlMs = 100L, maxEntries = 3, clock = { now })
