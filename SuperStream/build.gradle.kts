@@ -2,7 +2,7 @@
 
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 37
+version = 39
 
 android {
     buildFeatures {
@@ -30,7 +30,7 @@ android {
 cloudstream {
     language = "en"
     // All of these properties are optional, you can safely remove them
-     description = "SuperStream (Retrieve the cookie using Login with Google to properly utilize SuperStream."
+     description = "SuperStream 4K/1080p • Instant 1-Tap English & Spoken Urdu (اردو) Subtitles (8 SOTA Sources + Contextual Spoken AI) • Login with Google in Settings"
      authors = listOf("Phisher98")
 
     /**

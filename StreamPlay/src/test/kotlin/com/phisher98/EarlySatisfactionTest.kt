@@ -206,4 +206,39 @@ class EarlySatisfactionTest {
         val pixelDrainLink = createLink("PixelDrain Direct", Qualities.P720.value, "https://pixeldrain.com/api/file/xyz")
         assertTrue("PixelDrain at 720p+ qualifies as verified fast stream", controller.isHighQualityVerifiedStream(pixelDrainLink))
     }
+
+    @Test
+    fun testVideoLinkCountAloneNeverCutsOffSubtitleHarvesting() {
+        // Round-1 finding (GLM): the `links >= 8` hard ceiling previously early-satisfied WITHOUT
+        // the subtitle floor, cutting off active Urdu subtitle harvesters mid-flight. The gate is
+        // now `links >= 8 && subsMet`, mirroring StreamPlay's production config.
+        val config = EarlySatisfactionConfig(
+            minVerifiedLinks = 12,
+            minQualityStreams = 6,
+            qualityThreshold = Qualities.P720.value,
+            highBitrateThresholdKbps = 2500,
+            minSubtitles = 1,
+            satisfyWithOneLinkIfSubsFound = false,
+            requireSubtitles = true,
+            requireDualQualities = false,
+            require720p = false,
+            adaptiveTierEscalation = true,
+            softGracePeriodAfterFirstLinkMs = 0L
+        )
+        val controller = EarlySatisfactionController(config)
+
+        repeat(10) { idx ->
+            controller.onLinkEmitted(createLink("Stream $idx [720p]"))
+        }
+        assertFalse(
+            "8+ video links with 0 subtitles must NOT early-satisfy while subtitle harvesters are still running",
+            controller.isSatisfied()
+        )
+
+        controller.onSubtitleEmitted(createSubtitle("Urdu [SubDL]"))
+        assertTrue(
+            "Once the subtitle floor is met, 8+ links may early-satisfy",
+            controller.isSatisfied()
+        )
+    }
 }

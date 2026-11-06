@@ -825,5 +825,1540 @@ class UrduSubtitleSotaTest {
             }
         }
     }
-}
 
+    @Test
+    fun `8 SOTA Urdu sources registry and canonical source badges reject video and English-only providers`() {
+        assertEquals(8, UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES)
+        assertEquals(8, UrduSubtitleEngine.URDU_SOTA_SOURCES.size)
+        val summary = UrduSubtitleEngine.sotaSourcesSummary()
+        assertTrue(summary.contains("8 SOTA Sources"))
+        assertTrue(summary.contains("Neural AI"))
+        assertTrue(summary.contains("SubDL"))
+        assertTrue(summary.contains("SubSource"))
+        assertTrue(summary.contains("Wyzie"))
+        assertTrue(summary.contains("SubSense"))
+        assertTrue(summary.contains("YTS-Subs"))
+        assertTrue(summary.contains("Subf2m"))
+        assertTrue(summary.contains("SubtitleCat"))
+        assertTrue(summary.contains("OpenSubtitles"))
+
+        // Verify all 8 SOTA sources + Neural AI format cleanly and survive cleanSubtitleLabel
+        val expectedLabels = mapOf(
+            "subdl" to "Urdu [SubDL]",
+            "subsource" to "Urdu [SubSource]",
+            "wyziesub" to "Urdu [Wyzie]",
+            "subsense" to "Urdu [SubSense]",
+            "yify" to "Urdu [YTS-Subs]",
+            "subf2m" to "Urdu [Subf2m]",
+            "subtitlecat" to "Urdu [SubtitleCat]",
+            "opensubtitles" to "Urdu [OpenSubtitles]",
+            "subtitles" to "Urdu [OpenSubtitles]",
+            "urdu-neural-fallback" to "Urdu [Neural AI]"
+        )
+        for ((key, expectedLabel) in expectedLabels) {
+            val formatted = UrduSubtitleEngine.formatUrduSourceLabel(key)
+            assertEquals(expectedLabel, formatted)
+            assertEquals(expectedLabel, cleanSubtitleLabel(formatted))
+            assertNotNull(UrduSubtitleEngine.extractUrduSourceBadge(formatted))
+        }
+
+        // Video providers and English-only providers must NEVER be accepted as Urdu sources
+        val rejectedSources = listOf(
+            "vidlink", "cinesrc", "meowtv", "vidfast", "vidrift", "cineby",
+            "addic7ed", "ridoo", "lookmovie", "vidsrc", "superstream", ""
+        )
+        for (rejected in rejectedSources) {
+            assertNull(
+                "Provider '$rejected' does not host verified Urdu subtitles and must be rejected",
+                UrduSubtitleEngine.canonicalUrduSourceKey(rejected)
+            )
+        }
+    }
+
+    @Test
+    fun `containsVerifiedUrduScript accepts genuine Urdu subtitles and rejects mislabeled English subtitles`() {
+        val mislabeledEnglishSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            This is actually an English subtitle file mislabeled as Urdu by an upstream scraper.
+
+            2
+            00:00:04,000 --> 00:00:06,000
+            It contains zero Arabic or Urdu script characters!
+        """.trimIndent()
+        assertFalse(
+            "Mislabeled English subtitle must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(mislabeledEnglishSrt)
+        )
+
+        val genuineUrduSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            یہ ایک اصلی اردو سب ٹائٹل فائل ہے۔
+
+            2
+            00:00:04,000 --> 00:00:06,000
+            ہم کہاں جا رہے ہیں؟
+        """.trimIndent()
+        assertTrue(
+            "Genuine Urdu subtitle must be accepted by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(genuineUrduSrt)
+        )
+    }
+
+    @Test
+    fun `containsVerifiedUrduScript accepts genuine Urdu cues and rejects Persian and Arabic multi-cue subtitle files`() {
+        assertTrue(UrduSubtitleEngine.containsVerifiedUrduScript("یہ اردو سب ٹائٹل ہے"))
+        assertTrue(UrduSubtitleEngine.containsVerifiedUrduScript("رُک جاؤ، ورنہ گولی مار دوں گا!"))
+
+        val persianMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            راشل، من کارم تموم شد
+
+            2
+            00:00:03,500 --> 00:00:05,500
+            باشه، فردا میبینمت
+
+            3
+            00:00:06,000 --> 00:00:08,500
+            کجا بودی؟ چرا انقدر دیر کردی؟
+
+            4
+            00:00:09,000 --> 00:00:11,500
+            خیلی خوب، اینجا منتظرم باش
+
+            5
+            00:00:12,000 --> 00:00:14,500
+            من دارم میرم خونه
+        """.trimIndent()
+        assertFalse(
+            "Persian (Farsi) subtitle file using Arabic script must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianMultiCueSrt)
+        )
+
+        val arabicMultiCueSrt = """
+            1
+            00:00:01,000 --> 00:00:03,500
+            مرحبًا بك في هذا العالم، ماذا تفعل هنا؟
+
+            2
+            00:00:04,000 --> 00:00:06,500
+            هذا هو اليوم الذي ننتظره
+
+            3
+            00:00:07,000 --> 00:00:09,500
+            لماذا لم تخبرني عن هذه المشكلة؟
+
+            4
+            00:00:10,000 --> 00:00:12,500
+            التي كانت هناك منذ البداية
+
+            5
+            00:00:13,000 --> 00:00:15,500
+            ماذا تريد أن تفعل الآن؟
+        """.trimIndent()
+        assertFalse(
+            "Arabic subtitle file using Arabic script must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(arabicMultiCueSrt)
+        )
+    }
+
+    @Test
+    fun `refineUrduToSpokenIdiom and adaptEnglishForSpokenUrduTranslation transform calques and idioms into natural spoken Urdu`() {
+        assertEquals("یا خدایا!", UrduSubtitleEngine.refineUrduToSpokenIdiom("اوہ ، میرے خدا۔"))
+        assertEquals("اف خدایا!", UrduSubtitleEngine.refineUrduToSpokenIdiom("اوہ ، میرے گوش۔"))
+        assertEquals("کیا تمہارا دماغ خراب ہو گیا ہے؟", UrduSubtitleEngine.refineUrduToSpokenIdiom("کیا آپ اپنے دماغ سے باہر ہیں؟"))
+        assertEquals("یا خدایا!", UrduSubtitleEngine.refineUrduToSpokenIdiom("مسیح!"))
+        assertEquals("بیڑا غرق!", UrduSubtitleEngine.refineUrduToSpokenIdiom("گندگی!"))
+        assertEquals("عالی جاہ", UrduSubtitleEngine.refineUrduToSpokenIdiom("آپ کا فضل"))
+        assertEquals("طبیعت خراب ہو رہی", UrduSubtitleEngine.refineUrduToSpokenIdiom("صحت ناکام ہو رہی"))
+        assertEquals("سوچو، سوچو، ذرا سوچو۔", UrduSubtitleEngine.refineUrduToSpokenIdiom("سوچو ، سوچو ، سوچئے۔"))
+        assertTrue(UrduSubtitleEngine.refineUrduToSpokenIdiom("سوچو ، سوچو ، سوچئے۔").contains("سوچو، سوچو، ذرا سوچو"))
+
+        // Pre-translation English idiom adaptation
+        assertEquals(
+            "کیا تمہارا دماغ خراب ہو گیا ہے؟",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("Are you out of your mind?")
+        )
+        assertEquals(
+            "یہ تم آخر کر کیا رہے ہو؟",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("What the hell are you doing?")
+        )
+        assertEquals(
+            "یا خدایا!",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("Oh, my God!")
+        )
+        assertEquals(
+            "ذرا رکو!",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("Hold on!")
+        )
+        assertEquals(
+            "کوئی بات نہیں۔",
+            UrduSubtitleEngine.adaptEnglishForSpokenUrduTranslation("You're welcome.")
+        )
+    }
+
+    @Test
+    fun `isBrokenSmtUrdu detects 2012-era SMT dumps and scoreUrduSubtitleNaturalness ranks natural spoken Urdu higher than literal calques`() = runBlocking {
+        val brokenSmtSrt = """
+            1
+            00:00:01,000 --> 00:00:03,500
+            اس سے پہلے کہ تم یہ جانتے ہو کہ وہ ٹکڑے ٹکڑے کرنے کے ایک دوسرے کے ripping کے رہے
+
+            2
+            00:00:04,000 --> 00:00:06,500
+            میں نے کبھی نہیں دیکھا ہے wildlings اس طرح ایک کام کرو
+
+            3
+            00:00:07,000 --> 00:00:09,500
+            اپنے گھوڑے پر واپس حاصل
+        """.trimIndent()
+
+        val brokenCues = UrduSubtitleEngine.parseSubtitleCues(brokenSmtSrt)
+        assertEquals(3, brokenCues.size)
+        assertTrue(
+            "2012-era broken SMT dump with embedded English tokens and ungrammatical SMT phrases must be flagged by isBrokenSmtUrdu",
+            UrduSubtitleEngine.isBrokenSmtUrdu(brokenCues)
+        )
+
+        // Verify broken SMT Urdu is also rejected during materialization when extracted from a ZIP archive
+        val brokenZipBytes = ByteArrayOutputStream().apply {
+            ZipOutputStream(this).use { zos ->
+                zos.putNextEntry(ZipEntry("Broken.2012.SMT.Urdu.srt"))
+                zos.write(brokenSmtSrt.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+        }.toByteArray()
+        val tempBrokenZip = java.io.File.createTempFile("broken_smt_test_", ".zip")
+        try {
+            tempBrokenZip.writeBytes(brokenZipBytes)
+            // Use extractBestSubtitleFromZip / decodeAndNormalizeUrduBytes + materialization validation path
+            val decodedBroken = UrduSubtitleEngine.decodeAndNormalizeUrduBytes(brokenZipBytes)
+            val parsedBroken = UrduSubtitleEngine.parseSubtitleCues(UrduSubtitleEngine.normalizeUrduTypography(decodedBroken))
+            assertTrue(UrduSubtitleEngine.isBrokenSmtUrdu(parsedBroken))
+        } finally {
+            tempBrokenZip.delete()
+        }
+
+        val naturalSpokenCues = listOf(
+            UrduSubtitleEngine.SrtCue(1, "00:00:01,000 --> 00:00:03,000", "یا خدایا! ذرا رُک جاؤ یار، کیا تمہارا دماغ خراب ہو گیا ہے؟"),
+            UrduSubtitleEngine.SrtCue(2, "00:00:04,000 --> 00:00:06,000", "بھئی دیکھو، بالکل ٹھیک ہے، اب چلو یہاں سے۔"),
+            UrduSubtitleEngine.SrtCue(3, "00:00:07,000 --> 00:00:09,000", "خبردار! ورنہ بہت برا ہو گا، سنو میری بات۔")
+        )
+        val literalCalqueCues = listOf(
+            UrduSubtitleEngine.SrtCue(1, "00:00:01,000 --> 00:00:03,000", "اوہ ، میرے خدا۔ کیا آپ اپنے دماغ سے باہر ہیں؟"),
+            UrduSubtitleEngine.SrtCue(2, "00:00:04,000 --> 00:00:06,000", "اوہ ، میرے گوش۔ آپ کا فضل، صحت ناکام ہو رہی ہے۔"),
+            UrduSubtitleEngine.SrtCue(3, "00:00:07,000 --> 00:00:09,000", "میرے پاس بھی نہیں۔")
+        )
+
+        assertFalse(UrduSubtitleEngine.isBrokenSmtUrdu(naturalSpokenCues))
+        val naturalScore = UrduSubtitleEngine.scoreUrduSubtitleNaturalness(naturalSpokenCues)
+        val calqueScore = UrduSubtitleEngine.scoreUrduSubtitleNaturalness(literalCalqueCues)
+        val brokenScore = UrduSubtitleEngine.scoreUrduSubtitleNaturalness(brokenCues)
+
+        assertTrue(
+            "Natural spoken Urdu ($naturalScore) must score significantly higher than literal calques ($calqueScore)",
+            naturalScore > calqueScore + 50
+        )
+        assertTrue(
+            "Broken SMT cues ($brokenScore) must score heavily negative",
+            brokenScore <= -500
+        )
+    }
+
+    @Test
+    fun `parseSubDlUrduPageZips scopes strictly to data-language urdu filters out AI rows and ranks Tier-1A uploaders ahead of Tier-1C`() {
+        // 1. HTML with persian and indonesian data-language blocks (and SUBDL AI) but no data-language="urdu"
+        val nonUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <span>Inception.2010.1080p.Persian</span>
+                <a href="https://dl.subdl.com/subtitle/3001-9001.zip">Download</a>
+              </div>
+            </div>
+            <div data-language="indonesian">
+              <div class="sub-row">
+                <span>Inception.2010.1080p.Indonesian (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/3002-9002.zip">Download</a>
+              </div>
+            </div>
+        """.trimIndent()
+        assertEquals(
+            "When data-language blocks exist without data-language='urdu', parseSubDlUrduPageZips must return emptyList()",
+            emptyList<String>(),
+            UrduSubtitleEngine.parseSubDlUrduPageZips(nonUrduAstroHtml)
+        )
+
+        // 2. HTML with data-language="urdu" containing AI rows, Tier-1C bulk uploaders, and Tier-1A human uploaders
+        val mixedUrduAstroHtml = """
+            <div data-language="persian">
+              <div class="sub-row">
+                <a href="https://dl.subdl.com/subtitle/1111-1111.zip">Persian Sub</a>
+              </div>
+            </div>
+            <div data-language="urdu">
+              <div class="sub-row" data-ai-translated="true">
+                <span>Movie.2024.1080p.Urdu</span>
+                <a data-subtitle-author="subdl_ai" href="https://dl.subdl.com/subtitle/2222-2222.zip">Download AI 1</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.Urdu (SUBDL AI)</span>
+                <a href="https://dl.subdl.com/subtitle/2223-2223.zip">Download AI 2</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.WEBRip.Urdu</span>
+                <a data-subtitle-author="blackgold" href="https://dl.subdl.com/subtitle/3333-3333.zip">Download Tier 1C blackgold</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.BluRay.Urdu</span>
+                <a data-subtitle-author="akhaliq_655" href="https://dl.subdl.com/subtitle/3334-3334.zip">Download Tier 1C akhaliq</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.NF.WEB-DL.Urdu</span>
+                <a data-subtitle-author="naveshta" href="https://dl.subdl.com/subtitle/4444-4444.zip">Download Tier 1A naveshta</a>
+              </div>
+              <div class="sub-row">
+                <span>Movie.2024.1080p.AMZN.WEB-DL.Urdu</span>
+                <a data-subtitle-author="faizybaba" href="https://dl.subdl.com/subtitle/4445-4445.zip">Download Tier 1A faizybaba</a>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val parsedZips = UrduSubtitleEngine.parseSubDlUrduPageZips(mixedUrduAstroHtml)
+        assertFalse("Persian zip must be excluded", parsedZips.contains("https://dl.subdl.com/subtitle/1111-1111.zip"))
+        assertFalse("data-ai-translated row must be filtered out", parsedZips.contains("https://dl.subdl.com/subtitle/2222-2222.zip"))
+        assertFalse("(SUBDL AI) row must be filtered out", parsedZips.contains("https://dl.subdl.com/subtitle/2223-2223.zip"))
+        assertEquals(
+            "Tier-1A human uploaders (naveshta, faizybaba) must be ranked ahead of Tier-1C bulk uploaders (blackgold, akhaliq_655)",
+            listOf(
+                "https://dl.subdl.com/subtitle/4444-4444.zip",
+                "https://dl.subdl.com/subtitle/4445-4445.zip",
+                "https://dl.subdl.com/subtitle/3333-3333.zip",
+                "https://dl.subdl.com/subtitle/3334-3334.zip"
+            ),
+            parsedZips
+        )
+    }
+
+    @Test
+    fun `cross-cue sentence continuation merging and proportional Urdu splitting preserve exact cue timestamps`() = runBlocking {
+        val cue1 = UrduSubtitleEngine.SrtCue(
+            index = 1,
+            timestamp = "00:01:10,000 --> 00:01:12,500",
+            text = "As we begin, I believe you have"
+        )
+        val cue2 = UrduSubtitleEngine.SrtCue(
+            index = 2,
+            timestamp = "00:01:12,700 --> 00:01:15,200",
+            text = "a statement to read into the record."
+        )
+        val cue3 = UrduSubtitleEngine.SrtCue(
+            index = 3,
+            timestamp = "00:01:18,000 --> 00:01:20,000",
+            text = "Thank you, Senator."
+        )
+
+        assertTrue(
+            "Consecutive cues splitting a single sentence with 200ms (< 1500ms) gap must be merged",
+            UrduSubtitleEngine.shouldMergeContinuationCues(cue1, cue2)
+        )
+        assertFalse(
+            "Cue ending with terminal period must not merge with next cue",
+            UrduSubtitleEngine.shouldMergeContinuationCues(cue2, cue3)
+        )
+
+        val fullUrduSentence = "جیسا کہ ہم آغاز کر رہے ہیں، میرا خیال ہے کہ آپ کے پاس ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"
+        val (part1, part2) = UrduSubtitleEngine.splitTranslatedUrduProportionally(
+            translatedText = fullUrduSentence,
+            firstSourceLen = cue1.text.length,
+            secondSourceLen = cue2.text.length
+        )
+        assertTrue(part1.isNotBlank())
+        assertTrue(part2.isNotBlank())
+        assertEquals(fullUrduSentence, "$part1 $part2")
+
+        // Verify end-to-end through translateEnglishSrtToUrdu (which invokes buildContextualTranslationUnits)
+        val englishSrt = """
+            1
+            00:01:10,000 --> 00:01:12,500
+            As we begin, I believe you have
+
+            2
+            00:01:12,700 --> 00:01:15,200
+            a statement to read into the record.
+
+            3
+            00:01:18,000 --> 00:01:20,000
+            Thank you, Senator.
+        """.trimIndent()
+
+        var receivedBatchInputs: List<String> = emptyList()
+        val translatedSrt = UrduSubtitleEngine.translateEnglishSrtToUrdu(englishSrt) { batch ->
+            receivedBatchInputs = batch
+            listOf(
+                fullUrduSentence,
+                "شکریہ، سینیٹر۔"
+            )
+        }
+
+        // 3 English cues (where 1 & 2 are continuation cues) must be merged into 2 contextual translation units
+        assertEquals(2, receivedBatchInputs.size)
+        assertEquals(
+            "As we begin, I believe you have a statement to read into the record.",
+            receivedBatchInputs[0]
+        )
+
+        assertNotNull(translatedSrt)
+        val outputCues = UrduSubtitleEngine.parseSubtitleCues(translatedSrt!!)
+        assertEquals("Proportionally split output must restore all 3 original cues", 3, outputCues.size)
+        assertEquals("00:01:10,000 --> 00:01:12,500", outputCues[0].timestamp)
+        assertEquals("00:01:12,700 --> 00:01:15,200", outputCues[1].timestamp)
+        assertEquals("00:01:18,000 --> 00:01:20,000", outputCues[2].timestamp)
+        assertTrue(outputCues[0].text.contains("جیسا کہ ہم آغاز کر رہے ہیں"))
+        assertTrue(outputCues[1].text.contains("ریکارڈ میں پڑھنے کے لیے ایک بیان موجود ہے۔"))
+    }
+
+    @Test
+    fun `2-cue Persian and Arabic files are deterministically rejected and 3-cue SVO to SOV continuation chains merge cleanly`() = runBlocking {
+        // 1. 2-cue Persian (Farsi) with کی (which in Persian means 'when/who') must NOT pass as Urdu
+        val twoCuePersian = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            کی اومدی؟ من اینجا منتظرت بودم
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            بگو چرا نرفتی خونه
+        """.trimIndent()
+        assertFalse(
+            "2-cue Persian file must be deterministically rejected even with Persian 'کی'",
+            UrduSubtitleEngine.containsVerifiedUrduScript(twoCuePersian)
+        )
+
+        // 2. 2-cue Arabic without exclusive regex words must still be rejected because it lacks Urdu distinctive chars and function words
+        val twoCueArabic = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            نحن ننتظر في البيت منذ الصباح
+            
+            2
+            00:00:03,500 --> 00:00:05,500
+            هل سمعت الخبر الجديد اليوم
+        """.trimIndent()
+        assertFalse(
+            "2-cue Arabic file without Urdu distinctive characters or Urdu function words must be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(twoCueArabic)
+        )
+
+        // 3. 3-cue continuation chain with 'I' pronoun on cue 2 and lowercase continuation on cue 3
+        val threeCueEnglishSrt = """
+            1
+            00:02:00,000 --> 00:02:02,000
+            When the storm finally arrived,
+            
+            2
+            00:02:02,200 --> 00:02:04,200
+            I realized that the old bridge
+            
+            3
+            00:02:04,400 --> 00:02:06,500
+            had already collapsed into the river.
+        """.trimIndent()
+
+        var capturedBatch: List<String> = emptyList()
+        val fullThreeCueUrdu = "جب طوفان بالآخر پہنچا تو مجھے احساس ہوا کہ پرانا پل پہلے ہی دریا میں گر چکا تھا۔"
+        val translatedThreeCue = UrduSubtitleEngine.translateEnglishSrtToUrdu(threeCueEnglishSrt) { batch ->
+            capturedBatch = batch
+            listOf(fullThreeCueUrdu)
+        }
+        assertEquals("3 continuation cues must merge into 1 contextual SVO->SOV unit", 1, capturedBatch.size)
+        assertEquals(
+            "When the storm finally arrived, I realized that the old bridge had already collapsed into the river.",
+            capturedBatch[0]
+        )
+        assertNotNull(translatedThreeCue)
+        val splitCues = UrduSubtitleEngine.parseSubtitleCues(translatedThreeCue!!)
+        assertEquals(3, splitCues.size)
+        assertEquals("00:02:00,000 --> 00:02:02,000", splitCues[0].timestamp)
+        assertEquals("00:02:02,200 --> 00:02:04,200", splitCues[1].timestamp)
+        assertEquals("00:02:04,400 --> 00:02:06,500", splitCues[2].timestamp)
+
+        // 4. Content-Addressed Storage (cs_urdu_cas_) deduplicates identical Urdu SRT content across different URLs
+        val uriA = UrduSubtitleEngine.writeUrduLocalCacheFile("https://mirror1.example.com/sub.srt|S1E1", translatedThreeCue)
+        val uriB = UrduSubtitleEngine.writeUrduLocalCacheFile("https://mirror2.example.com/sub.srt|S1E1", translatedThreeCue)
+        assertNotNull(uriA)
+        assertEquals("Identical Urdu SRT content from two different URLs must resolve to the same content-addressed cs_urdu_cas_ file", uriA, uriB)
+        assertTrue(uriA!!.contains("cs_urdu_cas_"))
+
+        // 5. SubtitleCat candidates are scoped by (imdbId, season, episode)
+        UrduSubtitleEngine.consumeSubtitleCatOrigCandidates()
+        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
+            origUrl = "https://www.subtitlecat.com/subs/111/Show.S01E01-orig.srt",
+            origFilename = "Show.S01E01-orig.srt",
+            imdbId = "tt1111111",
+            season = 1,
+            episode = 1
+        )
+        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
+            origUrl = "https://www.subtitlecat.com/subs/222/Show.S01E02-orig.srt",
+            origFilename = "Show.S01E02-orig.srt",
+            imdbId = "tt1111111",
+            season = 1,
+            episode = 2
+        )
+        val ep2Candidates = UrduSubtitleEngine.consumeSubtitleCatOrigCandidates(imdbId = "tt1111111", season = 1, episode = 2)
+        assertEquals(1, ep2Candidates.size)
+        assertEquals("Show.S01E02-orig.srt", ep2Candidates[0].second)
+
+        // 6. LRU Eviction stops at exactly 64 files (never wipes the entire cache) and never touches foreign .srt files
+        val tmpDir = java.nio.file.Files.createTempDirectory("urdu_lru_test").toFile()
+        try {
+            val foreignFile = java.io.File(tmpDir, "foreign_user_subtitle.srt").apply {
+                writeText("1\n00:00:01,000 --> 00:00:02,000\nForeign subtitle\n")
+            }
+            val now = System.currentTimeMillis()
+            for (idx in 1..70) {
+                val f = java.io.File(tmpDir, "cs_urdu_cas_%04d.srt".format(idx))
+                f.writeText("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن $idx ہے\n")
+                f.setLastModified(now - (100 - idx) * 1000L)
+            }
+            UrduSubtitleEngine.evictStaleAndExcessCacheFiles(tmpDir)
+            val remainingUrduFiles = tmpDir.listFiles { f -> f.name.startsWith("cs_urdu_") } ?: emptyArray()
+            assertEquals("LRU eviction of 70 files must retain exactly 64 newest files", 64, remainingUrduFiles.size)
+            assertTrue("Foreign non-cs_urdu_ .srt file must never be deleted", foreignFile.exists())
+            assertFalse("Oldest file cs_urdu_cas_0001.srt must be evicted", java.io.File(tmpDir, "cs_urdu_cas_0001.srt").exists())
+            assertTrue("Newest file cs_urdu_cas_0070.srt must be retained", java.io.File(tmpDir, "cs_urdu_cas_0070.srt").exists())
+        } finally {
+            tmpDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Persian subtitle whose only Urdu evidence is shared homographs is rejected even after typography normalization`() {
+        // Gemini round-1 repro: normalizeUrduTypography leaves تو/کجا untouched, and the old gate
+        // compared strict inequality, so a Persian file with zero Urdu-distinctive glyphs passed.
+        val persianSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nتو کجا رفتی؟\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nمن منتظرت بودم\n")
+        }
+        assertFalse(
+            "Persian homograph-only file must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianSrt)
+        )
+    }
+
+    @Test
+    fun `Arabic file that normalizes into Urdu homographs is rejected by the raw-orthography scan`() {
+        // Gemini round-1 repro: Arabic هو/هم normalize INTO the Urdu words ہو/ہم, so the normalized
+        // scan alone cannot catch it; RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX sees the raw orthography.
+        val arabicSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nهو في البيت الآن\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nهل سمعت الخبر الجديد اليوم\n")
+        }
+        assertFalse(
+            "Arabic file normalizing into Urdu homographs must be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(arabicSrt)
+        )
+    }
+
+    @Test
+    fun `Persian raw orthography (هست) is rejected by the raw scan before normalization`() {
+        val persianSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nتو خوب هستی\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nاین خانه بزرگ است\n")
+        }
+        assertFalse(
+            "Persian raw-orthography file must be rejected by containsVerifiedUrduScript",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianSrt)
+        )
+    }
+
+    @Test
+    fun `Token-free Persian padding with one Urdu line is rejected by the evidence-share gate`() {
+        // Round-3 finding (GLM): natural colloquial Persian can contain ZERO matches against the
+        // curated fa/ar token list, so the list-independent share gate is the only defense. Every
+        // padding line below was mechanically verified token-free against the compiled RAW and
+        // normalized patterns (0 fa/ar matches, 0 Urdu evidence). The file is 1 Urdu cue over 30
+        // such lines: dominance passes (0 fa-leaning), so ONLY the >= 40% evidence-share gate
+        // rejects it.
+        val padding = listOf(
+            "او به مدرسه رفت",
+            "سارا نان خرید",
+            "او نامه نوشت",
+            "حالت چطوره؟",
+            "دیر رسید",
+            "دوستم تلفن کرد",
+            "سارا کتاب خواند",
+            "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n\n")
+            }
+        }
+        assertFalse(
+            "Token-free Persian padding must be rejected by the evidence-share gate",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Persian homograph vocabulary can no longer earn Urdu-evidence credit`() {
+        // Round-3 finding (GLM): Persian هوا (air) normalized into the evidence word ہوا, letting
+        // a Persian body earn Urdu-evidence credit. ہوا/ہوئی/ہوئے were removed from the
+        // homograph-free evidence list, so an all-هوا Persian file has 0% evidence.
+        val persianHava = buildString {
+            for (i in 1..30) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("هوا سرد بود و باران می\u200Cبارید\n")
+            }
+        }
+        assertFalse(
+            "Persian هوا cues must not earn Urdu-evidence credit",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianHava)
+        )
+    }
+
+    @Test
+    fun `Vocative-dense genuine Urdu files are accepted`() {
+        // Round-3 finding (GLM): bare greeting/vocative cues (خدا حافظ، سلام علیکم) share their
+        // nouns with Persian/Arabic, and the old exclusive list counted them as fa/ar-leaning,
+        // rejecting vocative-dense genuine Urdu. The shared nouns were removed from the list, so
+        // such cues are language-neutral and the file passes on the strength of its dialogue cues.
+        val vocativeDense = buildString {
+            for (i in 1..12) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 13..24) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(
+            "Vocative-dense genuine Urdu must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(vocativeDense)
+        )
+    }
+
+    @Test
+    fun `Genuine Urdu subtitles containing shared homographs are still accepted`() {
+        // Urdu fixture deliberately contains homographs (تم، کیا، اور) alongside distinctive glyphs
+        // (ٹ، ں، ے، ھ) — the tightened gate must never reject genuine spoken Urdu.
+        val urduSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:03,000\nیہ گھر بہت خوبصورت ہے اور تم اسے پسند کرو گے\n\n")
+            append("2\n00:00:03,000 --> 00:00:05,000\nکل ہم سب بازار جائیں گے اور ٹھیلوں سے خریداری کریں گے\n")
+        }
+        assertTrue(
+            "Genuine Urdu with shared fa/ar homographs must still be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(urduSrt)
+        )
+    }
+
+    @Test
+    fun `Cache writes are atomic with no temporary files left behind`() {
+        val urduSrt = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n")
+        }
+        val returnedUri = UrduSubtitleEngine.writeUrduLocalCacheFile("atomic_write_test", urduSrt)
+        assertNotNull("writeUrduLocalCacheFile must return a file URI", returnedUri)
+        val path = returnedUri!!.removePrefix("file://").removePrefix("file:")
+        val file = java.io.File(path)
+        try {
+            assertTrue("Cached .srt must exist", file.exists() && file.isFile)
+            val bytes = file.readBytes()
+            assertEquals("Cached .srt must start with the UTF-8 BOM", 0xEF, bytes[0].toInt() and 0xFF)
+            assertTrue("Cached .srt must contain the Urdu payload", String(bytes, Charsets.UTF_8).contains("سبٹائٹل"))
+            val tmpLeftovers = file.parentFile?.listFiles { f -> f.name.endsWith(".tmp") } ?: emptyArray()
+            assertEquals("Atomic write must leave no .tmp files behind", 0, tmpLeftovers.size)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `Adversarially padded files (one Urdu line over a Persian body) are rejected by per-cue verification`() {
+        // Round-2 finding (GLM): the file-level aggregate counts can be defeated by padding a
+        // single Urdu-distinctive line over Persian sentences that contain no list-tokens at all.
+        // The per-cue gate requires Urdu evidence (distinctive glyphs or homograph-free function
+        // words) in a healthy share of the Arabic-script cues.
+        val padding = listOf(
+            "او به مدرسه رفت", "برادرم دیروز آمد", "او گفت فردا می‌آید", "این کتاب نو است",
+            "آن‌ها در پارک قدم می‌زدند", "پدرم چای می‌خورد", "ما به بازار رفتیم", "او نامه نوشت",
+            "دوستم تلفن کرد", "هوا سرد شده است", "کتاب روی میز است", "او زود بیدار شد"
+        )
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ٹائٹل ہے\n\n")
+            for (i in 2..31) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(padding[i % padding.size] + "\n\n")
+            }
+        }
+        assertFalse(
+            "One padded Urdu line over a Persian body must be rejected by per-cue verification",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+        // Genuine Urdu with a few Persian-shared single-word cues must still pass comfortably.
+        val genuine = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(UrduSubtitleEngine.containsVerifiedUrduScript(genuine))
+    }
+
+    @Test
+    fun `Corrupted URL-index cache entries are discarded instead of served`() = runBlocking {
+        val urduSrt = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو سبٹائٹل لائن $i ہے، اور یہ بہت خوبصورت ہے\n\n")
+            }
+        }
+        val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+        server.createContext("/sub.srt") { exchange ->
+            fetchCount.incrementAndGet()
+            val bytes = urduSrt.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "application/octet-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            UrduSubtitleEngine.clearCachesForTest()
+            val url = "http://127.0.0.1:${server.address.port}/sub.srt?run=${System.nanoTime()}"
+            // Pre-plant a > 64-byte NON-Urdu payload at the exact URL-index path for this cache key.
+            val cacheKey = "$url|S0E0"
+            val urlCacheName = "cs_urdu_url_${UrduSubtitleEngine.sha256Hex(cacheKey).take(24)}.srt"
+            val bogus = java.io.File(System.getProperty("java.io.tmpdir"), urlCacheName)
+            bogus.writeText("1\n00:00:01,000 --> 00:00:02,000\nTotally not Urdu at all\n\n2\n00:00:02,000 --> 00:00:03,000\nstill not urdu here\n")
+            try {
+                val result = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "integrity-test")
+                assertNotNull("Materialization must fall through to the network", result)
+                assertEquals("The network must have been used instead of the corrupt cache", 1, fetchCount.get())
+                val served = java.io.File(result!!.removePrefix("file://")).readText()
+                assertTrue("Served payload must be the verified Urdu content", served.contains("سبٹائٹل"))
+                val indexNow = runCatching { bogus.readText() }.getOrNull().orEmpty()
+                assertTrue(
+                    "The corrupt entry must have been replaced by the verified Urdu payload",
+                    indexNow.contains("سبٹائٹل") && !indexNow.contains("Totally not Urdu")
+                )
+            } finally {
+                java.io.File(System.getProperty("java.io.tmpdir"), urlCacheName).delete()
+            }
+        } finally {
+            server.stop(0)
+            UrduSubtitleEngine.clearCachesForTest()
+        }
+    }
+
+    @Test
+    fun `Corrupted CAS cache entries are rewritten on the next write`() {
+        val srt = "1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے اور اچھی ہے\n\n2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n"
+        val uri = UrduSubtitleEngine.writeUrduLocalCacheFile("cas_corruption_test", srt)
+        assertNotNull(uri)
+        val file = java.io.File(uri!!.removePrefix("file://"))
+        try {
+            file.writeText("CORRUPTED GARBAGE PAYLOAD THAT NO LONGER MATCHES THE HASH ".repeat(3))
+            val uri2 = UrduSubtitleEngine.writeUrduLocalCacheFile("cas_corruption_test", srt)
+            assertEquals("The same CAS path must be returned after the rewrite", uri, uri2)
+            assertTrue(
+                "The rewritten payload must be the verified Urdu content again",
+                java.io.File(uri2!!.removePrefix("file://")).readText().contains("سبٹائٹل")
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `Cached payload trust helper rejects non-Urdu and broken content`() {
+        val validUrdu = "1\n00:00:01,000 --> 00:00:02,000\nیہ اردو سبٹائٹل لائن ہے اور اچھی ہے\n\n2\n00:00:02,000 --> 00:00:03,000\nدوسری لائن بھی نرمل اردو میں ہے\n"
+        assertTrue(UrduSubtitleEngine.isTrustedCachedUrduContent(validUrdu))
+        assertFalse(
+            "Non-Urdu content must fail the cache trust gate",
+            UrduSubtitleEngine.isTrustedCachedUrduContent("1\n00:00:01,000 --> 00:00:02,000\nplain english text\n")
+        )
+        assertFalse(
+            "Blank payload must fail the cache trust gate",
+            UrduSubtitleEngine.isTrustedCachedUrduContent("")
+        )
+        assertFalse(
+            "Non-cue payload must fail the cache trust gate",
+            UrduSubtitleEngine.isTrustedCachedUrduContent("جستجوی متن بدون تایم‌استمپ")
+        )
+    }
+
+    @Test
+    fun `Concurrent materializations of the same URL coalesce into a single network fetch`() = runBlocking {
+        val urduSrt = buildString {
+            for (i in 1..40) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ اردو سبٹائٹل لائن $i ہے، اور یہ بہت خوبصورت ہے\n\n")
+            }
+        }
+        val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+        server.createContext("/sub.srt") { exchange ->
+            fetchCount.incrementAndGet()
+            val bytes = urduSrt.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "application/octet-stream")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            UrduSubtitleEngine.clearCachesForTest()
+            // Unique query string per run so no stale URL-index disk entry from an earlier run
+            // can answer the request without touching the network.
+            val url = "http://127.0.0.1:${server.address.port}/sub.srt?run=${System.nanoTime()}"
+            val results = coroutineScope {
+                (1..24).map {
+                    async { UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "coalesce-test") }
+                }.awaitAll()
+            }
+            assertTrue("Every coalesced caller must receive a materialized URI", results.all { it != null && it == results[0] })
+            assertEquals(
+                "SingleFlight must coalesce 24 concurrent materializations into exactly 1 network fetch",
+                1,
+                fetchCount.get()
+            )
+        } finally {
+            server.stop(0)
+            UrduSubtitleEngine.clearCachesForTest()
+        }
+    }
+
+    @Test
+    fun `Persian raha padding can no longer earn Urdu-evidence credit via the ra-ha homograph`() {
+        // Round-4 finding (GLM): normalizeUrduTypography("رها") == "رہا", and رہا was in the
+        // evidence list, so one Persian رها per cue flipped a fully-detected Persian file to
+        // ACCEPT. The evidence token is now stored with do-chashmi heh (رھا) — which normalization
+        // never produces — and the hamza-less Arabic spellings اب/سب were removed outright.
+        assertEquals("رہا", UrduSubtitleEngine.normalizeUrduTypography("رها"))
+        // Evidence is matched on RAW cue text only: the gol-heh token رہا exists for recall, but
+        // Persian رها (raw heh U+0647) can never match it before normalization runs — the
+        // homograph class is closed by the scan policy, not by the token set.
+        assertTrue(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رہا"))
+        assertFalse("Persian raw رها must never match the evidence list", UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("رها"))
+        assertFalse(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("اب"))
+        assertFalse(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn("سب"))
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("رها شد\n\n")
+            }
+        }
+        assertFalse(
+            "A رها-padded Persian file must be rejected by the share gate",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Persian ZWNJ verb prefixes are detected structurally without any token list`() {
+        // Structural orthography signal (list-independent): Urdu orthography never uses ZWNJ, so
+        // می\u200C / نمی\u200C verb prefixes flag Persian regardless of the curated token list.
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("پدرم چای می\u200Cخورد\n\n")
+            }
+        }
+        assertFalse(
+            "A ZWNJ-verb Persian body must be rejected via structural dominance",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Arabic hamza orthography is detected structurally without any token list`() {
+        val padded = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..7) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("أين أخي الآن؟\n\n")
+            }
+        }
+        assertFalse(
+            "An Arabic-hamza body must be rejected via structural dominance",
+            UrduSubtitleEngine.containsVerifiedUrduScript(padded)
+        )
+    }
+
+    @Test
+    fun `Short genuine Urdu snippets and vocative-dense files survive the tiered share floor`() {
+        // Round-4 finding (GLM): the 40% cliff rejected a 3-cue genuine snippet (1 evidence cue)
+        // and vocative-dense files beyond 50% bare-cue share. The floor is now 40% when any cue
+        // leans fa/ar and 30% when the file carries no fa/ar signal at all.
+        val short3 = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nواہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nخوبصورت ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nشکریہ\n")
+        }
+        assertTrue(
+            "A 3-cue genuine snippet with 1 evidence cue must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(short3)
+        )
+        val vocativeDense = buildString {
+            for (i in 1..20) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append(if (i % 2 == 0) "خدا حافظ\n\n" else "سلام علیکم\n\n")
+            }
+            for (i in 21..32) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("یہ مکالمہ $i ہے اور ہم اسے سمجھ گے\n\n")
+            }
+        }
+        assertTrue(
+            "A 62.5% bare-vocative file (37.5% evidence share, 0 fa/ar-leaning) must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(vocativeDense)
+        )
+        val short4pad = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..4) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("او به مدرسه رفت\n\n")
+            }
+        }
+        assertFalse(
+            "A 4-cue token-free padding file (25% evidence) must still be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(short4pad)
+        )
+    }
+
+    @Test
+    fun `Adversarial colloquial-Persian corpus is rejected and genuine-Urdu corpus is accepted`() {
+        // Round-5 finding (GLM): handcrafted per-round probes kept being falsified; an embedded
+        // corpus guards the whole language-gate class in CI. The Persian corpus covers یه (the
+        // normalization homograph), می‌/نمی‌ ZWNJ verbs, است/هست, hamza letters, and token-free
+        // colloquial lines; the Urdu corpus covers standard + do-chashmi spellings and shared
+        // homograph vocabulary.
+        val persianCorpus = listOf(
+            "یه لحظه صبر کن", "یه شب تمام روید", "یه جایی می‌رم که هیچکس نباشه",
+            "است یه بار دیگه فکر کن", "پدرم چای می‌خورد و روزنامه می‌خوند",
+            "او به مدرسه رفت و کتابش را جا گذاشت", "این خانه بزرگ‌تر از آن یکی است",
+            "أين أخي الآن؟ هل سمعت الخبر؟", "حالت چطوره؟ دیر رسیدی",
+            "دوستم تلفن کرد و گفت بیا", "سارا نان خرید و رفت", "رها شد و رفت"
+        )
+        val persianFile = buildString {
+            persianCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(
+            "The colloquial-Persian corpus must be rejected (any evidence it earns is homograph or structural noise)",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianFile)
+        )
+        val urduCorpus = listOf(
+            "یہ گھر بہت خوبصورت ہے اور تم اسے پسند کرو گے",
+            "کل ہم سب بازار جائیں گے اور ٹھیلوں سے خریداری کریں گے",
+            "میں نہیں جاؤں گا، تم یہاں رہو",
+            "وہ رہا ہے اور ہم اس کا انتظار کر رہے ہیں",
+            "یہ سؤال مؤثر ہے اور جائزہ لیا گیا",
+            "خدا حافظ، کل ملیں گے",
+            "بہت شکریہ، آپ کی مدد کے لیے",
+            "واہ! کیا بات ہے"
+        )
+        val urduFile = buildString {
+            urduCorpus.forEachIndexed { idx, line ->
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertTrue(
+            "The genuine-Urdu corpus (standard + do-chashmi spellings, shared homographs, formal loanwords) must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(urduFile)
+        )
+    }
+    @Test
+    fun `Pure-Persian colloquial yeh files are rejected via the raw-heh structural signal`() {
+        // Round-5 finding (GLM), probe (m): Persian colloquial یه normalizes into the Urdu evidence
+        // token یہ — a 100%-Persian file with zero tokens/ZWNJ/hamza/glyphs was ACCEPTED. Evidence
+        // now scans RAW cue text only (یہ cannot match یه), and word-initial ی + raw heh U+0647 is
+        // a structural Persian signal, so every cue here leans and the dominance rule rejects.
+        val persianYeh = buildString {
+            val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+            for ((idx, line) in lines.withIndex()) {
+                append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                append(line + "\n\n")
+            }
+        }
+        assertFalse(
+            "A 100%-Persian colloquial-yeh file must be rejected",
+            UrduSubtitleEngine.containsVerifiedUrduScript(persianYeh)
+        )
+    }
+
+    @Test
+    fun `Evidence precedence cannot inoculate fa-ar markers (dual counting regression)`() {
+        // Round-5 finding (GLM), probes (n)/(o): cues carrying BOTH a fa/ar marker and an evidence
+        // token were counted as evidence only (else-if precedence), so `است یه` per cue inoculated
+        // a Persian file. Dual counting records leaning independently — every cue here leans.
+        val inoculated = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+            for (i in 2..13) {
+                append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                append("است یه\n\n")
+            }
+        }
+        assertFalse(
+            "است یه cues must lean fa/ar (dual counting), rejecting the file",
+            UrduSubtitleEngine.containsVerifiedUrduScript(inoculated)
+        )
+    }
+
+    @Test
+    fun `Standard gol-heh orthography retains full evidence recall`() {
+        // Round-5 finding (GLM), Probe2: the round-4 respell dropped standard gol-heh spellings
+        // (نہیں/پہلے) from evidence matching. Both spellings are now listed, and the
+        // normalization-colliding Arabic pronouns (هم/هو/هي) were removed from the fa/ar list so
+        // genuine ہم never leans fa/ar under dual counting.
+        val standard = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nمیں پہلے ہی کہہ چکا تھا کہ میں نہیں آؤں گا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nتم بھی وہی کہو گے جو سب کہتے ہیں\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nہم نے پھر بھی اپنا فیصلہ سنایا\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nآخرکار سب کو میری بات ماننی پڑی\n")
+        }
+        assertTrue(
+            "Standard gol-heh orthography must retain full evidence recall",
+            UrduSubtitleEngine.containsVerifiedUrduScript(standard)
+        )
+    }
+    // ---- Round-7: derived-data self-tests + pipeline-level (materialize) probes ----
+
+    private fun tokensOf(pattern: String): List<String> {
+        val start = pattern.indexOf("])(") + 3
+        val end = listOf(pattern.lastIndexOf(")(?:$|"), pattern.lastIndexOf(")(?=$|")).filter { it >= 0 }.max()
+        return pattern.substring(start, end).split('|')
+            .filter { it.isNotBlank() }
+            .map { token ->
+                Regex("\\\\u([0-9A-Fa-f]{4})").replace(token) { m ->
+                    m.groupValues[1].toInt(16).toChar().toString()
+                }
+            }
+    }
+
+    @Test
+    fun `Every curated token matches its own regex (derived-data self-test)`() {
+        // Catches construction typos (e.g. the stray `]` that bound to the last alternation
+        // branch and silently required a literal bracket after it).
+        val faTokens = tokensOf(UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)
+        assertTrue(faTokens.size > 100)
+        for (token in faTokens) {
+            assertTrue(
+                "Raw fa/ar token must match its own regex: $token",
+                UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.containsMatchIn(token)
+            )
+        }
+        val evTokens = tokensOf(UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.pattern)
+        assertTrue(evTokens.size > 40)
+        for (token in evTokens) {
+            assertTrue(
+                "Evidence token must match its own regex: $token",
+                UrduSubtitleEngine.URDU_UNAMBIGUOUS_FUNCTION_WORDS_REGEX.containsMatchIn(token)
+            )
+        }
+    }
+
+    @Test
+    fun `No fa-ar token collides with common Urdu vocabulary in raw or normalized form`() {
+        // Round-6 finding (both reviewers): the collision class (هم/هو/هي/بعد/فقط/جدا/کل/نہ/…)
+        // must stay closed by a CI-enforced sweep, not a one-off manual audit.
+        val urduVocabulary = setOf(
+            "آؤ",
+            "آسمان",
+            "آنا",
+            "آنسو",
+            "آپ",
+            "آگے",
+            "آہستہ",
+            "البتہ",
+            "امن",
+            "امید",
+            "امیر",
+            "اندر",
+            "اوپر",
+            "اٹھنا",
+            "اپنی",
+            "اپنے",
+            "اچھا",
+            "بائیں",
+            "بات",
+            "باتیں",
+            "باد",
+            "بادشاہ",
+            "بادل",
+            "بارش",
+            "بالکل",
+            "باہر",
+            "بتاؤ",
+            "بددلی",
+            "بدصورت",
+            "برا",
+            "برادر",
+            "براہ",
+            "برسات",
+            "بعد",
+            "بلہ",
+            "بندوق",
+            "بندہ",
+            "بولنا",
+            "بوڑھا",
+            "بچنا",
+            "بچہ",
+            "بڑا",
+            "بکواس",
+            "بھئی",
+            "بھائی",
+            "بھابھی",
+            "بھاگنا",
+            "بھوک",
+            "بھیجنا",
+            "بہار",
+            "بہت",
+            "بہن",
+            "بہنوئی",
+            "بیت",
+            "بیماری",
+            "بین",
+            "بیوقوف",
+            "بیٹا",
+            "بیٹھنا",
+            "بیٹی",
+            "تبہ",
+            "تعجب",
+            "تلوار",
+            "تلک",
+            "تم",
+            "تمہاری",
+            "تن",
+            "تھا",
+            "تھوڑا",
+            "تھی",
+            "تھے",
+            "تیز",
+            "جاؤ",
+            "جائزہ",
+            "جائیں",
+            "جانا",
+            "جانم",
+            "جاگنا",
+            "جاہل",
+            "جج",
+            "جدا",
+            "جزء",
+            "جسم",
+            "جنگ",
+            "جواب",
+            "جوان",
+            "جھوٹ",
+            "جی",
+            "جینا",
+            "حاضر",
+            "حبیب",
+            "حتما",
+            "حتی",
+            "حسد",
+            "حوصلہ",
+            "حیا",
+            "حیرت",
+            "خالہ",
+            "خاموش",
+            "خاندان",
+            "خانہ",
+            "خبر",
+            "خبردار",
+            "خدا",
+            "خدایا",
+            "خزاں",
+            "خواب",
+            "خواهر",
+            "خوب",
+            "خوبصورت",
+            "خوشگل",
+            "خوشی",
+            "خوف",
+            "خیال",
+            "خیانت",
+            "خیلی",
+            "دائما",
+            "دائیں",
+            "دادا",
+            "دادی",
+            "دار",
+            "دانشمند",
+            "درد",
+            "دریا",
+            "دست",
+            "دشمن",
+            "دعا",
+            "دل",
+            "دلبر",
+            "دماغ",
+            "دن",
+            "دنیا",
+            "دوائی",
+            "دور",
+            "دوست",
+            "دکھ",
+            "دھوپ",
+            "دھوکا",
+            "دھکا",
+            "دینا",
+            "دیوانہ",
+            "دیکھنا",
+            "دیکھو",
+            "ذرا",
+            "رات",
+            "رب",
+            "رشتہ",
+            "رشتے",
+            "رفیق",
+            "روتا",
+            "روز",
+            "رونا",
+            "رکو",
+            "رہا",
+            "رہی",
+            "رہے",
+            "زخم",
+            "زم",
+            "زمین",
+            "زن",
+            "زندگی",
+            "زور",
+            "زیادہ",
+            "سؤال",
+            "ساتھی",
+            "ساس",
+            "سال",
+            "سب",
+            "ستارے",
+            "سجن",
+            "سر",
+            "سردی",
+            "سلام",
+            "سمجھنا",
+            "سننا",
+            "سنو",
+            "سنگتی",
+            "سوال",
+            "سورج",
+            "سونا",
+            "سوچو",
+            "سپاہی",
+            "سچ",
+            "سکھ",
+            "شام",
+            "شب",
+            "شرم",
+            "شفقت",
+            "شک",
+            "شہر",
+            "شیء",
+            "صبح",
+            "صحت",
+            "صدا",
+            "صنم",
+            "ضرورت",
+            "طاقت",
+            "طبعا",
+            "طبیعت",
+            "طریق",
+            "عاجزی",
+            "عاشق",
+            "عالم",
+            "عدالت",
+            "عزت",
+            "عزیز",
+            "عشق",
+            "عقلمند",
+            "علاج",
+            "علی",
+            "عوام",
+            "عورت",
+            "عین",
+            "غریب",
+            "غصہ",
+            "غلام",
+            "غم",
+            "غیر",
+            "فعلا",
+            "فقط",
+            "فوجی",
+            "فوق",
+            "فی",
+            "فیصلہ",
+            "قانون",
+            "قبل",
+            "قریب",
+            "قیدی",
+            "كيف",
+            "لمبا",
+            "لونڈا",
+            "لڑائی",
+            "لڑکا",
+            "لڑکی",
+            "لکھنا",
+            "لینا",
+            "لیکن",
+            "مؤثر",
+            "ما",
+            "ماء",
+            "مادر",
+            "ماموں",
+            "ماہ",
+            "محبت",
+            "محبوب",
+            "مخلوق",
+            "مدد",
+            "مرد",
+            "مردم",
+            "مرنا",
+            "مسکراہٹ",
+            "مضبوط",
+            "مع",
+            "معاف",
+            "معشوق",
+            "ملنا",
+            "ممتا",
+            "موسم",
+            "مگر",
+            "می",
+            "میری",
+            "نام",
+            "نانا",
+            "نانی",
+            "ناچنا",
+            "نحو",
+            "نفرت",
+            "نفسم",
+            "نہ",
+            "نہیں",
+            "نیا",
+            "نیند",
+            "نیچے",
+            "واقعا",
+            "والے",
+            "ورنہ",
+            "وزیر",
+            "وفا",
+            "وقار",
+            "وقت",
+            "وقتی",
+            "ولد",
+            "وہ",
+            "ٹوٹا",
+            "ٹھنڈی",
+            "ٹھیک",
+            "پانی",
+            "پاگل",
+            "پدر",
+            "پرانا",
+            "پوتا",
+            "پوتی",
+            "پولیس",
+            "پڑھنا",
+            "پکڑنا",
+            "پکڑو",
+            "پھر",
+            "پہلے",
+            "پہنچنا",
+            "پیاس",
+            "پیچھے",
+            "چاند",
+            "چاچا",
+            "چرا",
+            "چلنا",
+            "چلو",
+            "چون",
+            "چوڑا",
+            "چپ",
+            "چھوٹا",
+            "چھوڑنا",
+            "کا",
+            "کائنات",
+            "کار",
+            "کان",
+            "کرنا",
+            "کرو",
+            "کریں",
+            "کل",
+            "کم",
+            "کمزور",
+            "کند",
+            "کو",
+            "کوئی",
+            "کوچک",
+            "کچھ",
+            "کھانا",
+            "کھیلنا",
+            "کہ",
+            "کہنا",
+            "کی",
+            "کیجئے",
+            "کیف",
+            "کے",
+            "گانا",
+            "گرمی",
+            "گواہ",
+            "گھر",
+            "ہست",
+            "ہفتہ",
+            "ہم",
+            "ہمارا",
+            "ہمہ",
+            "ہمین",
+            "ہن",
+            "ہنسنا",
+            "ہو",
+            "ہوا",
+            "ہونا",
+            "ہی",
+            "ہیں",
+            "ہے",
+            "یار",
+            "یقین",
+            "یوم",
+            "یہ",
+        )
+        // Known formal limit (documented): do-chashmi (ھ) respellings of purged Persian tokens
+        // are not vocabulary-lockable — harmless by construction, since any such cue is
+        // simultaneously Urdu-evidence-bearing under dual counting.
+        for (token in tokensOf(UrduSubtitleEngine.RAW_PERSIAN_ARABIC_EXCLUSIVE_REGEX.pattern)) {
+            assertFalse(
+                "fa/ar token must not BE an Urdu word: $token",
+                token in urduVocabulary
+            )
+            assertFalse(
+                "fa/ar token must not normalize into an Urdu word: $token -> ${UrduSubtitleEngine.normalizeUrduTypography(token)}",
+                UrduSubtitleEngine.normalizeUrduTypography(token) in urduVocabulary
+            )
+        }
+    }
+
+    @Test
+    fun `Pipeline-level probes are rejected through materializeNormalizedUrduSubtitle`() = runBlocking {
+        // Round-6 finding (Gemini): the adversarial probes must be tested THROUGH the production
+        // pipeline (decode -> raw gate -> normalize), not just by calling the gate on raw strings.
+        val probes = listOf(
+            // (m) 100%-Persian colloquial-yeh file
+            buildString {
+                val lines = listOf("یه لحظه صبر", "یه شب رفت", "یه جایی میرم", "یه سال گذشت")
+                for ((idx, line) in lines.withIndex()) {
+                    append("${idx + 1}\n00:00:${"%02d".format(idx + 1)},000 --> 00:00:${"%02d".format(idx + 1)},500\n")
+                    append(line + "\n\n")
+                }
+            },
+            // (k) رها padding
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                for (i in 2..13) {
+                    append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                    append("رها شد\n\n")
+                }
+            },
+            // (n/o) است یه inoculation
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                for (i in 2..13) {
+                    append("$i\n00:00:${"%02d".format(i)},000 --> 00:00:${"%02d".format(i)},500\n")
+                    append("است یه\n\n")
+                }
+            },
+            // cue-final یه (the missing $| anchor case)
+            buildString {
+                append("1\n00:00:01,000 --> 00:00:02,000\nیہ اردو لائن ہے\n\n")
+                append("2\n00:00:02,000 --> 00:00:03,000\nاو گفت یه\n\n")
+                append("3\n00:00:03,000 --> 00:00:04,000\nسارا دید یه\n")
+            }
+        )
+        for ((probeIdx, srt) in probes.withIndex()) {
+            val fetchCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0)
+            server.createContext("/probe.srt") { exchange ->
+                fetchCount.incrementAndGet()
+                val bytes = srt.toByteArray(Charsets.UTF_8)
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+            server.start()
+            try {
+                UrduSubtitleEngine.clearCachesForTest()
+                val url = "http://127.0.0.1:${server.address.port}/probe.srt?probe=$probeIdx&run=${System.nanoTime()}"
+                val result = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "pipeline-probe")
+                assertNull("Pipeline probe #$probeIdx must be REJECTED through materialize", result)
+                assertEquals("The pipeline must have fetched the probe content", 1, fetchCount.get())
+            } finally {
+                server.stop(0)
+                UrduSubtitleEngine.clearCachesForTest()
+            }
+        }
+    }
+
+    @Test
+    fun `Formal Urdu with clashing loanwords and hamza fragments is accepted`() {
+        // Round-6 finding: بعد/فقط/جدا/کل/نہ/ہفتہ/علی/شیء/جزء cues must never lean fa/ar.
+        val formal = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nاجلاس بعد از ظہر ہوگا\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nفقط ارکان شرکت کریں گے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nعلی گڑھ کی تحریک الگ ہے\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nکل ہم نے یہ فیصلہ کیا تھا\n\n")
+            append("5\n00:00:05,000 --> 00:00:06,000\nہر نہ نہیں، مگر ہمت نہ ہارو\n\n")
+            append("6\n00:00:06,000 --> 00:00:07,000\nیہ ہفتہ قبل سے طے تھا\n\n")
+            append("7\n00:00:07,000 --> 00:00:08,000\nخدا حافظ، کل ملیں گے\n\n")
+            append("8\n00:00:08,000 --> 00:00:09,000\nشکریہ\n")
+        }
+        assertTrue(
+            "Formal Urdu dialogue with clashing loanwords must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(formal)
+        )
+        val hamzaFragments = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nعجیب شیء ہے یہ\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nایک جزء کافی ہے\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nانشاء اللہ ہو جائے گا\n")
+        }
+        assertTrue(
+            "Hamza-loanword formal fragments must be accepted (ء exempted from the Arabic signal)",
+            UrduSubtitleEngine.containsVerifiedUrduScript(hamzaFragments)
+        )
+
+        // Round-7 finding (Gemini): غیر/عین/طریق were spelled with Arabic yeh (U+064A) in the raw
+        // list, so the normalized scan leaned every genuine Urdu cue containing them; and ء was
+        // left in the Arabic signal, leaning standalone انشاء اللہ cues.
+        val everydayLoanwords = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nغیر ضروری بات مت کرو\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nعین وقت پر پہنچے ہو\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nغیر قانونی کام منع ہے\n\n")
+            append("4\n00:00:04,000 --> 00:00:05,000\nعین ممکن ہے\n\n")
+            append("5\n00:00:05,000 --> 00:00:06,000\nغیر معمولی صورتحال ہے\n\n")
+            append("6\n00:00:06,000 --> 00:00:07,000\nشکریہ\n\n")
+            append("7\n00:00:07,000 --> 00:00:08,000\nانشاء اللہ!\n")
+        }
+        assertTrue(
+            "Everyday غیر/عین cues and standalone انشاء اللہ must be accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(everydayLoanwords)
+        )
+        // Round-8 (Gemini): discriminative ء test — passes ONLY when ء is exempted. With ء in the
+        // signal, the two standalone hamza cues lean (2 > 1 dominance) and the 40% floor fires.
+        val hamzaDiscriminative = buildString {
+            append("1\n00:00:01,000 --> 00:00:02,000\nانشاء اللہ!\n\n")
+            append("2\n00:00:02,000 --> 00:00:03,000\nماشاء اللہ!\n\n")
+            append("3\n00:00:03,000 --> 00:00:04,000\nیہ بہت اچھا ہے\n")
+        }
+        assertTrue(
+            "Standalone hamza exclamations must be neutral (ء exempted), so the file is accepted",
+            UrduSubtitleEngine.containsVerifiedUrduScript(hamzaDiscriminative)
+        )
+    }
+}
