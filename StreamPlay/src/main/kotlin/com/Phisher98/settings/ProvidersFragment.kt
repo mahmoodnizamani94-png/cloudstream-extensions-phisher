@@ -1,6 +1,7 @@
 package com.phisher98
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.SharedPreferences
 import android.content.res.Resources
 import android.os.Build
@@ -17,7 +18,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.core.content.edit
-import androidx.core.view.isNotEmpty
 import androidx.core.view.isVisible
 import androidx.core.widget.CompoundButtonCompat
 import androidx.core.widget.addTextChangedListener
@@ -33,6 +33,11 @@ class ProvidersFragment(
 ) : DialogFragment() {
 
     constructor() : this(null, null, null)
+
+    private data class ProviderRowEntry(
+        val checkBox: CheckBox,
+        val precedingDivider: View?
+    )
 
     private val res: Resources
         get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
@@ -51,8 +56,13 @@ class ProvidersFragment(
     private lateinit var adapter: ProviderAdapter
     private lateinit var container: LinearLayout
     private var providers: List<Provider> = emptyList()
+    private val rowEntries = mutableListOf<ProviderRowEntry>()
     private val PREFS_DISABLED = "disabled_providers"
     private lateinit var tvProviderCount: TextView
+
+    private var activeSubDialog: Dialog? = null
+    private var activeSubDialogType: String? = null
+    private var draftPresetName: String = ""
 
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
@@ -102,6 +112,45 @@ class ProvidersFragment(
         btnDeleteProfile.visibility = if (hasPresets) View.VISIBLE else View.GONE
     }
 
+    private fun refreshFilteredProviderGroup(query: String, density: Float, tvEmpty: TextView?) {
+        val normalizedQuery = query.lowercase().trim()
+        val visibleEntries = mutableListOf<ProviderRowEntry>()
+        for (entry in rowEntries) {
+            val matches = normalizedQuery.isEmpty() ||
+                entry.checkBox.text.toString().lowercase().contains(normalizedQuery)
+            entry.checkBox.visibility = if (matches) View.VISIBLE else View.GONE
+            if (matches) {
+                visibleEntries.add(entry)
+            } else {
+                entry.precedingDivider?.visibility = View.GONE
+            }
+        }
+        visibleEntries.forEachIndexed { visibleIdx, entry ->
+            entry.precedingDivider?.visibility = if (visibleIdx == 0) View.GONE else View.VISIBLE
+            val pos = when {
+                visibleEntries.size == 1 -> StreamPlayDesignTokens.GroupPosition.SINGLE
+                visibleIdx == 0 -> StreamPlayDesignTokens.GroupPosition.TOP
+                visibleIdx == visibleEntries.lastIndex -> StreamPlayDesignTokens.GroupPosition.BOTTOM
+                else -> StreamPlayDesignTokens.GroupPosition.MIDDLE
+            }
+            entry.checkBox.background = StreamPlayDesignTokens.groupedRowDrawable(density, pos)
+        }
+        val firstVisible = visibleEntries.firstOrNull()?.checkBox
+        if (firstVisible != null) {
+            firstVisible.isFocusable = true
+            firstVisible.nextFocusUpId = btnSaveProfile.id
+            btnSaveProfile.nextFocusDownId = firstVisible.id
+            btnLoadProfile.nextFocusDownId = firstVisible.id
+            btnDeleteProfile.nextFocusDownId = firstVisible.id
+        } else {
+            btnSaveProfile.nextFocusDownId = View.NO_ID
+            btnLoadProfile.nextFocusDownId = View.NO_ID
+            btnDeleteProfile.nextFocusDownId = View.NO_ID
+        }
+        container.visibility = if (visibleEntries.isEmpty()) View.GONE else View.VISIBLE
+        tvEmpty?.visibility = if (visibleEntries.isEmpty()) View.VISIBLE else View.GONE
+    }
+
     @RequiresApi(Build.VERSION_CODES.O)
     @SuppressLint("SetTextI18n")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -133,42 +182,15 @@ class ProvidersFragment(
         StreamPlayDesignTokens.applyDirectionalFocus(btnLoadProfile, btnDeleteProfile)
 
         container = view.findView("list_container")
+        container.layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         container.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
         providers = buildProviders().sortedBy { it.name.lowercase() }
+        rowEntries.clear()
 
         val chkId = res.getIdentifier("chk_provider", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
 
         val etSearch = view.findView<EditText>("ext_search")
         etSearch.background = StreamPlayDesignTokens.inputWellDrawable(density)
-        etSearch.addTextChangedListener { text ->
-            val query = text.toString().lowercase().trim()
-            var visibleCount = 0
-            for (i in 0 until container.childCount) {
-                val item = container.getChildAt(i)
-                val chk = item.findViewById<CheckBox>(chkId)
-                if (chk != null) {
-                    val matches = query.isEmpty() || chk.text.toString().lowercase().contains(query)
-                    item.visibility = if (matches) View.VISIBLE else View.GONE
-                    if (matches) visibleCount++
-                } else {
-                    // Hairline divider visibility tracks adjacent items
-                    item.visibility = if (query.isEmpty()) View.VISIBLE else View.GONE
-                }
-            }
-            container.visibility = if (visibleCount == 0) View.GONE else View.VISIBLE
-            tvEmpty?.visibility = if (visibleCount == 0) View.VISIBLE else View.GONE
-        }
-
-        etSearch.setOnEditorActionListener { _, _, _ ->
-            for (i in 0 until container.childCount) {
-                val item = container.getChildAt(i)
-                if (item is CheckBox && item.isVisible) {
-                    item.requestFocus()
-                    break
-                }
-            }
-            true
-        }
 
         val savedDisabled = getOrInitializeDisabledProviders(sharedPref)
 
@@ -177,36 +199,32 @@ class ProvidersFragment(
             updateUI()
         }
 
-        var firstCheckBox: CheckBox? = null
         providers.forEachIndexed { index, provider ->
-            if (index > 0) {
-                val divider = View(requireContext()).apply {
+            val divider = if (index > 0) {
+                View(requireContext()).apply {
                     setBackgroundColor(StreamPlayDesignTokens.BORDER_SUBTLE)
+                }.also { div ->
+                    container.addView(
+                        div,
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            StreamPlayDesignTokens.dpToPx(density, 1f)
+                        ).apply {
+                            marginStart = StreamPlayDesignTokens.dpToPx(density, 16f)
+                        }
+                    )
                 }
-                container.addView(
-                    divider,
-                    LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        StreamPlayDesignTokens.dpToPx(density, 1f)
-                    ).apply {
-                        marginStart = StreamPlayDesignTokens.dpToPx(density, 14f)
-                    }
-                )
+            } else {
+                null
             }
 
             val item = getLayout("item_provider_checkbox", layoutInflater, container)
             val chk = item.findViewById<CheckBox>(chkId) ?: (item as CheckBox)
-            if (firstCheckBox == null) firstCheckBox = chk
-
-            val isVidlinkMandatory = provider.id.equals("vidlink", ignoreCase = true)
-            val groupPosition = when {
-                providers.size == 1 -> StreamPlayDesignTokens.GroupPosition.SINGLE
-                index == 0 -> StreamPlayDesignTokens.GroupPosition.TOP
-                index == providers.lastIndex -> StreamPlayDesignTokens.GroupPosition.BOTTOM
-                else -> StreamPlayDesignTokens.GroupPosition.MIDDLE
+            if (chk.id == View.NO_ID || chk.id == chkId) {
+                chk.id = View.generateViewId()
             }
 
-            chk.background = StreamPlayDesignTokens.groupedRowDrawable(density, groupPosition)
+            val isVidlinkMandatory = provider.id.equals("vidlink", ignoreCase = true)
             CompoundButtonCompat.setButtonTintList(
                 chk,
                 StreamPlayDesignTokens.compoundButtonTintList()
@@ -228,17 +246,19 @@ class ProvidersFragment(
             }
 
             container.addView(item)
+            rowEntries.add(ProviderRowEntry(chk, divider))
         }
+
+        refreshFilteredProviderGroup(etSearch.text?.toString().orEmpty(), density, tvEmpty)
         updateProviderCountAndActions()
 
-        container.post {
-            firstCheckBox?.let { first ->
-                first.isFocusable = true
-                first.nextFocusUpId = btnSaveProfile.id
-                btnSaveProfile.nextFocusDownId = first.id
-                btnLoadProfile.nextFocusDownId = first.id
-                btnDeleteProfile.nextFocusDownId = first.id
-            }
+        etSearch.addTextChangedListener { text ->
+            refreshFilteredProviderGroup(text?.toString().orEmpty(), density, tvEmpty)
+        }
+
+        etSearch.setOnEditorActionListener { _, _, _ ->
+            rowEntries.firstOrNull { it.checkBox.isVisible }?.checkBox?.requestFocus()
+            true
         }
 
         btnSelectAll.setOnClickListener {
@@ -252,90 +272,127 @@ class ProvidersFragment(
         btnSave.setOnClickListener { dismissFragment() }
 
         btnSaveProfile.setOnClickListener {
-            StreamPlayDesignTokens.showTextInputDialog(
-                context = requireContext(),
-                resources = resources,
-                title = "Save source preset",
-                subtitle = "Name this source selection for quick switching",
-                fieldLabel = "Preset name",
-                hintText = "e.g. Fast 720p",
-                confirmText = "Save preset"
-            ) { name ->
-                if (name.isNotEmpty()) {
-                    saveProfile(name)
-                    updateProviderCountAndActions()
-                    showMessage("Preset \"$name\" saved.")
-                } else {
-                    showMessage("Enter a preset name.")
-                }
-            }
+            openSavePresetDialog()
         }
 
         btnLoadProfile.setOnClickListener {
-            val profiles = getAllProfiles().keys.toList()
-            if (profiles.isEmpty()) {
-                showToast("No saved presets yet.")
-                return@setOnClickListener
-            }
-
-            StreamPlayDesignTokens.showSelectionListDialog(
-                context = requireContext(),
-                resources = resources,
-                title = "Load source preset",
-                subtitle = "Select a saved provider configuration",
-                items = profiles
-            ) { _, selectedName ->
-                loadProfile(selectedName)
-            }
+            openLoadPresetDialog()
         }
 
         btnDeleteProfile.setOnClickListener {
-            val profiles = getAllProfiles().keys.toList()
-            if (profiles.isEmpty()) {
-                showToast("No saved presets to delete.")
-                return@setOnClickListener
-            }
+            openDeletePresetDialog()
+        }
 
-            StreamPlayDesignTokens.showSelectionListDialog(
-                context = requireContext(),
-                resources = resources,
-                title = "Delete source preset",
-                subtitle = "Select a preset to remove",
-                items = profiles,
-                itemTextColor = StreamPlayDesignTokens.DANGER_TEXT
-            ) { _, selectedName ->
-                val backupSet = getAllProfiles()[selectedName]
-                deleteProfile(selectedName)
-                updateProviderCountAndActions()
-                if (backupSet != null) {
-                    StreamPlayDesignTokens.showConfirmationDialog(
-                        context = requireContext(),
-                        resources = resources,
-                        title = "Preset \"$selectedName\" deleted",
-                        message = "Restore this preset?",
-                        confirmText = "Undo",
-                        cancelText = "Keep deleted",
-                        confirmVariant = StreamPlayDesignTokens.ButtonVariant.PRIMARY
-                    ) {
-                        restoreProfile(selectedName, backupSet)
-                        updateProviderCountAndActions()
-                        showMessage("Preset \"$selectedName\" restored.")
-                    }
-                }
+        val restoredSubDialog = savedInstanceState?.getString(STATE_ACTIVE_SUB_DIALOG)
+        draftPresetName = savedInstanceState?.getString(STATE_DRAFT_PRESET_NAME).orEmpty()
+        when (restoredSubDialog) {
+            SUB_DIALOG_SAVE -> openSavePresetDialog(draftPresetName)
+            SUB_DIALOG_LOAD -> openLoadPresetDialog()
+            SUB_DIALOG_DELETE -> openDeletePresetDialog()
+        }
+    }
+
+    private fun trackSubDialog(type: String?, dialogInstance: Dialog) {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = dialogInstance
+        activeSubDialogType = type
+        dialogInstance.setOnDismissListener {
+            if (activeSubDialog === dialogInstance) {
+                activeSubDialog = null
+                activeSubDialogType = null
             }
         }
     }
 
+    private fun openSavePresetDialog(initialName: String = "") {
+        if (activeSubDialog?.isShowing == true) return
+        draftPresetName = initialName
+        val dlg = StreamPlayDesignTokens.showTextInputDialog(
+            context = requireContext(),
+            resources = resources,
+            title = "Save source preset",
+            subtitle = "Name this source selection for quick switching",
+            fieldLabel = "Preset name",
+            hintText = "e.g. Fast 720p",
+            confirmText = "Save preset",
+            initialText = initialName,
+            onTextChanged = { text -> draftPresetName = text }
+        ) { name ->
+            draftPresetName = ""
+            if (name.isNotEmpty()) {
+                saveProfile(name)
+                updateProviderCountAndActions()
+                showMessage("Preset \"$name\" saved.")
+            } else {
+                showMessage("Enter a preset name.")
+            }
+        }
+        trackSubDialog(SUB_DIALOG_SAVE, dlg)
+    }
+
+    private fun openLoadPresetDialog() {
+        if (activeSubDialog?.isShowing == true) return
+        val profiles = getAllProfiles().keys.toList()
+        if (profiles.isEmpty()) {
+            showToast("No saved presets yet.")
+            return
+        }
+        val dlg = StreamPlayDesignTokens.showSelectionListDialog(
+            context = requireContext(),
+            resources = resources,
+            title = "Load source preset",
+            subtitle = "Select a saved provider configuration",
+            items = profiles
+        ) { _, selectedName ->
+            loadProfile(selectedName)
+        }
+        trackSubDialog(SUB_DIALOG_LOAD, dlg)
+    }
+
+    private fun openDeletePresetDialog() {
+        if (activeSubDialog?.isShowing == true) return
+        val profiles = getAllProfiles().keys.toList()
+        if (profiles.isEmpty()) {
+            showToast("No saved presets to delete.")
+            return
+        }
+        val dlg = StreamPlayDesignTokens.showSelectionListDialog(
+            context = requireContext(),
+            resources = resources,
+            title = "Delete source preset",
+            subtitle = "Select a preset to remove",
+            items = profiles,
+            itemTextColor = StreamPlayDesignTokens.DANGER_TEXT
+        ) { _, selectedName ->
+            val backupSet = getAllProfiles()[selectedName]
+            deleteProfile(selectedName)
+            updateProviderCountAndActions()
+            if (backupSet != null) {
+                val undoDlg = StreamPlayDesignTokens.showConfirmationDialog(
+                    context = requireContext(),
+                    resources = resources,
+                    title = "Preset \"$selectedName\" deleted",
+                    message = "Restore this preset?",
+                    confirmText = "Undo",
+                    cancelText = "Keep deleted",
+                    confirmVariant = StreamPlayDesignTokens.ButtonVariant.PRIMARY
+                ) {
+                    restoreProfile(selectedName, backupSet)
+                    updateProviderCountAndActions()
+                    showMessage("Preset \"$selectedName\" restored.")
+                }
+                trackSubDialog(null, undoDlg)
+            }
+        }
+        trackSubDialog(SUB_DIALOG_DELETE, dlg)
+    }
+
     private fun updateUI() {
-        val chkId = res.getIdentifier("chk_provider", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-        var providerIdx = 0
-        for (i in 0 until container.childCount) {
-            val child = container.getChildAt(i)
-            val chk = child.findViewById<CheckBox>(chkId) ?: (child as? CheckBox)
-            if (chk != null && providerIdx < providers.size) {
+        rowEntries.forEachIndexed { providerIdx, entry ->
+            if (providerIdx < providers.size) {
                 val id = providers[providerIdx].id
-                chk.isChecked = if (id.equals("vidlink", ignoreCase = true)) true else !adapter.isDisabled(id)
-                providerIdx++
+                entry.checkBox.isChecked = if (id.equals("vidlink", ignoreCase = true)) true else !adapter.isDisabled(id)
             }
         }
         updateProviderCountAndActions()
@@ -403,6 +460,12 @@ class ProvidersFragment(
     }
 
     companion object {
+        private const val STATE_ACTIVE_SUB_DIALOG = "state_active_sub_dialog"
+        private const val STATE_DRAFT_PRESET_NAME = "state_draft_preset_name"
+        private const val SUB_DIALOG_SAVE = "save"
+        private const val SUB_DIALOG_LOAD = "load"
+        private const val SUB_DIALOG_DELETE = "delete"
+
         internal fun encodeProfilesMap(profiles: Map<String, Set<String>>): String {
             return profiles.entries.joinToString("|") { (key, value) ->
                 val encodedKey = java.net.URLEncoder.encode(key, "UTF-8")
@@ -435,6 +498,20 @@ class ProvidersFragment(
 
     private fun showMessage(msg: String) {
         Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(STATE_ACTIVE_SUB_DIALOG, activeSubDialogType)
+        outState.putString(STATE_DRAFT_PRESET_NAME, draftPresetName)
+    }
+
+    override fun onDestroyView() {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = null
+        rowEntries.clear()
+        super.onDestroyView()
     }
 
     override fun onDismiss(dialog: android.content.DialogInterface) {

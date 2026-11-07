@@ -93,6 +93,7 @@ class ToggleFragment(
         root.background = StreamPlayDesignTokens.dialogSurfaceDrawable(resources)
 
         val extensionList = root.findView<LinearLayout>("toggle_list_container")
+        extensionList.layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         extensionList.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
 
         val subtitleCount = root.findViewOrNull<TextView>("subtitle_count")

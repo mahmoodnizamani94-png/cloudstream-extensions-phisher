@@ -41,3 +41,18 @@
 **Decisions:** new `DEC-014`, `DEC-015`, `DEC-016` · locked `DEC-001`–`DEC-016`
 **DESIGN.md:** Updated to `Version 4 · revised round 4`.
 **AI-tell scan:** **PASS (0 hard-ban hits, 0 substitute clichés, 0 raw `AlertDialog.Builder` calls across all 14 layouts, 3 drawables, 8 settings Kotlin files, and 5 provider/engine files; verified by 13 JUnit tests in `StreamPlaySettingsUiUxSotaTest` and 615 total unit tests in `:StreamPlay:testDebugUnitTest`)**.
+
+---
+
+## Round 5 (Frontier Round 2 Overhaul): System-Wide Header/List Divider Parity, Dynamic Window Sizing & Sub-Dialog Rotation Persistence
+
+**Observed (Frontier Round 2 Council on `antigravity_2` · 3x `gemini-4-argon` `high`):**
+- **Council Member 3 (Visual Craft & Anti-Slop Auditor):** **10 / 10 (TRUE STATE OF THE ART)** — Zero visual or anti-slop objections remaining.
+- **Council Member 2 (Interaction & Runtime Critic):** **9.2 / 10** — Noted `createThemedCustomDialog` `onShowListener` overwrite in `showTextInputDialog`/`showSelectionListDialog`, fixed pixel height lock in `configureDialogWindow`, post-rotation parent window visibility when a child `DialogFragment` is open, filtered `ProvidersFragment` divider/focus/corner-radius recalculation, sub-dialog rotation persistence, and `!isInTouchMode` guard on `showSelectionListDialog`.
+- **Council Member 1 (OS Design Systems Architect):** **9.1 / 10** — Noted missing `1dp` `#283140` `16dp`-inset dividers in `RecyclerView` grouped lists and programmatic modals, missing `1dp` `#283140` header dividers in 4 sub-dialogs, `16dp` vs `20dp` outer padding on `fragment_main_settings.xml`, `streamio_addon_addlinks.xml` button/label/background parity, and `scripts/render_settings_screenshots.py` string parity (`"2"` vs `"2 linked"`, single-string `RadioButton` in `LanguageSelectFragment`).
+
+**Fixed in Round 5:**
+- Resolved all `R2-1` through `R2-8` findings across `StreamPlayDesignTokens.kt`, all 8 settings `DialogFragment`s, all 9 modal/sheet XML layouts, `item_language.xml`, `item_provider_checkbox.xml`, `scripts/render_settings_screenshots.py`, and `StreamPlaySettingsUiUxSotaTest.kt` (now 15 JUnit tests in `StreamPlaySettingsUiUxSotaTest` and 617 total unit tests in `:StreamPlay:testDebugUnitTest`).
+- **Decisions:** new `DEC-017`, `DEC-018` · locked `DEC-001`–`DEC-018`
+- **DESIGN.md:** Updated to `Version 5 · revised round 5`.
+

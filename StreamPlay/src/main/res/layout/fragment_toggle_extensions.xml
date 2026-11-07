@@ -12,7 +12,7 @@
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
         android:paddingTop="20dp"
-        android:paddingBottom="24dp">
+        android:paddingBottom="20dp">
 
         <!-- Header with Title and Done Action -->
         <LinearLayout
@@ -69,6 +69,12 @@
                 android:contentDescription="Close extensions dialog"
                 android:nextFocusDown="@id/toggle_list_container" />
         </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#283140"
+            android:layout_marginBottom="16dp" />
 
         <!-- Unified grouped section container for extension toggles -->
         <LinearLayout

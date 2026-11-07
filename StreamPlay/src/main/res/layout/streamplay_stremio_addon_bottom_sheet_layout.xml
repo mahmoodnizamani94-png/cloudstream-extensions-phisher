@@ -12,15 +12,14 @@
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
         android:paddingTop="20dp"
-        android:paddingBottom="24dp">
+        android:paddingBottom="20dp">
 
         <!-- Header -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="16dp">
+            android:gravity="center_vertical">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -61,6 +60,14 @@
                 android:nextFocusDown="@id/row_add_link"
                 android:scaleType="centerInside" />
         </LinearLayout>
+
+        <!-- Hairline Divider (Tokenized #283140) -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#283140"
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="16dp" />
 
         <!-- Unified Grouped Section Container -->
         <LinearLayout

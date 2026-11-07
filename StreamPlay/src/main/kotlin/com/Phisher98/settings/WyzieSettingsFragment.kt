@@ -1,6 +1,7 @@
 package com.phisher98.settings
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -27,6 +28,13 @@ class WyzieSettingsFragment(
 ) : DialogFragment() {
 
     constructor() : this(null, null, null)
+
+    companion object {
+        private const val STATE_SHOWING_CLEAR_DIALOG = "state_showing_clear_dialog"
+    }
+
+    private var activeSubDialog: Dialog? = null
+    private var isShowingClearDialog: Boolean = false
 
     private val res: Resources
         get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
@@ -83,17 +91,19 @@ class WyzieSettingsFragment(
         StreamPlayDesignTokens.styleButton(resetButton, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
         StreamPlayDesignTokens.applyDirectionalFocus(resetButton, saveButton)
 
-        val savedWyzie = UrduSubtitleEngine.resolveWyzieApiKey(context, sharedPref)
-        if (!savedWyzie.isNullOrEmpty()) {
-            wyzieKeyInput.setText(savedWyzie)
-        }
-        val savedSubDl = UrduSubtitleEngine.resolveSubDlApiKey(context, sharedPref)
-        if (!savedSubDl.isNullOrEmpty()) {
-            subDlKeyInput?.setText(savedSubDl)
-        }
-        val savedSubSource = UrduSubtitleEngine.resolveSubSourceApiKey(context, sharedPref)
-        if (!savedSubSource.isNullOrEmpty()) {
-            subSourceKeyInput?.setText(savedSubSource)
+        if (savedInstanceState == null) {
+            val savedWyzie = UrduSubtitleEngine.resolveWyzieApiKey(context, sharedPref)
+            if (!savedWyzie.isNullOrEmpty()) {
+                wyzieKeyInput.setText(savedWyzie)
+            }
+            val savedSubDl = UrduSubtitleEngine.resolveSubDlApiKey(context, sharedPref)
+            if (!savedSubDl.isNullOrEmpty()) {
+                subDlKeyInput?.setText(savedSubDl)
+            }
+            val savedSubSource = UrduSubtitleEngine.resolveSubSourceApiKey(context, sharedPref)
+            if (!savedSubSource.isNullOrEmpty()) {
+                subSourceKeyInput?.setText(savedSubSource)
+            }
         }
 
         fun updateClearButtonState() {
@@ -146,9 +156,11 @@ class WyzieSettingsFragment(
             dismiss()
         }
 
-        resetButton.setOnClickListener {
-            val ctx = context ?: return@setOnClickListener
-            StreamPlayDesignTokens.showConfirmationDialog(
+        fun showClearKeysConfirmation() {
+            val ctx = context ?: return
+            if (activeSubDialog?.isShowing == true) return
+            isShowingClearDialog = true
+            val dlg = StreamPlayDesignTokens.showConfirmationDialog(
                 context = ctx,
                 resources = resources,
                 title = "Clear subtitle API keys?",
@@ -157,6 +169,7 @@ class WyzieSettingsFragment(
                 cancelText = "Cancel",
                 confirmVariant = StreamPlayDesignTokens.ButtonVariant.DANGER
             ) {
+                isShowingClearDialog = false
                 val prefStores = listOfNotNull(
                     sharedPref,
                     runCatching { ctx.applicationContext?.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE) }.getOrNull(),
@@ -184,7 +197,34 @@ class WyzieSettingsFragment(
                 showToast("Subtitle API keys cleared.")
                 dismiss()
             }
+            dlg.setOnDismissListener {
+                if (activeSubDialog === dlg) {
+                    activeSubDialog = null
+                    isShowingClearDialog = false
+                }
+            }
+            activeSubDialog = dlg
         }
+
+        resetButton.setOnClickListener {
+            showClearKeysConfirmation()
+        }
+
+        if (savedInstanceState?.getBoolean(STATE_SHOWING_CLEAR_DIALOG, false) == true) {
+            showClearKeysConfirmation()
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_SHOWING_CLEAR_DIALOG, isShowingClearDialog)
+    }
+
+    override fun onDestroyView() {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = null
+        super.onDestroyView()
     }
 
     override fun onDismiss(dialog: android.content.DialogInterface) {

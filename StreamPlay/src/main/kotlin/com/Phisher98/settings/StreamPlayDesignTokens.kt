@@ -6,11 +6,16 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.content.res.Resources
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.provider.Settings
@@ -34,6 +39,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.Fragment
+import androidx.recyclerview.widget.RecyclerView
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -237,20 +243,19 @@ object StreamPlayDesignTokens {
         } else {
             ViewGroup.LayoutParams.MATCH_PARENT
         }
-        val maxDialogHeight = (displayMetrics.heightPixels * maxHeightFraction).toInt()
+        val verticalInset = if (displayMetrics.heightPixels > 0) {
+            ((displayMetrics.heightPixels * (1f - maxHeightFraction).coerceAtLeast(0f)) / 2f).roundToInt()
+        } else {
+            0
+        }
         window.setGravity(Gravity.CENTER)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        window.setBackgroundDrawable(
+            InsetDrawable(ColorDrawable(Color.TRANSPARENT), 0, verticalInset, 0, verticalInset)
+        )
         runCatching {
             window.navigationBarColor = SURFACE_CANVAS
-        }
-        if (maxDialogHeight > 0) {
-            window.decorView.post {
-                if (window.decorView.height > maxDialogHeight) {
-                    window.setLayout(width, maxDialogHeight)
-                }
-            }
         }
     }
 
@@ -395,7 +400,11 @@ object StreamPlayDesignTokens {
      * with position-matched corner radii (`14dp` on outer corners, `0dp` on inner seams) when
      * pressed or focused via D-pad.
      */
-    fun groupedRowDrawable(density: Float, position: GroupPosition): Drawable {
+    fun groupedRowDrawable(
+        density: Float,
+        position: GroupPosition,
+        showBottomDivider: Boolean = false
+    ): Drawable {
         val topR = when (position) {
             GroupPosition.SINGLE, GroupPosition.TOP -> RADIUS_SECTION_CARD_DP
             GroupPosition.MIDDLE, GroupPosition.BOTTOM -> 0f
@@ -418,7 +427,78 @@ object StreamPlayDesignTokens {
             buildCornerRadiiShape(density, Color.TRANSPARENT, topR, topR, botR, botR)
         )
         val mask = buildCornerRadiiShape(density, Color.WHITE, topR, topR, botR, botR)
-        return RippleDrawable(ColorStateList.valueOf(0x2293C5FD), stateList, mask)
+        val ripple = RippleDrawable(ColorStateList.valueOf(0x2293C5FD), stateList, mask)
+        if (!showBottomDivider || position == GroupPosition.BOTTOM || position == GroupPosition.SINGLE) {
+            return ripple
+        }
+        val dividerHeightPx = dpToPx(density, 1f).coerceAtLeast(1)
+        val insetPx = dpToPx(density, 16f)
+        val dividerShape = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(BORDER_SUBTLE)
+            setSize(0, dividerHeightPx)
+        }
+        return LayerDrawable(arrayOf(ripple, dividerShape)).apply {
+            setLayerGravity(1, Gravity.BOTTOM or Gravity.FILL_HORIZONTAL)
+            setLayerHeight(1, dividerHeightPx)
+            setLayerInsetRelative(1, insetPx, 0, 0, 0)
+        }
+    }
+
+    /**
+     * Attaches an idempotent `1dp` `#283140` (`BORDER_SUBTLE`) hairline `ItemDecoration` inset `16dp`
+     * from the start edge (`LTR`/`RTL` aware) between items in a grouped `RecyclerView`.
+     */
+    fun attachGroupedListDivider(recyclerView: RecyclerView, density: Float) {
+        for (i in recyclerView.itemDecorationCount - 1 downTo 0) {
+            if (recyclerView.getItemDecorationAt(i) is GroupedInsetDividerDecoration) {
+                recyclerView.removeItemDecorationAt(i)
+            }
+        }
+        recyclerView.addItemDecoration(GroupedInsetDividerDecoration(density))
+    }
+
+    private class GroupedInsetDividerDecoration(density: Float) : RecyclerView.ItemDecoration() {
+        private val dividerHeightPx = dpToPx(density, 1f).coerceAtLeast(1)
+        private val insetStartPx = dpToPx(density, 16f)
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = BORDER_SUBTLE
+            style = Paint.Style.FILL
+        }
+
+        override fun getItemOffsets(
+            outRect: Rect,
+            view: View,
+            parent: RecyclerView,
+            state: RecyclerView.State
+        ) {
+            val position = parent.getChildAdapterPosition(view)
+            val itemCount = parent.adapter?.itemCount ?: state.itemCount
+            if (position != RecyclerView.NO_POSITION && position < itemCount - 1) {
+                outRect.set(0, 0, 0, dividerHeightPx)
+            } else {
+                outRect.set(0, 0, 0, 0)
+            }
+        }
+
+        override fun onDraw(c: Canvas, parent: RecyclerView, state: RecyclerView.State) {
+            val itemCount = parent.adapter?.itemCount ?: state.itemCount
+            if (itemCount <= 1) return
+            val isRtl = parent.layoutDirection == View.LAYOUT_DIRECTION_RTL
+            val left = if (isRtl) parent.paddingLeft else parent.paddingLeft + insetStartPx
+            val right = if (isRtl) parent.width - parent.paddingRight - insetStartPx else parent.width - parent.paddingRight
+            if (right <= left) return
+            for (i in 0 until parent.childCount) {
+                val child = parent.getChildAt(i)
+                val position = parent.getChildAdapterPosition(child)
+                if (position != RecyclerView.NO_POSITION && position < itemCount - 1) {
+                    val params = child.layoutParams as? RecyclerView.LayoutParams
+                    val top = child.bottom + (params?.bottomMargin ?: 0)
+                    val bottom = top + dividerHeightPx
+                    c.drawRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), paint)
+                }
+            }
+        }
     }
 
     fun cardSurfaceDrawable(density: Float): Drawable {
@@ -635,14 +715,17 @@ object StreamPlayDesignTokens {
         context: Context,
         resources: Resources,
         contentView: View,
-        maxHeightFraction: Float = 0.85f
+        maxHeightFraction: Float = 0.85f,
+        onShown: ((Dialog) -> Unit)? = null
     ): Dialog {
         val dialog = Dialog(context)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        contentView.layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         contentView.background = dialogSheetDrawable(resources.displayMetrics.density)
         dialog.setContentView(contentView)
         dialog.setOnShowListener {
             configureDialogWindow(dialog, resources, maxHeightFraction = maxHeightFraction)
+            onShown?.invoke(dialog)
         }
         applyWindowInsetsPadding(contentView)
         return dialog
@@ -662,6 +745,7 @@ object StreamPlayDesignTokens {
         val pad = dpToPx(density, 20f)
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             setPadding(pad, pad, pad, pad)
         }
         val titleView = TextView(context).apply {
@@ -669,6 +753,7 @@ object StreamPlayDesignTokens {
             setTextColor(TEXT_PRIMARY)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             setTypeface(typeface, Typeface.BOLD)
+            letterSpacing = -0.015f
         }
         val messageView = TextView(context).apply {
             text = message
@@ -716,6 +801,7 @@ object StreamPlayDesignTokens {
         root.addView(actionsRow)
 
         val scroll = ScrollView(context).apply {
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             isFillViewport = true
             addView(root)
         }
@@ -738,12 +824,15 @@ object StreamPlayDesignTokens {
         hintText: String,
         confirmText: String,
         cancelText: String = "Cancel",
+        initialText: String = "",
+        onTextChanged: ((String) -> Unit)? = null,
         onConfirm: (String) -> Unit
     ): Dialog {
         val density = resources.displayMetrics.density
         val pad = dpToPx(density, 20f)
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             setPadding(pad, pad, pad, pad)
         }
         val titleView = TextView(context).apply {
@@ -751,6 +840,7 @@ object StreamPlayDesignTokens {
             setTextColor(TEXT_PRIMARY)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             setTypeface(typeface, Typeface.BOLD)
+            letterSpacing = -0.015f
         }
         val subtitleView = TextView(context).apply {
             text = subtitle
@@ -779,6 +869,19 @@ object StreamPlayDesignTokens {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             background = inputWellDrawable(density)
             setPadding(padH, padV, padH, padV)
+            if (initialText.isNotEmpty()) {
+                setText(initialText)
+                setSelection(initialText.length)
+            }
+            if (onTextChanged != null) {
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        onTextChanged(s?.toString().orEmpty())
+                    }
+                    override fun afterTextChanged(s: android.text.Editable?) {}
+                })
+            }
         }
         val actionsRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -825,20 +928,19 @@ object StreamPlayDesignTokens {
         root.addView(actionsRow)
 
         val scroll = ScrollView(context).apply {
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             isFillViewport = true
             addView(root)
         }
-        val dialog = createThemedCustomDialog(context, resources, scroll)
+        val dialog = createThemedCustomDialog(context, resources, scroll) {
+            input.isFocusableInTouchMode = true
+            input.requestFocus()
+        }
         cancelBtn.setOnClickListener { dialog.dismiss() }
         confirmBtn.setOnClickListener {
             val value = input.text?.toString()?.trim().orEmpty()
             dialog.dismiss()
             onConfirm(value)
-        }
-        dialog.setOnShowListener {
-            configureDialogWindow(dialog, resources, maxHeightFraction = 0.85f)
-            input.isFocusableInTouchMode = true
-            input.requestFocus()
         }
         dialog.show()
         return dialog
@@ -858,6 +960,7 @@ object StreamPlayDesignTokens {
         val pad = dpToPx(density, 20f)
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             setPadding(pad, pad, pad, pad)
         }
         val titleView = TextView(context).apply {
@@ -865,6 +968,7 @@ object StreamPlayDesignTokens {
             setTextColor(TEXT_PRIMARY)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             setTypeface(typeface, Typeface.BOLD)
+            letterSpacing = -0.015f
         }
         val subtitleView = TextView(context).apply {
             text = subtitle
@@ -874,6 +978,7 @@ object StreamPlayDesignTokens {
         }
         val groupContainer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             background = groupedSectionDrawable(density)
         }
         val cancelBtn = Button(context).apply {
@@ -899,10 +1004,15 @@ object StreamPlayDesignTokens {
         )
 
         val scroll = ScrollView(context).apply {
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             isFillViewport = true
             addView(root)
         }
-        val dialog = createThemedCustomDialog(context, resources, scroll)
+        val dialog = createThemedCustomDialog(context, resources, scroll) {
+            if (!groupContainer.isInTouchMode && groupContainer.childCount > 0) {
+                groupContainer.getChildAt(0)?.requestFocus()
+            }
+        }
         cancelBtn.setOnClickListener { dialog.dismiss() }
 
         items.forEachIndexed { index, label ->
@@ -948,12 +1058,6 @@ object StreamPlayDesignTokens {
             )
         }
 
-        dialog.setOnShowListener {
-            configureDialogWindow(dialog, resources, maxHeightFraction = 0.85f)
-            if (groupContainer.childCount > 0) {
-                groupContainer.getChildAt(0)?.requestFocus()
-            }
-        }
         dialog.show()
         return dialog
     }

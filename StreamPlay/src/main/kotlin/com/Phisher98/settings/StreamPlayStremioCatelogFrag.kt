@@ -1,10 +1,13 @@
 package com.phisher98
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.SharedPreferences
 import android.content.res.Resources
 import android.graphics.drawable.Drawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
@@ -29,6 +32,19 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
     private var pluginRef: StreamPlayPlugin? = null
     private var sharedPrefRef: SharedPreferences? = null
     private var onDismissCallback: (() -> Unit)? = null
+    private var activeSubDialog: Dialog? = null
+    private var activeSubDialogType: String? = null
+    private var draftCatalogName: String = ""
+    private var draftCatalogLink: String = ""
+
+    companion object {
+        private const val STATE_SUB_DIALOG_TYPE = "state_catalog_sub_dialog_type"
+        private const val STATE_DRAFT_NAME = "state_catalog_draft_name"
+        private const val STATE_DRAFT_LINK = "state_catalog_draft_link"
+        private const val SUB_DIALOG_ADD = "add"
+        private const val SUB_DIALOG_LIST = "list"
+        private const val SUB_DIALOG_RESTART = "restart"
+    }
 
     constructor(
         plugin: StreamPlayPlugin?,
@@ -74,6 +90,18 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
         return inflater.inflate(layout, container, false)
     }
 
+    private fun trackSubDialog(type: String, dialog: Dialog) {
+        activeSubDialog?.dismiss()
+        activeSubDialogType = type
+        activeSubDialog = dialog
+        dialog.setOnDismissListener {
+            if (activeSubDialog === dialog) {
+                activeSubDialog = null
+                activeSubDialogType = null
+            }
+        }
+    }
+
     @SuppressLint("DiscouragedApi", "SetTextI18n")
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -112,7 +140,7 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
         }
         refreshSavedCount()
 
-        val openAddDialog = View.OnClickListener {
+        fun showAddCatalogModal(initialName: String = "", initialLink: String = "") {
             val dialogView = getLayout("streamio_addon_addlinks", inflater, container)
             val etName: EditText
             val etLink: EditText
@@ -125,19 +153,48 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
                 btnSave = dialogView.findView("btn_save_manifest")
             } catch (t: Throwable) {
                 Log.e("StreamPlayStremioCatelogFrag", "Missing dialog views $t")
-                return@OnClickListener
+                return
             }
 
+            draftCatalogName = initialName
+            draftCatalogLink = initialLink
+
             dialogView.findViewOrNull<TextView>("tvAddManifestTitle")?.text = "Add catalog manifest"
+            dialogView.findViewOrNull<View>("label_addon_type")?.visibility = View.GONE
             dialogView.findViewOrNull<View>("radioGroup")?.visibility = View.GONE
 
             etName.background = StreamPlayDesignTokens.inputFieldDrawable(resources)
             etLink.background = StreamPlayDesignTokens.inputFieldDrawable(resources)
+            if (initialName.isNotEmpty()) {
+                etName.setText(initialName)
+                etName.setSelection(initialName.length)
+            }
+            if (initialLink.isNotEmpty()) {
+                etLink.setText(initialLink)
+                etLink.setSelection(initialLink.length)
+            }
+            etName.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    draftCatalogName = s?.toString().orEmpty()
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+            etLink.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    draftCatalogLink = s?.toString().orEmpty()
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+
             StreamPlayDesignTokens.styleButton(btnCancel, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
             StreamPlayDesignTokens.styleButton(btnSave, density, StreamPlayDesignTokens.ButtonVariant.PRIMARY)
+            StreamPlayDesignTokens.applyDirectionalFocus(btnCancel, btnSave)
             btnSave.text = "Save catalog"
 
             val dlg = StreamPlayDesignTokens.createThemedCustomDialog(requireContext(), resources, dialogView)
+            trackSubDialog(SUB_DIALOG_ADD, dlg)
             btnCancel.setOnClickListener { dlg.dismiss() }
             btnSave.setOnClickListener {
                 val name = etName.text.toString().trim()
@@ -179,10 +236,11 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
             dlg.show()
         }
 
-        val openListDialog = View.OnClickListener {
+        fun showSavedCatalogsModal() {
             val dialogView = getLayout("stremio_dialog_list_links", inflater, container)
             dialogView.findViewOrNull<TextView>("tvSavedManifestsTitle")?.text = "Saved catalog manifests"
             val dlg = StreamPlayDesignTokens.createThemedCustomDialog(requireContext(), resources, dialogView)
+            trackSubDialog(SUB_DIALOG_LIST, dlg)
 
             val rv: RecyclerView = dialogView.findView("rvLinks")
             val tvNoLinks: TextView = dialogView.findView("tvNoLinks")
@@ -193,6 +251,7 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
             }
 
             rv.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
+            StreamPlayDesignTokens.attachGroupedListDivider(rv, density)
             val list = loadLinks().toMutableList()
 
             if (list.isEmpty()) {
@@ -242,12 +301,9 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
             dlg.show()
         }
 
-        rowAddLink.setOnClickListener(openAddDialog)
-        rowShowLinks.setOnClickListener(openListDialog)
-
-        saveIcon.setOnClickListener {
-            val ctx = this.context ?: return@setOnClickListener
-            StreamPlayDesignTokens.showConfirmationDialog(
+        fun showRestartConfirmationModal() {
+            val ctx = this.context ?: return
+            val dlg = StreamPlayDesignTokens.showConfirmationDialog(
                 context = ctx,
                 resources = resources,
                 title = "Restart to apply catalogs",
@@ -259,9 +315,39 @@ class StreamPlayStremioCatelogFrag() : DialogFragment() {
                 dismiss()
                 StreamPlayDesignTokens.restartHostApp(requireContext())
             }
+            trackSubDialog(SUB_DIALOG_RESTART, dlg)
+        }
+
+        rowAddLink.setOnClickListener { showAddCatalogModal() }
+        rowShowLinks.setOnClickListener { showSavedCatalogsModal() }
+        saveIcon.setOnClickListener { showRestartConfirmationModal() }
+
+        when (savedInstanceState?.getString(STATE_SUB_DIALOG_TYPE)) {
+            SUB_DIALOG_ADD -> showAddCatalogModal(
+                initialName = savedInstanceState.getString(STATE_DRAFT_NAME, ""),
+                initialLink = savedInstanceState.getString(STATE_DRAFT_LINK, "")
+            )
+            SUB_DIALOG_LIST -> showSavedCatalogsModal()
+            SUB_DIALOG_RESTART -> showRestartConfirmationModal()
         }
 
         return view
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (activeSubDialog?.isShowing == true && activeSubDialogType != null) {
+            outState.putString(STATE_SUB_DIALOG_TYPE, activeSubDialogType)
+            outState.putString(STATE_DRAFT_NAME, draftCatalogName)
+            outState.putString(STATE_DRAFT_LINK, draftCatalogLink)
+        }
+    }
+
+    override fun onDestroyView() {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = null
+        super.onDestroyView()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {

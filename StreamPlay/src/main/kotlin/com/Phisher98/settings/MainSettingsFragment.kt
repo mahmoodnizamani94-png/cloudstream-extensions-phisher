@@ -1,6 +1,7 @@
 package com.phisher98
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.Resources
@@ -13,6 +14,8 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.fragment.app.DialogFragment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.phisher98.settings.ToggleFragment
 import com.phisher98.settings.WyzieSettingsFragment
 import org.json.JSONArray
@@ -24,6 +27,23 @@ class MainSettingsFragment(
 
     constructor() : this(null, null)
 
+    companion object {
+        private const val STATE_SHOWING_RESTART_DIALOG = "state_showing_restart_dialog"
+        val CHILD_DIALOG_TAGS = listOf(
+            "wyzie_settings_fragment",
+            "fragment_toggle_extensions",
+            "fragment_toggle_providers",
+            "fragment_language_list",
+            "stremio_bottom_sheet_layout",
+            "streamplay_stremio_addon_bottom_sheet_layout",
+            "concurrency_bottom_sheet"
+        )
+    }
+
+    private var activeSubDialog: Dialog? = null
+    private var isShowingRestartDialog: Boolean = false
+    private var refreshSummariesCallback: (() -> Unit)? = null
+
     private val res: Resources
         get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
 
@@ -33,6 +53,7 @@ class MainSettingsFragment(
     override fun onStart() {
         super.onStart()
         StreamPlayDesignTokens.configureDialogWindow(dialog, resources)
+        syncWindowVisibilityWithChildFragments()
     }
 
     private fun getDrawable(name: String): Drawable {
@@ -259,16 +280,18 @@ class MainSettingsFragment(
             }
         }
 
-        refreshLiveRowSummaries()
-        updateSubtitleModeCardUi(animate = false)
+        refreshSummariesCallback = {
+            refreshLiveRowSummaries()
+            updateSubtitleModeCardUi(animate = false)
+        }
+        refreshSummariesCallback?.invoke()
 
         parentFragmentManager.setFragmentResultListener(
             StreamPlayDesignTokens.FRAGMENT_RESULT_SETTINGS_CHANGED,
             viewLifecycleOwner
         ) { _, _ ->
-            dialog?.window?.decorView?.visibility = View.VISIBLE
-            refreshLiveRowSummaries()
-            updateSubtitleModeCardUi(animate = false)
+            syncWindowVisibilityWithChildFragments()
+            refreshSummariesCallback?.invoke()
         }
 
         fun applyModeSelection(ctx: Context, selectedMode: UrduSubtitleEngine.SubtitleMode) {
@@ -282,17 +305,19 @@ class MainSettingsFragment(
         }
 
         val showSubFragment = { fragmentCreator: (() -> Unit) -> DialogFragment, tag: String ->
-            val fm = activity?.supportFragmentManager
-            if (fm != null && !fm.isStateSaved && fm.findFragmentByTag(tag) == null) {
+            val fm = parentFragmentManager
+            val anyChildShowing = CHILD_DIALOG_TAGS.any { fm.findFragmentByTag(it)?.isAdded == true }
+            if (!fm.isStateSaved && !anyChildShowing) {
                 dialog?.window?.decorView?.visibility = View.INVISIBLE
                 val subFragment = fragmentCreator {
                     if (isAdded) {
                         dialog?.window?.decorView?.visibility = View.VISIBLE
-                        refreshLiveRowSummaries()
-                        updateSubtitleModeCardUi(animate = false)
+                        refreshSummariesCallback?.invoke()
                     }
                 }
                 subFragment.show(fm, tag)
+                fm.executePendingTransactions()
+                syncWindowVisibilityWithChildFragments()
             }
         }
 
@@ -340,25 +365,83 @@ class MainSettingsFragment(
 
         saveIcon.setOnClickListener {
             val ctx = this.context ?: return@setOnClickListener
-            StreamPlayDesignTokens.showConfirmationDialog(
-                context = ctx,
-                resources = resources,
-                title = "Restart CloudStream?",
-                message = "Subtitles, source selection, concurrency, and API keys apply immediately. Restart only if you added or toggled Stremio catalog extensions.",
-                confirmText = "Restart now",
-                cancelText = "Keep watching",
-                confirmVariant = StreamPlayDesignTokens.ButtonVariant.PRIMARY
-            ) {
-                dismiss()
-                StreamPlayDesignTokens.restartHostApp(ctx)
-            }
+            showRestartConfirmationDialog(ctx)
+        }
+
+        if (savedInstanceState?.getBoolean(STATE_SHOWING_RESTART_DIALOG, false) == true) {
+            this.context?.let { showRestartConfirmationDialog(it) }
         }
         return view
     }
 
+    private fun showRestartConfirmationDialog(ctx: Context) {
+        if (activeSubDialog?.isShowing == true) return
+        isShowingRestartDialog = true
+        val dialogInstance = StreamPlayDesignTokens.showConfirmationDialog(
+            context = ctx,
+            resources = resources,
+            title = "Restart CloudStream?",
+            message = "Subtitles, source selection, concurrency, and API keys apply immediately. Restart only if you added or toggled Stremio catalog extensions.",
+            confirmText = "Restart now",
+            cancelText = "Keep watching",
+            confirmVariant = StreamPlayDesignTokens.ButtonVariant.PRIMARY
+        ) {
+            isShowingRestartDialog = false
+            dismiss()
+            StreamPlayDesignTokens.restartHostApp(ctx)
+        }
+        dialogInstance.setOnDismissListener {
+            if (activeSubDialog === dialogInstance) {
+                activeSubDialog = null
+                isShowingRestartDialog = false
+            }
+        }
+        activeSubDialog = dialogInstance
+    }
+
+    private fun syncWindowVisibilityWithChildFragments() {
+        if (!isAdded) return
+        val fm = parentFragmentManager
+        val activeChildren = CHILD_DIALOG_TAGS.mapNotNull { tag ->
+            fm.findFragmentByTag(tag)?.takeIf { it.isAdded && !it.isRemoving }
+        }
+        if (activeChildren.isNotEmpty()) {
+            dialog?.window?.decorView?.visibility = View.INVISIBLE
+            for (child in activeChildren) {
+                child.lifecycle.addObserver(object : LifecycleEventObserver {
+                    override fun onStateChanged(source: androidx.lifecycle.LifecycleOwner, event: Lifecycle.Event) {
+                        if (event == Lifecycle.Event.ON_DESTROY) {
+                            source.lifecycle.removeObserver(this)
+                            if (isAdded) {
+                                syncWindowVisibilityWithChildFragments()
+                                refreshSummariesCallback?.invoke()
+                            }
+                        }
+                    }
+                })
+            }
+        } else {
+            dialog?.window?.decorView?.visibility = View.VISIBLE
+        }
+    }
+
     override fun onResume() {
         super.onResume()
-        dialog?.window?.decorView?.visibility = View.VISIBLE
+        syncWindowVisibilityWithChildFragments()
+        refreshSummariesCallback?.invoke()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_SHOWING_RESTART_DIALOG, isShowingRestartDialog)
+    }
+
+    override fun onDestroyView() {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = null
+        refreshSummariesCallback = null
+        super.onDestroyView()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {

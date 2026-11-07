@@ -24,17 +24,24 @@
             android:text="Concurrency"
             android:textSize="20sp"
             android:textStyle="bold"
+            android:letterSpacing="-0.015"
             android:textColor="#F1F5F9" />
 
         <TextView
             android:id="@+id/tv_concurrency_subtitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:layout_marginBottom="20dp"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="14dp"
             android:text="Parallel provider tasks launched per search"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textColor="#94A3B8" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#283140"
+            android:layout_marginBottom="16dp" />
 
         <!-- Stepper Row -->
         <LinearLayout

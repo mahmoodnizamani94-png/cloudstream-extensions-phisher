@@ -147,6 +147,7 @@ class LanguageSelectFragment(
         search.background = StreamPlayDesignTokens.inputWellDrawable(density)
         recycler.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
         recycler.layoutManager = LinearLayoutManager(requireContext())
+        StreamPlayDesignTokens.attachGroupedListDivider(recycler, density)
 
         val savedCode = sharedPref.getString("tmdb_language_code", "en-US") ?: "en-US"
 
@@ -164,6 +165,7 @@ class LanguageSelectFragment(
 
         search.addTextChangedListener { text ->
             val count = adapter.filter(text.toString())
+            recycler.invalidateItemDecorations()
             if (count == 0) {
                 tvEmpty?.visibility = View.VISIBLE
                 recycler.visibility = View.GONE
@@ -190,6 +192,13 @@ class LanguageSelectFragment(
 
         private var filteredList: List<Pair<String, String>> = originalList
 
+        private fun groupPositionFor(index: Int, size: Int): StreamPlayDesignTokens.GroupPosition = when {
+            size <= 1 -> StreamPlayDesignTokens.GroupPosition.SINGLE
+            index == 0 -> StreamPlayDesignTokens.GroupPosition.TOP
+            index == size - 1 -> StreamPlayDesignTokens.GroupPosition.BOTTOM
+            else -> StreamPlayDesignTokens.GroupPosition.MIDDLE
+        }
+
         inner class VH(val v: View) : RecyclerView.ViewHolder(v) {
             val radio: RadioButton = v.findView("radio_language")
         }
@@ -201,11 +210,12 @@ class LanguageSelectFragment(
 
         override fun onBindViewHolder(holder: VH, position: Int) {
             val (name, code) = filteredList[position]
+            val pos = groupPositionFor(position, filteredList.size)
 
             holder.radio.text = name
             holder.radio.isChecked = code == selectedCode
             holder.radio.setTextColor(StreamPlayDesignTokens.TEXT_PRIMARY)
-            holder.radio.background = StreamPlayDesignTokens.listItemDrawable(density)
+            holder.radio.background = StreamPlayDesignTokens.groupedRowDrawable(density, pos)
             CompoundButtonCompat.setButtonTintList(
                 holder.radio,
                 StreamPlayDesignTokens.compoundButtonTintList()
@@ -235,7 +245,9 @@ class LanguageSelectFragment(
                 override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
                     previousList[oldItemPosition].second == nextList[newItemPosition].second
                 override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
-                    previousList[oldItemPosition] == nextList[newItemPosition]
+                    previousList[oldItemPosition] == nextList[newItemPosition] &&
+                        groupPositionFor(oldItemPosition, previousList.size) ==
+                        groupPositionFor(newItemPosition, nextList.size)
             })
             filteredList = nextList
             diff.dispatchUpdatesTo(this)

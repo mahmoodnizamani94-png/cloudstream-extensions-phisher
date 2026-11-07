@@ -1,10 +1,13 @@
 package com.phisher98
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.SharedPreferences
 import android.content.res.Resources
 import android.graphics.drawable.Drawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
@@ -34,6 +37,21 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
     private var pluginRef: StreamPlayPlugin? = null
     private var sharedPrefRef: SharedPreferences? = null
     private var onDismissCallback: (() -> Unit)? = null
+    private var activeSubDialog: Dialog? = null
+    private var activeSubDialogType: String? = null
+    private var draftManifestName: String = ""
+    private var draftManifestLink: String = ""
+    private var draftManifestType: String = StreamPlayStremioAddonType.HTTPS.name
+
+    companion object {
+        private const val STATE_SUB_DIALOG_TYPE = "state_addon_sub_dialog_type"
+        private const val STATE_DRAFT_NAME = "state_addon_draft_name"
+        private const val STATE_DRAFT_LINK = "state_addon_draft_link"
+        private const val STATE_DRAFT_TYPE = "state_addon_draft_type"
+        private const val SUB_DIALOG_ADD = "add"
+        private const val SUB_DIALOG_LIST = "list"
+        private const val SUB_DIALOG_RESTART = "restart"
+    }
 
     constructor(
         plugin: StreamPlayPlugin?,
@@ -86,6 +104,18 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
         else -> rawType
     }
 
+    private fun trackSubDialog(type: String, dialog: Dialog) {
+        activeSubDialog?.dismiss()
+        activeSubDialogType = type
+        activeSubDialog = dialog
+        dialog.setOnDismissListener {
+            if (activeSubDialog === dialog) {
+                activeSubDialog = null
+                activeSubDialogType = null
+            }
+        }
+    }
+
     @SuppressLint("DiscouragedApi", "SetTextI18n")
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val view = getLayout("streamplay_stremio_addon_bottom_sheet_layout", inflater, container)
@@ -120,7 +150,11 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
         }
         refreshSavedCount()
 
-        val openAddDialog = View.OnClickListener {
+        fun showAddManifestModal(
+            initialName: String = "",
+            initialLink: String = "",
+            initialType: String = StreamPlayStremioAddonType.HTTPS.name
+        ) {
             val dialogView = getLayout("streamio_addon_addlinks", inflater, container)
             val etName: EditText
             val etLink: EditText
@@ -135,15 +169,42 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
                 btnSave = dialogView.findView("btn_save_manifest")
             } catch (t: Throwable) {
                 Log.e("StreamPlayStremioAddonFrag", "Missing dialog views $t")
-                return@OnClickListener
+                return
             }
+
+            draftManifestName = initialName
+            draftManifestLink = initialLink
+            draftManifestType = initialType
 
             etName.background = StreamPlayDesignTokens.inputFieldDrawable(resources)
             etLink.background = StreamPlayDesignTokens.inputFieldDrawable(resources)
+            if (initialName.isNotEmpty()) {
+                etName.setText(initialName)
+                etName.setSelection(initialName.length)
+            }
+            if (initialLink.isNotEmpty()) {
+                etLink.setText(initialLink)
+                etLink.setSelection(initialLink.length)
+            }
+            etName.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    draftManifestName = s?.toString().orEmpty()
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+            etLink.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    draftManifestLink = s?.toString().orEmpty()
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+
             rg.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
             rg.removeAllViews()
 
-            val padH = StreamPlayDesignTokens.dpToPx(density, 14f)
+            val padH = StreamPlayDesignTokens.dpToPx(density, 16f)
             val padV = StreamPlayDesignTokens.dpToPx(density, 10f)
             val options = listOf(
                 StreamPlayStremioAddonType.HTTPS to "HTTPS",
@@ -166,21 +227,32 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
                         minHeight = StreamPlayDesignTokens.dp(resources, StreamPlayDesignTokens.MIN_TOUCH_TARGET_DP)
                         setPadding(padH, padV, padH, padV)
                         setTextColor(StreamPlayDesignTokens.TEXT_PRIMARY)
-                        background = StreamPlayDesignTokens.groupedRowDrawable(density, pos)
+                        background = StreamPlayDesignTokens.groupedRowDrawable(
+                            density = density,
+                            position = pos,
+                            showBottomDivider = true
+                        )
                         CompoundButtonCompat.setButtonTintList(
                             this,
                             StreamPlayDesignTokens.compoundButtonTintList()
                         )
-                        isChecked = index == 0
+                        isChecked = type.name.equals(initialType, ignoreCase = true) ||
+                            (index == 0 && options.none { it.first.name.equals(initialType, ignoreCase = true) })
                     }
                 )
+            }
+            rg.setOnCheckedChangeListener { group, checkedId ->
+                draftManifestType = group.findViewById<RadioButton>(checkedId)?.tag?.toString()
+                    ?: StreamPlayStremioAddonType.HTTPS.name
             }
 
             StreamPlayDesignTokens.styleButton(btnCancel, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
             StreamPlayDesignTokens.styleButton(btnSave, density, StreamPlayDesignTokens.ButtonVariant.PRIMARY)
+            StreamPlayDesignTokens.applyDirectionalFocus(btnCancel, btnSave)
             btnSave.text = "Save manifest"
 
             val dlg = StreamPlayDesignTokens.createThemedCustomDialog(requireContext(), resources, dialogView)
+            trackSubDialog(SUB_DIALOG_ADD, dlg)
             btnCancel.setOnClickListener { dlg.dismiss() }
             btnSave.setOnClickListener {
                 val name = etName.text.toString().trim()
@@ -221,9 +293,10 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
             dlg.show()
         }
 
-        val openListDialog = View.OnClickListener {
+        fun showSavedManifestsModal() {
             val dialogView = getLayout("stremio_dialog_list_links", inflater, container)
             val dlg = StreamPlayDesignTokens.createThemedCustomDialog(requireContext(), resources, dialogView)
+            trackSubDialog(SUB_DIALOG_LIST, dlg)
 
             val rv: RecyclerView = dialogView.findView("rvLinks")
             val tvNoLinks: TextView = dialogView.findView("tvNoLinks")
@@ -234,6 +307,7 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
             }
 
             rv.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
+            StreamPlayDesignTokens.attachGroupedListDivider(rv, density)
             val list = loadLinks().toMutableList()
 
             if (list.isEmpty()) {
@@ -279,12 +353,9 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
             dlg.show()
         }
 
-        rowAddLink.setOnClickListener(openAddDialog)
-        rowShowLinks.setOnClickListener(openListDialog)
-
-        saveIcon.setOnClickListener {
-            val ctx = this.context ?: return@setOnClickListener
-            StreamPlayDesignTokens.showConfirmationDialog(
+        fun showRestartConfirmationModal() {
+            val ctx = this.context ?: return
+            val dlg = StreamPlayDesignTokens.showConfirmationDialog(
                 context = ctx,
                 resources = resources,
                 title = "Restart to apply addons",
@@ -296,9 +367,41 @@ class StreamPlayStremioAddonFrag() : DialogFragment() {
                 dismiss()
                 StreamPlayDesignTokens.restartHostApp(requireContext())
             }
+            trackSubDialog(SUB_DIALOG_RESTART, dlg)
+        }
+
+        rowAddLink.setOnClickListener { showAddManifestModal() }
+        rowShowLinks.setOnClickListener { showSavedManifestsModal() }
+        saveIcon.setOnClickListener { showRestartConfirmationModal() }
+
+        when (savedInstanceState?.getString(STATE_SUB_DIALOG_TYPE)) {
+            SUB_DIALOG_ADD -> showAddManifestModal(
+                initialName = savedInstanceState.getString(STATE_DRAFT_NAME, ""),
+                initialLink = savedInstanceState.getString(STATE_DRAFT_LINK, ""),
+                initialType = savedInstanceState.getString(STATE_DRAFT_TYPE, StreamPlayStremioAddonType.HTTPS.name)
+            )
+            SUB_DIALOG_LIST -> showSavedManifestsModal()
+            SUB_DIALOG_RESTART -> showRestartConfirmationModal()
         }
 
         return view
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (activeSubDialog?.isShowing == true && activeSubDialogType != null) {
+            outState.putString(STATE_SUB_DIALOG_TYPE, activeSubDialogType)
+            outState.putString(STATE_DRAFT_NAME, draftManifestName)
+            outState.putString(STATE_DRAFT_LINK, draftManifestLink)
+            outState.putString(STATE_DRAFT_TYPE, draftManifestType)
+        }
+    }
+
+    override fun onDestroyView() {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = null
+        super.onDestroyView()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {

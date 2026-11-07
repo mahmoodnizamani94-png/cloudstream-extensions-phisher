@@ -493,4 +493,68 @@ class StreamPlaySettingsUiUxSotaTest {
         val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000.0 / 50.0
         assertTrue("Average filter + summary latency ($elapsedMs ms) must be < 5.0 ms", elapsedMs < 5.0)
     }
+
+    @Test
+    fun `all 9 modal and sheet XML layouts enforce 20dp outer padding 20sp tight-tracked titles and 1dp #283140 header dividers`() {
+        val root = resolveModuleRoot()
+        val layoutDir = File(root, "src/main/res/layout")
+        val modalLayouts = listOf(
+            "fragment_main_settings.xml",
+            "concurrency_bottom_sheet.xml",
+            "wyzie_settings_fragment.xml",
+            "fragment_providers.xml",
+            "fragment_language_select.xml",
+            "fragment_toggle_extensions.xml",
+            "streamplay_stremio_addon_bottom_sheet_layout.xml",
+            "stremio_bottom_sheet_layout.xml",
+            "streamio_addon_addlinks.xml",
+            "stremio_dialog_list_links.xml"
+        )
+        for (name in modalLayouts) {
+            val content = File(layoutDir, name).readText()
+            assertTrue("$name must use 20sp title", content.contains("android:textSize=\"20sp\""))
+            assertTrue("$name must use -0.015 letterSpacing on 20sp title", content.contains("android:letterSpacing=\"-0.015\""))
+            assertTrue("$name must include a 1dp #283140 header hairline divider", content.contains("android:background=\"#283140\""))
+            val hasUniform20dpPadding = content.contains("android:padding=\"20dp\"") ||
+                (content.contains("android:paddingStart=\"20dp\"") &&
+                    content.contains("android:paddingEnd=\"20dp\"") &&
+                    content.contains("android:paddingTop=\"20dp\"") &&
+                    content.contains("android:paddingBottom=\"20dp\""))
+            assertTrue("$name must use 20dp outer modal padding", hasUniform20dpPadding)
+        }
+    }
+
+    @Test
+    fun `runtime window sizing grouped dividers and rotation state guards are wired across all settings fragments`() {
+        val root = resolveModuleRoot()
+        val settingsDir = File(root, "src/main/kotlin/com/Phisher98/settings")
+
+        val tokensCode = File(settingsDir, "StreamPlayDesignTokens.kt").readText()
+        assertTrue("configureDialogWindow must use InsetDrawable vertical inset cap with WRAP_CONTENT", tokensCode.contains("InsetDrawable(ColorDrawable(Color.TRANSPARENT), 0, verticalInset, 0, verticalInset)"))
+        assertFalse("configureDialogWindow must not lock fixed pixel height via decorView.post", tokensCode.contains("decor.height > maxHeight"))
+        assertTrue("StreamPlayDesignTokens must provide attachGroupedListDivider for RecyclerViews", tokensCode.contains("fun attachGroupedListDivider("))
+        assertTrue("showSelectionListDialog must guard auto-focus with !groupContainer.isInTouchMode", tokensCode.contains("!groupContainer.isInTouchMode"))
+        assertTrue("groupedRowDrawable must support showBottomDivider", tokensCode.contains("showBottomDivider: Boolean = false"))
+
+        val mainCode = File(settingsDir, "MainSettingsFragment.kt").readText()
+        assertTrue("MainSettingsFragment must sync window visibility with child DialogFragments across rotation", mainCode.contains("syncWindowVisibilityWithChildFragments"))
+        assertTrue("MainSettingsFragment must persist restart confirmation modal across rotation", mainCode.contains("STATE_SHOWING_RESTART_DIALOG"))
+
+        val providersCode = File(settingsDir, "ProvidersFragment.kt").readText()
+        assertTrue("ProvidersFragment must dynamically recompute visible dividers and focus when filtering", providersCode.contains("refreshFilteredProviderGroup"))
+        assertTrue("ProvidersFragment must persist active sub-dialog and draft preset name across rotation", providersCode.contains("STATE_ACTIVE_SUB_DIALOG"))
+
+        val langCode = File(settingsDir, "LanguageSelectFragment.kt").readText()
+        assertTrue("LanguageSelectFragment must attach grouped inset list divider to languageRecycler", langCode.contains("attachGroupedListDivider"))
+        assertTrue("LanguageSelectFragment must use groupedRowDrawable per item position", langCode.contains("groupedRowDrawable(density, pos)"))
+
+        val addonCode = File(settingsDir, "StreamPlayStremioAddonFrag.kt").readText()
+        assertTrue("StreamPlayStremioAddonFrag must attach grouped inset list divider to rvLinks", addonCode.contains("attachGroupedListDivider"))
+        assertTrue("StreamPlayStremioAddonFrag must pass showBottomDivider = true to RadioButtons", addonCode.contains("showBottomDivider = true"))
+        assertTrue("StreamPlayStremioAddonFrag must persist sub-dialog state across rotation", addonCode.contains("STATE_SUB_DIALOG_TYPE"))
+
+        val catalogCode = File(settingsDir, "StreamPlayStremioCatelogFrag.kt").readText()
+        assertTrue("StreamPlayStremioCatelogFrag must attach grouped inset list divider to rvLinks", catalogCode.contains("attachGroupedListDivider"))
+        assertTrue("StreamPlayStremioCatelogFrag must hide label_addon_type alongside radioGroup", catalogCode.contains("label_addon_type"))
+    }
 }

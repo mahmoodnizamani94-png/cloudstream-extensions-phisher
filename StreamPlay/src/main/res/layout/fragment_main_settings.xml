@@ -13,9 +13,9 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="18dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="20dp"
         android:paddingBottom="20dp"
         tools:background="#0E1116">
 
@@ -41,7 +41,7 @@
                     android:textSize="20sp"
                     android:textColor="#F1F5F9"
                     android:textStyle="bold"
-                    android:letterSpacing="-0.01" />
+                    android:letterSpacing="-0.015" />
 
                 <TextView
                     android:id="@+id/headerSubtitle"
@@ -131,7 +131,7 @@
                         android:fontFeatureSettings="tnum"
                         android:text="5 of 6 sources"
                         android:textColor="#94A3B8"
-                        android:textSize="12sp"
+                        android:textSize="13sp"
                         android:maxLines="1"
                         android:ellipsize="end" />
                 </LinearLayout>

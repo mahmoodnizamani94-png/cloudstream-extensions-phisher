@@ -129,7 +129,7 @@ def render_main_settings_svg(
     require_id_exists(main_xml, "section_playback_group")
     require_id_exists(main_xml, "section_addons_group")
 
-    pad_x = 16
+    pad_x = 20
     sheet_x = 12
     sheet_w = width - 24
     inner_x = sheet_x + pad_x
@@ -145,8 +145,8 @@ def render_main_settings_svg(
         f'<rect x="{sheet_x}" y="12" width="{sheet_w}" height="{height - 24}" rx="20" fill="{TOKENS["canvas"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
     ]
 
-    # Header (y=30..78)
-    hy = 30
+    # Header (y=32..80)
+    hy = 32
     header_title = "StreamPlay"
     header_sub = "Playback, subtitles, and source settings"
     if not rtl:
@@ -168,9 +168,9 @@ def render_main_settings_svg(
         )
         parts.append(reload_icon_svg(inner_x, hy - 2))
 
-    # Header Hairline Divider (y=84)
+    # Header Hairline Divider (y=86)
     parts.append(
-        f'<rect x="{inner_x}" y="84" width="{inner_w}" height="1" fill="{TOKENS["border"]}"/>'
+        f'<rect x="{inner_x}" y="86" width="{inner_w}" height="1" fill="{TOKENS["border"]}"/>'
     )
 
     def draw_section_label(ly: int, label_text: str) -> int:
@@ -336,7 +336,7 @@ def render_main_settings_svg(
         f'<rect x="{inner_x}" y="{sec3_y}" width="{inner_w}" height="{sec3_h}" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     cur_y = draw_grouped_row(sec3_y, "Extensions", "Home & anime catalogs", require_text(main_xml, "featureValue"), has_top_divider=False)
-    cur_y = draw_grouped_row(cur_y, "Stream addons", "HTTPS, torrent & debrid", "2 linked", has_top_divider=True)
+    cur_y = draw_grouped_row(cur_y, "Stream addons", "HTTPS, torrent & debrid", "2", has_top_divider=True)
     cur_y = draw_grouped_row(cur_y, "Catalog addons", "Custom home feeds", require_text(main_xml, "stremioCatalogsValue"), value_muted=True, has_top_divider=True)
 
     parts.append("</svg>")
@@ -364,39 +364,40 @@ def render_subdialogs_svg(width: int = 768) -> str:
         f'<text x="{lx}" y="52" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="20" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "tv_concurrency_title"))}</text>'
     )
     parts.append(
-        f'<text x="{lx}" y="74" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_concurrency_subtitle"))}</text>'
+        f'<text x="{lx}" y="72" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_concurrency_subtitle"))}</text>'
     )
+    parts.append(f'<rect x="{lx}" y="86" width="{lw}" height="1" fill="{TOKENS["border"]}"/>')
 
     # Stepper Card
     parts.append(
-        f'<rect x="{lx}" y="94" width="{lw}" height="96" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{lx}" y="102" width="{lw}" height="96" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     # Decrease btn (56x56)
     parts.append(
-        f'<rect x="{lx + 16}" y="114" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{lx + 16}" y="122" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     parts.append(
-        f'<text x="{lx + 44}" y="151" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="26" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_decrease"))}</text>'
+        f'<text x="{lx + 44}" y="159" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="26" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_decrease"))}</text>'
     )
     # Center readout (calm #94A3B8 secondary tier label)
     parts.append(
-        f'<text x="{lx + lw / 2}" y="148" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="40" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "tv_value"))}</text>'
+        f'<text x="{lx + lw / 2}" y="156" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="40" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "tv_value"))}</text>'
     )
     parts.append(
-        f'<text x="{lx + lw / 2}" y="170" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_mode"))}</text>'
+        f'<text x="{lx + lw / 2}" y="178" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_mode"))}</text>'
     )
     # Increase btn (56x56)
     inc_x = lx + lw - 16 - 56
     parts.append(
-        f'<rect x="{inc_x}" y="114" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{inc_x}" y="122" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     parts.append(
-        f'<text x="{inc_x + 28}" y="151" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="26" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_increase"))}</text>'
+        f'<text x="{inc_x + 28}" y="159" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="26" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_increase"))}</text>'
     )
 
     # 3 Presets Row
     pw = (lw - 16) / 3.0
-    py = 202
+    py = 210
     presets = [
         (require_text(conc_xml, "preset_low"), False),
         (require_text(conc_xml, "preset_balanced"), True),
@@ -415,10 +416,10 @@ def render_subdialogs_svg(width: int = 768) -> str:
         )
 
     parts.append(
-        f'<text x="{lx}" y="276" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_muted"]}">8 to 12 keeps slow connections stable. 16 is balanced</text>'
+        f'<text x="{lx}" y="284" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_muted"]}">8 to 12 keeps slow connections stable. 16 is balanced</text>'
     )
     parts.append(
-        f'<text x="{lx}" y="294" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_muted"]}">for most phones and TVs. 32+ races more providers.</text>'
+        f'<text x="{lx}" y="302" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_muted"]}">for most phones and TVs. 32+ races more providers.</text>'
     )
 
     # Done button
@@ -511,7 +512,7 @@ def render_subdialogs_secondary_svg(width: int = 768) -> str:
     toggle_xml = parse_layout_strings("fragment_toggle_extensions.xml")
     lang_xml = parse_layout_strings("fragment_language_select.xml")
     links_xml = parse_layout_strings("stremio_dialog_list_links.xml")
-    height = 700
+    height = 716
     col_w = (width - 48) // 2
     left_x = 16
     right_x = left_x + col_w + 16
@@ -520,7 +521,7 @@ def render_subdialogs_secondary_svg(width: int = 768) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         f'<rect width="{width}" height="{height}" fill="#07090D"/>',
         # Left Top Sheet: ProvidersFragment (fragment_providers.xml)
-        f'<rect x="{left_x}" y="16" width="{col_w}" height="462" rx="20" fill="{TOKENS["canvas"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
+        f'<rect x="{left_x}" y="16" width="{col_w}" height="474" rx="20" fill="{TOKENS["canvas"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
     ]
 
     lx = left_x + 20
@@ -538,16 +539,17 @@ def render_subdialogs_secondary_svg(width: int = 768) -> str:
     parts.append(
         f'<text x="{done_x + 36}" y="63" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(prov_xml, "btn_save"))}</text>'
     )
+    parts.append(f'<rect x="{lx}" y="94" width="{lw}" height="1" fill="{TOKENS["border"]}"/>')
 
     # Search sources preceding label + EditText
     parts.append(
-        f'<text x="{lx}" y="106" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(prov_xml, "label_search_providers"))}</text>'
+        f'<text x="{lx}" y="118" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(prov_xml, "label_search_providers"))}</text>'
     )
     parts.append(
-        f'<rect x="{lx}" y="114" width="{lw}" height="48" rx="10" fill="{TOKENS["track"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{lx}" y="126" width="{lw}" height="48" rx="10" fill="{TOKENS["track"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     parts.append(
-        f'<text x="{lx + 14}" y="143" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" fill="{TOKENS["text_muted"]}">{esc(require_hint(prov_xml, "ext_search"))}</text>'
+        f'<text x="{lx + 14}" y="155" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" fill="{TOKENS["text_muted"]}">{esc(require_hint(prov_xml, "ext_search"))}</text>'
     )
 
     # Quiet Secondary Toolbar: Enable all / Disable optional / Save preset
@@ -560,14 +562,14 @@ def render_subdialogs_secondary_svg(width: int = 768) -> str:
     for idx, label in enumerate(toolbar_btns):
         px = lx + idx * (pw3 + 8)
         parts.append(
-            f'<rect x="{px:.1f}" y="172" width="{pw3:.1f}" height="48" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+            f'<rect x="{px:.1f}" y="184" width="{pw3:.1f}" height="48" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
         )
         parts.append(
-            f'<text x="{px + pw3 / 2:.1f}" y="201" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(label)}</text>'
+            f'<text x="{px + pw3 / 2:.1f}" y="213" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(label)}</text>'
         )
 
     # Grouped Inset Providers List Container
-    list_y = 232
+    list_y = 244
     list_h = 228
     parts.append(
         f'<rect x="{lx}" y="{list_y}" width="{lw}" height="{list_h}" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
@@ -598,34 +600,37 @@ def render_subdialogs_secondary_svg(width: int = 768) -> str:
         )
         cy_p += 54
 
-    # Left Bottom Sheet: LanguageSelectFragment (fragment_language_select.xml)
+    # Left Bottom Sheet: LanguageSelectFragment (fragment_language_select.xml + item_language.xml)
     parts.append(
-        f'<rect x="{left_x}" y="494" width="{col_w}" height="190" rx="20" fill="{TOKENS["canvas"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{left_x}" y="504" width="{col_w}" height="196" rx="20" fill="{TOKENS["canvas"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     parts.append(
-        f'<text x="{lx}" y="530" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="20" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(lang_xml, "tv_language_title"))}</text>'
+        f'<text x="{lx}" y="540" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="20" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(lang_xml, "tv_language_title"))}</text>'
     )
     parts.append(
-        f'<text x="{lx}" y="550" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(lang_xml, "tv_language_subtitle"))}</text>'
+        f'<text x="{lx}" y="560" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(lang_xml, "tv_language_subtitle"))}</text>'
     )
     parts.append(
-        f'<rect x="{done_x}" y="512" width="72" height="48" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{done_x}" y="522" width="72" height="48" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
     parts.append(
-        f'<text x="{done_x + 36}" y="541" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(lang_xml, "btn_close_language"))}</text>'
+        f'<text x="{done_x + 36}" y="551" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="13" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(lang_xml, "btn_close_language"))}</text>'
     )
+    parts.append(f'<rect x="{lx}" y="576" width="{lw}" height="1" fill="{TOKENS["border"]}"/>')
     parts.append(
-        f'<rect x="{lx}" y="572" width="{lw}" height="96" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
+        f'<rect x="{lx}" y="586" width="{lw}" height="96" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>'
     )
-    for idx, (lname, lcode, active) in enumerate([("English", "en", True), ("Urdu", "ur", False)]):
-        ly_r = 574 + idx * 46
+    for idx, (full_label, active) in enumerate([
+        ("English \u00b7 United States (en-US)", True),
+        ("Urdu \u00b7 Pakistan (ur-PK)", False),
+    ]):
+        ly_r = 588 + idx * 46
         if idx > 0:
             parts.append(f'<rect x="{lx + 16}" y="{ly_r}" width="{lw - 16}" height="1" fill="{TOKENS["border"]}"/>')
         parts.append(f'<circle cx="{lx + 26}" cy="{ly_r + 23}" r="9" fill="none" stroke="{TOKENS["accent"] if active else TOKENS["text_secondary"]}" stroke-width="2"/>')
         if active:
             parts.append(f'<circle cx="{lx + 26}" cy="{ly_r + 23}" r="4.5" fill="{TOKENS["accent"]}"/>')
-        parts.append(f'<text x="{lx + 46}" y="{ly_r + 28}" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="14" fill="{TOKENS["text_primary"]}">{esc(lname)}</text>')
-        parts.append(f'<text x="{lx + lw - 16}" y="{ly_r + 28}" text-anchor="end" font-family="DejaVu Sans Mono, monospace" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(lcode)}</text>')
+        parts.append(f'<text x="{lx + 46}" y="{ly_r + 28}" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="14" fill="{TOKENS["text_primary"]}">{esc(full_label)}</text>')
 
     # Right Top Sheet: ToggleFragment (fragment_toggle_extensions.xml — Grouped inset switches)
     parts.append(
@@ -718,17 +723,18 @@ def render_landscape_360h_svg(width: int = 640, height: int = 360) -> str:
         f'<rect width="{width}" height="{height}" fill="#07090D"/>',
         f'<rect x="{sheet_x}" y="{sheet_y}" width="{sheet_w}" height="{sheet_h}" rx="20" fill="{TOKENS["canvas"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
         f'<text x="{lx}" y="{sheet_y + 34}" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="18" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "tv_concurrency_title"))}</text>',
-        f'<text x="{lx}" y="{sheet_y + 54}" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_concurrency_subtitle"))}</text>',
-        f'<rect x="{lx}" y="{sheet_y + 68}" width="{lw}" height="82" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
-        f'<rect x="{lx + 16}" y="{sheet_y + 81}" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
-        f'<text x="{lx + 44}" y="{sheet_y + 118}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="24" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_decrease"))}</text>',
-        f'<text x="{lx + lw / 2}" y="{sheet_y + 112}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="34" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "tv_value"))}</text>',
-        f'<text x="{lx + lw / 2}" y="{sheet_y + 132}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_mode"))}</text>',
-        f'<rect x="{lx + lw - 72}" y="{sheet_y + 81}" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
-        f'<text x="{lx + lw - 44}" y="{sheet_y + 118}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="24" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_increase"))}</text>',
+        f'<text x="{lx}" y="{sheet_y + 52}" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_concurrency_subtitle"))}</text>',
+        f'<rect x="{lx}" y="{sheet_y + 62}" width="{lw}" height="1" fill="{TOKENS["border"]}"/>',
+        f'<rect x="{lx}" y="{sheet_y + 72}" width="{lw}" height="82" rx="14" fill="{TOKENS["card"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
+        f'<rect x="{lx + 16}" y="{sheet_y + 85}" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
+        f'<text x="{lx + 44}" y="{sheet_y + 122}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="24" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_decrease"))}</text>',
+        f'<text x="{lx + lw / 2}" y="{sheet_y + 116}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="34" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "tv_value"))}</text>',
+        f'<text x="{lx + lw / 2}" y="{sheet_y + 136}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="12" fill="{TOKENS["text_secondary"]}">{esc(require_text(conc_xml, "tv_mode"))}</text>',
+        f'<rect x="{lx + lw - 72}" y="{sheet_y + 85}" width="56" height="56" rx="10" fill="{TOKENS["overlay"]}" stroke="{TOKENS["border"]}" stroke-width="1"/>',
+        f'<text x="{lx + lw - 44}" y="{sheet_y + 122}" text-anchor="middle" font-family="Noto Sans, DejaVu Sans, sans-serif" font-size="24" font-weight="700" fill="{TOKENS["text_primary"]}">{esc(require_text(conc_xml, "btn_increase"))}</text>',
     ]
     pw = (lw - 16) / 3.0
-    py = sheet_y + 160
+    py = sheet_y + 164
     for idx, (label, active) in enumerate([
         (require_text(conc_xml, "preset_low"), False),
         (require_text(conc_xml, "preset_balanced"), True),

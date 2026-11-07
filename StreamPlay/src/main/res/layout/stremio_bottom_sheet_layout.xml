@@ -13,7 +13,7 @@
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
         android:paddingTop="20dp"
-        android:paddingBottom="24dp">
+        android:paddingBottom="20dp">
 
         <!-- Header -->
         <LinearLayout
@@ -81,7 +81,7 @@
                 android:id="@+id/row_add_link"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:minHeight="60dp"
+                android:minHeight="58dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
                 android:paddingStart="16dp"
@@ -138,7 +138,7 @@
                 android:id="@+id/row_show_links"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:minHeight="60dp"
+                android:minHeight="58dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
                 android:paddingStart="16dp"
@@ -168,6 +168,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
+                        android:accessibilityLiveRegion="polite"
                         android:text="No catalog feeds saved"
                         android:textSize="12sp"
                         android:textColor="#94A3B8" />
