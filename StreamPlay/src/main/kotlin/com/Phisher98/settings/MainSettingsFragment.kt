@@ -1,78 +1,64 @@
 package com.phisher98
 
+import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
-import android.content.Intent
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.content.SharedPreferences
+import android.content.res.Resources
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.DialogFragment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.phisher98.settings.ToggleFragment
 import com.phisher98.settings.WyzieSettingsFragment
-import kotlin.math.roundToInt
+import org.json.JSONArray
 
 class MainSettingsFragment(
-    private val plugin: StreamPlayPlugin,
-    private val sharedPref: android.content.SharedPreferences
+    private var explicitPlugin: StreamPlayPlugin? = null,
+    private var explicitSharedPref: SharedPreferences? = null
 ) : DialogFragment() {
+
+    constructor() : this(null, null)
+
+    companion object {
+        private const val STATE_SHOWING_RESTART_DIALOG = "state_showing_restart_dialog"
+        val CHILD_DIALOG_TAGS = listOf(
+            "wyzie_settings_fragment",
+            "fragment_toggle_extensions",
+            "fragment_toggle_providers",
+            "fragment_language_list",
+            "stremio_bottom_sheet_layout",
+            "streamplay_stremio_addon_bottom_sheet_layout",
+            "concurrency_bottom_sheet"
+        )
+    }
+
+    private var activeSubDialog: Dialog? = null
+    private var isShowingRestartDialog: Boolean = false
+    private var refreshSummariesCallback: (() -> Unit)? = null
+
+    private val res: Resources
+        get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
+
+    private val sharedPref: SharedPreferences
+        get() = StreamPlayDesignTokens.resolveSharedPreferences(this, explicitSharedPref)
 
     override fun onStart() {
         super.onStart()
-        dialog?.window?.apply {
-            val displayMetrics = resources.displayMetrics
-            val maxDialogWidth = (500 * displayMetrics.density).toInt()
-            val width = if (displayMetrics.widthPixels > 0 && displayMetrics.widthPixels > maxDialogWidth) {
-                maxDialogWidth
-            } else {
-                (displayMetrics.widthPixels * 0.92f).toInt()
-            }
-            val maxDialogHeight = (displayMetrics.heightPixels * 0.90f).toInt()
-            setGravity(Gravity.CENTER)
-            setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            decorView.post {
-                if (decorView.height > maxDialogHeight && maxDialogHeight > 0) {
-                    setLayout(width, maxDialogHeight)
-                }
-            }
-        }
-    }
-
-    private val res = plugin.resources ?: throw Exception("Unable to access plugin resources")
-
-    private fun dpToPx(dp: Float): Float = dp * resources.displayMetrics.density
-
-    private fun buildRoundedBox(
-        fillColorHex: String,
-        cornerRadiusDp: Float,
-        strokeWidthDp: Float = 0f,
-        strokeColorHex: String? = null
-    ): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dpToPx(cornerRadiusDp)
-            setColor(Color.parseColor(fillColorHex))
-            if (strokeWidthDp > 0f && strokeColorHex != null) {
-                setStroke(dpToPx(strokeWidthDp).roundToInt().coerceAtLeast(1), Color.parseColor(strokeColorHex))
-            }
-        }
+        StreamPlayDesignTokens.configureDialogWindow(dialog, resources)
+        syncWindowVisibilityWithChildFragments()
     }
 
     private fun getDrawable(name: String): Drawable {
         val id = res.getIdentifier(name, "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        return res.getDrawable(id, null) ?: throw Exception("Drawable $name not found")
+        return res.getDrawable(id, null) ?: throw IllegalStateException("Drawable $name not found")
     }
 
     private fun <T : View> View.findView(name: String): T {
@@ -81,11 +67,10 @@ class MainSettingsFragment(
         return this.findViewById(id)
     }
 
-    private fun View.makeTvCompatible() {
-        val outlineId = res.getIdentifier("outline", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (outlineId != 0) {
-            this.background = res.getDrawable(outlineId, null)
-        }
+    private fun <T : View> View.findViewOrNull(name: String): T? {
+        val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
+        if (id == 0) return null
+        return runCatching { this.findViewById<T>(id) }.getOrNull()
     }
 
     private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
@@ -94,50 +79,48 @@ class MainSettingsFragment(
         return inflater.inflate(layout, container, false)
     }
 
+    private fun countJsonLinks(prefKey: String): Int {
+        val raw = sharedPref.getString(prefKey, null) ?: return 0
+        return runCatching { JSONArray(raw).length() }.getOrDefault(0)
+    }
+
+    @SuppressLint("SetTextI18n")
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
         val view = getLayout("fragment_main_settings", inflater, container)
-        val drawableId = res.getIdentifier("dialog_background", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (drawableId != 0) {
-            view.background = res.getDrawable(drawableId, null)
-        }
+        val density = resources.displayMetrics.density
+        view.background = StreamPlayDesignTokens.dialogSheetDrawable(density)
+
+        val mainContainer: ViewGroup? = view.findViewOrNull("main_settings_container")
+        val sectionSubtitlesGroup: View? = view.findViewOrNull("section_subtitles_group")
+        val sectionPlaybackGroup: View? = view.findViewOrNull("section_playback_group")
+        val sectionAddonsGroup: View? = view.findViewOrNull("section_addons_group")
 
         val subtitleModeRow: View = view.findView("subtitle_mode_button")
         val subtitleModeLabel: TextView = view.findView("subtitle_mode_label")
-        val subtitleModeDesc: TextView? = runCatching {
-            view.findView<TextView>("subtitle_mode_desc")
-        }.getOrNull()
-        val subtitleModeIcon: ImageView? = runCatching {
-            view.findView<ImageView>("subtitle_mode_icon")
-        }.getOrNull()
-        val subtitleModeStatusBadge: TextView? = runCatching {
-            view.findView<TextView>("subtitle_mode_status_badge")
-        }.getOrNull()
-        val subtitleModePillTrack: View? = runCatching {
-            view.findView<View>("subtitle_mode_pill_track")
-        }.getOrNull()
-        val subtitleModePillDefault: TextView? = runCatching {
-            view.findView<TextView>("subtitle_mode_pill_default")
-        }.getOrNull()
-        val subtitleModePillUrdu: TextView? = runCatching {
-            view.findView<TextView>("subtitle_mode_pill_urdu")
-        }.getOrNull()
-        val subtitleModeSourcesChips: TextView? = runCatching {
-            view.findView<TextView>("subtitle_mode_sources_chips")
-        }.getOrNull()
+        val subtitleModeDesc: TextView? = view.findViewOrNull("subtitle_mode_desc")
+        val subtitleModePillTrack: View? = view.findViewOrNull("subtitle_mode_pill_track")
+        val subtitleModePillDefault: TextView? = view.findViewOrNull("subtitle_mode_pill_default")
+        val subtitleModePillUrdu: TextView? = view.findViewOrNull("subtitle_mode_pill_urdu")
 
-        val loginCard: ImageView? = runCatching { view.findView<ImageView>("loginCard") }.getOrNull()
-        val wyzieCard: ImageView? = runCatching { view.findView<ImageView>("wyzieCard") }.getOrNull()
-        val featureCard: ImageView? = runCatching { view.findView<ImageView>("featureCard") }.getOrNull()
-        val toggleproviders: ImageView? = runCatching { view.findView<ImageView>("toggleproviders") }.getOrNull()
-        val languagechange: ImageView? = runCatching { view.findView<ImageView>("languageCard") }.getOrNull()
-        val stremioaddon: ImageView? = runCatching { view.findView<ImageView>("stremioaddons") }.getOrNull()
-        val stremioaddonstreams: ImageView? = runCatching { view.findView<ImageView>("stremioaddonstreams") }.getOrNull()
-        val performance: ImageView? = runCatching { view.findView<ImageView>("performance") }.getOrNull()
+        val wyzieCard: ImageView? = view.findViewOrNull("wyzieCard")
+        val featureCard: ImageView? = view.findViewOrNull("featureCard")
+        val toggleproviders: ImageView? = view.findViewOrNull("toggleproviders")
+        val languagechange: ImageView? = view.findViewOrNull("languageCard")
+        val stremioaddon: ImageView? = view.findViewOrNull("stremioaddons")
+        val stremioaddonstreams: ImageView? = view.findViewOrNull("stremioaddonstreams")
+        val performance: ImageView? = view.findViewOrNull("performance")
 
-        val loginRow: View = view.findView("loginRow")
+        val languageValue: TextView? = view.findViewOrNull("languageValue")
+        val wyzieValue: TextView? = view.findViewOrNull("wyzieValue")
+        val providersValue: TextView? = view.findViewOrNull("providersValue")
+        val performanceValue: TextView? = view.findViewOrNull("performanceValue")
+        val featureValue: TextView? = view.findViewOrNull("featureValue")
+        val stremioStreamsValue: TextView? = view.findViewOrNull("stremioStreamsValue")
+        val stremioCatalogsValue: TextView? = view.findViewOrNull("stremioCatalogsValue")
+
         val wyzieRow: View = view.findView("wyzieRow")
         val featureRow: View = view.findView("featureRow")
         val toggleprovidersRow: View = view.findView("toggleprovidersRow")
@@ -149,205 +132,196 @@ class MainSettingsFragment(
         val saveIcon: ImageView = view.findView("saveIcon")
 
         runCatching {
-            val settingsIcon = getDrawable("settings_icon")
-            subtitleModeIcon?.setImageDrawable(settingsIcon)
-            loginCard?.setImageDrawable(getDrawable("settings_icon"))
-            wyzieCard?.setImageDrawable(getDrawable("settings_icon"))
-            languagechange?.setImageDrawable(getDrawable("settings_icon"))
-            featureCard?.setImageDrawable(getDrawable("settings_icon"))
-            toggleproviders?.setImageDrawable(getDrawable("settings_icon"))
-            stremioaddon?.setImageDrawable(getDrawable("settings_icon"))
-            stremioaddonstreams?.setImageDrawable(getDrawable("settings_icon"))
-            performance?.setImageDrawable(getDrawable("settings_icon"))
+            val chevron = getDrawable("chevron_right_icon")
+            wyzieCard?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
+            languagechange?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
+            featureCard?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
+            toggleproviders?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
+            stremioaddon?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
+            stremioaddonstreams?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
+            performance?.setImageDrawable(chevron.constantState?.newDrawable()?.mutate() ?: chevron)
             saveIcon.setImageDrawable(getDrawable("save_icon"))
         }
 
-        runCatching {
-            loginRow.background = getDrawable("settings_item_background")
-            wyzieRow.background = getDrawable("settings_item_background")
-            featureRow.background = getDrawable("settings_item_background")
-            toggleprovidersRow.background = getDrawable("settings_item_background")
-            languageRow.background = getDrawable("settings_item_background")
-            stremioaddonsRow.background = getDrawable("settings_item_background")
-            stremioaddonstreamsRow.background = getDrawable("settings_item_background")
-            performanceRow.background = getDrawable("settings_item_background")
-        }
+        saveIcon.background = StreamPlayDesignTokens.buttonDrawable(
+            density,
+            StreamPlayDesignTokens.ButtonVariant.ICON_GHOST
+        )
 
-        fun updateSubtitleModeCardUi() {
-            val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
-            val isUrdu = currentMode == UrduSubtitleEngine.SubtitleMode.URDU
+        // Apply unified OS grouped inset section containers + position-aware row drawables
+        sectionSubtitlesGroup?.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
+        sectionPlaybackGroup?.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
+        sectionAddonsGroup?.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
 
-            subtitleModePillTrack?.background = buildRoundedBox(
-                fillColorHex = "#0F172A",
-                cornerRadiusDp = 14f,
-                strokeWidthDp = 1f,
-                strokeColorHex = "#1E293B"
-            )
+        subtitleModeRow.background = null
+        StreamPlayDesignTokens.applyDirectionalFocus(subtitleModePillDefault, subtitleModePillUrdu)
 
-            if (isUrdu) {
-                subtitleModeRow.background = buildRoundedBox(
-                    fillColorHex = "#141E28",
-                    cornerRadiusDp = 16f,
-                    strokeWidthDp = 1.5f,
-                    strokeColorHex = "#10B981"
-                )
-                subtitleModeLabel.text =
-                    "Subtitle Mode: Urdu (\u0627\u0631\u062f\u0648) • ${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Sources"
-                subtitleModeDesc?.text =
-                    "Active: ${UrduSubtitleEngine.sotaSourcesSummary()}. Every track is labeled Urdu [Source] in the player."
-                subtitleModeStatusBadge?.apply {
-                    text = "URDU SOTA ACTIVE"
-                    setTextColor(Color.parseColor("#34D399"))
-                    background = buildRoundedBox("#064E3B", 999f, 1f, "#10B981")
+        languageRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.MIDDLE)
+        wyzieRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.BOTTOM)
+
+        toggleprovidersRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.TOP)
+        performanceRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.BOTTOM)
+
+        featureRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.TOP)
+        stremioaddonstreamsRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.MIDDLE)
+        stremioaddonsRow.background = StreamPlayDesignTokens.groupedRowDrawable(density, StreamPlayDesignTokens.GroupPosition.BOTTOM)
+
+        fun refreshLiveRowSummaries() {
+            // 1. Language code
+            val langCode = sharedPref.getString("tmdb_language_code", "en-US") ?: "en-US"
+            languageValue?.apply {
+                text = langCode
+                setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+            }
+
+            // 2. Subtitle API keys count
+            val keyCount = StreamPlayDesignTokens.countConfiguredSubtitleKeys(context, sharedPref)
+            wyzieValue?.apply {
+                if (keyCount > 0) {
+                    text = "$keyCount of 3"
+                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+                } else {
+                    text = "None"
+                    setTextColor(StreamPlayDesignTokens.TEXT_MUTED)
                 }
-                subtitleModePillUrdu?.apply {
-                    background = buildRoundedBox("#059669", 12f)
-                    setTextColor(Color.parseColor("#FFFFFF"))
-                    isSelected = true
+            }
+
+            // 3. Enabled providers ratio
+            val allProviders = buildProviders()
+            val disabledSet = getOrInitializeDisabledProviders(sharedPref)
+            val enabledCount = allProviders.count { it.id.equals("vidlink", ignoreCase = true) || !disabledSet.contains(it.id) }
+            providersValue?.apply {
+                text = "$enabledCount of ${allProviders.size}"
+                setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+            }
+
+            // 4. Concurrency value + unified tier label ("Stable", "Balanced", "Fast", "Max")
+            val concurrency = sharedPref
+                .getInt("provider_concurrency", StreamPlayConcurrency.DeviceProfile.MID_RANGE.recommendedConcurrency)
+                .let(StreamPlayConcurrency::normalizeConcurrency)
+            performanceValue?.apply {
+                text = StreamPlayDesignTokens.formatConcurrencySummary(concurrency)
+                setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+            }
+
+            // 5. Active extensions count
+            val catalogCount = countJsonLinks("streamplay_stremio_saved_links")
+            val totalExt = 2 + catalogCount
+            val savedPlugins = sharedPref.getStringSet("enabled_plugins_saved", null)
+            val activeExt = savedPlugins?.size ?: totalExt
+            featureValue?.apply {
+                text = "$activeExt of $totalExt"
+                setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+            }
+
+            // 6. Stremio stream addons count
+            val streamAddonCount = countJsonLinks(StreamPlayStremioAddonSettings.PREF_KEY_LINKS)
+            stremioStreamsValue?.apply {
+                if (streamAddonCount > 0) {
+                    text = "$streamAddonCount"
+                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+                } else {
+                    text = "None"
+                    setTextColor(StreamPlayDesignTokens.TEXT_MUTED)
                 }
-                subtitleModePillDefault?.apply {
-                    background = buildRoundedBox("#1E293B", 12f)
-                    setTextColor(Color.parseColor("#94A3B8"))
-                    isSelected = false
-                }
-                subtitleModeSourcesChips?.apply {
-                    text = "✓ Spoken Urdu Idiom Engine • SubDL • Subf2m • YTS-Subs • OpenSubtitles • SubSource • SubSense • Wyzie • SubtitleCat • Contextual AI"
-                    setTextColor(Color.parseColor("#6EE7B7"))
-                }
-            } else {
-                subtitleModeRow.background = buildRoundedBox(
-                    fillColorHex = "#161B26",
-                    cornerRadiusDp = 16f,
-                    strokeWidthDp = 1.5f,
-                    strokeColorHex = "#3B82F6"
-                )
-                subtitleModeLabel.text = "Subtitle Mode: Default (English) • 6 English Sources"
-                subtitleModeDesc?.text =
-                    "Tap any pill below for instant 0ms switch to Urdu (\u0627\u0631\u062f\u0648) — ${UrduSubtitleEngine.sotaSourcesSummary()}"
-                subtitleModeStatusBadge?.apply {
-                    text = "ENGLISH DEFAULT"
-                    setTextColor(Color.parseColor("#93C5FD"))
-                    background = buildRoundedBox("#1E3A8A", 999f, 1f, "#3B82F6")
-                }
-                subtitleModePillDefault?.apply {
-                    background = buildRoundedBox("#2563EB", 12f)
-                    setTextColor(Color.parseColor("#FFFFFF"))
-                    isSelected = true
-                }
-                subtitleModePillUrdu?.apply {
-                    background = buildRoundedBox("#1E293B", 12f)
-                    setTextColor(Color.parseColor("#94A3B8"))
-                    isSelected = false
-                }
-                subtitleModeSourcesChips?.apply {
-                    text = "✓ 6 Verified English Harvesters • 5-Source Download Diversity • Instant 1-Tap Urdu Switch Above"
-                    setTextColor(Color.parseColor("#93C5FD"))
+            }
+
+            // 7. Stremio catalog addons count
+            stremioCatalogsValue?.apply {
+                if (catalogCount > 0) {
+                    text = "$catalogCount"
+                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+                } else {
+                    text = "None"
+                    setTextColor(StreamPlayDesignTokens.TEXT_MUTED)
                 }
             }
         }
 
-        updateSubtitleModeCardUi()
+        fun updateSubtitleModeCardUi(animate: Boolean = false) {
+            if (animate) {
+                StreamPlayDesignTokens.beginMicroTransition(mainContainer, context)
+            }
+            val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
+            val isUrdu = currentMode == UrduSubtitleEngine.SubtitleMode.URDU
+
+            subtitleModePillTrack?.background = StreamPlayDesignTokens.segmentedTrackDrawable(density)
+            subtitleModePillDefault?.text = "English"
+            subtitleModePillUrdu?.text = "Urdu ${StreamPlayDesignTokens.isolateRtl("\u0627\u0631\u062f\u0648")}"
+
+            if (isUrdu) {
+                val readySources = StreamPlayDesignTokens.countReadyUrduSources(context, sharedPref)
+                subtitleModeLabel.text = "Subtitles"
+                subtitleModeDesc?.text = "$readySources of ${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} sources"
+                subtitleModePillUrdu?.apply {
+                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = true)
+                    setTextColor(StreamPlayDesignTokens.ON_ACCENT)
+                    isSelected = true
+                }
+                subtitleModePillDefault?.apply {
+                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = false)
+                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+                    isSelected = false
+                }
+            } else {
+                val readyEnglish = StreamPlayDesignTokens.countReadyEnglishSources(context, sharedPref)
+                subtitleModeLabel.text = "Subtitles"
+                subtitleModeDesc?.text = "$readyEnglish of 6 sources"
+                subtitleModePillDefault?.apply {
+                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = true)
+                    setTextColor(StreamPlayDesignTokens.ON_ACCENT)
+                    isSelected = true
+                }
+                subtitleModePillUrdu?.apply {
+                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = false)
+                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
+                    isSelected = false
+                }
+            }
+        }
+
+        refreshSummariesCallback = {
+            refreshLiveRowSummaries()
+            updateSubtitleModeCardUi(animate = false)
+        }
+        refreshSummariesCallback?.invoke()
+
+        parentFragmentManager.setFragmentResultListener(
+            StreamPlayDesignTokens.FRAGMENT_RESULT_SETTINGS_CHANGED,
+            viewLifecycleOwner
+        ) { _, _ ->
+            syncWindowVisibilityWithChildFragments()
+            refreshSummariesCallback?.invoke()
+        }
 
         fun applyModeSelection(ctx: Context, selectedMode: UrduSubtitleEngine.SubtitleMode) {
+            val previousMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
             UrduSubtitleEngine.setSubtitleMode(
                 mode = selectedMode,
                 context = ctx,
                 sharedPref = sharedPref
             )
-            updateSubtitleModeCardUi()
-            val detail = if (selectedMode == UrduSubtitleEngine.SubtitleMode.URDU) {
-                "${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Urdu Sources + Spoken Urdu AI active immediately"
-            } else {
-                "Default English subtitles active immediately"
-            }
-            Toast.makeText(
-                ctx,
-                "Subtitle Mode: ${selectedMode.displayLabel} — $detail",
-                Toast.LENGTH_SHORT
-            ).show()
+            updateSubtitleModeCardUi(animate = previousMode != selectedMode)
         }
 
-        fun showSubtitleApiKeysDialog(ctx: Context) {
-            val container = android.widget.LinearLayout(ctx).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                val pad = dpToPx(18f).roundToInt()
-                setPadding(pad, pad / 2, pad, 0)
-            }
-            val subDlInput = android.widget.EditText(ctx).apply {
-                hint = "Optional SubDL API Key (api.subdl.com)"
-                setText(UrduSubtitleEngine.resolveSubDlApiKey(ctx, sharedPref).orEmpty())
-                setSingleLine()
-            }
-            val subSourceInput = android.widget.EditText(ctx).apply {
-                hint = "Optional SubSource API Key (api.subsource.net)"
-                setText(UrduSubtitleEngine.resolveSubSourceApiKey(ctx, sharedPref).orEmpty())
-                setSingleLine()
-            }
-            val wyzieInput = android.widget.EditText(ctx).apply {
-                hint = "Optional Wyzie API Key (sub.wyzie.ru)"
-                setText(UrduSubtitleEngine.resolveWyzieApiKey(ctx, sharedPref).orEmpty())
-                setSingleLine()
-            }
-            container.addView(subDlInput)
-            container.addView(subSourceInput)
-            container.addView(wyzieInput)
-
-            AlertDialog.Builder(ctx)
-                .setTitle("Optional Subtitle API Keys (Cross-Module)")
-                .setMessage("6 of 8 Urdu sources (SubDL, SubSense, Subf2m, YTS-Subs, OpenSubtitles, SubtitleCat) work keylessly out-of-the-box. Adding SubSource or Wyzie API keys activates those 2 key-gated sources, and an optional SubDL key unlocks its official API v1 JSON tier across both StreamPlay and SuperStream.")
-                .setView(container)
-                .setPositiveButton("Save Keys") { _, _ ->
-                    val dlKey = subDlInput.text?.toString()?.trim().orEmpty()
-                    val ssKey = subSourceInput.text?.toString()?.trim().orEmpty()
-                    val wyKey = wyzieInput.text?.toString()?.trim().orEmpty()
-                    val prefStores = listOfNotNull(
-                        sharedPref,
-                        runCatching { ctx.applicationContext.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE) }.getOrNull(),
-                        runCatching { ctx.applicationContext.getSharedPreferences("SuperStream", Context.MODE_PRIVATE) }.getOrNull(),
-                        runCatching { ctx.applicationContext.getSharedPreferences("cloudstream_subtitle_mode_prefs", Context.MODE_PRIVATE) }.getOrNull()
-                    )
-                    for (store in prefStores) {
-                        store.edit().apply {
-                            putString("subdl_api_key", dlKey)
-                            putString("subsource_api_key", ssKey)
-                            putString("wyzie_key", wyKey)
-                            putString("wyzie_api_key", wyKey)
-                            apply()
-                        }
+        val showSubFragment = { fragmentCreator: (() -> Unit) -> DialogFragment, tag: String ->
+            val fm = parentFragmentManager
+            val anyChildShowing = CHILD_DIALOG_TAGS.any { fm.findFragmentByTag(it)?.isAdded == true }
+            if (!fm.isStateSaved && !anyChildShowing) {
+                dialog?.window?.decorView?.visibility = View.INVISIBLE
+                val subFragment = fragmentCreator {
+                    if (isAdded) {
+                        dialog?.window?.decorView?.visibility = View.VISIBLE
+                        refreshSummariesCallback?.invoke()
                     }
-                    if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey) else System.clearProperty("cloudstream.subdl.key")
-                    if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey) else System.clearProperty("cloudstream.subsource.key")
-                    if (wyKey.isNotEmpty()) System.setProperty("cloudstream.wyzie.key", wyKey) else System.clearProperty("cloudstream.wyzie.key")
-                    Toast.makeText(ctx, "Subtitle API keys saved across StreamPlay & SuperStream", Toast.LENGTH_SHORT).show()
                 }
-                .setNegativeButton("Cancel", null)
-                .show()
+                subFragment.show(fm, tag)
+                fm.executePendingTransactions()
+                syncWindowVisibilityWithChildFragments()
+            }
         }
 
-        fun showSubtitleModeDialog(ctx: Context) {
-            val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
-            val checkedItem = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) 1 else 0
-            val options = arrayOf(
-                "🇬🇧 Default (English — 6 Verified English Sources)",
-                "🇵🇰 Urdu / \u0627\u0631\u062f\u0648 (${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} SOTA Sources: SubDL, Subf2m, YTS-Subs, OpenSubtitles, SubSource, SubSense, Wyzie, SubtitleCat + Spoken Urdu AI)"
-            )
-            AlertDialog.Builder(ctx)
-                .setTitle("Subtitle Mode (Streams & Downloads)")
-                .setSingleChoiceItems(options, checkedItem) { dialogInterface, which ->
-                    val selectedMode = if (which == 1) {
-                        UrduSubtitleEngine.SubtitleMode.URDU
-                    } else {
-                        UrduSubtitleEngine.SubtitleMode.DEFAULT
-                    }
-                    applyModeSelection(ctx, selectedMode)
-                    dialogInterface.dismiss()
-                }
-                .setNeutralButton("API Keys (Optional)") { _, _ ->
-                    showSubtitleApiKeysDialog(ctx)
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }
+        val pluginRef = explicitPlugin ?: StreamPlayPlugin.instance
 
         subtitleModePillDefault?.setOnClickListener { pillView ->
             val ctx = this.context ?: return@setOnClickListener
@@ -361,124 +335,117 @@ class MainSettingsFragment(
             applyModeSelection(ctx, UrduSubtitleEngine.SubtitleMode.URDU)
         }
 
-        subtitleModeRow.setOnClickListener { rowView ->
-            val ctx = this.context ?: return@setOnClickListener
-            rowView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            val currentMode = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
-            val nextMode = if (currentMode == UrduSubtitleEngine.SubtitleMode.URDU) {
-                UrduSubtitleEngine.SubtitleMode.DEFAULT
-            } else {
-                UrduSubtitleEngine.SubtitleMode.URDU
-            }
-            applyModeSelection(ctx, nextMode)
-        }
-
-        subtitleModeRow.setOnLongClickListener { rowView ->
-            val ctx = this.context ?: return@setOnLongClickListener false
-            rowView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            showSubtitleModeDialog(ctx)
-            true
-        }
-
-        subtitleModeIcon?.apply {
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { iconView ->
-                val ctx = this@MainSettingsFragment.context ?: return@setOnClickListener
-                iconView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                showSubtitleModeDialog(ctx)
-            }
-        }
-
-        saveIcon.makeTvCompatible()
-        val showSubFragment = { fragmentCreator: (() -> Unit) -> DialogFragment, tag: String ->
-            val fm = activity?.supportFragmentManager
-            if (fm != null) {
-                dismiss()
-                val subFragment = fragmentCreator {
-                    val mainSettings = MainSettingsFragment(plugin, sharedPref)
-                    mainSettings.show(fm, "main_settings")
-                }
-                subFragment.show(fm, tag)
-            }
-        }
-
-        loginRow.visibility = View.GONE
-
         wyzieRow.setOnClickListener {
-            showSubFragment({ cb -> WyzieSettingsFragment(plugin, sharedPref, cb) }, "wyzie_settings_fragment")
+            showSubFragment({ cb -> WyzieSettingsFragment(pluginRef, sharedPref, cb) }, "wyzie_settings_fragment")
         }
 
         featureRow.setOnClickListener {
-            showSubFragment({ cb -> ToggleFragment(plugin, sharedPref, cb) }, "fragment_toggle_extensions")
+            showSubFragment({ cb -> ToggleFragment(pluginRef, sharedPref, cb) }, "fragment_toggle_extensions")
         }
 
         toggleprovidersRow.setOnClickListener {
-            showSubFragment({ cb -> ProvidersFragment(plugin, sharedPref, cb) }, "fragment_toggle_providers")
+            showSubFragment({ cb -> ProvidersFragment(pluginRef, sharedPref, cb) }, "fragment_toggle_providers")
         }
 
         languageRow.setOnClickListener {
-            showSubFragment({ cb -> LanguageSelectFragment(plugin, sharedPref, cb) }, "fragment_language_list")
+            showSubFragment({ cb -> LanguageSelectFragment(pluginRef, sharedPref, cb) }, "fragment_language_list")
         }
 
         stremioaddonsRow.setOnClickListener {
-            showSubFragment({ cb -> StreamPlayStremioCatelogFrag(plugin, sharedPref, cb) }, "stremio_bottom_sheet_layout")
+            showSubFragment({ cb -> StreamPlayStremioCatelogFrag(pluginRef, sharedPref, cb) }, "stremio_bottom_sheet_layout")
         }
 
         stremioaddonstreamsRow.setOnClickListener {
-            showSubFragment({ cb -> StreamPlayStremioAddonFrag(plugin, sharedPref, cb) }, "streamplay_stremio_addon_bottom_sheet_layout")
+            showSubFragment({ cb -> StreamPlayStremioAddonFrag(pluginRef, sharedPref, cb) }, "streamplay_stremio_addon_bottom_sheet_layout")
         }
 
         performanceRow.setOnClickListener {
-            showSubFragment({ cb -> ConcurrencyBottomSheet(plugin, sharedPref, cb) }, "concurrency_bottom_sheet")
+            showSubFragment({ cb -> ConcurrencyBottomSheet(pluginRef, sharedPref, cb) }, "concurrency_bottom_sheet")
         }
 
         saveIcon.setOnClickListener {
-            val context = this.context ?: return@setOnClickListener
+            val ctx = this.context ?: return@setOnClickListener
+            showRestartConfirmationDialog(ctx)
+        }
 
-            AlertDialog.Builder(context)
-                .setTitle("Save & Reload")
-                .setMessage("Changes have been saved. Do you want to restart the app to apply them?")
-                .setPositiveButton("Yes") { _, _ ->
-                    dismiss()
-                    restartApp()
-                }
-                .setNegativeButton("No", null)
-                .show()
+        if (savedInstanceState?.getBoolean(STATE_SHOWING_RESTART_DIALOG, false) == true) {
+            this.context?.let { showRestartConfirmationDialog(it) }
         }
         return view
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        val basePaddingLeft = view.paddingLeft
-        val basePaddingTop = view.paddingTop
-        val basePaddingRight = view.paddingRight
-        val basePaddingBottom = view.paddingBottom
-        ViewCompat.setOnApplyWindowInsetsListener(view) { v, windowInsets ->
-            val insets = windowInsets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-            )
-            v.setPadding(
-                basePaddingLeft + insets.left,
-                basePaddingTop + insets.top,
-                basePaddingRight + insets.right,
-                basePaddingBottom + insets.bottom
-            )
-            windowInsets
+    private fun showRestartConfirmationDialog(ctx: Context) {
+        if (activeSubDialog?.isShowing == true) return
+        isShowingRestartDialog = true
+        val dialogInstance = StreamPlayDesignTokens.showConfirmationDialog(
+            context = ctx,
+            resources = resources,
+            title = "Restart CloudStream?",
+            message = "Subtitles, source selection, concurrency, and API keys apply immediately. Restart only if you added or toggled Stremio catalog extensions.",
+            confirmText = "Restart now",
+            cancelText = "Keep watching",
+            confirmVariant = StreamPlayDesignTokens.ButtonVariant.PRIMARY
+        ) {
+            isShowingRestartDialog = false
+            dismiss()
+            StreamPlayDesignTokens.restartHostApp(ctx)
+        }
+        dialogInstance.setOnDismissListener {
+            if (activeSubDialog === dialogInstance) {
+                activeSubDialog = null
+                isShowingRestartDialog = false
+            }
+        }
+        activeSubDialog = dialogInstance
+    }
+
+    private fun syncWindowVisibilityWithChildFragments() {
+        if (!isAdded) return
+        val fm = parentFragmentManager
+        val activeChildren = CHILD_DIALOG_TAGS.mapNotNull { tag ->
+            fm.findFragmentByTag(tag)?.takeIf { it.isAdded && !it.isRemoving }
+        }
+        if (activeChildren.isNotEmpty()) {
+            dialog?.window?.decorView?.visibility = View.INVISIBLE
+            for (child in activeChildren) {
+                child.lifecycle.addObserver(object : LifecycleEventObserver {
+                    override fun onStateChanged(source: androidx.lifecycle.LifecycleOwner, event: Lifecycle.Event) {
+                        if (event == Lifecycle.Event.ON_DESTROY) {
+                            source.lifecycle.removeObserver(this)
+                            if (isAdded) {
+                                syncWindowVisibilityWithChildFragments()
+                                refreshSummariesCallback?.invoke()
+                            }
+                        }
+                    }
+                })
+            }
+        } else {
+            dialog?.window?.decorView?.visibility = View.VISIBLE
         }
     }
 
-    private fun restartApp() {
-        val context = requireContext().applicationContext
-        val packageManager = context.packageManager
-        val intent = packageManager.getLaunchIntentForPackage(context.packageName)
-        val componentName = intent?.component
+    override fun onResume() {
+        super.onResume()
+        syncWindowVisibilityWithChildFragments()
+        refreshSummariesCallback?.invoke()
+    }
 
-        if (componentName != null) {
-            val restartIntent = Intent.makeRestartActivityTask(componentName)
-            context.startActivity(restartIntent)
-            Runtime.getRuntime().exit(0)
-        }
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_SHOWING_RESTART_DIALOG, isShowingRestartDialog)
+    }
+
+    override fun onDestroyView() {
+        activeSubDialog?.setOnDismissListener(null)
+        activeSubDialog?.dismiss()
+        activeSubDialog = null
+        refreshSummariesCallback = null
+        super.onDestroyView()
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        StreamPlayDesignTokens.applyWindowInsetsPadding(view)
     }
 }

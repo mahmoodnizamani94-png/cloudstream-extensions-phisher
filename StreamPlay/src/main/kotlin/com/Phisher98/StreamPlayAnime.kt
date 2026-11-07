@@ -166,11 +166,6 @@ class StreamPlayAnime : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val id = url.removeSuffix("/").substringAfterLast("/")
         val urduMode = UrduSubtitleEngine.isUrduMode(context = null, sharedPref = StreamPlay.companionSharedPref)
-        val subtitleModeBadge = if (urduMode) {
-            "🇵🇰 Subtitles: Urdu (اردو • SOTA)"
-        } else {
-            "🇬🇧 Subtitles: English (Default)"
-        }
         val cacheKey = "anime_load_${id}_${if (urduMode) "urdu" else "en"}"
         StreamPlayCache.getCachedLoadResponse(cacheKey)?.let { return it }
 
@@ -383,10 +378,7 @@ class StreamPlayAnime : MainAPI() {
                 )
             }
 
-            val enrichedAnimeTags = buildList {
-                add(subtitleModeBadge)
-                addAll(data.genres.orEmpty())
-            }
+            val enrichedAnimeTags = data.genres.orEmpty()
 
             if (isMovie) {
                 newMovieLoadResponse(anititle, url, TvType.AnimeMovie, href) {

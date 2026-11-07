@@ -35,11 +35,25 @@ import org.json.JSONArray
 
 @CloudstreamPlugin
 class StreamPlayPlugin: Plugin() {
+    companion object {
+        const val PREF_FILE_NAME = "StreamPlay"
+        const val PREF_KEY_CATALOG_LINKS = "streamplay_stremio_saved_links"
+
+        @Volatile
+        var instance: StreamPlayPlugin? = null
+            internal set
+    }
+
+    init {
+        instance = this
+    }
+
     private val registeredMainApis = mutableListOf<MainAPI>()
-    private val PREF_FILE = "StreamPlay"
-    private val PREF_KEY_LINKS = "streamplay_stremio_saved_links"
+    private val PREF_FILE = PREF_FILE_NAME
+    private val PREF_KEY_LINKS = PREF_KEY_CATALOG_LINKS
 
     override fun load(context: Context) {
+        instance = this
         val sharedPref = context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
 
         // Initialize StreamPlay optimizations
@@ -218,8 +232,11 @@ class StreamPlayPlugin: Plugin() {
         openSettings = { ctx ->
             val act = ctx.unwrapActivity()
             if (act != null && !act.isFinishing && !act.isDestroyed) {
-                val frag = MainSettingsFragment(this, sharedPref)
-                frag.show(act.supportFragmentManager, "Frag")
+                val fm = act.supportFragmentManager
+                if (!fm.isStateSaved && fm.findFragmentByTag("StreamPlayMainSettings") == null) {
+                    val frag = MainSettingsFragment(this, sharedPref)
+                    frag.show(fm, "StreamPlayMainSettings")
+                }
             } else {
                 Log.e("Plugin", "Activity is not valid anymore, cannot show settings dialog")
             }

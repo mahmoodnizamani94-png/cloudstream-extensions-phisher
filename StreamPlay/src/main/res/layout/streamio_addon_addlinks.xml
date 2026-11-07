@@ -1,42 +1,151 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:padding="18dp"
-    android:background="@android:color/transparent">
+    android:fillViewport="true"
+    android:layoutDirection="locale">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Add link"
-        android:textSize="18sp"
-        android:textStyle="bold" />
-
-    <EditText
-        android:id="@+id/etName"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:autofillHints=""
-        android:hint="Extension Name"
-        android:inputType="text"
-        android:layout_marginTop="12dp"
-        android:textColorHint="#666" />
-
-    <EditText
-        android:id="@+id/etLink"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:autofillHints="Manifest URL"
-        android:hint="Link (https://...)"
-        android:inputType="textUri"
-        android:layout_marginTop="8dp"
-        android:textColorHint="#666" />
-
-    <RadioGroup
-        android:id="@+id/radioGroup"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="12dp"/>
-</LinearLayout>
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/tvAddManifestTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Add manifest URL"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9"
+            android:letterSpacing="-0.015" />
+
+        <TextView
+            android:id="@+id/tvAddManifestSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="Provide a display name and the Stremio manifest endpoint"
+            android:textSize="12sp"
+            android:textColor="#94A3B8"
+            android:lineSpacingExtra="2dp" />
+
+        <!-- Hairline Divider (Tokenized #283140) -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#283140"
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:labelFor="@id/etName"
+            android:text="Display name"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9" />
+
+        <EditText
+            android:id="@+id/etName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:autofillHints="name"
+            android:hint="Torrentio / Cyberflix"
+            android:inputType="textNoSuggestions"
+            android:singleLine="true"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:textSize="14sp"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#7C8B9E" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="6dp"
+            android:labelFor="@id/etLink"
+            android:text="Manifest endpoint URL"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9" />
+
+        <EditText
+            android:id="@+id/etLink"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:autofillHints="url"
+            android:hint="https://.../manifest.json"
+            android:fontFamily="monospace"
+            android:inputType="textUri"
+            android:singleLine="true"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:textSize="13sp"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#7C8B9E" />
+
+        <TextView
+            android:id="@+id/label_addon_type"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="6dp"
+            android:text="Addon type"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9" />
+
+        <RadioGroup
+            android:id="@+id/radioGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/btn_cancel_manifest"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:minHeight="48dp"
+                android:text="Cancel"
+                android:textAllCaps="false"
+                android:textColor="#F1F5F9"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <Space
+                android:layout_width="10dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btn_save_manifest"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:minHeight="48dp"
+                android:text="Save manifest"
+                android:textAllCaps="false"
+                android:textColor="#F1F5F9"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>
