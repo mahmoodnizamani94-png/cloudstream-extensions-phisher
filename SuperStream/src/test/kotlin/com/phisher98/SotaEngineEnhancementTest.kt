@@ -331,7 +331,7 @@ class SotaEngineEnhancementTest {
     }
 
     @Test
-    fun testResolutionStrictlyPrecedesBitrateInIsBetterThan() {
+    fun test720pFirstHierarchyUnderV27InIsBetterThan() {
         val link1080p = createLink(
             name = "Movie [1080p] [2500 kbps]",
             url = "https://cdn.example.com/stream.mp4",
@@ -343,8 +343,11 @@ class SotaEngineEnhancementTest {
             quality = Qualities.P720.value
         )
 
-        assertTrue("1080p must beat 720p despite 720p claiming higher bitrate", StreamLinkOptimizer.isBetterThan(link1080p, link720pHighBitrate))
-        assertFalse("720p must not beat 1080p", StreamLinkOptimizer.isBetterThan(link720pHighBitrate, link1080p))
+        // v27 SOTA contract: 720p is the #1 user tier. For the same media (same canonical URL),
+        // the 720p rendition wins the mirror dedup even when the 1080p rendition claims a higher
+        // bitrate — bitrate is a display/ranking hint, never a tier override.
+        assertTrue("720p must beat 1080p under the v27 hierarchy despite 1080p claiming higher bitrate", StreamLinkOptimizer.isBetterThan(link720pHighBitrate, link1080p))
+        assertFalse("1080p must not beat 720p", StreamLinkOptimizer.isBetterThan(link1080p, link720pHighBitrate))
     }
 
     @Test

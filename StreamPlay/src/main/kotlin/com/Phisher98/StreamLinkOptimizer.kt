@@ -170,16 +170,18 @@ object StreamLinkOptimizer {
 
     // Quality Tag Regexes
     private val QUALITY_EXPLICIT_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(2160|1440|1080|720|576|540|480|360)\s*[pP]?(?:[^a-zA-Z0-9]|$)""")
-    private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|3840[xX]2160|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
-    private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|2560[xX]1440|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
-    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|1920[xX]1080|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
+    private val FOUR_K_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(4K|UHD|2160P?|ULTRA[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
+    private val QHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1440P?|QHD|2K)(?:[^a-zA-Z0-9]|$)""")
+    private val FHD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(FHD|1080P?|FULL[\s-_.]?HD)(?:[^a-zA-Z0-9]|$)""")
     // Bare "HD"/"SD" are deliberately absent: they are marketing grades, not resolutions, and
     // mapping them to 720p/480p is exactly how a 360p file ends up labelled as 720p. Only an
-    // explicit numeric height (handled by QUALITY_EXPLICIT_REGEX) or an exact pixel dimension
-    // proves a resolution, and FHD/QHD/4K are kept because those acronyms have a single meaning.
-    private val HD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(1280[xX]720)(?:[^a-zA-Z0-9]|$)""")
-    private val SD_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(854[xX]480)(?:[^a-zA-Z0-9]|$)""")
-    private val P360_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(640[xX]360)(?:[^a-zA-Z0-9]|$)""")
+    // explicit numeric height (QUALITY_EXPLICIT_REGEX), an unambiguous acronym (FHD/QHD/4K/UHD),
+    // or an exact `WxH` pixel dimension proves a resolution. Exact dimensions are classified by
+    // the shared ResolutionTruth bands — the SAME mapping StreamPlayExtractor applies to manifest
+    // declarations — so the text layer and the manifest layer can never disagree on `1850x720`,
+    // `2650x1080`, `2048x1038` or any other dimension (there are no hand-maintained WxH regex
+    // tables left to drift apart).
+    private val DIMENSION_PAIR_REGEX = Regex("""(?<![a-zA-Z0-9])(\d{3,4})[xX](\d{3,4})(?![a-zA-Z0-9])""")
     private val EXPLICIT_QUALITY_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:quality|res|resolution|height|q)=([0-9]{3,4})[pP]?(?:&|$)""")
     private val EMBEDDED_MEDIA_URL_QUERY_REGEX = Regex("""(?i)(?:[?&]|^)(?:file|url|path|src)=([^&]+)""")
 
@@ -716,8 +718,7 @@ object StreamLinkOptimizer {
                 headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
             }
             isVidlink -> {
-                headers.entries.removeIf { it.key.equals(HEADER_REFERER, ignoreCase = true) }
-                headers.entries.removeIf { it.key.equals(HEADER_ORIGIN, ignoreCase = true) }
+                VidLinkCdnPolicy.apply(lowerUrl, headers, linkReferer = referer)
                 headers[HEADER_USER_AGENT] = "com.community.oneroom/50020115 (Linux; U; Android 15; en_US; OPPO CPH2579; Build/AP3A.240905.015.A2; Cronet/140.0.7339.51)"
                 headers[HEADER_ACCEPT] = "*/*"
                 headers["Accept-Ranges"] = "bytes"
@@ -1308,7 +1309,12 @@ object StreamLinkOptimizer {
             lowerUrl.contains("vidsrc.net")
         return when {
             lowerUrl.contains("pixeldrain.com") || lowerUrl.contains("pixeldrain.dev") || lowerUrl.contains("pd.cybar.xyz") -> ""
-            isVidlink -> ""
+            isVidlink -> {
+                val suppliedRef = headers.entries.firstOrNull {
+                    it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
+                }?.value ?: referer?.takeIf { it.isNotBlank() }
+                VidLinkCdnPolicy.effectiveReferer(lowerUrl, suppliedRef)
+            }
             isMeowTv -> {
                 val supplied = headers.entries.firstOrNull {
                     it.key.equals(HEADER_REFERER, ignoreCase = true) && it.value.isNotBlank()
@@ -1782,10 +1788,26 @@ object StreamLinkOptimizer {
         if (FOUR_K_REGEX.containsMatchIn(text)) return Qualities.P2160.value
         if (QHD_REGEX.containsMatchIn(text)) return Qualities.P1440.value
         if (FHD_REGEX.containsMatchIn(text)) return Qualities.P1080.value
-        if (HD_REGEX.containsMatchIn(text)) return Qualities.P720.value
-        if (SD_REGEX.containsMatchIn(text)) return Qualities.P480.value
-        if (P360_REGEX.containsMatchIn(text)) return Qualities.P360.value
-        return Qualities.Unknown.value
+        return matchDimensionPairs(text)
+    }
+
+    /**
+     * Classifies every exact `WxH` dimension pair in [text] through the shared [ResolutionTruth]
+     * bands and returns the highest tier found. This replaces the former hand-maintained
+     * FHD/HD/SD/P360 WxH regex families: one mapping serves both the manifest layer and this text
+     * layer, so the two can never disagree.
+     */
+    private fun matchDimensionPairs(text: String): Int {
+        var best = 0
+        for (m in DIMENSION_PAIR_REGEX.findAll(text)) {
+            val w = m.groupValues[1].toIntOrNull() ?: continue
+            val h = m.groupValues[2].toIntOrNull() ?: continue
+            // `\d{3,4}` bounds both dimensions to 100..9999; every regex match is a plausible
+            // dimension claim and ResolutionTruth classifies it honestly.
+            val q = ResolutionTruth.classifyDimensions(w, h)
+            if (q > 0 && q != Qualities.Unknown.value && q > best) best = q
+        }
+        return if (best > 0) best else Qualities.Unknown.value
     }
 
     // ==================== Audio Track Normalization ====================
@@ -2082,9 +2104,11 @@ object StreamLinkOptimizer {
                 .trim()
 
             val isM3u8 = (streamType == ExtractorLinkType.M3U8) || url.contains(".m3u8", ignoreCase = true)
+            val isDash = (streamType == ExtractorLinkType.DASH) || url.contains(".mpd", ignoreCase = true)
+            val isAdaptive = isM3u8 || isDash
             val detectedQ = extractQualityFromText(baseName, url)
 
-            val (finalQuality, finalName) = if (isM3u8 && (detectedQ <= 0 || detectedQ == Qualities.Unknown.value)) {
+            val (finalQuality, finalName) = if (isAdaptive && (detectedQ <= 0 || detectedQ == Qualities.Unknown.value)) {
                 val autoName = if (cleanBaseName.contains("[Auto]", ignoreCase = true)) cleanBaseName else "$cleanBaseName [Auto]"
                 Qualities.Unknown.value to autoName
             } else {
@@ -2114,7 +2138,11 @@ object StreamLinkOptimizer {
                     url = url,
                     referer = referer,
                     quality = finalQuality,
-                    type = streamType ?: (if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO),
+                    type = streamType ?: when {
+                        isDash -> ExtractorLinkType.DASH
+                        isM3u8 -> ExtractorLinkType.M3U8
+                        else -> ExtractorLinkType.VIDEO
+                    },
                     headers = headers,
                     extractorData = mergeExtractorData(null)
                 )
@@ -2361,8 +2389,11 @@ object StreamLinkOptimizer {
     fun isBetterThan(
         candidate: ExtractorLink,
         current: ExtractorLink,
-        isAnime: Boolean = false
+        isAnime: Boolean? = null
     ): Boolean {
+        // `null` auto-detects anime from the stream headers/extractor data; an explicit
+        // true/false from the caller is authoritative and never silently overridden.
+        val effectiveIsAnime = isAnime ?: (isAnimeStream(candidate) || isAnimeStream(current))
         val sourceRank1 = getSourcePriorityRank(candidate)
         val sourceRank2 = getSourcePriorityRank(current)
         val rawQ1 = getEffectiveQuality(candidate)
@@ -2388,7 +2419,7 @@ object StreamLinkOptimizer {
             isBelow720 = isBelow720_1,
             isAbove1080 = isAbove1080_1,
             link = candidate,
-            isAnime = isAnime
+            isAnime = effectiveIsAnime
         )
         val tierMult2 = getPrimaryStreamTierMultiplier(
             sourceRank = sourceRank2,
@@ -2398,10 +2429,20 @@ object StreamLinkOptimizer {
             isBelow720 = isBelow720_2,
             isAbove1080 = isAbove1080_2,
             link = current,
-            isAnime = isAnime
+            isAnime = effectiveIsAnime
         )
         if (tierMult1 != tierMult2) {
             return tierMult1 > tierMult2
+        }
+        if (tierMult1 == 0 && tierMult2 == 0) {
+            // Secondary bucket (tier 0): the AGENTS.md fallback ladder is resolution-first
+            // (720p -> 1080p -> 480p -> 360p -> Unknown -> 2160p), so quality decides before
+            // source rank. Top-tier pairs keep rank before quality below.
+            val secScore1 = getQualityPriorityScore(q1)
+            val secScore2 = getQualityPriorityScore(q2)
+            if (secScore1 != secScore2) {
+                return secScore1 > secScore2
+            }
         }
         if (sourceRank1 != sourceRank2) {
             return sourceRank1 > sourceRank2
@@ -2754,9 +2795,9 @@ object StreamLinkOptimizer {
      *    - Lower SD (e.g. 360p, 240p) -> Score 5000 + quality (e.g. 360p = 5360, 240p = 5240)
      * 4. Above 1080p (Tier 4: 1440p, 2160p/4K, 4320p/8K - Priority #4) -> Score 4000 - (quality - 1080) [clamped to min 1000]
      *    (1440p = 3640, 2160p/4K = 2920)
-     * 5. Unknown -> Score 0
+     * 5. Unknown -> Score 4500 (AGENTS.md §1 ladder: Unknown outranks 2160p inside tier #6)
      *
-     * Strict User Monotonicity: 720p > 1080p > below 720p (480p > 576p > 360p > 240p) > above 1080p (1440p > 4K) > Unknown
+     * Strict User Monotonicity: 720p > 1080p > below 720p (480p > 576p > 360p > 240p) > Unknown > above 1080p (1440p > 4K)
      */
     fun getQualityPriorityScore(quality: Int): Int {
         return when {
@@ -2802,8 +2843,11 @@ object StreamLinkOptimizer {
     @JvmOverloads
     fun getStreamCompositeScore(
         link: ExtractorLink,
-        isAnime: Boolean = false
+        isAnime: Boolean? = null
     ): Float {
+        // `null` auto-detects anime from the stream headers/extractor data; an explicit
+        // true/false from the caller is authoritative and never silently overridden.
+        val effectiveIsAnime = isAnime ?: isAnimeStream(link)
         val sourceRank = getSourcePriorityRank(link)
         val rawQuality = getEffectiveQuality(link)
         val isUnknown = isUnknownQuality(link, rawQuality)
@@ -2829,7 +2873,7 @@ object StreamLinkOptimizer {
             isBelow720 = isBelow720,
             isAbove1080 = isAbove1080,
             link = link,
-            isAnime = isAnime
+            isAnime = effectiveIsAnime
         )
         val verifiedSizeBytes = parseSizeBytes(link.name)?.takeIf { it in 1L..MAX_REASONABLE_STREAM_BYTES }
         val isDirect = isDirectMp4Stream(link)
@@ -2922,14 +2966,20 @@ object StreamLinkOptimizer {
                 }
                 else -> 0f
             }
-            secQualityTerm + laneBonus
+            secQualityTerm + (sourceRank * 1f) + laneBonus
         }
 
         val effectiveTiebreaker = if (sourceRank == VIDRIFT_SOURCE_RANK || verifiedSizeBytes != null) 0f else tiebreaker
         return baseScore + effectiveTiebreaker
     }
 
-    fun streamPriorityComparator(isAnime: Boolean = false): Comparator<ExtractorLink> = Comparator { a, b ->
+    /**
+     * Builds the stream priority comparator. `isAnime = null` auto-detects the mode per
+     * comparison from the links' `X-StreamPlay-Anime` headers (used by the shared
+     * [STREAM_PRIORITY_COMPARATOR] that sorts extractor emissions for both surfaces);
+     * an explicit true/false pins the mode for surfaces that know it (the dispatchers).
+     */
+    fun streamPriorityComparator(isAnime: Boolean? = null): Comparator<ExtractorLink> = Comparator { a, b ->
         when {
             isBetterThan(a, b, isAnime) -> -1
             isBetterThan(b, a, isAnime) -> 1
@@ -2937,7 +2987,7 @@ object StreamLinkOptimizer {
         }
     }
 
-    val STREAM_PRIORITY_COMPARATOR: Comparator<ExtractorLink> = streamPriorityComparator(isAnime = false)
+    val STREAM_PRIORITY_COMPARATOR: Comparator<ExtractorLink> = streamPriorityComparator()
 
     /**
      * Determines whether candidate stream is strictly higher priority for user playback than current stream,
@@ -2947,7 +2997,7 @@ object StreamLinkOptimizer {
     fun isStreamBetter(
         candidate: ExtractorLink,
         current: ExtractorLink,
-        isAnime: Boolean = false
+        isAnime: Boolean? = null
     ): Boolean {
         return isBetterThan(candidate, current, isAnime)
     }
