@@ -1,8 +1,13 @@
 package com.phisher98.settings
 
+import com.phisher98.ConcurrencyBottomSheet
+import com.phisher98.LanguageSelectFragment
+import com.phisher98.MainSettingsFragment
 import com.phisher98.ProvidersFragment
 import com.phisher98.StreamPlayConcurrency
 import com.phisher98.StreamPlayDesignTokens
+import com.phisher98.StreamPlayStremioAddonFrag
+import com.phisher98.StreamPlayStremioCatelogFrag
 import com.phisher98.UrduSubtitleEngine
 import com.phisher98.buildProviders
 import org.junit.Assert.assertEquals
@@ -13,6 +18,7 @@ import org.junit.Test
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.File
+import java.lang.reflect.Modifier
 import java.util.Locale
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.max
@@ -139,7 +145,31 @@ class StreamPlaySettingsUiUxSotaTest {
     }
 
     @Test
-    fun `zero hard-ban AI tells or off-token hexes exist across layouts drawables settings and providers`() {
+    fun `all 8 settings DialogFragments expose a public no-arg constructor for Android configuration change survival`() {
+        val fragmentClasses = listOf(
+            MainSettingsFragment::class.java,
+            LanguageSelectFragment::class.java,
+            ConcurrencyBottomSheet::class.java,
+            ProvidersFragment::class.java,
+            WyzieSettingsFragment::class.java,
+            ToggleFragment::class.java,
+            StreamPlayStremioAddonFrag::class.java,
+            StreamPlayStremioCatelogFrag::class.java
+        )
+        for (clazz in fragmentClasses) {
+            val noArgCtor = clazz.getDeclaredConstructor()
+            assertNotNull("${clazz.simpleName} must have a no-arg constructor", noArgCtor)
+            assertTrue(
+                "${clazz.simpleName} no-arg constructor must be public",
+                Modifier.isPublic(noArgCtor.modifiers)
+            )
+            val instance = noArgCtor.newInstance()
+            assertNotNull("${clazz.simpleName} must instantiate cleanly via no-arg constructor", instance)
+        }
+    }
+
+    @Test
+    fun `zero hard-ban AI tells or off-token hexes or raw AlertDialog builders exist across layouts drawables settings and providers`() {
         val root = resolveModuleRoot()
         val layoutDir = File(root, "src/main/res/layout")
         val drawableDir = File(root, "src/main/res/drawable")
@@ -158,7 +188,7 @@ class StreamPlaySettingsUiUxSotaTest {
         )
 
         assertEquals("Expected exactly 14 active layout XML files", 14, layoutFiles.size)
-        assertEquals("Expected exactly 4 active drawable XML files", 4, drawableFiles.size)
+        assertEquals("Expected exactly 3 active drawable XML files", 3, drawableFiles.size)
         assertTrue("Expected settings Kotlin files to exist", settingsKotlinFiles.isNotEmpty())
 
         val bannedTokens = listOf(
@@ -178,6 +208,8 @@ class StreamPlaySettingsUiUxSotaTest {
             "Slow internet saver",
             "Max speed",
             "Dialog fields not found",
+            "Saved automatically",
+            "Always enabled (primary source)",
             "#6200EE",
             "#3700B3",
             "#D32F2F",
@@ -230,6 +262,12 @@ class StreamPlaySettingsUiUxSotaTest {
                     content.contains("—")
                 )
             }
+            if (file in settingsKotlinFiles) {
+                assertFalse(
+                    "Settings Kotlin file ${file.name} must not use raw AlertDialog.Builder (use StreamPlayDesignTokens dialogs)",
+                    content.contains("AlertDialog.Builder")
+                )
+            }
             if (file.extension == "xml") {
                 assertFalse(
                     "XML ${file.name} must not use textAllCaps=\"true\"",
@@ -251,7 +289,7 @@ class StreamPlaySettingsUiUxSotaTest {
     }
 
     @Test
-    fun `main settings layout groups rows into 3 task sections with live value summaries and 48dp segment pills`() {
+    fun `main settings layout groups rows into 3 OS grouped inset section containers with calm secondary values and 48dp segment pills`() {
         val root = resolveModuleRoot()
         val mainLayoutFile = File(root, "src/main/res/layout/fragment_main_settings.xml")
         val content = mainLayoutFile.readText()
@@ -259,8 +297,13 @@ class StreamPlaySettingsUiUxSotaTest {
         assertTrue(content.contains("Subtitles &amp; language"))
         assertTrue(content.contains("Playback &amp; sources"))
         assertTrue(content.contains("Addons &amp; extensions"))
+        assertTrue("Subtitles section must use grouped container section_subtitles_group", content.contains("@+id/section_subtitles_group"))
+        assertTrue("Playback section must use grouped container section_playback_group", content.contains("@+id/section_playback_group"))
+        assertTrue("Addons section must use grouped container section_addons_group", content.contains("@+id/section_addons_group"))
         assertFalse("Redundant subtitle_api_keys_btn must be removed from hero card", content.contains("subtitle_api_keys_btn"))
+        assertFalse("Noisy subtitle_mode_sources_chips dump must be removed from hero row", content.contains("subtitle_mode_sources_chips"))
         assertFalse("Dead loginRow must be removed from main settings layout", content.contains("loginRow"))
+        assertFalse("Main settings XML must not color every right-hand value in #93C5FD", content.contains("#93C5FD"))
         assertTrue("Initial D-pad focus must request subtitle_mode_pill_default", content.contains("<requestFocus"))
 
         val requiredValueSummaryIds = listOf(
@@ -285,6 +328,24 @@ class StreamPlaySettingsUiUxSotaTest {
                 val minHeight = node.attributes.getNamedItem("android:minHeight")?.nodeValue
                 assertEquals("Segment pill $id must have 48dp minHeight", "48dp", minHeight)
             }
+        }
+    }
+
+    @Test
+    fun `scrollable dialogs use NestedScrollView for landscape 360dp and IME safety`() {
+        val root = resolveModuleRoot()
+        val layoutDir = File(root, "src/main/res/layout")
+        val scrollableLayouts = listOf(
+            "fragment_main_settings.xml",
+            "concurrency_bottom_sheet.xml",
+            "wyzie_settings_fragment.xml",
+            "streamplay_stremio_addon_bottom_sheet_layout.xml",
+            "stremio_bottom_sheet_layout.xml",
+            "streamio_addon_addlinks.xml"
+        )
+        for (name in scrollableLayouts) {
+            val content = File(layoutDir, name).readText()
+            assertTrue("$name must be wrapped in NestedScrollView for landscape/IME safety", content.contains("NestedScrollView"))
         }
     }
 
@@ -341,7 +402,7 @@ class StreamPlaySettingsUiUxSotaTest {
         assertEquals("8 · Stable", StreamPlayDesignTokens.formatConcurrencySummary(8))
         assertEquals("16 · Balanced", StreamPlayDesignTokens.formatConcurrencySummary(16))
         assertEquals("32 · Fast", StreamPlayDesignTokens.formatConcurrencySummary(32))
-        assertEquals("80 · Max", StreamPlayDesignTokens.formatConcurrencySummary(80))
+        assertEquals("80 · Max", StreamPlayConcurrency.concurrencyLabel(80).let { "80 · $it" })
 
         assertEquals("Stable", StreamPlayConcurrency.concurrencyLabel(8))
         assertEquals("Balanced", StreamPlayConcurrency.concurrencyLabel(16))

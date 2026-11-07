@@ -7,14 +7,47 @@
     android:layout_height="wrap_content"
     android:background="#0E1116">
 
-    <TextView
+    <!-- Header -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Saved manifests"
-        android:textColor="#F1F5F9"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:paddingBottom="12dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/tvSavedManifestsTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Saved manifests"
+            android:textColor="#F1F5F9"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:letterSpacing="-0.015" />
+
+        <Button
+            android:id="@+id/btn_close_links"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:layout_marginStart="12dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="Done"
+            android:textAllCaps="false"
+            android:textColor="#F1F5F9"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:focusable="true"
+            android:clickable="true" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#283140"
+        android:layout_marginTop="14dp"
+        android:layout_marginBottom="16dp" />
 
     <TextView
         android:id="@+id/tvNoLinks"
@@ -34,5 +67,7 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:minHeight="120dp"
+        android:paddingVertical="4dp"
+        android:clipToPadding="false"
         android:scrollbars="vertical" />
 </LinearLayout>

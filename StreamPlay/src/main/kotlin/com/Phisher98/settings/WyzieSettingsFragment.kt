@@ -4,18 +4,15 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.content.res.Resources
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.addTextChangedListener
 import androidx.fragment.app.DialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.phisher98.BuildConfig
@@ -24,11 +21,18 @@ import com.phisher98.StreamPlayPlugin
 import com.phisher98.UrduSubtitleEngine
 
 class WyzieSettingsFragment(
-    plugin: StreamPlayPlugin,
-    private val sharedPref: SharedPreferences,
+    private var explicitPlugin: StreamPlayPlugin? = null,
+    private var explicitSharedPref: SharedPreferences? = null,
     private val onDismissCallback: (() -> Unit)? = null
 ) : DialogFragment() {
-    private val res = plugin.resources ?: throw Exception("Unable to read resources")
+
+    constructor() : this(null, null, null)
+
+    private val res: Resources
+        get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
+
+    private val sharedPref: SharedPreferences
+        get() = StreamPlayDesignTokens.resolveSharedPreferences(this, explicitSharedPref)
 
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
@@ -76,8 +80,8 @@ class WyzieSettingsFragment(
 
         StreamPlayDesignTokens.styleButton(getKeyButton, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
         StreamPlayDesignTokens.styleButton(saveButton, density, StreamPlayDesignTokens.ButtonVariant.PRIMARY)
-        StreamPlayDesignTokens.styleButton(resetButton, density, StreamPlayDesignTokens.ButtonVariant.DANGER)
-        StreamPlayDesignTokens.applyDirectionalFocus(saveButton, resetButton)
+        StreamPlayDesignTokens.styleButton(resetButton, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
+        StreamPlayDesignTokens.applyDirectionalFocus(resetButton, saveButton)
 
         val savedWyzie = UrduSubtitleEngine.resolveWyzieApiKey(context, sharedPref)
         if (!savedWyzie.isNullOrEmpty()) {
@@ -91,6 +95,18 @@ class WyzieSettingsFragment(
         if (!savedSubSource.isNullOrEmpty()) {
             subSourceKeyInput?.setText(savedSubSource)
         }
+
+        fun updateClearButtonState() {
+            val hasAnyText = !wyzieKeyInput.text.isNullOrBlank() ||
+                !subDlKeyInput?.text.isNullOrBlank() ||
+                !subSourceKeyInput?.text.isNullOrBlank()
+            resetButton.isEnabled = hasAnyText
+        }
+        updateClearButtonState()
+
+        wyzieKeyInput.addTextChangedListener { updateClearButtonState() }
+        subDlKeyInput?.addTextChangedListener { updateClearButtonState() }
+        subSourceKeyInput?.addTextChangedListener { updateClearButtonState() }
 
         getKeyButton.setOnClickListener {
             try {
@@ -126,41 +142,53 @@ class WyzieSettingsFragment(
             if (dlKey.isNotEmpty()) System.setProperty("cloudstream.subdl.key", dlKey) else System.clearProperty("cloudstream.subdl.key")
             if (ssKey.isNotEmpty()) System.setProperty("cloudstream.subsource.key", ssKey) else System.clearProperty("cloudstream.subsource.key")
 
-            showToast("Subtitle API keys saved and active immediately.")
+            showToast("Subtitle API keys saved.")
             dismiss()
         }
 
         resetButton.setOnClickListener {
-            val prefStores = listOfNotNull(
-                sharedPref,
-                runCatching { context?.applicationContext?.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE) }.getOrNull(),
-                runCatching { context?.applicationContext?.getSharedPreferences("SuperStream", Context.MODE_PRIVATE) }.getOrNull(),
-                runCatching { context?.applicationContext?.getSharedPreferences("cloudstream_subtitle_mode_prefs", Context.MODE_PRIVATE) }.getOrNull()
-            )
-            for (store in prefStores) {
-                store.edit().apply {
-                    remove("wyzie_key")
-                    remove("wyzie_api_key")
-                    remove("subdl_api_key")
-                    remove("subsource_api_key")
-                    apply()
+            val ctx = context ?: return@setOnClickListener
+            StreamPlayDesignTokens.showConfirmationDialog(
+                context = ctx,
+                resources = resources,
+                title = "Clear subtitle API keys?",
+                message = "Remove saved Wyzie, SubDL, and SubSource keys from this device?",
+                confirmText = "Clear keys",
+                cancelText = "Cancel",
+                confirmVariant = StreamPlayDesignTokens.ButtonVariant.DANGER
+            ) {
+                val prefStores = listOfNotNull(
+                    sharedPref,
+                    runCatching { ctx.applicationContext?.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE) }.getOrNull(),
+                    runCatching { ctx.applicationContext?.getSharedPreferences("SuperStream", Context.MODE_PRIVATE) }.getOrNull(),
+                    runCatching { ctx.applicationContext?.getSharedPreferences("cloudstream_subtitle_mode_prefs", Context.MODE_PRIVATE) }.getOrNull()
+                )
+                for (store in prefStores) {
+                    store.edit().apply {
+                        remove("wyzie_key")
+                        remove("wyzie_api_key")
+                        remove("subdl_api_key")
+                        remove("subsource_api_key")
+                        apply()
+                    }
                 }
+                runCatching {
+                    System.clearProperty("cloudstream.wyzie.key")
+                    System.clearProperty("cloudstream.subdl.key")
+                    System.clearProperty("cloudstream.subsource.key")
+                }
+                wyzieKeyInput.setText("")
+                subDlKeyInput?.setText("")
+                subSourceKeyInput?.setText("")
+                updateClearButtonState()
+                showToast("Subtitle API keys cleared.")
+                dismiss()
             }
-            runCatching {
-                System.clearProperty("cloudstream.wyzie.key")
-                System.clearProperty("cloudstream.subdl.key")
-                System.clearProperty("cloudstream.subsource.key")
-            }
-            wyzieKeyInput.setText("")
-            subDlKeyInput?.setText("")
-            subSourceKeyInput?.setText("")
-            showToast("Subtitle API keys cleared.")
-            dismiss()
         }
     }
 
     override fun onDismiss(dialog: android.content.DialogInterface) {
         super.onDismiss(dialog)
-        onDismissCallback?.invoke()
+        StreamPlayDesignTokens.notifyParentSettingsChanged(this, onDismissCallback)
     }
 }

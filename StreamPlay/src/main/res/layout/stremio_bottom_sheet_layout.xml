@@ -69,107 +69,120 @@
             android:layout_marginTop="14dp"
             android:layout_marginBottom="16dp" />
 
-        <!-- Row 1: Add Catalog Feed -->
+        <!-- Grouped Catalog Actions Container -->
         <LinearLayout
-            android:id="@+id/row_add_link"
+            android:id="@+id/catalog_actions_group"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:minHeight="60dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:layout_marginBottom="10dp"
-            android:focusable="true"
-            android:clickable="true"
-            android:nextFocusUp="@id/saveIcon"
-            android:nextFocusDown="@id/row_show_links">
+            android:orientation="vertical">
 
+            <!-- Row 1: Add Catalog Feed -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/row_add_link"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="60dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:focusable="true"
+                android:clickable="true"
+                android:nextFocusUp="@id/saveIcon"
+                android:nextFocusDown="@id/row_show_links">
 
-                <TextView
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:text="Add catalog manifest"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:textColor="#F1F5F9" />
+                    android:layout_weight="1"
+                    android:orientation="vertical">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Register an HTTP or HTTPS catalog endpoint"
-                    android:textSize="12sp"
-                    android:textColor="#94A3B8" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Add catalog manifest"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:textColor="#F1F5F9" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Register an HTTP or HTTPS catalog endpoint"
+                        android:textSize="12sp"
+                        android:textColor="#94A3B8" />
+                </LinearLayout>
+
+                <ImageView
+                    android:id="@+id/addlinks"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="8dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no"
+                    android:scaleType="centerInside" />
             </LinearLayout>
 
-            <ImageView
-                android:id="@+id/addlinks"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="8dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no"
-                android:scaleType="centerInside" />
-        </LinearLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="16dp"
+                android:background="#283140" />
 
-        <!-- Row 2: Saved Catalog Feeds -->
-        <LinearLayout
-            android:id="@+id/row_show_links"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="60dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:focusable="true"
-            android:clickable="true"
-            android:nextFocusUp="@id/row_add_link">
-
+            <!-- Row 2: Saved Catalog Feeds -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/row_show_links"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="60dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:focusable="true"
+                android:clickable="true"
+                android:nextFocusUp="@id/row_add_link">
 
-                <TextView
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:text="Saved catalog manifests"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:textColor="#F1F5F9" />
+                    android:layout_weight="1"
+                    android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/saved_links_count_text"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="No catalog feeds saved"
-                    android:textSize="12sp"
-                    android:textColor="#94A3B8" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Saved catalog manifests"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:textColor="#F1F5F9" />
+
+                    <TextView
+                        android:id="@+id/saved_links_count_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="No catalog feeds saved"
+                        android:textSize="12sp"
+                        android:textColor="#94A3B8" />
+                </LinearLayout>
+
+                <ImageView
+                    android:id="@+id/showlinks"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="8dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no"
+                    android:scaleType="centerInside" />
             </LinearLayout>
-
-            <ImageView
-                android:id="@+id/showlinks"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="8dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no"
-                android:scaleType="centerInside" />
         </LinearLayout>
     </LinearLayout>
 </androidx.core.widget.NestedScrollView>

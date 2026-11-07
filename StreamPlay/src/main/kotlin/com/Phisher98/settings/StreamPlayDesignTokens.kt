@@ -1,9 +1,14 @@
 package com.phisher98
 
 import android.animation.ValueAnimator
+import android.app.Dialog
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.res.ColorStateList
+import android.content.res.Resources
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -12,19 +17,36 @@ import android.provider.Settings
 import android.transition.AutoTransition
 import android.transition.TransitionManager
 import android.util.StateSet
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
+import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Space
+import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.fragment.app.DialogFragment
+import androidx.fragment.app.Fragment
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
  * Single source of truth for StreamPlay Settings design tokens (OKLCH-calibrated dark palette,
- * modular typography, 4dp spacing grid, nested radius scale, TV D-pad focus rings, and
- * reduced-motion-aware transitions).
+ * modular typography, 4dp spacing grid, nested radius scale, grouped inset section surfaces,
+ * TV D-pad focus rings, reduced-motion-aware transitions, and tokenized modal dialogs).
  *
  * Synced with `DESIGN.md`.
  */
 object StreamPlayDesignTokens {
+
+    const val FRAGMENT_RESULT_SETTINGS_CHANGED = "streamplay_settings_changed"
 
     // -------------------------------------------------------------------------
     // 1. Color Tokens (OKLCH-calibrated cool obsidian dark palette)
@@ -107,33 +129,64 @@ object StreamPlayDesignTokens {
         ICON_GHOST
     }
 
+    enum class GroupPosition {
+        SINGLE,
+        TOP,
+        MIDDLE,
+        BOTTOM
+    }
+
     fun dpToPx(density: Float, dp: Float): Int = (dp * density).roundToInt()
 
-    fun dp(resources: android.content.res.Resources, dp: Int): Int =
+    fun dp(resources: Resources, dp: Int): Int =
         (dp * resources.displayMetrics.density).roundToInt()
 
-    fun dialogSurfaceDrawable(resources: android.content.res.Resources): Drawable =
+    fun resolvePluginResources(fragment: Fragment, explicitPlugin: StreamPlayPlugin?): Resources {
+        val pluginRes = explicitPlugin?.resources ?: StreamPlayPlugin.instance?.resources
+        return pluginRes ?: fragment.requireContext().resources
+    }
+
+    fun resolveSharedPreferences(fragment: Fragment, explicitPrefs: SharedPreferences?): SharedPreferences {
+        return explicitPrefs ?: fragment.requireContext().getSharedPreferences(
+            StreamPlayPlugin.PREF_FILE_NAME,
+            Context.MODE_PRIVATE
+        )
+    }
+
+    fun notifyParentSettingsChanged(fragment: DialogFragment, explicitCallback: (() -> Unit)?) {
+        explicitCallback?.invoke()
+        runCatching {
+            if (fragment.isAdded) {
+                fragment.parentFragmentManager.setFragmentResult(
+                    FRAGMENT_RESULT_SETTINGS_CHANGED,
+                    android.os.Bundle.EMPTY
+                )
+            }
+        }
+    }
+
+    fun dialogSurfaceDrawable(resources: Resources): Drawable =
         dialogSheetDrawable(resources.displayMetrics.density)
 
-    fun elevatedCardDrawable(resources: android.content.res.Resources): Drawable =
+    fun elevatedCardDrawable(resources: Resources): Drawable =
         staticCardDrawable(resources.displayMetrics.density)
 
-    fun interactiveRowDrawable(resources: android.content.res.Resources): Drawable =
+    fun interactiveRowDrawable(resources: Resources): Drawable =
         cardSurfaceDrawable(resources.displayMetrics.density)
 
-    fun iconButtonDrawable(resources: android.content.res.Resources): Drawable =
+    fun iconButtonDrawable(resources: Resources): Drawable =
         buttonDrawable(resources.displayMetrics.density, ButtonVariant.ICON_GHOST)
 
-    fun primaryButtonDrawable(resources: android.content.res.Resources): Drawable =
+    fun primaryButtonDrawable(resources: Resources): Drawable =
         buttonDrawable(resources.displayMetrics.density, ButtonVariant.PRIMARY)
 
-    fun secondaryButtonDrawable(resources: android.content.res.Resources): Drawable =
+    fun secondaryButtonDrawable(resources: Resources): Drawable =
         buttonDrawable(resources.displayMetrics.density, ButtonVariant.SECONDARY)
 
-    fun destructiveOutlineButtonDrawable(resources: android.content.res.Resources): Drawable =
+    fun destructiveOutlineButtonDrawable(resources: Resources): Drawable =
         buttonDrawable(resources.displayMetrics.density, ButtonVariant.DANGER)
 
-    fun inputFieldDrawable(resources: android.content.res.Resources): Drawable =
+    fun inputFieldDrawable(resources: Resources): Drawable =
         inputWellDrawable(resources.displayMetrics.density)
 
     fun formatConcurrencySummary(concurrency: Int): String {
@@ -169,8 +222,8 @@ object StreamPlayDesignTokens {
 
     @Suppress("DEPRECATION")
     fun configureDialogWindow(
-        dialog: android.app.Dialog?,
-        resources: android.content.res.Resources,
+        dialog: Dialog?,
+        resources: Resources,
         widthFraction: Float = 0.92f,
         maxHeightFraction: Float = 0.90f
     ) {
@@ -185,9 +238,10 @@ object StreamPlayDesignTokens {
             ViewGroup.LayoutParams.MATCH_PARENT
         }
         val maxDialogHeight = (displayMetrics.heightPixels * maxHeightFraction).toInt()
-        window.setGravity(android.view.Gravity.CENTER)
+        window.setGravity(Gravity.CENTER)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
-        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         runCatching {
             window.navigationBarColor = SURFACE_CANVAS
         }
@@ -205,16 +259,17 @@ object StreamPlayDesignTokens {
         val basePaddingTop = view.paddingTop
         val basePaddingRight = view.paddingRight
         val basePaddingBottom = view.paddingBottom
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(view) { v, windowInsets ->
-            val insets = windowInsets.getInsets(
-                androidx.core.view.WindowInsetsCompat.Type.systemBars() or
-                    androidx.core.view.WindowInsetsCompat.Type.displayCutout()
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, windowInsets ->
+            val systemInsets = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or
+                    WindowInsetsCompat.Type.displayCutout()
             )
+            val imeInsets = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
             v.setPadding(
-                basePaddingLeft + insets.left,
-                basePaddingTop + insets.top,
-                basePaddingRight + insets.right,
-                basePaddingBottom + insets.bottom
+                basePaddingLeft + systemInsets.left,
+                basePaddingTop + systemInsets.top,
+                basePaddingRight + systemInsets.right,
+                basePaddingBottom + max(systemInsets.bottom, imeInsets.bottom)
             )
             windowInsets
         }
@@ -285,6 +340,30 @@ object StreamPlayDesignTokens {
         }
     }
 
+    fun buildCornerRadiiShape(
+        density: Float,
+        fillColor: Int,
+        topLeftDp: Float,
+        topRightDp: Float,
+        bottomRightDp: Float,
+        bottomLeftDp: Float,
+        strokeWidthDp: Float = 0f,
+        strokeColor: Int = Color.TRANSPARENT
+    ): GradientDrawable {
+        val tl = density * topLeftDp
+        val tr = density * topRightDp
+        val br = density * bottomRightDp
+        val bl = density * bottomLeftDp
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadii = floatArrayOf(tl, tl, tr, tr, br, br, bl, bl)
+            setColor(fillColor)
+            if (strokeWidthDp > 0f) {
+                setStroke((density * strokeWidthDp).roundToInt().coerceAtLeast(1), strokeColor)
+            }
+        }
+    }
+
     fun dialogSheetDrawable(density: Float): Drawable {
         return buildShape(
             density = density,
@@ -293,6 +372,53 @@ object StreamPlayDesignTokens {
             strokeWidthDp = 1f,
             strokeColor = BORDER_SUBTLE
         )
+    }
+
+    /**
+     * Unified OS-level grouped section container (`#171C24` fill, `14dp` radius, `1dp` `#283140` border).
+     * Holds multiple sibling rows separated by `1dp` hairline dividers so rows never float as
+     * repetitive individual bordered rectangles.
+     */
+    fun groupedSectionDrawable(density: Float): Drawable {
+        return buildShape(
+            density = density,
+            fillColor = SURFACE_CARD,
+            cornerRadiusDp = RADIUS_SECTION_CARD_DP,
+            strokeWidthDp = 1f,
+            strokeColor = BORDER_SUBTLE
+        )
+    }
+
+    /**
+     * Interactive row surface inside a `groupedSectionDrawable` container.
+     * Transparent at rest so the parent section card provides the unified plane and border,
+     * with position-matched corner radii (`14dp` on outer corners, `0dp` on inner seams) when
+     * pressed or focused via D-pad.
+     */
+    fun groupedRowDrawable(density: Float, position: GroupPosition): Drawable {
+        val topR = when (position) {
+            GroupPosition.SINGLE, GroupPosition.TOP -> RADIUS_SECTION_CARD_DP
+            GroupPosition.MIDDLE, GroupPosition.BOTTOM -> 0f
+        }
+        val botR = when (position) {
+            GroupPosition.SINGLE, GroupPosition.BOTTOM -> RADIUS_SECTION_CARD_DP
+            GroupPosition.TOP, GroupPosition.MIDDLE -> 0f
+        }
+        val stateList = StateListDrawable()
+        stateList.addState(
+            intArrayOf(android.R.attr.state_focused),
+            buildCornerRadiiShape(density, SURFACE_CARD_PRESSED, topR, topR, botR, botR, 2f, BORDER_FOCUS)
+        )
+        stateList.addState(
+            intArrayOf(android.R.attr.state_pressed),
+            buildCornerRadiiShape(density, SURFACE_CARD_PRESSED, topR, topR, botR, botR)
+        )
+        stateList.addState(
+            StateSet.WILD_CARD,
+            buildCornerRadiiShape(density, Color.TRANSPARENT, topR, topR, botR, botR)
+        )
+        val mask = buildCornerRadiiShape(density, Color.WHITE, topR, topR, botR, botR)
+        return RippleDrawable(ColorStateList.valueOf(0x2293C5FD), stateList, mask)
     }
 
     fun cardSurfaceDrawable(density: Float): Drawable {
@@ -427,6 +553,10 @@ object StreamPlayDesignTokens {
             }
             ButtonVariant.ICON_GHOST -> {
                 stateList.addState(
+                    intArrayOf(-android.R.attr.state_enabled),
+                    buildShape(density, Color.TRANSPARENT, RADIUS_BUTTON_DP)
+                )
+                stateList.addState(
                     intArrayOf(android.R.attr.state_focused),
                     buildShape(density, SURFACE_CARD_PRESSED, RADIUS_BUTTON_DP, 2f, BORDER_FOCUS)
                 )
@@ -443,7 +573,7 @@ object StreamPlayDesignTokens {
         return stateList
     }
 
-    fun styleButton(button: android.widget.TextView, density: Float, variant: ButtonVariant) {
+    fun styleButton(button: TextView, density: Float, variant: ButtonVariant) {
         button.backgroundTintList = null
         button.background = buttonDrawable(density, variant)
         button.isAllCaps = false
@@ -499,7 +629,337 @@ object StreamPlayDesignTokens {
     }
 
     // -------------------------------------------------------------------------
-    // 5. Reduced-Motion-Aware Choreographed Transition (§7)
+    // 5. Tokenized OS-Environment Modal Dialogs (Zero Raw AlertDialog Escapes)
+    // -------------------------------------------------------------------------
+    fun createThemedCustomDialog(
+        context: Context,
+        resources: Resources,
+        contentView: View,
+        maxHeightFraction: Float = 0.85f
+    ): Dialog {
+        val dialog = Dialog(context)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        contentView.background = dialogSheetDrawable(resources.displayMetrics.density)
+        dialog.setContentView(contentView)
+        dialog.setOnShowListener {
+            configureDialogWindow(dialog, resources, maxHeightFraction = maxHeightFraction)
+        }
+        applyWindowInsetsPadding(contentView)
+        return dialog
+    }
+
+    fun showConfirmationDialog(
+        context: Context,
+        resources: Resources,
+        title: String,
+        message: String,
+        confirmText: String,
+        cancelText: String = "Cancel",
+        confirmVariant: ButtonVariant = ButtonVariant.PRIMARY,
+        onConfirm: () -> Unit
+    ): Dialog {
+        val density = resources.displayMetrics.density
+        val pad = dpToPx(density, 20f)
+        val root = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        val titleView = TextView(context).apply {
+            text = title
+            setTextColor(TEXT_PRIMARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val messageView = TextView(context).apply {
+            text = message
+            setTextColor(TEXT_SECONDARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setLineSpacing(dpToPx(density, 2f).toFloat(), 1f)
+            setPadding(0, dpToPx(density, 6f), 0, dpToPx(density, 18f))
+        }
+        val actionsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val cancelBtn = Button(context).apply {
+            id = View.generateViewId()
+            text = cancelText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+            styleButton(this, density, ButtonVariant.SECONDARY)
+        }
+        val confirmBtn = Button(context).apply {
+            id = View.generateViewId()
+            text = confirmText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+            styleButton(this, density, confirmVariant)
+        }
+        actionsRow.addView(
+            cancelBtn,
+            LinearLayout.LayoutParams(0, dpToPx(density, 48f), 1f)
+        )
+        actionsRow.addView(
+            Space(context),
+            LinearLayout.LayoutParams(dpToPx(density, 10f), ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+        actionsRow.addView(
+            confirmBtn,
+            LinearLayout.LayoutParams(0, dpToPx(density, 48f), 1f)
+        )
+        applyDirectionalFocus(cancelBtn, confirmBtn)
+
+        root.addView(titleView)
+        root.addView(messageView)
+        root.addView(actionsRow)
+
+        val scroll = ScrollView(context).apply {
+            isFillViewport = true
+            addView(root)
+        }
+        val dialog = createThemedCustomDialog(context, resources, scroll)
+        cancelBtn.setOnClickListener { dialog.dismiss() }
+        confirmBtn.setOnClickListener {
+            dialog.dismiss()
+            onConfirm()
+        }
+        dialog.show()
+        return dialog
+    }
+
+    fun showTextInputDialog(
+        context: Context,
+        resources: Resources,
+        title: String,
+        subtitle: String,
+        fieldLabel: String,
+        hintText: String,
+        confirmText: String,
+        cancelText: String = "Cancel",
+        onConfirm: (String) -> Unit
+    ): Dialog {
+        val density = resources.displayMetrics.density
+        val pad = dpToPx(density, 20f)
+        val root = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        val titleView = TextView(context).apply {
+            text = title
+            setTextColor(TEXT_PRIMARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val subtitleView = TextView(context).apply {
+            text = subtitle
+            setTextColor(TEXT_SECONDARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(0, dpToPx(density, 4f), 0, dpToPx(density, 14f))
+        }
+        val inputId = View.generateViewId()
+        val labelView = TextView(context).apply {
+            text = fieldLabel
+            labelFor = inputId
+            setTextColor(TEXT_PRIMARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, 0, 0, dpToPx(density, 6f))
+        }
+        val padH = dpToPx(density, 14f)
+        val padV = dpToPx(density, 12f)
+        val input = EditText(context).apply {
+            id = inputId
+            hint = hintText
+            setSingleLine()
+            minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+            setTextColor(TEXT_PRIMARY)
+            setHintTextColor(TEXT_MUTED)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            background = inputWellDrawable(density)
+            setPadding(padH, padV, padH, padV)
+        }
+        val actionsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(density, 16f), 0, 0)
+        }
+        val cancelBtn = Button(context).apply {
+            id = View.generateViewId()
+            text = cancelText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+            styleButton(this, density, ButtonVariant.SECONDARY)
+        }
+        val confirmBtn = Button(context).apply {
+            id = View.generateViewId()
+            text = confirmText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+            styleButton(this, density, ButtonVariant.PRIMARY)
+        }
+        actionsRow.addView(
+            cancelBtn,
+            LinearLayout.LayoutParams(0, dpToPx(density, 48f), 1f)
+        )
+        actionsRow.addView(
+            Space(context),
+            LinearLayout.LayoutParams(dpToPx(density, 10f), ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+        actionsRow.addView(
+            confirmBtn,
+            LinearLayout.LayoutParams(0, dpToPx(density, 48f), 1f)
+        )
+        applyDirectionalFocus(cancelBtn, confirmBtn)
+
+        root.addView(titleView)
+        root.addView(subtitleView)
+        root.addView(labelView)
+        root.addView(
+            input,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+        root.addView(actionsRow)
+
+        val scroll = ScrollView(context).apply {
+            isFillViewport = true
+            addView(root)
+        }
+        val dialog = createThemedCustomDialog(context, resources, scroll)
+        cancelBtn.setOnClickListener { dialog.dismiss() }
+        confirmBtn.setOnClickListener {
+            val value = input.text?.toString()?.trim().orEmpty()
+            dialog.dismiss()
+            onConfirm(value)
+        }
+        dialog.setOnShowListener {
+            configureDialogWindow(dialog, resources, maxHeightFraction = 0.85f)
+            input.isFocusableInTouchMode = true
+            input.requestFocus()
+        }
+        dialog.show()
+        return dialog
+    }
+
+    fun showSelectionListDialog(
+        context: Context,
+        resources: Resources,
+        title: String,
+        subtitle: String,
+        items: List<String>,
+        itemTextColor: Int = TEXT_PRIMARY,
+        cancelText: String = "Cancel",
+        onSelect: (Int, String) -> Unit
+    ): Dialog {
+        val density = resources.displayMetrics.density
+        val pad = dpToPx(density, 20f)
+        val root = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        val titleView = TextView(context).apply {
+            text = title
+            setTextColor(TEXT_PRIMARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val subtitleView = TextView(context).apply {
+            text = subtitle
+            setTextColor(TEXT_SECONDARY)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(0, dpToPx(density, 4f), 0, dpToPx(density, 14f))
+        }
+        val groupContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = groupedSectionDrawable(density)
+        }
+        val cancelBtn = Button(context).apply {
+            id = View.generateViewId()
+            text = cancelText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+            styleButton(this, density, ButtonVariant.SECONDARY)
+        }
+
+        root.addView(titleView)
+        root.addView(subtitleView)
+        root.addView(
+            groupContainer,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+        root.addView(
+            cancelBtn,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(density, 48f)).apply {
+                topMargin = dpToPx(density, 14f)
+            }
+        )
+
+        val scroll = ScrollView(context).apply {
+            isFillViewport = true
+            addView(root)
+        }
+        val dialog = createThemedCustomDialog(context, resources, scroll)
+        cancelBtn.setOnClickListener { dialog.dismiss() }
+
+        items.forEachIndexed { index, label ->
+            if (index > 0) {
+                val divider = View(context).apply {
+                    setBackgroundColor(BORDER_SUBTLE)
+                }
+                groupContainer.addView(
+                    divider,
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(density, 1f)).apply {
+                        marginStart = dpToPx(density, 16f)
+                    }
+                )
+            }
+            val pos = when {
+                items.size == 1 -> GroupPosition.SINGLE
+                index == 0 -> GroupPosition.TOP
+                index == items.lastIndex -> GroupPosition.BOTTOM
+                else -> GroupPosition.MIDDLE
+            }
+            val row = TextView(context).apply {
+                id = View.generateViewId()
+                text = label
+                setTextColor(itemTextColor)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setTypeface(typeface, Typeface.BOLD)
+                minHeight = dpToPx(density, MIN_TOUCH_TARGET_DP.toFloat())
+                gravity = Gravity.CENTER_VERTICAL
+                val rowPadH = dpToPx(density, 16f)
+                val rowPadV = dpToPx(density, 12f)
+                setPadding(rowPadH, rowPadV, rowPadH, rowPadV)
+                isClickable = true
+                isFocusable = true
+                background = groupedRowDrawable(density, pos)
+                setOnClickListener {
+                    dialog.dismiss()
+                    onSelect(index, label)
+                }
+            }
+            groupContainer.addView(
+                row,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            )
+        }
+
+        dialog.setOnShowListener {
+            configureDialogWindow(dialog, resources, maxHeightFraction = 0.85f)
+            if (groupContainer.childCount > 0) {
+                groupContainer.getChildAt(0)?.requestFocus()
+            }
+        }
+        dialog.show()
+        return dialog
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. Reduced-Motion-Aware Choreographed Transition (§7)
     // -------------------------------------------------------------------------
     fun isReducedMotionEnabled(context: Context?): Boolean {
         if (context == null) return false
@@ -525,11 +985,11 @@ object StreamPlayDesignTokens {
     }
 
     // -------------------------------------------------------------------------
-    // 6. Live State Summary Resolvers for MainSettingsFragment
+    // 7. Live State Summary Resolvers for MainSettingsFragment
     // -------------------------------------------------------------------------
     fun countConfiguredSubtitleKeys(
         context: Context?,
-        sharedPref: android.content.SharedPreferences?
+        sharedPref: SharedPreferences?
     ): Int {
         var count = 0
         if (!UrduSubtitleEngine.resolveWyzieApiKey(context, sharedPref).isNullOrBlank()) count++
@@ -540,7 +1000,7 @@ object StreamPlayDesignTokens {
 
     fun countReadyUrduSources(
         context: Context?,
-        sharedPref: android.content.SharedPreferences?
+        sharedPref: SharedPreferences?
     ): Int {
         // 6 keyless sources (SubDL, SubSense, Subf2m, YTS, OpenSubtitles, SubtitleCat) + 2 key-gated (SubSource, Wyzie)
         var ready = 6
@@ -551,7 +1011,7 @@ object StreamPlayDesignTokens {
 
     fun countReadyEnglishSources(
         context: Context?,
-        sharedPref: android.content.SharedPreferences?
+        sharedPref: SharedPreferences?
     ): Int {
         // 5 keyless English sources (OpenSubtitles, SubDL, Subf2m, YTS, SubtitleCat) + 1 key-gated (SubSource)
         var ready = 5
@@ -562,7 +1022,7 @@ object StreamPlayDesignTokens {
     fun formatSubtitleSourcesLine(
         isUrdu: Boolean,
         context: Context?,
-        sharedPref: android.content.SharedPreferences?
+        sharedPref: SharedPreferences?
     ): String {
         return if (isUrdu) {
             buildList {

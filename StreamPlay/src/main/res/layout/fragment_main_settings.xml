@@ -34,6 +34,7 @@
                 android:orientation="vertical">
 
                 <TextView
+                    android:id="@+id/headerTitle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="StreamPlay"
@@ -43,6 +44,7 @@
                     android:letterSpacing="-0.01" />
 
                 <TextView
+                    android:id="@+id/headerSubtitle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
@@ -73,6 +75,7 @@
 
         <!-- SECTION 1: Subtitles & language -->
         <TextView
+            android:id="@+id/section_subtitles_header"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Subtitles &amp; language"
@@ -83,253 +86,263 @@
             android:paddingStart="2dp"
             android:paddingEnd="2dp" />
 
-        <!-- 0. Hero Subtitle Control Card -->
+        <!-- Unified Inset Group 1: Subtitles + Catalog language + Subtitle API keys -->
         <LinearLayout
-            android:id="@+id/subtitle_mode_button"
+            android:id="@+id/section_subtitles_group"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            android:orientation="vertical"
-            android:padding="16dp"
-            android:clickable="false"
-            android:focusable="false">
+            android:layout_marginBottom="18dp"
+            android:orientation="vertical">
 
-            <!-- Header Row: Title + Live Readiness Summary -->
+            <!-- 0. Hero Subtitle Control Row (Top of Section 1) -->
             <LinearLayout
+                android:id="@+id/subtitle_mode_button"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical">
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:clickable="false"
+                android:focusable="false">
 
-                <TextView
-                    android:id="@+id/subtitle_mode_label"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Subtitles"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
 
-                <TextView
-                    android:id="@+id/subtitle_mode_desc"
-                    android:layout_width="wrap_content"
+                    <TextView
+                        android:id="@+id/subtitle_mode_label"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Subtitles"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/subtitle_mode_desc"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:accessibilityLiveRegion="polite"
+                        android:fontFeatureSettings="tnum"
+                        android:text="5 of 6 sources"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
+
+                <!-- Segmented Control Track (outer radius 12dp = inner 9dp + 3dp padding; pills >= 48dp touch height) -->
+                <LinearLayout
+                    android:id="@+id/subtitle_mode_pill_track"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:accessibilityLiveRegion="polite"
-                    android:text="5 of 6 sources ready · Streams and downloads"
-                    android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:minHeight="54dp"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal"
+                    android:padding="3dp"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:id="@+id/subtitle_mode_pill_default"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:ellipsize="end"
+                        android:text="English"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:contentDescription="Use English subtitles for streams and downloads"
+                        android:nextFocusUp="@id/saveIcon"
+                        android:nextFocusRight="@id/subtitle_mode_pill_urdu"
+                        android:nextFocusDown="@id/languageRow">
+                        <requestFocus />
+                    </TextView>
+
+                    <Space
+                        android:layout_width="4dp"
+                        android:layout_height="wrap_content" />
+
+                    <TextView
+                        android:id="@+id/subtitle_mode_pill_urdu"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:ellipsize="end"
+                        android:text="Urdu &#x2067;اردو&#x2069;"
+                        android:textColor="#94A3B8"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:contentDescription="Use Urdu subtitles for streams and downloads"
+                        android:nextFocusUp="@id/saveIcon"
+                        android:nextFocusLeft="@id/subtitle_mode_pill_default"
+                        android:nextFocusDown="@id/languageRow" />
+                </LinearLayout>
             </LinearLayout>
 
-            <!-- Segmented Control Track (outer radius 12dp = inner 9dp + 3dp padding; pills >= 48dp touch height) -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="16dp"
+                android:background="#283140" />
+
+            <!-- 1. Catalog Language Row (Middle of Section 1) -->
             <LinearLayout
-                android:id="@+id/subtitle_mode_pill_track"
+                android:id="@+id/languageRow"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:minHeight="54dp"
-                android:layout_marginTop="12dp"
+                android:minHeight="56dp"
                 android:orientation="horizontal"
-                android:padding="3dp"
-                android:gravity="center_vertical">
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/subtitle_mode_pill_default"
+                android:nextFocusDown="@id/wyzieRow">
 
-                <TextView
-                    android:id="@+id/subtitle_mode_pill_default"
+                <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:minHeight="48dp"
                     android:layout_weight="1"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="10dp"
-                    android:singleLine="true"
-                    android:ellipsize="end"
-                    android:text="English"
-                    android:textColor="#FFFFFF"
-                    android:textSize="13sp"
-                    android:textStyle="bold"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:contentDescription="Use English subtitles for streams and downloads"
-                    android:nextFocusUp="@id/saveIcon"
-                    android:nextFocusRight="@id/subtitle_mode_pill_urdu"
-                    android:nextFocusDown="@id/languageRow">
-                    <requestFocus />
-                </TextView>
+                    android:orientation="vertical">
 
-                <Space
-                    android:layout_width="4dp"
-                    android:layout_height="wrap_content" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Catalog language"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Metadata &amp; audio"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
-                    android:id="@+id/subtitle_mode_pill_urdu"
-                    android:layout_width="0dp"
+                    android:id="@+id/languageValue"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:layout_weight="1"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="10dp"
-                    android:singleLine="true"
-                    android:ellipsize="end"
-                    android:text="Urdu &#x2067;اردو&#x2069;"
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="en-US"
                     android:textColor="#94A3B8"
-                    android:textSize="13sp"
-                    android:textStyle="bold"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:contentDescription="Use Urdu subtitles for streams and downloads"
-                    android:nextFocusUp="@id/saveIcon"
-                    android:nextFocusLeft="@id/subtitle_mode_pill_default"
-                    android:nextFocusDown="@id/languageRow" />
+                    android:textSize="13sp" />
+
+                <ImageView
+                    android:id="@+id/languageCard"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <!-- Active Subtitle Sources Line -->
-            <TextView
-                android:id="@+id/subtitle_mode_sources_chips"
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="16dp"
+                android:background="#283140" />
+
+            <!-- 2. Subtitle API Keys Row (Bottom of Section 1) -->
+            <LinearLayout
+                android:id="@+id/wyzieRow"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:lineSpacingExtra="2dp"
-                android:text="OpenSubtitles · SubDL · Subf2m · YTS · SubtitleCat"
-                android:textColor="#7C8B9E"
-                android:textSize="12sp" />
-        </LinearLayout>
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/languageRow"
+                android:nextFocusDown="@id/toggleprovidersRow">
 
-        <!-- 1. Catalog Language Row -->
-        <LinearLayout
-            android:id="@+id/languageRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:layout_marginBottom="8dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/subtitle_mode_pill_default"
-            android:nextFocusDown="@id/wyzieRow">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
 
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Subtitle API keys"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Wyzie, SubDL, SubSource"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
+                    android:id="@+id/wyzieValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Catalog language"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="None"
+                    android:textColor="#7C8B9E"
+                    android:textSize="13sp" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Metadata &amp; audio"
-                    android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                <ImageView
+                    android:id="@+id/wyzieCard"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/languageValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="en-US"
-                android:textColor="#93C5FD"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/languageCard"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
-        </LinearLayout>
-
-        <!-- 2. Subtitle API Keys Row -->
-        <LinearLayout
-            android:id="@+id/wyzieRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:layout_marginBottom="20dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/languageRow"
-            android:nextFocusDown="@id/toggleprovidersRow">
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Subtitle API keys"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Wyzie, SubDL, SubSource"
-                    android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/wyzieValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="Optional"
-                android:textColor="#7C8B9E"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/wyzieCard"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
         </LinearLayout>
 
         <!-- SECTION 2: Playback & sources -->
         <TextView
+            android:id="@+id/section_playback_header"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Playback &amp; sources"
@@ -340,140 +353,152 @@
             android:paddingStart="2dp"
             android:paddingEnd="2dp" />
 
-        <!-- 3. Enabled Sources Row -->
+        <!-- Unified Inset Group 2: Enabled sources + Concurrency -->
         <LinearLayout
-            android:id="@+id/toggleprovidersRow"
+            android:id="@+id/section_playback_group"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:layout_marginBottom="8dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/wyzieRow"
-            android:nextFocusDown="@id/performanceRow">
+            android:layout_marginBottom="18dp"
+            android:orientation="vertical">
 
+            <!-- 3. Enabled Sources Row (Top of Section 2) -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/toggleprovidersRow"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/wyzieRow"
+                android:nextFocusDown="@id/performanceRow">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Enabled sources"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Active search providers"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
+                    android:id="@+id/providersValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Enabled sources"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Active search providers"
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="10 of 10"
                     android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:textSize="13sp" />
+
+                <ImageView
+                    android:id="@+id/toggleproviders"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/providersValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="10 / 10"
-                android:textColor="#93C5FD"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="16dp"
+                android:background="#283140" />
 
-            <ImageView
-                android:id="@+id/toggleproviders"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
-        </LinearLayout>
-
-        <!-- 4. Concurrency Row -->
-        <LinearLayout
-            android:id="@+id/performanceRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:layout_marginBottom="20dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/toggleprovidersRow"
-            android:nextFocusDown="@id/featureRow">
-
+            <!-- 4. Concurrency Row (Bottom of Section 2) -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/performanceRow"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/toggleprovidersRow"
+                android:nextFocusDown="@id/featureRow">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Concurrency"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Parallel search tasks"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
+                    android:id="@+id/performanceValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Concurrency"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Parallel search tasks"
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="16 · Balanced"
                     android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:textSize="13sp" />
+
+                <ImageView
+                    android:id="@+id/performance"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/performanceValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="16 · Balanced"
-                android:textColor="#93C5FD"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/performance"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
         </LinearLayout>
 
         <!-- SECTION 3: Addons & extensions -->
         <TextView
+            android:id="@+id/section_addons_header"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Addons &amp; extensions"
@@ -484,200 +509,215 @@
             android:paddingStart="2dp"
             android:paddingEnd="2dp" />
 
-        <!-- 5. Extensions Row -->
+        <!-- Unified Inset Group 3: Extensions + Stream addons + Catalog addons -->
         <LinearLayout
-            android:id="@+id/featureRow"
+            android:id="@+id/section_addons_group"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:layout_marginBottom="8dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/performanceRow"
-            android:nextFocusDown="@id/stremioaddonstreamsRow">
+            android:orientation="vertical">
 
+            <!-- 5. Extensions Row (Top of Section 3) -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/featureRow"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/performanceRow"
+                android:nextFocusDown="@id/stremioaddonstreamsRow">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Extensions"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Home &amp; anime catalogs"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
+                    android:id="@+id/featureValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Extensions"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Home &amp; anime catalogs"
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="2 of 2"
                     android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:textSize="13sp" />
+
+                <ImageView
+                    android:id="@+id/featureCard"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/featureValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="2 active"
-                android:textColor="#93C5FD"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="16dp"
+                android:background="#283140" />
 
-            <ImageView
-                android:id="@+id/featureCard"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
-        </LinearLayout>
-
-        <!-- 6. Stream Addons Row -->
-        <LinearLayout
-            android:id="@+id/stremioaddonstreamsRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:layout_marginBottom="8dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/featureRow"
-            android:nextFocusDown="@id/stremioaddonsRow">
-
+            <!-- 6. Stream Addons Row (Middle of Section 3) -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/stremioaddonstreamsRow"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/featureRow"
+                android:nextFocusDown="@id/stremioaddonsRow">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Stream addons"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="HTTPS, torrent &amp; debrid"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
+                    android:id="@+id/stremioStreamsValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Stream addons"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="None"
+                    android:textColor="#7C8B9E"
+                    android:textSize="13sp" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="HTTPS, torrent &amp; debrid"
-                    android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                <ImageView
+                    android:id="@+id/stremioaddonstreams"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/stremioStreamsValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="None"
-                android:textColor="#7C8B9E"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="16dp"
+                android:background="#283140" />
 
-            <ImageView
-                android:id="@+id/stremioaddonstreams"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
-        </LinearLayout>
-
-        <!-- 7. Catalog Addons Row -->
-        <LinearLayout
-            android:id="@+id/stremioaddonsRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="58dp"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:gravity="center_vertical"
-            android:clickable="true"
-            android:focusable="true"
-            android:nextFocusUp="@id/stremioaddonstreamsRow">
-
+            <!-- 7. Catalog Addons Row (Bottom of Section 3) -->
             <LinearLayout
-                android:layout_width="0dp"
+                android:id="@+id/stremioaddonsRow"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:nextFocusUp="@id/stremioaddonstreamsRow">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Catalog addons"
+                        android:textColor="#F1F5F9"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Custom home feeds"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+                </LinearLayout>
 
                 <TextView
+                    android:id="@+id/stremioCatalogsValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Catalog addons"
-                    android:textColor="#F1F5F9"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                    android:layout_marginStart="12dp"
+                    android:fontFeatureSettings="tnum"
+                    android:text="None"
+                    android:textColor="#7C8B9E"
+                    android:textSize="13sp" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="Custom home feeds"
-                    android:textColor="#94A3B8"
-                    android:textSize="12sp"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
+                <ImageView
+                    android:id="@+id/stremioaddons"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginStart="6dp"
+                    android:focusable="false"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/stremioCatalogsValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:fontFeatureSettings="tnum"
-                android:text="None"
-                android:textColor="#7C8B9E"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/stremioaddons"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_marginStart="6dp"
-                android:focusable="false"
-                android:clickable="false"
-                android:importantForAccessibility="no" />
         </LinearLayout>
 
     </LinearLayout>

@@ -2,10 +2,8 @@ package com.phisher98
 
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.content.res.Resources
 import android.os.Bundle
-import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
@@ -13,22 +11,23 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
 import androidx.core.content.edit
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.DialogFragment
 
 class ConcurrencyBottomSheet(
-    plugin: StreamPlayPlugin,
-    private val sharedPref: SharedPreferences,
+    private var explicitPlugin: StreamPlayPlugin? = null,
+    private var explicitSharedPref: SharedPreferences? = null,
     private val onDismissCallback: (() -> Unit)? = null
 ) : DialogFragment() {
 
-    private val res = plugin.resources ?: throw Exception("Unable to access plugin resources")
+    constructor() : this(null, null, null)
 
-    // Single source of truth with proper clamp
-    private var currentValue = sharedPref
-        .getInt("provider_concurrency", StreamPlayConcurrency.DeviceProfile.MID_RANGE.recommendedConcurrency)
-        .let(StreamPlayConcurrency::normalizeConcurrency)
+    private val res: Resources
+        get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
+
+    private val sharedPref: SharedPreferences
+        get() = StreamPlayDesignTokens.resolveSharedPreferences(this, explicitSharedPref)
+
+    private var currentValue: Int = StreamPlayConcurrency.DeviceProfile.MID_RANGE.recommendedConcurrency
 
     private fun <T : View> View.findView(name: String): T {
         val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
@@ -47,6 +46,9 @@ class ConcurrencyBottomSheet(
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View? {
+        currentValue = sharedPref
+            .getInt("provider_concurrency", StreamPlayConcurrency.DeviceProfile.MID_RANGE.recommendedConcurrency)
+            .let(StreamPlayConcurrency::normalizeConcurrency)
         val layoutId = res.getIdentifier(
             "concurrency_bottom_sheet",
             "layout",
@@ -106,6 +108,7 @@ class ConcurrencyBottomSheet(
         fun updateUI() {
             tvValue.text = currentValue.toString()
             tvMode.text = StreamPlayConcurrency.concurrencyTier(currentValue)
+            tvMode.setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
             val atMin = currentValue <= StreamPlayConcurrency.MIN_PROVIDER_CONCURRENCY
             val atMax = currentValue >= StreamPlayConcurrency.MAX_PROVIDER_CONCURRENCY
             btnDecrease.isEnabled = !atMin
@@ -161,6 +164,6 @@ class ConcurrencyBottomSheet(
 
     override fun onDismiss(dialog: android.content.DialogInterface) {
         super.onDismiss(dialog)
-        onDismissCallback?.invoke()
+        StreamPlayDesignTokens.notifyParentSettingsChanged(this, onDismissCallback)
     }
 }

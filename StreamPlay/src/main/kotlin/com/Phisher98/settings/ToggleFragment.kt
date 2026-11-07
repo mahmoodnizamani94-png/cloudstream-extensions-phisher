@@ -3,10 +3,7 @@ package com.phisher98.settings
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
 import android.content.res.Resources
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
-import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
@@ -15,8 +12,6 @@ import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
 import androidx.core.content.edit
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.DialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.phisher98.BuildConfig
@@ -28,22 +23,28 @@ import com.phisher98.StreamPlayStremioCatelog
 import com.phisher98.StreamPlayStremioCatelogFrag
 
 class ToggleFragment(
-    plugin: StreamPlayPlugin,
-    private val sharedPref: SharedPreferences,
+    private var explicitPlugin: StreamPlayPlugin? = null,
+    private var explicitSharedPref: SharedPreferences? = null,
     private val onDismissCallback: (() -> Unit)? = null
 ) : DialogFragment() {
+
+    constructor() : this(null, null, null)
+
+    private val res: Resources
+        get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
+
+    private val sharedPref: SharedPreferences
+        get() = StreamPlayDesignTokens.resolveSharedPreferences(this, explicitSharedPref)
 
     override fun onStart() {
         super.onStart()
         StreamPlayDesignTokens.configureDialogWindow(dialog, resources)
     }
 
-    private val res: Resources = plugin.resources ?: throw Exception("Unable to access plugin resources")
-
     @SuppressLint("DiscouragedApi")
     private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
         val id = res.getIdentifier(name, "layout", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (id == 0) throw Exception("Layout $name not found.")
+        if (id == 0) throw IllegalStateException("Layout $name not found.")
         val layout = res.getLayout(id)
         return inflater.inflate(layout, container, false)
     }
@@ -92,6 +93,8 @@ class ToggleFragment(
         root.background = StreamPlayDesignTokens.dialogSurfaceDrawable(resources)
 
         val extensionList = root.findView<LinearLayout>("toggle_list_container")
+        extensionList.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
+
         val subtitleCount = root.findViewOrNull<TextView>("subtitle_count")
         val stremioLinks = loadStremioLinks()
         val apis = buildList {
@@ -119,16 +122,37 @@ class ToggleFragment(
             sharedPref.edit {
                 putStringSet(savedKey, activeNames.toSet())
             }
-            subtitleCount?.text =
-                "${activeNames.size} of ${apis.size} active · Saved automatically"
+            subtitleCount?.text = "${activeNames.size} of ${apis.size} enabled"
         }
 
         val toggleItemId = res.getIdentifier("toggle_item", "id", BuildConfig.LIBRARY_PACKAGE_NAME)
 
-        for (api in apis) {
+        apis.forEachIndexed { index, api ->
+            if (index > 0) {
+                val divider = View(requireContext()).apply {
+                    setBackgroundColor(StreamPlayDesignTokens.BORDER_SUBTLE)
+                }
+                extensionList.addView(
+                    divider,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        StreamPlayDesignTokens.dpToPx(density, 1f)
+                    ).apply {
+                        marginStart = StreamPlayDesignTokens.dpToPx(density, 16f)
+                    }
+                )
+            }
+
+            val groupPosition = when {
+                apis.size == 1 -> StreamPlayDesignTokens.GroupPosition.SINGLE
+                index == 0 -> StreamPlayDesignTokens.GroupPosition.TOP
+                index == apis.lastIndex -> StreamPlayDesignTokens.GroupPosition.BOTTOM
+                else -> StreamPlayDesignTokens.GroupPosition.MIDDLE
+            }
+
             val toggleItem = getLayout("list_toggle_item", inflater, container)
             val toggleSwitch = toggleItem.findViewById<Switch>(toggleItemId)
-            toggleItem.background = StreamPlayDesignTokens.interactiveRowDrawable(resources)
+            toggleItem.background = StreamPlayDesignTokens.groupedRowDrawable(density, groupPosition)
             toggleSwitch.text = api.name
             toggleSwitch.setTextColor(StreamPlayDesignTokens.TEXT_PRIMARY)
             toggleSwitch.isChecked = activeNames.contains(api.name)
@@ -176,6 +200,6 @@ class ToggleFragment(
 
     override fun onDismiss(dialog: android.content.DialogInterface) {
         super.onDismiss(dialog)
-        onDismissCallback?.invoke()
+        StreamPlayDesignTokens.notifyParentSettingsChanged(this, onDismissCallback)
     }
 }

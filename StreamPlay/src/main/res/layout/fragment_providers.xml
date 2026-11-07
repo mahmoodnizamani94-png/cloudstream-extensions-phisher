@@ -49,10 +49,9 @@
                     android:layout_marginTop="2dp"
                     android:accessibilityLiveRegion="polite"
                     android:fontFeatureSettings="tnum"
-                    android:text="10 / 10 active · Saved automatically"
-                    android:textColor="#93C5FD"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
+                    android:text="10 of 10 enabled"
+                    android:textColor="#94A3B8"
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <Button
@@ -79,7 +78,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:labelFor="@id/ext_search"
-            android:text="Search sources"
+            android:text="Filter sources"
             android:textColor="#F1F5F9"
             android:textSize="13sp"
             android:textStyle="bold"
@@ -106,7 +105,7 @@
             android:nextFocusUp="@id/btn_save"
             android:nextFocusDown="@id/btn_select_all" />
 
-        <!-- ENABLE ALL / DISABLE ALL -->
+        <!-- QUIET SECONDARY ACTION BAR -->
         <LinearLayout
             android:id="@+id/buttons_row"
             android:layout_width="match_parent"
@@ -121,7 +120,7 @@
                 android:layout_weight="1"
                 android:text="Enable all"
                 android:textAllCaps="false"
-                android:textSize="13sp"
+                android:textSize="12sp"
                 android:textStyle="bold"
                 android:focusable="true"
                 android:nextFocusUp="@id/ext_search"
@@ -139,15 +138,15 @@
                 android:layout_weight="1"
                 android:text="Disable optional"
                 android:textAllCaps="false"
-                android:textSize="13sp"
+                android:textSize="12sp"
                 android:textStyle="bold"
                 android:focusable="true"
                 android:nextFocusUp="@id/ext_search"
                 android:nextFocusLeft="@id/btn_select_all"
-                android:nextFocusDown="@id/btn_load_profile" />
+                android:nextFocusDown="@id/btn_save_profile" />
         </LinearLayout>
 
-        <!-- PRESET BUTTONS -->
+        <!-- PRESET BUTTONS (Load & Delete only appear when presets exist) -->
         <LinearLayout
             android:id="@+id/profile_buttons"
             android:layout_width="match_parent"
@@ -167,11 +166,14 @@
                 android:textStyle="bold"
                 android:focusable="true"
                 android:nextFocusUp="@id/btn_select_all"
-                android:nextFocusRight="@id/btn_load_profile" />
+                android:nextFocusRight="@id/btn_load_profile"
+                android:nextFocusDown="@id/list_container" />
 
             <Space
+                android:id="@+id/space_load_profile"
                 android:layout_width="8dp"
-                android:layout_height="wrap_content" />
+                android:layout_height="wrap_content"
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/btn_load_profile"
@@ -183,13 +185,17 @@
                 android:textSize="12sp"
                 android:textStyle="bold"
                 android:focusable="true"
+                android:visibility="gone"
                 android:nextFocusUp="@id/btn_select_all"
                 android:nextFocusLeft="@id/btn_save_profile"
-                android:nextFocusRight="@id/btn_delete_profile" />
+                android:nextFocusRight="@id/btn_delete_profile"
+                android:nextFocusDown="@id/list_container" />
 
             <Space
+                android:id="@+id/space_delete_profile"
                 android:layout_width="8dp"
-                android:layout_height="wrap_content" />
+                android:layout_height="wrap_content"
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/btn_delete_profile"
@@ -201,16 +207,11 @@
                 android:textSize="12sp"
                 android:textStyle="bold"
                 android:focusable="true"
+                android:visibility="gone"
                 android:nextFocusUp="@id/btn_deselect_all"
                 android:nextFocusLeft="@id/btn_load_profile"
                 android:nextFocusDown="@id/list_container" />
         </LinearLayout>
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#283140"
-            android:layout_marginBottom="8dp" />
 
         <TextView
             android:id="@+id/tv_empty_providers"
@@ -224,7 +225,7 @@
             android:textSize="13sp"
             android:visibility="gone" />
 
-        <!-- PROVIDERS LIST -->
+        <!-- UNIFIED GROUPED PROVIDERS CONTAINER -->
         <LinearLayout
             android:id="@+id/list_container"
             android:layout_width="match_parent"

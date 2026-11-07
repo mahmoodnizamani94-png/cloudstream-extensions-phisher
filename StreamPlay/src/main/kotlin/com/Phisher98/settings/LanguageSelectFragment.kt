@@ -2,44 +2,43 @@ package com.phisher98
 
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.content.res.Resources
 import android.os.Bundle
-import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.edit
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.CompoundButtonCompat
 import androidx.core.widget.addTextChangedListener
 import androidx.fragment.app.DialogFragment
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 
 class LanguageSelectFragment(
-    plugin: StreamPlayPlugin,
-    private val sharedPref: SharedPreferences,
+    private var explicitPlugin: StreamPlayPlugin? = null,
+    private var explicitSharedPref: SharedPreferences? = null,
     private val onDismissCallback: (() -> Unit)? = null
 ) : DialogFragment() {
+
+    constructor() : this(null, null, null)
+
+    private val res: Resources
+        get() = StreamPlayDesignTokens.resolvePluginResources(this, explicitPlugin)
+
+    private val sharedPref: SharedPreferences
+        get() = StreamPlayDesignTokens.resolveSharedPreferences(this, explicitSharedPref)
 
     override fun onStart() {
         super.onStart()
         StreamPlayDesignTokens.configureDialogWindow(dialog, resources, maxHeightFraction = 0.85f)
-        dialog?.window?.apply {
-            val displayMetrics = resources.displayMetrics
-            val height = (displayMetrics.heightPixels * 0.85f).toInt().coerceAtLeast(1)
-            setLayout(attributes.width, height)
-        }
     }
-
-    private val res = plugin.resources ?: throw Exception("Unable to access plugin resources")
 
     private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
         val id = res.getIdentifier(name, "layout", BuildConfig.LIBRARY_PACKAGE_NAME)
@@ -136,87 +135,17 @@ class LanguageSelectFragment(
         val density = resources.displayMetrics.density
         root.background = StreamPlayDesignTokens.dialogSheetDrawable(density)
 
-        val rootContainer: ViewGroup? = root.findViewOrNull("language_select_root")
-        val banner: View? = root.findViewOrNull("lang_subtitle_mode_banner")
-        val bannerStatus: TextView? = root.findViewOrNull("lang_subtitle_mode_status")
-        val pillTrack: View? = root.findViewOrNull("lang_pill_track")
-        val pillDefault: TextView? = root.findViewOrNull("lang_pill_default")
-        val pillUrdu: TextView? = root.findViewOrNull("lang_pill_urdu")
+        val btnClose: Button? = root.findViewOrNull("btn_close_language")
         val tvEmpty: TextView? = root.findViewOrNull("tv_empty_language")
-
         val recycler: RecyclerView = root.findView("languageRecycler")
         val search: EditText = root.findView("searchLanguage")
+
+        btnClose?.let {
+            StreamPlayDesignTokens.styleButton(it, density, StreamPlayDesignTokens.ButtonVariant.SECONDARY)
+            it.setOnClickListener { dismiss() }
+        }
         search.background = StreamPlayDesignTokens.inputWellDrawable(density)
-
-        banner?.background = StreamPlayDesignTokens.staticCardDrawable(density)
-        pillTrack?.background = StreamPlayDesignTokens.segmentedTrackDrawable(density)
-        StreamPlayDesignTokens.applyDirectionalFocus(pillDefault, pillUrdu)
-
-        fun updateSubtitleBannerUi(animate: Boolean = false) {
-            if (animate) {
-                StreamPlayDesignTokens.beginMicroTransition(rootContainer, context)
-            }
-            val currentMode = UrduSubtitleEngine.getSubtitleMode(context, sharedPref)
-            val isUrdu = currentMode == UrduSubtitleEngine.SubtitleMode.URDU
-
-            pillDefault?.text = "English"
-            pillUrdu?.text = "Urdu ${StreamPlayDesignTokens.isolateRtl("\u0627\u0631\u062f\u0648")}"
-
-            if (isUrdu) {
-                val ready = StreamPlayDesignTokens.countReadyUrduSources(context, sharedPref)
-                bannerStatus?.text =
-                    "$ready of ${UrduSubtitleEngine.TOTAL_URDU_SOTA_SOURCES} sources ready · Streams and downloads"
-                bannerStatus?.setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
-                pillUrdu?.apply {
-                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = true)
-                    setTextColor(StreamPlayDesignTokens.ON_ACCENT)
-                    isSelected = true
-                }
-                pillDefault?.apply {
-                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = false)
-                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
-                    isSelected = false
-                }
-            } else {
-                val readyEnglish = StreamPlayDesignTokens.countReadyEnglishSources(context, sharedPref)
-                bannerStatus?.text = "$readyEnglish of 6 sources ready · Streams and downloads"
-                bannerStatus?.setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
-                pillDefault?.apply {
-                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = true)
-                    setTextColor(StreamPlayDesignTokens.ON_ACCENT)
-                    isSelected = true
-                }
-                pillUrdu?.apply {
-                    background = StreamPlayDesignTokens.segmentOptionDrawable(density, selected = false)
-                    setTextColor(StreamPlayDesignTokens.TEXT_SECONDARY)
-                    isSelected = false
-                }
-            }
-        }
-
-        updateSubtitleBannerUi(animate = false)
-
-        fun applySubtitleModeFromBanner(selectedMode: UrduSubtitleEngine.SubtitleMode) {
-            val ctx = context ?: return
-            val prev = UrduSubtitleEngine.getSubtitleMode(ctx, sharedPref)
-            UrduSubtitleEngine.setSubtitleMode(
-                mode = selectedMode,
-                context = ctx,
-                sharedPref = sharedPref
-            )
-            updateSubtitleBannerUi(animate = prev != selectedMode)
-        }
-
-        pillDefault?.setOnClickListener { v ->
-            v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            applySubtitleModeFromBanner(UrduSubtitleEngine.SubtitleMode.DEFAULT)
-        }
-
-        pillUrdu?.setOnClickListener { v ->
-            v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            applySubtitleModeFromBanner(UrduSubtitleEngine.SubtitleMode.URDU)
-        }
-
+        recycler.background = StreamPlayDesignTokens.groupedSectionDrawable(density)
         recycler.layoutManager = LinearLayoutManager(requireContext())
 
         val savedCode = sharedPref.getString("tmdb_language_code", "en-US") ?: "en-US"
@@ -227,34 +156,7 @@ class LanguageSelectFragment(
             density
         ) { code ->
             sharedPref.edit { putString("tmdb_language_code", code) }
-            val ctx = requireContext()
-            if (code.startsWith("ur", ignoreCase = true)) {
-                UrduSubtitleEngine.setSubtitleMode(
-                    mode = UrduSubtitleEngine.SubtitleMode.URDU,
-                    context = ctx,
-                    sharedPref = sharedPref
-                )
-                updateSubtitleBannerUi(animate = false)
-                Toast.makeText(
-                    ctx,
-                    "Language set to $code (Urdu subtitles active)",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } else if (code.startsWith("en", ignoreCase = true)) {
-                UrduSubtitleEngine.setSubtitleMode(
-                    mode = UrduSubtitleEngine.SubtitleMode.DEFAULT,
-                    context = ctx,
-                    sharedPref = sharedPref
-                )
-                updateSubtitleBannerUi(animate = false)
-                Toast.makeText(
-                    ctx,
-                    "Language set to $code (English subtitles active)",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } else {
-                Toast.makeText(ctx, "Language set to $code", Toast.LENGTH_SHORT).show()
-            }
+            Toast.makeText(requireContext(), "Catalog language set to $code", Toast.LENGTH_SHORT).show()
             dismiss()
         }
 
@@ -309,7 +211,8 @@ class LanguageSelectFragment(
                 StreamPlayDesignTokens.compoundButtonTintList()
             )
 
-            holder.radio.setOnClickListener {
+            holder.radio.setOnClickListener { buttonView ->
+                buttonView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 onClick(code)
             }
         }
@@ -326,7 +229,7 @@ class LanguageSelectFragment(
                         it.second.contains(query, ignoreCase = true)
                 }
             }
-            val diff = androidx.recyclerview.widget.DiffUtil.calculateDiff(object : androidx.recyclerview.widget.DiffUtil.Callback() {
+            val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
                 override fun getOldListSize(): Int = previousList.size
                 override fun getNewListSize(): Int = nextList.size
                 override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
@@ -342,6 +245,6 @@ class LanguageSelectFragment(
 
     override fun onDismiss(dialog: android.content.DialogInterface) {
         super.onDismiss(dialog)
-        onDismissCallback?.invoke()
+        StreamPlayDesignTokens.notifyParentSettingsChanged(this, onDismissCallback)
     }
 }
