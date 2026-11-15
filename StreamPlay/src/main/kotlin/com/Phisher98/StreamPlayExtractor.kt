@@ -98,15 +98,8 @@ object StreamPlayExtractor : StreamPlay() {
     val encDecApiSemaphore = Semaphore(4)
     val vidlinkEncCache = ConcurrentHashMap<Int, Pair<String, Long>>()
 
-    /**
-     * Grace window granted to the preferred `standard` (direct-MP4) lane when `dash-hevc` already
-     * answered with a fully satisfying 720p+1080p+English-captions payload. `standard` normally
-     * lands within a single round-trip (~400-800ms); when it is slow (retry ladder up to ~36s),
-     * the dash-hevc result proceeds after this window instead of blocking the whole walk.
-     */
     private const val VIDLINK_STANDARD_LANE_GRACE_MS = 1500L
 
-    // Shared pre-built OkHttpClient pool (zero per-request allocation)
     private val fastHttpClient: okhttp3.OkHttpClient by lazy {
         app.baseClient.newBuilder()
             .callTimeout(10L, TimeUnit.SECONDS)
@@ -301,19 +294,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * SOTA Emission for Top-Tier Sources (VidLink 100 > Cineby 95 > CineSrc 94 > VidFast 93 >
-     * MegaPlay 92 > MeowTV 91 > AniZone 89 > AnimePahe 88 > Animex 87). Emits only genuine,
-     * manifest-verified variants: 720p is prioritized #1 and 1080p #2 by STREAM_PRIORITY_COMPARATOR,
-     * followed by the remaining qualities (480p, 4K, ...); no synthetic companions are ever
-     * fabricated.
-     *
-     * - If generatedLinks is provided from generateM3u8: every parsed variant is tagged with
-     *   sota_dual_quality and dispatched sorted strictly by STREAM_PRIORITY_COMPARATOR.
-     * - If generatedLinks is null or empty (direct MP4/MKV, single media playlist, or an
-     *   unparseable master): exactly one link is emitted carrying its authentic detected
-     *   quality, or [Auto] + Qualities.Unknown for unparseable HLS masters.
-     */
     fun emitTopTierDualQualityStreamLinks(
         source: String,
         baseName: String,
@@ -338,7 +318,6 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    // Shared data class to hold pre-fetched anime metadata
     data class AnimeResolvedIds(
         val malId: Int?,
         val anilistId: Int?,
@@ -428,12 +407,6 @@ object StreamPlayExtractor : StreamPlay() {
         val courTitle: String? = null
     )
 
-    /**
-     * Walks the AniList `SEQUEL` chain when a TMDB season aggregates multiple split-cour
-     * AniList/MAL entries (e.g. TMDB Bleach Season 2 "Thousand-Year Blood War" has 52 episodes
-     * spanning 4 AniList cours: Part 1 [13 eps] -> Part 2 [13 eps] -> Part 3 [14 eps] -> Part 4 [12 eps]).
-     * For S02E45, this resolves `(aniId = 185874, malId = 60636, resolvedEpisode = 5)`.
-     */
     private suspend fun resolveAniListCourForEpisode(
         baseAniId: Int?,
         baseMalId: Int?,
@@ -542,8 +515,6 @@ object StreamPlayExtractor : StreamPlay() {
             }
         }
 
-        // Fast path for Season 1 / Movies (or fallback if Season 2+ search returned nothing):
-        // resolve via api.ani.zip using IMDb ID or TMDB ID when available
         val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
         if ((resolvedAnilistId == null && resolvedMalId == null) && cleanImdb != null) {
             val raw = runCatching {
@@ -576,7 +547,6 @@ object StreamPlayExtractor : StreamPlay() {
             resolvedMalId = malFromSearch
         }
 
-        // Walk the AniList SEQUEL chain when the requested episode exceeds the base cour's episode count
         if (season != null && episode != null && episode > 1 && (resolvedAnilistId != null || resolvedMalId != null)) {
             val cour = runCatching {
                 resolveAniListCourForEpisode(resolvedAnilistId, resolvedMalId, title, season, episode)
@@ -741,8 +711,6 @@ object StreamPlayExtractor : StreamPlay() {
                     (malId == null || item.malId == null || item.malId == malId)
             }
 
-            // Direct plyr.animex.one SSR slug resolution fallback when graphql.animex.one is
-            // unreachable or title search misses a localized title, using only the AniList ID.
             if (anime == null && anilistId != null && anilistId > 0) {
                 val plyrHtml = cancellableGetText(
                     "$animexPlyrOrigin/e/$anilistId/$epNum?lang=sub",
@@ -832,9 +800,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            // Direct KickAssAnime (kaa.lt -> krussdomi.com) SOTA soft-sub & stream harvest:
-            // always runs for sub requests so BirdStream/VidStreaming English VTT sidecars are
-            // harvested even when pp.animex.one only answered with hardsubbed nero streams.
             if (emittedStreamsCount.get() == 0 || "sub" in requestTypes) {
                 invokeKaaDirect(
                     candidateTitles = candidateTitles,
@@ -891,9 +856,7 @@ object StreamPlayExtractor : StreamPlay() {
         val subtitleHeaders = buildMap {
             putAll(streamHeaders)
             put("X-StreamPlay-Source", subProvenance)
-            if (subProvenance == "animex") {
-                put("X-StreamPlay-Compat", "cinesrc")
-            }
+            put("X-StreamPlay-Origin", "native")
         }
         sourceResponse.tracks?.forEach { track ->
             if (track.kind.equals("thumbnails", ignoreCase = true)) return@forEach
@@ -1239,8 +1202,6 @@ object StreamPlayExtractor : StreamPlay() {
                     timeoutSec = 5L
                 ) ?: continue
                 val sourceResponse = kaaParseCatPlayerHtml(playerHtml) ?: continue
-                // VidStreaming (server 0) -> kickassanime ("sora"); BirdStream (server 1+) -> animex ("yuki")
-                // so both independent subtitle servers are preserved as distinct sidecar sources.
                 val kaaProviderId = if (serverIdx == 0) "sora" else "yuki"
                 emitAnimexSourceResponse(
                     sourceResponse = sourceResponse,
@@ -1270,15 +1231,6 @@ object StreamPlayExtractor : StreamPlay() {
     private val QUALITY_KNOWN_HEIGHT_REGEX =
         Regex("""(?i)(?<![\d])(2160|1440|1080|720|576|540|480|360|240|144)\s*p?(?![\d])""")
 
-    /**
-     * Resolves a provider quality label without inventing a resolution.
-     *
-     * Exact pixel dimensions are classified through the shared [ResolutionTruth] bands
-     * (`1280x720` is 720p, never 1280p; `1920x800` letterbox is 1080p; `1280x534` is 720p),
-     * known numeric heights are normalized, and only the unambiguous acronyms `FHD`/`QHD`/`2K`/
-     * `4K`/`UHD` are accepted. Marketing grades such as `HD`, `SD` and `high` stay Unknown so the
-     * host measures the media instead of inheriting an inflated label.
-     */
     internal fun providerLabelQuality(raw: String?): Int {
         val label = raw?.trim().orEmpty()
         if (label.isBlank() || label.equals("auto", true) || label.equals("hls", true) || label.equals("default", true)) {
@@ -1330,7 +1282,6 @@ object StreamPlayExtractor : StreamPlay() {
             if (parsed != null && !parsed.sources.isNullOrEmpty()) return parsed
         }
 
-        // Secondary fallback to enc-animex -> pp.animex.one -> dec-animex if endpoint requires encrypted query
         val encRaw = encDecGet(
             "$ENC_DEC_API/enc-animex?id=${URLEncoder.encode(animeId, "UTF-8")}&ep=$epNum&type=$type&provider=$providerId",
             headers = mapOf("User-Agent" to USER_AGENT),
@@ -1460,7 +1411,6 @@ object StreamPlayExtractor : StreamPlay() {
         val kind: String? = null
     )
 
-    // ==================== MegaPlay SOTA Anime Extractor (megaplay.buzz) ====================
 
     private const val MEGAPLAY_HOST = "https://megaplay.buzz"
     private const val MEGAPLAY_AES_KEY_PREFIX = "i?LMTAx0Q6,:}50U"
@@ -1477,15 +1427,6 @@ object StreamPlayExtractor : StreamPlay() {
         val tracks: List<Pair<String, String>>
     )
 
-    /**
-     * Pure-Kotlin offline decryption of MegaPlay's `/stream/getSources` `"enc"` ciphertext
-     * (`e1-player.min.js?v=2.1` `caPm`/`EHem`/`QwJl`).
-     *
-     * Eliminates the external `enc-dec.app/api/dec-megaplay` single point of failure:
-     * - Key: `"i?LMTAx0Q6,:}50U"` UTF-8 zero-padded to 32 bytes (`AES-256-CBC`)
-     * - IV: `"W0;27ToaUpl_P%'c"` UTF-8 (16 bytes)
-     * - Ciphertext: Base64URL-encoded AES-CBC payload decrypting to `{"file":"https://fetch.nexabloom.top/..."}`
-     */
     internal fun megaplayDecryptEnc(
         enc: String,
         ttlSeconds: Long = 14_400L,
@@ -1516,13 +1457,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.getOrNull()
     }
 
-    /**
-     * Pure-Kotlin offline HMAC-SHA256 CDN token signer for `fetch.nexabloom.top` (`e1-player.min.js?v=2.1` `ULok`/`EzQj`).
-     *
-     * Signs `"${nowEpochSec + ttlSeconds}|${hash1}/${hash2}"` with `MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s`
-     * and attaches `?token=<base64url(payload)>.<base64url(hmac)>`. Defaults to a 4-hour (14,400s) TTL
-     * instead of the browser's 90-second window so queued anime downloads never expire mid-transfer.
-     */
     internal fun megaplaySignCdnUrl(
         rawUrl: String,
         ttlSeconds: Long = 14_400L,
@@ -1547,11 +1481,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.getOrDefault(trimmed)
     }
 
-    /**
-     * Extracts the internal MegaPlay episode file ID from the `/stream/{mal|ani}/{id}/{ep}/{type}`
-     * embed document. Live verified (2026-10-17): the document embeds `<title>File 141638</title>`
-     * and/or `#megaplay-player[data-id]`.
-     */
     internal fun megaplayExtractFileId(html: String): String? {
         if (html.isBlank()) return null
         MEGAPLAY_DATA_ID_REGEX.find(html)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }?.let { return it }
@@ -1559,12 +1488,6 @@ object StreamPlayExtractor : StreamPlay() {
         return null
     }
 
-    /**
-     * Parses both raw `/stream/getSources?id={cid}&platform=OTHER` responses and `dec-megaplay`
-     * decrypted envelopes. Handles `sources` or `enc` as an encrypted string, a JSONArray of
-     * `{file,url}`, a JSONObject `{file,url}`, or a direct `file`/`url` string on `result`/`root`,
-     * alongside `tracks` (`{file,url,label,lang,kind}`).
-     */
     internal fun megaplayParseSourcesPayload(rawJson: String): MegaPlaySourcesPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
         val target = root.optJSONObject("result") ?: root
@@ -1595,8 +1518,6 @@ object StreamPlayExtractor : StreamPlay() {
             }
         }
 
-        // Live 2026-10-24 contract: `getSources` returns `{"enc":"<ciphertext>","tracks":[...]}`
-        // and `dec-megaplay` returns `{"status":200,"result":{"file":"https://fetch.nexabloom.top/.../master.m3u8?..."}}`.
         if (encryptedSources == null) {
             val encField = target.optString("enc").ifBlank { root.optString("enc") }.trim()
             if (encField.length >= 16 && !encField.startsWith("http", ignoreCase = true)) {
@@ -1639,16 +1560,6 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    /**
-     * SOTA Anime extractor for MegaPlay (`megaplay.buzz`, Rank 92).
-     *
-     * Protocol (verified live 2026-10-17):
-     *   1. GET `https://megaplay.buzz/stream/mal/{malId}/{ep}/{sub|dub}` (or `/stream/ani/{aniId}/{ep}/{sub|dub}`)
-     *   2. Extract internal file ID (`<title>File 141638</title>` / `data-id`)
-     *   3. GET `https://megaplay.buzz/stream/getSources?id={fileId}&platform=OTHER`
-     *   4. POST `https://enc-dec.app/api/dec-megaplay` with `{"text": sourcesCiphertext}`
-     *   5. Emits `fetch.nexabloom.top` multi-resolution HLS + `.vtt` subtitle tracks (`broforgotsave.online`)
-     */
     suspend fun invokeMegaPlay(
         malId: Int? = null,
         anilistId: Int? = null,
@@ -1735,12 +1646,10 @@ object StreamPlayExtractor : StreamPlay() {
                     }
 
                     if (streamUrls.isEmpty() && !initialPayload.encryptedSources.isNullOrBlank()) {
-                        // Primary: 0ms offline AES-256-CBC decryption + 4-hour HMAC-SHA256 CDN token signing
                         val offlineUrl = megaplayDecryptEnc(initialPayload.encryptedSources)
                         if (!offlineUrl.isNullOrBlank()) {
                             streamUrls.add(offlineUrl)
                         } else {
-                            // Fallback to enc-dec.app only if MegaPlay rotates its static client key
                             val decRaw = encDecPost(
                                 "dec-megaplay",
                                 JSONObject().put("text", initialPayload.encryptedSources).toString(),
@@ -1787,30 +1696,10 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    // ==================== AnimePahe SOTA Anime Extractor (animepahe.pw) ====================
 
-    /**
-     * Live AnimePahe origin.
-     *
-     * `animepahe.com` answers with a permanent 301 to `animepahe.pw` (verified 2026-10-23), so
-     * `.pw` is the only host worth requesting. The redirecting origin stays in
-     * [ANIMEPAHE_HOSTS] so a future domain move degrades to one extra hop instead of a dead
-     * provider. `animepahe.si` is deliberately not used: it currently serves a parked page.
-     *
-     * The site is behind a Cloudflare anti-bot gate, so every request goes through
-     * [cloudflareKiller], which the app answers with its anti-bot interceptor (fresh cookies,
-     * single-flight challenge solving). No JS execution or scraping browser is needed here.
-     */
     private const val ANIMEPAHE_HOST = "https://animepahe.pw"
     internal val ANIMEPAHE_HOSTS = listOf("https://animepahe.pw", "https://animepahe.com")
 
-    /**
-     * How many title spellings a new anime source searches before giving up.
-     *
-     * Anime catalogues index a show under its English, Romaji or native name, and AnimePahe's and
-     * AniZone's search APIs are one-shot (no id lookup), so the variants must be tried. Three keeps
-     * the worst case inside the per-source pipeline budget.
-     */
     private const val MAX_ANIME_SOURCE_TITLE_QUERIES = 3
 
     private val ANIMEPAHE_HEADERS = mapOf(
@@ -1825,7 +1714,6 @@ object StreamPlayExtractor : StreamPlay() {
         RegexOption.IGNORE_CASE
     )
 
-    /** One entry of `GET /api?m=search&l=8&q={title}`. */
     internal data class AnimePaheSearchHit(
         val session: String,
         val title: String,
@@ -1834,19 +1722,12 @@ object StreamPlayExtractor : StreamPlay() {
         val episodes: Int?,
     )
 
-    /** One page of `GET /api?m=release&id={session}&sort=episode_asc&page={n}`. */
     internal data class AnimePaheReleasePage(
         val sessions: Map<Int, String>,
         val perPage: Int,
         val lastPage: Int,
     )
 
-    /**
-     * One playable entry of `#resolutionMenu` on `/play/{anime}/{episode}`.
-     *
-     * `audio` is the provider's own declaration (`jpn`/`eng`), never inferred from the quality
-     * label, because AnimePahe lists both audio cuts with the same resolutions.
-     */
     internal data class AnimePahePlaySource(
         val url: String,
         val quality: Int,
@@ -1910,15 +1791,6 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    /**
-     * Parses the `#resolutionMenu` buttons of an AnimePahe play page.
-     *
-     * The quality is the provider's own `data-resolution` height (falling back to the `1080p`
-     * fragment of the button label). Nothing is inferred from a stream URL, and an entry without
-     * either declaration stays [Qualities.Unknown]. When the page also includes explicit
-     * `(XXX MB)` size metadata on the button or matching `#pickDownload` row, it is preserved
-     * for lowest-size 720p/1080p tie-breaking.
-     */
     internal fun animePaheParsePlaySources(html: String): List<AnimePahePlaySource> {
         if (html.isBlank()) return emptyList()
         val document = Jsoup.parse(html)
@@ -1970,13 +1842,6 @@ object StreamPlayExtractor : StreamPlay() {
         return sources.distinctBy { "${it.url}|${it.audio}" }
     }
 
-    /**
-     * Resolves a Kwik embed page (`kwik.cx/e/{id}`) to its HLS manifest.
-     *
-     * Kwik ships the real manifest inside a Dean Edwards packed script (`source='...m3u8'`), so
-     * the packed payload is unpacked first; an already-unpacked document is used as a fallback in
-     * case the site stops packing.
-     */
     internal fun animePaheParseKwikStream(html: String): String? {
         if (html.isBlank()) return null
         val packed = Jsoup.parse(html)
@@ -2003,11 +1868,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * Deterministic AnimePahe result selection: exact/normalized title first, then the show whose
-     * release year matches. The provider returns its own relevance ordering, which is not stable
-     * between requests, so the pick cannot depend on response order.
-     */
     internal fun pickAnimePaheHit(
         hits: List<AnimePaheSearchHit>,
         titles: List<String>,
@@ -2016,8 +1876,6 @@ object StreamPlayExtractor : StreamPlay() {
     ): AnimePaheSearchHit? {
         if (hits.isEmpty() || titles.isEmpty()) return null
         val typed = hits.filter { animePaheTypeMatches(it.mediaType, isMovie) }
-        // A media-type miss is an honest miss: episode 1 of a movie (or of a series when a movie
-        // was requested) is worse than no result. Blank types are accepted by the predicate.
         if (typed.isEmpty()) return null
         return typed.mapNotNull { hit ->
             val base = titles.maxOfOrNull { animeTitleMatchScore(it, hit.title) } ?: 0
@@ -2025,13 +1883,7 @@ object StreamPlayExtractor : StreamPlay() {
         }.maxByOrNull { it.second }?.first
     }
 
-    // ==================== AniZone SOTA Anime Extractor (anizone.to) ====================
 
-    /**
-     * AniZone is a soft-sub anime catalogue: every episode page declares an HLS master with
-     * demuxed original-language audio plus real `.srt`/`.ass` sidecars (English, non-SDH
-     * available). That is exactly what a download needs to keep its original audio and subtitles.
-     */
     private const val ANIZONE_HOST = "https://anizone.to"
 
     private val ANIZONE_HEADERS = mapOf(
@@ -2074,13 +1926,6 @@ object StreamPlayExtractor : StreamPlay() {
         setOf(RegexOption.DOT_MATCHES_ALL)
     )
 
-    /**
-     * Decodes a JS single-quoted string literal body (what sits between `JSON.parse('` and `')`).
-     *
-     * AniZone HTML-escapes every quote as `\u0022`, so the payload is not valid JSON until the JS
-     * string escapes are resolved. Escapes are consumed exactly once, which keeps Windows path
-     * separators and already-decoded quotes intact.
-     */
     internal fun aniZoneDecodeJsString(raw: String): String {
         if (raw.isEmpty()) return raw
         val out = StringBuilder(raw.length)
@@ -2122,12 +1967,6 @@ object StreamPlayExtractor : StreamPlay() {
         return out.toString()
     }
 
-    /**
-     * Parses the `items: JSON.parse('...')` catalogue payload of `GET /anime?search=...`.
-     *
-     * Each item carries `slug`/`url`, `main_title`, a localized `title_list` and `start_year`, so
-     * a match is decided on every name AniZone knows plus the year, never on response order.
-     */
     internal fun aniZoneParseSearchItems(html: String): List<AniZoneSearchHit> {
         if (html.isBlank()) return emptyList()
         val document = Jsoup.parse(html)
@@ -2199,17 +2038,6 @@ object StreamPlayExtractor : StreamPlay() {
 
     private val ANIZONE_CC_REGEX = Regex("""(?i)(?:^|[^a-z0-9])cc(?:$|[^a-z0-9])""")
 
-    /**
-     * English, non-forced, non-SDH track selector.
-     *
-     * Forced tracks cover on-screen text only and SDH/CC adds sound descriptions, so neither is a
-     * usable English subtitle for a full episode. Note that on some AniZone releases (e.g. Frieren
-     * S01E01), the primary 36 KB full-dialogue `"English (US)"` track is marked `default: true,
-     * forced: "yes"` while the secondary track is `"English (US) (CC)"`. A default track whose
-     * label does not indicate forced/signs/SDH/CC is therefore accepted as a full English dialogue
-     * track, while any non-default forced track or explicitly labeled Forced/Signs/SDH/CC track is
-     * rejected.
-     */
     internal fun aniZoneIsEnglishSubtitle(track: AniZoneSubtitleTrack): Boolean {
         val label = track.label.lowercase(Locale.ROOT)
         if (label.contains("sdh") ||
@@ -2229,11 +2057,6 @@ object StreamPlayExtractor : StreamPlay() {
         return isEnglishSubtitleLabel(track.label)
     }
 
-    /**
-     * Selects all valid English dialogue tracks from an AniZone episode payload, ordered with the
-     * provider's default track first and rescuing misflagged `forced="yes"` full-dialogue tracks
-     * when no `forced="no"` non-SDH/non-CC English track exists.
-     */
     internal fun aniZoneSelectEnglishSubtitles(tracks: List<AniZoneSubtitleTrack>): List<AniZoneSubtitleTrack> {
         val primary = tracks.filter(::aniZoneIsEnglishSubtitle)
         val selected = if (primary.isNotEmpty()) {
@@ -2255,11 +2078,6 @@ object StreamPlayExtractor : StreamPlay() {
         return selected.sortedByDescending { it.isDefault }
     }
 
-    /**
-     * Normalizes an AniZone English subtitle track's label so fansub-titled English tracks such as
-     * `"Full Subtitles [Kaizoku]"` (`language = "en"`) are emitted with an English-recognizable
-     * language label (`"English"`) rather than `"Full Subtitles"`.
-     */
     internal fun aniZoneNormalizeEnglishLabel(track: AniZoneSubtitleTrack): String {
         val cleaned = cleanSubtitleLabel(track.label)
         return if (isEnglishSubtitleLabel(cleaned)) cleaned else "English"
@@ -2292,9 +2110,7 @@ object StreamPlayExtractor : StreamPlay() {
         }.maxByOrNull { it.second }?.first
     }
 
-    // -------------------- Shared anime title matching --------------------
 
-    /** Minimum normalized title score below which a search hit is a different show. */
     internal const val ANIME_TITLE_MATCH_FLOOR = 60
 
     private val ANIME_TITLE_NOISE_REGEX = Regex(
@@ -2313,11 +2129,6 @@ object StreamPlayExtractor : StreamPlay() {
             .trim()
     }
 
-    /**
-     * Normalized title similarity: 100 exact, 82 one title being a prefix of the other (a sequel),
-     * 70 substring, then a bounded significant-token overlap. Two unrelated titles never clear
-     * [ANIME_TITLE_MATCH_FLOOR] on tokens alone.
-     */
     internal fun animeTitleMatchScore(query: String?, candidate: String?): Int {
         val q = animeNormalizeTitle(query)
         val c = animeNormalizeTitle(candidate)
@@ -2332,7 +2143,6 @@ object StreamPlayExtractor : StreamPlay() {
         return (overlap * 60) / queryTokens.size
     }
 
-    /** Year agreement bonus: exact year wins, a one-year gap is still plausible for split cours. */
     internal fun animeYearBonus(expected: Int?, actual: Int?): Int {
         if (expected == null || actual == null) return 0
         val gap = kotlin.math.abs(expected - actual)
@@ -2343,7 +2153,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /** Maps a provider-declared pixel height to an honest quality tier without inventing one. */
     internal fun animeDeclaredQuality(height: Int?): Int? {
         if (height == null || height < 144 || height > 4320) return null
         return when (height) {
@@ -2387,12 +2196,6 @@ object StreamPlayExtractor : StreamPlay() {
         return releasePage(targetPage)?.sessions?.get(episode)
     }
 
-    /**
-     * Emits one AnimePahe stream with the provider's own resolution declaration.
-     *
-     * Kwik serves a single-variant playlist, so a parsed master is used when present (distinct
-     * variants only) and the declared height is used otherwise. No resolution is synthesized.
-     */
     private suspend fun emitAnimePaheStream(
         source: AnimePahePlaySource,
         streamUrl: String,
@@ -2402,9 +2205,6 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         val tag = if (isDub) "[Dub]" else "[Sub] [Original]"
         val baseName = "AnimePahe $tag"
-        // The manifest is served by the embed provider that answered for this button (Kwik and
-        // its `uwucdn.top` CDN today), so the referer/origin must be that provider's origin, not a
-        // hardcoded host that a future domain move would invalidate.
         val kwikReferer = embedReferer
         val kwikOrigin = kwikReferer.removeSuffix("/")
         val streamHeaders = mapOf(
@@ -2479,22 +2279,6 @@ object StreamPlayExtractor : StreamPlay() {
         )
     }
 
-    /**
-     * SOTA Anime extractor for AnimePahe (`animepahe.pw`, Rank 88).
-     *
-     * Protocol (origin redirect verified 2026-10-23; payload contract verified against the live
-     * site's public API shape, with the Cloudflare gate answered by the app's anti-bot
-     * interceptor):
-     *   1. GET `/api?m=search&l=8&q={title}` and pick the hit by normalized title + year + type
-     *   2. GET `/api?m=release&id={animeSession}&sort=episode_asc&page={n}` for the episode session
-     *   3. GET `/play/{animeSession}/{episodeSession}` and read `#resolutionMenu [data-src]`
-     *      (`data-resolution`, `data-audio` = `jpn`/`eng`, `data-fansub`)
-     *   4. GET the Kwik embed (`kwik.si`/`kwik.cx`), unpack its packed script and read
-     *      `source='...m3u8'` (the manifest is served from `*.uwucdn.top` / `*.owocdn.top`)
-     *
-     * AnimePahe ships no external subtitle sidecars (subtitles are part of the encode), so this
-     * source never emits a fabricated track: the host's subtitle harvester covers that gap.
-     */
     suspend fun invokeAnimePahe(
         titles: List<String>,
         year: Int?,
@@ -2603,11 +2387,6 @@ object StreamPlayExtractor : StreamPlay() {
     )
     private val aniZoneEpisodePlayerSingleFlight = SingleFlight<String, AniZonePlayer?>()
 
-    /**
-     * Harvests frame-synced external soft-subtitles (`SubsPlease`, `Erai-raws`, `HorribleSubs`,
-     * `Kaizoku`) matching the resolved AnimePahe release so an AnimePahe download always carries
-     * external soft-sub sidecar files in addition to its burned-in encode.
-     */
     internal suspend fun harvestAnimePaheCompanionSubtitles(
         titles: List<String>,
         year: Int?,
@@ -2629,7 +2408,7 @@ object StreamPlayExtractor : StreamPlay() {
             }
             val subHeaders = ANIZONE_HEADERS + mapOf(
                 "X-StreamPlay-Source" to "animepahe",
-                "X-StreamPlay-Compat" to "meowtv"
+                "X-StreamPlay-Origin" to "native",
             )
             val emitted = HashSet<String>()
             ordered.forEach { track ->
@@ -2660,10 +2439,6 @@ object StreamPlayExtractor : StreamPlay() {
         if (queries.isEmpty()) return null
         val cacheKey = "${queries.joinToString("|") { it.lowercase(Locale.ROOT) }}|${year ?: 0}|$episodeNumber|$isMovie"
         aniZoneEpisodePlayerCache.get(cacheKey)?.let { return it }
-        // SingleFlight coalescing: concurrent callers share one resolution. A cancelled leader
-        // hands the flight to the next waiter (no poisoned false-null); a FAILED leader records
-        // the failure and every waiter receives it via getOrThrow — either way failures are
-        // never written into the TTL cache, so the next call re-resolves.
         return aniZoneEpisodePlayerSingleFlight.execute(cacheKey) {
             aniZoneEpisodePlayerCache.get(cacheKey)?.let { return@execute it }
             var hit: AniZoneSearchHit? = null
@@ -2697,20 +2472,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * SOTA Anime extractor for AniZone (`anizone.to`, Rank 89).
-     *
-     * Protocol (verified live 2026-10-23 with plain HTTP):
-     *   1. GET `/anime?search={title}`; the catalogue is embedded as `items: JSON.parse('...')`
-     *   2. Pick the entry by every known title variant plus the year and media type
-     *   3. GET `/anime/{slug}/{episode}` and read `vidstackPlayer(JSON.parse('...'))`
-     *   4. Emit the HLS master (demuxed audio preserved by `emitVerifiedStream`) and every
-     *      English, non-forced, non-SDH `.srt`/`.ass` sidecar
-     *
-     * AniZone is subtitle-first: the sidecars come from the same CDN pack as the video, so they are
-     * frame-accurate for the release being streamed or downloaded. It is sub-only, so a dub request
-     * emits nothing instead of pretending the original audio is a dub.
-     */
     suspend fun invokeAniZone(
         titles: List<String>,
         year: Int?,
@@ -2822,14 +2583,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * Independent English/Urdu subtitle harvest from the OpenSubtitles legacy REST catalogue.
-     *
-     * This is not a mirror of the Stremio v3 addon: each index misses releases the other still
-     * serves, and a missing English sidecar makes an otherwise perfect download unwatchable. The
-     * IMDb path is exact; when no id is available the title search keeps the source usable, which
-     * matters for anime/MAL-only entries. Results are gzip payloads and are inflated host-side.
-     */
     suspend fun invokeOpenSubtitlesLegacy(
         id: String? = null,
         season: Int? = null,
@@ -3064,14 +2817,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * Addic7ed harvest, used for TV series.
-     *
-     * Addic7ed has its own release list and is usually the fastest place to find a correctly
-     * timed English subtitle for a weekly TV episode. TV-style anime is eligible when the caller
-     * has a verified TMDB season/episode; entries without that mapping are skipped rather than
-     * guessed.
-     */
     suspend fun invokeAddic7ed(
         title: String? = null,
         season: Int? = null,
@@ -3193,7 +2938,6 @@ object StreamPlayExtractor : StreamPlay() {
             val wyzieLabel = UrduSubtitleEngine.formatUrduSourceLabel("wyziesub")
             var emittedUrdu = 0
 
-            // In Urdu mode, first query Wyzie's dedicated Urdu endpoint (/search?...&language=ur&sort=downloads&source=all&key=...)
             if (urduMode) {
                 val urQueryPath = "/search?$baseParams&language=ur&sort=downloads$keySuffix"
                 val urBody = cancellableGetText("$WYZIESubsAPI$urQueryPath", timeoutSec = 6L)
@@ -3231,7 +2975,7 @@ object StreamPlayExtractor : StreamPlay() {
                 if (lang == null && display == null) return@mapNotNull null
                 val subUrl = sub.url.trim()
                 if (subUrl.startsWith("http", ignoreCase = true)) {
-                    val isUr = UrduSubtitleEngine.isUrduLanguageTag(display) || UrduSubtitleEngine.isUrduLanguageTag(lang)
+                    val isUr = isUrduSubtitleLabel(display) || isUrduSubtitleLabel(lang)
                     val isEn = isEnglishSubtitleLabel(display) || isEnglishSubtitleLabel(lang)
                     val label = when {
                         isUr -> wyzieLabel
@@ -3260,12 +3004,22 @@ object StreamPlayExtractor : StreamPlay() {
                     ) ?: return@forEach
                     subtitleCallback.invoke(
                         newSubtitleFile(wyzieLabel, materializedUri) {
-                            headers = SUBTITLE_BROWSER_HEADERS + ("X-StreamPlay-Source" to "wyziesub")
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                                "X-StreamPlay-Source" to "wyziesub",
+                                "X-StreamPlay-Origin" to "catalogue",
+                            )
                         }
                     )
                     emittedUrdu++
                 } else {
-                    subtitleCallback.invoke(newSubtitleFile(lan, suburl))
+                    subtitleCallback.invoke(
+                        newSubtitleFile(lan, suburl) {
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                                "X-StreamPlay-Source" to "wyziesub",
+                                "X-StreamPlay-Origin" to "catalogue",
+                            )
+                        }
+                    )
                 }
             }
         } catch (e: Exception) {
@@ -3273,14 +3027,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * YTS-Subs / YIFY Subtitles harvest, used for movies.
-     *
-     * YTS-Subs (`https://www.yts-subs.com`) and YIFY (`https://yifysubtitles.ch`) publish IMDb-keyed
-     * HTML tables where each row contains the language and `/subtitles/{slug}` link.
-     * In Urdu mode, emits `"Urdu [YTS-Subs]"` subtitles first followed by `"English"` donor tracks; in Default mode,
-     * emits `"English"` subtitles only.
-     */
     suspend fun invokeYifySubs(
         imdbId: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
@@ -3450,16 +3196,6 @@ object StreamPlayExtractor : StreamPlay() {
             .toList()
     }
 
-    /**
-     * SubtitleCat harvest.
-     *
-     * Note: SubtitleCat's pre-cached `-ur.srt` (`State A`) is 100% literal Google Translate, NOT a
-     * human-translated Urdu archive. In Urdu mode, `invokeSubtitleCat` never emits `-ur.srt` as a
-     * Phase 1 `Urdu [SubtitleCat]` human track (which would preempt real human Urdu archives or our
-     * Spoken-Urdu Contextual Engine); instead it harvests and records the verified English donor
-     * (`-orig.srt` / `-en.srt` / `-eng.srt`) via `UrduSubtitleEngine.recordSubtitleCatOrigCandidate`
-     * (and records `-ur.srt` only as a last-resort Phase 4 fallback).
-     */
     suspend fun invokeSubtitleCat(
         titles: List<String>,
         season: Int? = null,
@@ -3472,13 +3208,10 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         val queries = buildSubtitleCatQueries(titles, season, episode, isMovie, isAnime)
         if (queries.isEmpty()) return
-        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         try {
             for (query in queries) {
                 val searchUrl = "$SUBTITLECAT_HOST/index.php?search=" +
                     URLEncoder.encode(query, "UTF-8")
-                // cancellableGetText's own call timeout is longer than timeoutSec; a hard wrapper
-                // keeps one slow search from consuming the whole subtitle task.
                 val body = withTimeoutOrNull(SUBTITLE_LOOKUP_TIMEOUT_MS) {
                     cancellableGetText(
                         searchUrl,
@@ -3495,8 +3228,6 @@ object StreamPlayExtractor : StreamPlay() {
                 )
                 if (candidates.isEmpty()) continue
 
-                // Detail pages are independent. Resolve them concurrently so two candidates do not
-                // add two sequential network timeouts to a task that already includes the search.
                 val resolvedDetails = coroutineScope {
                     candidates.map { candidate ->
                         async {
@@ -3531,7 +3262,6 @@ object StreamPlayExtractor : StreamPlay() {
                             Triple(origPair.first, origPair.first, origPair.second)
                         }
                         urUrl != null -> {
-                            // Derive -orig.srt donor path from -ur.srt when State A page omits explicit -en.srt
                             val derivedOrigUrl = urUrl
                                 .replace(Regex("""(?i)-(?:ur|urd)\.srt$"""), "-orig.srt")
                             if (derivedOrigUrl != urUrl) {
@@ -3545,43 +3275,16 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }.distinctBy { it.first }
 
-                val preCachedUrduUrls = if (urduMode) {
-                    resolvedDetails.mapNotNull { parseSubtitleCatUrduDetail(it) }.distinct()
-                } else {
-                    emptyList()
-                }
+                if (englishEntries.isEmpty()) continue
 
-                if (urduMode) {
-                    englishEntries.forEach { (_, origUrl, origFilename) ->
-                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
-                            origUrl = origUrl,
-                            origFilename = origFilename,
-                            imdbId = imdbId,
-                            season = season,
-                            episode = episode
-                        )
-                    }
-                    preCachedUrduUrls.forEach { urUrl ->
-                        UrduSubtitleEngine.recordSubtitleCatPreCachedUrduCandidate(
-                            urduUrl = urUrl,
-                            imdbId = imdbId,
-                            season = season,
-                            episode = episode
-                        )
-                    }
-                }
-
-                if (englishEntries.isEmpty() && preCachedUrduUrls.isEmpty()) continue
-
-                // Always emit English donor candidates (with X-SubtitleCat-Orig-Url metadata) so
-                // StreamPlay's Phase 4 Spoken-Urdu Contextual Engine can translate them; never emit
-                // SubtitleCat's pre-cached literal Google Translate (-ur.srt) as a Phase 1 human Urdu track!
                 englishEntries.forEach { (url, origUrl, origFilename) ->
                     subtitleCallback.invoke(
                         newSubtitleFile("English", url) {
                             headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                                "X-StreamPlay-Source" to "subtitlecat",
+                                "X-StreamPlay-Origin" to "catalogue",
                                 "X-SubtitleCat-Orig-Url" to origUrl,
-                                "X-SubtitleCat-Orig-Name" to origFilename
+                                "X-SubtitleCat-Orig-Name" to origFilename,
                             )
                         }
                     )
@@ -3595,14 +3298,6 @@ object StreamPlayExtractor : StreamPlay() {
 
     internal data class SubtitleCatCandidate(val pageUrl: String, val text: String)
 
-    /**
-     * Builds the episode-aware queries for SubtitleCat.
-     *
-     * TV releases are searched as `SXXEXX`, while anime is commonly numbered as a bare `- XX`. The
-     * season form goes first because it is unambiguous; the bare form is only used where a season is
-     * missing or the media is anime. At most two title variants are searched so the fallback stays
-     * inside the caller's time budget.
-     */
     internal fun buildSubtitleCatQueries(
         titles: List<String>,
         season: Int?,
@@ -3657,14 +3352,6 @@ object StreamPlayExtractor : StreamPlay() {
             .toList()
     }
 
-    /**
-     * Keeps only search hits whose release text matches the requested title and episode.
-     *
-     * SubtitleCat ranks by bag-of-words relevance, so a query for `Severance S02E05` returns every
-     * unrelated show that also has an `S02E05` release. Both a title match and an episode match are
-     * required; hearing-impaired releases are dropped because the fallback contract is
-     * English-only, non-SDH.
-     */
     internal fun selectSubtitleCatCandidates(
         candidates: List<SubtitleCatCandidate>,
         query: String,
@@ -3672,10 +3359,6 @@ object StreamPlayExtractor : StreamPlay() {
         episode: Int?,
         year: Int? = null,
     ): List<SubtitleCatCandidate> {
-        // A query carries the episode suffix sent to SubtitleCat, but the release may spell that
-        // same episode as `2x05`, `Season 2 Episode 5` or a bare `05`. Strip the suffix before title
-        // matching so those alternate forms are accepted. Only episode-bearing media is stripped:
-        // a movie title may legitimately end in a number ("Blade Runner 2049").
         val stripped = if (episode != null && episode > 0) {
             query
                 .replace(Regex("""(?i)\s+s\d{1,2}\s*e\d{1,4}\s*$"""), "")
@@ -3688,10 +3371,6 @@ object StreamPlayExtractor : StreamPlay() {
         val wanted = normalizeSubtitleReleaseText(stripped)
         if (wanted.isBlank()) return emptyList()
         val wantedTokens = wanted.split(' ').filter { it.length >= 3 }
-        // Movie titles are also ordinary phrases ("the matrix"), and without an episode number there
-        // is nothing else to disambiguate them. The release year is therefore required when the
-        // caller knows one; episode media keeps the softer rule because TV releases often omit the
-        // show's year entirely.
         val requireYear = year != null && season == null && episode == null
 
         return candidates.asSequence()
@@ -3725,8 +3404,6 @@ object StreamPlayExtractor : StreamPlay() {
     internal fun subtitleCatEpisodeMatches(text: String, season: Int?, episode: Int?): Boolean {
         if (episode == null || episode <= 0) return true
         if (season != null && season > 0) {
-            // Zero-padded seasons ("S02E05") are the common release form, so leading zeros
-            // are consumed before the number.
             val seasonRegex = Regex(
                 """(?i)(?:^|[^a-z0-9])(?:s|season[\s._-]*)0*${season}[\s._-]*(?:e|ep|episode[\s._-]*)0*${episode}(?!\d)"""
             )
@@ -3756,10 +3433,6 @@ object StreamPlayExtractor : StreamPlay() {
         return absolute.replace(" ", "%20")
     }
 
-    /**
-     * State A: Extracts a pre-cached Urdu `.srt` URL (`a#download_ur[href]` or any `a[href]`
-     * ending in `-ur.srt` / `-urd.srt`) from a SubtitleCat detail page.
-     */
     internal fun parseSubtitleCatUrduDetail(body: String): String? {
         val document = Jsoup.parse(body)
         val directUr = document.selectFirst("a#download_ur[href], a#download_urd[href]")
@@ -3781,11 +3454,6 @@ object StreamPlayExtractor : StreamPlay() {
         return absolute.replace(" ", "%20")
     }
 
-    /**
-     * State B: Extracts the original English `.srt` path from SubtitleCat's client-side
-     * `translate_from_server_folder('ur', 'filename-orig.srt', '/subs/dir/')` hook when no
-     * pre-cached `-ur.srt` exists yet. Returns `Pair(origAbsoluteUrl, origFilename)`.
-     */
     internal fun parseSubtitleCatOrigSrt(body: String): Pair<String, String>? {
         val regex = Regex(
             """translate_from_server_folder\s*\(\s*['"](?:ur|urd)['"]\s*,\s*['"]([^'"]+\.srt)['"]\s*,\s*['"]([^'"]+)['"]\s*\)""",
@@ -3803,13 +3471,6 @@ object StreamPlayExtractor : StreamPlay() {
     internal fun normalizeSubtitleReleaseText(value: String): String =
         value.lowercase().replace(Regex("""[^a-z0-9]+"""), " ").trim()
 
-    /**
-     * Finds a release year without mistaking a video dimension for one.
-     *
-     * Release names are full of four digit video numbers (`1920`, `1080`, `265`) and matching one as
-     * a year would reject a correct release. Resolution values are skipped so the first real year
-     * wins.
-     */
     internal fun subtitleCatYearOf(text: String): Int? {
         val videoNumbers = setOf(360, 384, 480, 540, 576, 720, 1080, 1440, 1920, 2160, 2560, 3840)
         return Regex("""(?<!\d)(19|20)\d{2}(?!\d)""")
@@ -3821,14 +3482,6 @@ object StreamPlayExtractor : StreamPlay() {
     private val imdbToTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private val titleToTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
-    /**
-     * Resolves an IMDb id through Cinemeta for media whose provider payload has none.
-     *
-     * Anime entries are the main beneficiary: AniList gives an AniList/MAL id but not always an
-     * IMDb id, so the Stremio and YIFY catalogues were previously skipped entirely. The resolver
-     * requires a real normalized title match (plus year/type preference), never the first search
-     * hit, because subtitles for the wrong film are worse than no subtitles.
-     */
     suspend fun resolveImdbIdByTitle(
         title: String?,
         year: Int? = null,
@@ -3930,7 +3583,6 @@ object StreamPlayExtractor : StreamPlay() {
         return try {
             val isTv = season != null && season > 0
             val type = if (isTv) "series" else "movie"
-            // 1. Cinemeta lookup (ultra fast, high availability, no key required)
             val cinemetaUrl = "https://v3-cinemeta.strem.io/meta/$type/$cleanImdb.json"
             val cineResp = suspendCancellable {
                 runCatching { app.get(cinemetaUrl, timeout = 5L).text }.getOrNull()
@@ -3948,7 +3600,6 @@ object StreamPlayExtractor : StreamPlay() {
                     return tmdbId
                 }
             }
-            // 2. TMDB Find fallback
             val tmdbKey = BuildConfig.TMDB_API.takeIf { it.isNotBlank() } ?: "98ae14df2b8d8f8f8136499daf79f0e0"
             val tmdbUrl = "https://api.themoviedb.org/3/find/$cleanImdb?api_key=$tmdbKey&external_source=imdb_id"
             val tmdbResp = suspendCancellable {
@@ -4062,20 +3713,6 @@ object StreamPlayExtractor : StreamPlay() {
             .trim()
     }
 
-    /**
-     * Resolves verified TMDB `(season_number, episode_number)` pairs for each episode of an anime entry.
-     *
-     * Fixes the critical TVDB-vs-TMDB mismatch in `api.ani.zip`:
-     * `api.ani.zip` returns `mappings.themoviedb_id` alongside TheTVDB `seasonNumber` (e.g. `seasonNumber = 17,
-     * episodeNumber = 45` for `BLEACH: Thousand-Year Blood War - The Calamity` on `tmdbId = 30984`),
-     * whereas TMDB `tv/30984` only has 2 seasons (`Season 1`: 2004 Bleach, `Season 2`: Thousand-Year Blood War
-     * where S02E45 is `"DEFEND YOU"`).
-     *
-     * Furthermore, if an anime entry is a sequel / later cour (`tvdbSeason > 1` or `epData.episodeNumber != epIdx`
-     * or `aniYear > tmdbFirstAirYear + 1`) and cannot be verified on TMDB, it maps to `null` (stored as `-1`
-     * in `LinkData`) so TMDB providers (`VidLink`, `Cineby`, `CineSrc`) never fall back to `Season 1 Episode N`
-     * of the root 2004 anime!
-     */
     suspend fun resolveAccurateTmdbSeriesMapping(
         tmdbId: Int?,
         aniTitle: String?,
@@ -4119,7 +3756,6 @@ object StreamPlayExtractor : StreamPlay() {
             firstMetaEpNum > 1 ||
             (aniYear != null && firstAirYear != null && aniYear > firstAirYear + 1)
 
-        // Fast path: 1-season TMDB show where this anime IS Season 1 Episode 1..N
         if (!isSequelOrOffsetCour && validSeasons.any { it.seasonNumber == 1 }) {
             return (1..totalEps).associateWith { epIdx ->
                 val epData = epMetaMap[epIdx]
@@ -4132,7 +3768,6 @@ object StreamPlayExtractor : StreamPlay() {
         val normAniTitle = normalizeEpisodeTitleForMatch(aniTitle)
         val normJpTitle = normalizeEpisodeTitleForMatch(jpTitle)
 
-        // Rank candidate TMDB seasons most likely to contain this cour
         val candidateSeasons = validSeasons.sortedByDescending { s ->
             var score = 0
             val normSName = normalizeEpisodeTitleForMatch(s.name)
@@ -4195,7 +3830,6 @@ object StreamPlayExtractor : StreamPlay() {
 
             var matched: Pair<Int, Int>? = null
 
-            // 1. Exact airDate match
             if (targetAirDate.length == 10) {
                 val byDate = allTmdbEpisodes.firstOrNull { it.airDate == targetAirDate }
                 if (byDate != null) {
@@ -4203,7 +3837,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            // 2. Exact or substring episode title match
             if (matched == null && candidateTitles.isNotEmpty()) {
                 val byTitle = allTmdbEpisodes.firstOrNull { tmdbEp ->
                     tmdbEp.normName.isNotEmpty() &&
@@ -4218,11 +3851,9 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            // 3. Match by epData.episodeNumber in the highest-ranked matching TMDB season (e.g. S2E45 for Bleach TYBW)
             val metaEpNum = epData?.episodeNumber ?: 0
             if (matched == null && metaEpNum > 0) {
                 for ((sNum, epList) in tmdbEpisodesBySeason) {
-                    // Never map a sequel/offset cour onto Season 1 Episode 1..N unless verified by airDate/title above
                     if (sNum == 1 && isSequelOrOffsetCour && metaEpNum <= 52) continue
                     val byNum = epList.firstOrNull { it.episodeNumber == metaEpNum }
                     if (byNum != null) {
@@ -4232,9 +3863,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            // 3b. Self-sufficiency fallback when api.ani.zip is down or missing episode metadata (epData == null)
-            // for a Season 2+ anime entry: if the highest-ranked TMDB season > 1 matches the AniList entry's
-            // release year, subtitle/season name, or explicit "Season N" number, map epIdx directly into that season.
             if (matched == null && epData == null) {
                 val topCand = candidateSeasons.firstOrNull()
                 if (topCand != null && topCand.seasonNumber > 1) {
@@ -4253,7 +3881,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            // 4. Sequential continuation from previous episode in the same cour
             if (matched == null && epIdx > 1) {
                 val prev = result[epIdx - 1]
                 if (prev != null) {
@@ -4268,7 +3895,6 @@ object StreamPlayExtractor : StreamPlay() {
             result[epIdx] = matched
         }
 
-        // Backfill earlier episodes in the cour if a later episode matched
         for (epIdx in (totalEps - 1) downTo 1) {
             if (result[epIdx] == null) {
                 val next = result[epIdx + 1]
@@ -4285,11 +3911,6 @@ object StreamPlayExtractor : StreamPlay() {
         return result
     }
 
-    /**
-     * Verifies `(tmdbSeason, tmdbEpisode)` at `loadLinks` time in `StreamPlayAnime` so even cached
-     * `LinkData` or unverified `api.ani.zip` TVDB season numbers are resolved to the true TMDB
-     * `(season, episode)` or rejected (`null`) if the episode does not exist on TMDB.
-     */
     suspend fun resolveVerifiedTmdbEpisodeForAnime(
         tmdbId: Int?,
         aniId: Int?,
@@ -4318,7 +3939,6 @@ object StreamPlayExtractor : StreamPlay() {
             (rawTmdbEpisode != null && rawTmdbEpisode != ep) ||
             (aniYear != null && firstAirYear != null && aniYear > firstAirYear + 1)
 
-        // If rawTmdbSeason is already a valid TMDB season and either not a sequel or > 1, check if episode exists
         if (rawTmdbSeason != null && rawTmdbSeason in validSeasonNums && (!isLikelySequel || rawTmdbSeason > 1)) {
             val sJson = fetchTmdbSeasonJson(id, rawTmdbSeason)
             val epsArr = sJson?.optJSONArray("episodes")
@@ -4332,7 +3952,6 @@ object StreamPlayExtractor : StreamPlay() {
             }
         }
 
-        // Otherwise resolve via api.ani.zip + resolveAccurateTmdbSeriesMapping
         val aniZipKey = "anizip_${aniId ?: malId ?: id}"
         val rawAniZip = StreamPlayCache.getCachedAniZip(aniZipKey) ?: run {
             val url = when {
@@ -4373,7 +3992,6 @@ object StreamPlayExtractor : StreamPlay() {
             if (effectiveTmdbId == null && !imdbId.isNullOrBlank()) {
                 effectiveTmdbId = resolveTmdbIdFromImdb(imdbId, season)
             }
-            // SOTA Fallback: vidlink.pro accepts encrypted IMDb IDs (e.g. tt0137523) directly for movies!
             val mediaIdStr = effectiveTmdbId?.toString() ?: (if (season == null) imdbId?.trim() else null)
             if (mediaIdStr.isNullOrBlank() || (season != null && season != 0 && episode == null)) return
 
@@ -4421,8 +4039,6 @@ object StreamPlayExtractor : StreamPlay() {
                     return null
                 }
 
-                // A dual-quality lane satisfies the walk when both the 720p and 1080p tiers are
-                // present with real HTTP URLs plus at least one genuine English caption.
                 fun vidlinkStreamHasEnglishCaptions(s: VidlinkStream?): Boolean =
                     s?.captions?.any { caption ->
                         !caption.url.isNullOrBlank() && isEnglishSubtitleLabel(cleanSubtitleLabel(caption.language))
@@ -4438,12 +4054,6 @@ object StreamPlayExtractor : StreamPlay() {
                     vidlinkStreamHasTier(s, 720) && vidlinkStreamHasTier(s, 1080) &&
                         vidlinkStreamHasEnglishCaptions(s)
 
-                // Speculative dual-environment fetch resolved strictly in completion order: whichever
-                // environment answers first decides the outcome. A satisfied winner cancels the loser
-                // immediately (zero added latency on the fast path); a satisfied dash-hevc winner
-                // grants the preferred direct-MP4 `standard` lane only a short grace window instead
-                // of blocking on its full retry ladder; an unsatisfied winner always awaits the other
-                // so nothing a slower environment produced is lost.
                 suspend fun fetchDualEnvStreams(token: String): Pair<VidlinkStream?, VidlinkStream?> = coroutineScope {
                     val stdDeferred = async { fetchStreamForToken(token, "standard") }
                     val dashDeferred = async { fetchStreamForToken(token, "dash-hevc") }
@@ -4476,9 +4086,6 @@ object StreamPlayExtractor : StreamPlay() {
                     Pair(stdRes, dashRes)
                 }
 
-                // SOTA Phase 1: High-performance, offline-native XSalsa20-Poly1305 encryption.
-                // Generates authentic tokens instantly in 0ms with zero network requests, bypassing
-                // external rate-limiting (HTTP 429), connection dropouts, and DNS blocks.
                 var encData = runCatching {
                     VidLinkCrypto.encryptToken(mediaIdStr)
                 }.getOrNull()
@@ -4491,7 +4098,6 @@ object StreamPlayExtractor : StreamPlay() {
                     dashStream = dashRes
                 }
 
-                // SOTA Phase 2: Resilient secondary fallback to enc-dec.app only if offline token returned no stream
                 if (standardStream == null && dashStream == null) {
                     val encUrl = "https://enc-dec.app/api/enc-vidlink?text=$mediaIdStr"
                     val remoteEnc = retryTransient(3, 300L) {
@@ -4575,7 +4181,6 @@ object StreamPlayExtractor : StreamPlay() {
                     isAnime = isAnime
                 )
 
-                // 1. Parse captions / subtitles across both standard and dash-hevc responses (deduplicated by URL)
                 var hasCaptions = false
                 var hasEnglishCaptions = false
                 val seenSubUrls = mutableSetOf<String>()
@@ -4612,10 +4217,6 @@ object StreamPlayExtractor : StreamPlay() {
                 val dashBaseName = "Vidlink DASH$animeTag"
                 val directBaseName = "Vidlink$animeTag"
 
-                // 2. Collect direct MP4 stream qualities from standard/dash responses.
-                // Tiers are keyed canonically (`"720"` vs `"720p"` collapse to one tier) and the
-                // standard (direct-MP4 family) lane wins collisions unless its URL is a manifest
-                // while the dash-hevc lane's is a genuine direct video.
                 fun canonicalVidlinkQualityKey(key: String): String {
                     val digits = key.filter { it.isDigit() }
                     return if (digits.isEmpty()) key.trim().lowercase(Locale.ROOT) else digits
@@ -4711,7 +4312,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
                 val directTierComplete = hasDirect720p && hasDirect1080p
                 if (directTierComplete && directQualitiesLinks.isNotEmpty()) {
-                    // Fast path: direct MP4 qualities already cover both top tiers; emit immediately!
                     emitTopTierDualQualityStreamLinks(
                         source = "Vidlink",
                         baseName = directBaseName,
@@ -4724,13 +4324,9 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                 }
 
-                // 3. Parse adaptive playlists (DASH .mpd from dash-hevc and/or HLS .m3u8 from dash-hevc/standard)
                 suspend fun resolveVidlinkPlaylistLinks(s: VidlinkStream): List<ExtractorLink> {
                     val rawPlaylistUrl = s.playlist?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
 
-                    // URL-embedded `headers=` JSON is an embed-wrapper artifact. It may only FILL
-                    // slots the VidLink CDN policy left blank on third-party hosts — it never
-                    // overrides the policy's filmboom/strip decisions.
                     var embeddedReferer = ""
                     var embeddedOrigin = ""
                     val headersJson = Regex("""[?&]headers=([^&]+)""")
@@ -4850,7 +4446,6 @@ object StreamPlayExtractor : StreamPlay() {
                     }.orEmpty()
                 }
 
-                // Only fetch adaptive playlists if direct MP4 streams did not already cover both 720p and 1080p
                 val playlistStreamsToParse = if (directTierComplete) {
                     emptyList()
                 } else {
@@ -4890,9 +4485,6 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-                // Single-emission merge: every quality tier is emitted exactly once — direct MP4s
-                // first, playlist variants only for tiers the direct lanes did not already cover —
-                // so a hidden 720p manifest variant is never discarded behind an early emission.
                 if (!directTierComplete) {
                     val nonOverlappingPlaylistLinks = uniquePlaylistLinks.filter { link ->
                         link.quality == Qualities.Unknown.value || link.quality !in directQualityTiers
@@ -4940,10 +4532,6 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-                // For non-anime Movie/TV streams without native English captions in Default mode,
-                // harvest English subtitles from WyZIESUB and SubtitleAPI. Never do this on anime or
-                // in Urdu mode (where Wyzie and SubtitleAPI already run as dedicated SOTA Urdu tasks
-                // and must not be disguised under `vidlink` provenance).
                 val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
                 if (!hasEnglishCaptions && !isAnime && !urduMode && subtitleCallback != null) {
                     val subLookupId = imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
@@ -4970,7 +4558,6 @@ object StreamPlayExtractor : StreamPlay() {
         invokeVidlink(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== CineSrc (cinesrc.st) SOTA Universal Extractor (Rank 94) ====================
 
     private const val CINESRC_HOST = "https://cinesrc.st"
     private const val CINESRC_SUBS_API = "https://subs.bright67.online"
@@ -5067,10 +4654,6 @@ object StreamPlayExtractor : StreamPlay() {
         return (topByte ushr (8 - remBits)) == 0
     }
 
-    /**
-     * Pure-Kotlin CSP4 + SHA-256 Stage-1 Proof-of-Work solver for `cinesrc.st`.
-     * Solves typical 12-bit challenges in < 5ms on JVM/ART without external calls.
-     */
     internal fun cinesrcSolveStage1(wBase64Url: String, seedHex: String): String {
         val c = cinesrcBase64UrlDecode(wBase64Url)
         val seedBytes = cinesrcHexToBytes(seedHex)
@@ -5193,9 +4776,6 @@ object StreamPlayExtractor : StreamPlay() {
         throw IllegalStateException("CineSrc stage1 PoW exceeded max iterations")
     }
 
-    /**
-     * Pure-Kotlin SHA-256 Stage-2 Proof-of-Work solver for `cinesrc.st`.
-     */
     internal fun cinesrcSolveStage2(pack: List<String>): String {
         require(pack.size >= 5) { "CineSrc stage2 pack requires at least 5 elements" }
         val target = pack[0].reversed()
@@ -5227,7 +4807,6 @@ object StreamPlayExtractor : StreamPlay() {
     internal data class CineSrcStreamEntry(
         val url: String,
         val quality: Int,
-        /** Real payload size reported by the source, in whole MiB; null when the source is silent. */
         val sizeMb: Int?
     )
 
@@ -5236,8 +4815,6 @@ object StreamPlayExtractor : StreamPlay() {
         val subtitles: List<Pair<String, String>>
     )
 
-    // Size fields the CineSrc / CineJoy payload may report per stream entry. Only these exact
-    // payload fields are trusted; a resolution label alone never yields a size.
     private val CINESRC_SIZE_BYTE_KEYS = arrayOf(
         "sizeBytes", "size_bytes", "fileSizeBytes", "file_size_bytes", "filesizeBytes", "bytes"
     )
@@ -5245,13 +4822,6 @@ object StreamPlayExtractor : StreamPlay() {
         "size", "filesize", "fileSize", "file_size", "sizeText", "size_text"
     )
 
-    /**
-     * Extracts the real payload size (MiB) from a CineSrc stream entry.
-     *
-     * Sources either report an exact byte count (`sizeBytes`, `bytes`, ...) or a human label
-     * (`"612 MB"`). When neither exists the result is null - the previous hardcoded per-quality
-     * table (410/760/240 MB) fabricated sizes and made the download ranker compare fiction.
-     */
     internal fun cinesrcPayloadSizeMb(entry: JSONObject): Int? {
         for (key in CINESRC_SIZE_BYTE_KEYS) {
             val raw = entry.opt(key) ?: continue
@@ -5285,11 +4855,6 @@ object StreamPlayExtractor : StreamPlay() {
     private fun bytesToMiB(bytes: Long): Int =
         ((bytes + 524_288L) / (1024L * 1024L)).toInt().coerceAtLeast(1)
 
-    /**
-     * Parses a decrypted `dec-cinesrc` response envelope into verified stream entries and captions.
-     * Per-entry sizes are taken only from real payload metadata, so the download ranker never
-     * compares invented per-resolution estimates.
-     */
     internal fun cinesrcParseDecryptedResult(rawJson: String): CineSrcDecryptedPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
         val target = root.optJSONObject("result") ?: root
@@ -5357,11 +4922,6 @@ object StreamPlayExtractor : StreamPlay() {
 
     private val CINESRC_WING_SERVERS = listOf("secret", "Nebula")
 
-    /**
-     * Parses a decrypted `dec-cinejoy` (`api.wing.st`) response envelope into verified stream entries and captions.
-     * Supports both the current `result.data.stream` (`JSONObject` or `JSONArray` of `playlist` + `captions`)
-     * schema and legacy `result.sources` schema.
-     */
     internal fun cinesrcParseWingDecryptedResult(rawJson: String): CineSrcDecryptedPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
         val target = root.optJSONObject("result") ?: root
@@ -5427,7 +4987,6 @@ object StreamPlayExtractor : StreamPlay() {
             parseCaptionsArray(streamCaps, checkCorsFlag = true)
         }
 
-        // 1. Current schema: result.data.stream (JSONObject or JSONArray)
         val streamNode = dataNode.opt("stream") ?: target.opt("stream")
         when (streamNode) {
             is JSONObject -> parseStreamObject(streamNode)
@@ -5439,7 +4998,6 @@ object StreamPlayExtractor : StreamPlay() {
             }
         }
 
-        // 2. Legacy schema: result.sources / data.captions / result.captions / result.tracks
         val sourcesArr = dataNode.optJSONArray("sources") ?: target.optJSONArray("sources")
         sourcesArr?.let { arr ->
             for (i in 0 until arr.length()) {
@@ -5565,17 +5123,6 @@ object StreamPlayExtractor : StreamPlay() {
         else -> if (quality > 0 && quality != Qualities.Unknown.value) "${quality}p" else "Auto"
     }
 
-    /**
-     * SOTA Universal Extractor for CineSrc (`cinesrc.st`, Rank 94).
-     *
-     * Dual-engine, live-verified universal source supporting Movies, TV Series, and Anime:
-     *  1. `cinesrc.st` native CSP4 + SHA-256 Proof-of-Work engine fanning out across `wave`,
-     *     `nebula`, and `surge` (`ice.bright67.online` discrete 720p/1080p VOD HLS +
-     *     `nebula.bright67.online` multi-variant HLS ladders).
-     *  2. `api.wing.st` (`secret` + `Nebula`) zero-PoW fast-lane (`enc-cinejoy` -> `/g` binary POST ->
-     *     `dec-cinejoy` -> `lightspeed.st` / `nebula.bright67.online` master HLS + captions).
-     *  3. `subs.bright67.online/search` human-verified multi-language `.srt` subtitle tracks.
-     */
     suspend fun invokeCineSrc(
         tmdbId: Int? = null,
         season: Int? = null,
@@ -5609,7 +5156,6 @@ object StreamPlayExtractor : StreamPlay() {
                 val emittedLangCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
                 coroutineScope {
-                    // 1. Concurrent subtitle harvest from subs.bright67.online
                     val subsJob = async {
                         try {
                             val subsUrl = if (isMovie) {
@@ -5645,7 +5191,6 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
 
-                    // 2. Concurrent zero-PoW Secret + Nebula fast-lanes via api.wing.st
                     val wingJobs = CINESRC_WING_SERVERS.map { wingServer ->
                         async {
                             try {
@@ -5732,9 +5277,6 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
 
-                    // 3. Native cinesrc.st CSP4 + SHA-256 PoW fan-out across wave, nebula, surge
-                    //    Staggered by 350ms so zero-PoW wingJobs (`secret` / `Nebula`) acquire
-                    //    `encDecApiSemaphore` first without queueing behind 6 CSP4 `enc-cinesrc` calls.
                     val embedUrl = if (isMovie) {
                         "$CINESRC_HOST/embed/movie/$id"
                     } else {
@@ -5942,7 +5484,6 @@ object StreamPlayExtractor : StreamPlay() {
         invokeCineSrc(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // ==================== Cineby SOTA Universal Extractor (api.wecollege.net, Rank 95) ====================
 
     private const val CINEBY_API = "https://api.wecollege.net"
     private const val CINEBY_ORIGIN = "https://vidy.st"
@@ -5973,11 +5514,6 @@ object StreamPlayExtractor : StreamPlay() {
         return if (t == 0) x else (x shl t) or (x ushr (32 - t))
     }
 
-    /**
-     * Offline native `mvm1` stream cipher decryption for `api.wecollege.net` (`enc=2`).
-     * Derived from `vidy.st` / `player.videasy.to/_next/static/chunks/8351-ad3ea010cfe1b6bd.js` (`f(cipher, seed, mediaId)`).
-     * Decrypts the Base64URL payload in <0.1ms with zero network requests and verifies the `mvm1` magic header.
-     */
     internal fun cinebyDecryptMvm1(cipherTextBase64Url: String, seed: String, mediaId: Int): String? {
         if (cipherTextBase64Url.isBlank() || seed.isBlank()) return null
         val bytes = runCatching { cinesrcBase64UrlDecode(cipherTextBase64Url) }.getOrNull() ?: return null
@@ -6030,7 +5566,6 @@ object StreamPlayExtractor : StreamPlay() {
                 idx++
             }
         }
-        // Verify 4-byte magic header "mvm1" (109, 118, 109, 49)
         if ((bytes[0].toInt() and 0xFF) != 109 ||
             (bytes[1].toInt() and 0xFF) != 118 ||
             (bytes[2].toInt() and 0xFF) != 109 ||
@@ -6041,10 +5576,6 @@ object StreamPlayExtractor : StreamPlay() {
         return String(bytes, 4, bytes.size - 4, Charsets.UTF_8)
     }
 
-    /**
-     * Parses the decrypted JSON payload (`mvm1` or `dec-videasy` envelope) returned for a Cineby
-     * (`api.wecollege.net`) server payload. Extracts both `sources` (`url`, `quality`) and `subtitles` (`url`, `lang`/`language`).
-     */
     internal fun cinebyParseDecryptedResult(rawJson: String): CinebyDecryptedPayload? {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return null
         val target = root.optJSONObject("result") ?: root
@@ -6088,16 +5619,6 @@ object StreamPlayExtractor : StreamPlay() {
 
     internal fun cinebyQualityOf(raw: String?): Int = providerLabelQuality(raw)
 
-    /**
-     * SOTA Universal Extractor for Cineby (`api.wecollege.net`, Rank 95).
-     *
-     * Protocol (verified live across Movies, TV Shows, and Anime):
-     *   1. GET `https://api.wecollege.net/seed?mediaId={tmdbId}` -> `{"seed": "..."}`
-     *   2. Concurrent fan-out across `oakland`, `reno`, `dallas`, `boise`, `miami`, `vegas`, `atlanta`, `phoenix`:
-     *      `GET https://api.wecollege.net/{server}/sources?title=...&mediaType={movie|tv}&year=...&tmdbId={id}&imdbId=...&seasonId=...&episodeId=...&enc=2&seed={seed}`
-     *   3. Offline `mvm1` stream cipher decryption (`cinebyDecryptMvm1(ciphertext, seed, tmdbId)`) with fallback to `dec-videasy`
-     *   4. Emits multi-CDN HLS (`moon.goldenkite.top`, `sun.paleoak.top`, `e2e.majorplay.net`) with `720p` sorted ahead of `1080p` + multi-language subtitles
-     */
     suspend fun invokeCineby(
         tmdbId: Int? = null,
         season: Int? = null,
@@ -6310,35 +5831,17 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    // ==================== SOTA Extractor Suite (VidFast / MeowTV) ====================
-    //
-    // Protocols reverse-engineered and verified end-to-end over plain HTTP in the v23/v24
-    // research passes. Each one hides its media URL behind a small closed-source
-    // client crypto chain; the per-request decryptor calls are delegated to enc-dec.app, the
-    // continuously maintained decrypt toolkit already trusted by this extension for other
-    // flows. Every playback URL produced here is expanded and emitted through the repo-standard
-    // non-synthetic top-tier emission path (emitTopTierDualQualityStreamLinks).
 
     private const val ENC_DEC_API = "https://enc-dec.app/api"
 
-    /** VidFast player origin. Protocol: page token -> enc-vidfast stage 1/2 -> per-server stream. */
     private const val VIDFAST_HOST = "https://vidfast.vc"
 
-    /** MeowTV web front (Origin/Referer) + ticket/stream API. */
     private const val MEOWTV_HOST = "https://meowtv.ru"
     private const val MEOWTV_API = "https://api.meowtv.ru"
     private const val MEOWTV_SECRET = "10eE3wyyhkF38rwLFwisRYgwP2bbTL_Y"
 
-    /** MeowTV upstream servers (`english` first for verified H.264 streams, then `dcloud`, then `acme` with `list=1`). */
     private val MEOWTV_SERVERS = listOf("english" to false, "dcloud" to false, "acme" to true)
 
-    /**
-     * Offline pure-Kotlin MeowTV payload decryptor extracted from `meowtv.wasm` (`s-p-CmJx-XQh.js`,
-     * 3-way XOR-masked data segments 5 ^ 9 ^ 13). Computes `SHA-256(MEOWTV_SECRET + n)` and XORs the
-     * 32-byte digest cyclically against `Base64.decode(d)` in <0.1ms with zero network calls.
-     * Supports both single-stream JSON objects and `acme` multi-stream `{"streams": [...]}` payloads,
-     * while rejecting server-IP-locked path tokens.
-     */
     internal fun meowTvDecryptStreamsOffline(nB64: String, dB64: String): List<MeowTvDecResult> {
         if (nB64.isBlank() || dB64.isBlank()) return emptyList()
         return runCatching {
@@ -6390,11 +5893,6 @@ object StreamPlayExtractor : StreamPlay() {
 
     private val VIDFAST_PAGE_TOKEN_REGEX = Regex("\"(?:en|token)\":\"([A-Za-z0-9_-]+)\"")
 
-    /**
-     * Extracts the VidFast player handshake token from the page HTML. The bundle embeds it inside
-     * a JSON-in-string (`\"en\":\"<b64url>\"`, fallback key `token`), so the JSON string layer is
-     * unescaped first and the first base64url payload of at least 20 characters wins.
-     */
     internal fun vidfastExtractPageToken(html: String): String? {
         val unescaped = html.replace("\\\"", "\"")
         return VIDFAST_PAGE_TOKEN_REGEX.findAll(unescaped)
@@ -6402,13 +5900,11 @@ object StreamPlayExtractor : StreamPlay() {
             .firstOrNull { it.length >= 20 }
     }
 
-    /** enc-dec.app GET with the process-wide 4-permit throttle and one transient retry. */
     private suspend fun encDecGet(url: String, headers: Map<String, String>, timeoutSec: Long = 3L): String? =
         encDecApiSemaphore.withPermit {
             retryTransient(1, 200L) { cancellableGetText(url, headers, timeoutSec) }
         }
 
-    /** enc-dec.app POST (JSON body) with the process-wide throttle and two transient retries. */
     private suspend fun encDecPost(path: String, jsonBody: String, timeoutSec: Long = 4L): String? =
         encDecApiSemaphore.withPermit {
             retryTransient(2, 300L) {
@@ -6478,15 +5974,6 @@ object StreamPlayExtractor : StreamPlay() {
     private val DASH_S_REPEAT_ATTR_REGEX = Regex("""\br\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
     private val DASH_S_DURATION_ATTR_REGEX = Regex("""\bd\s*=\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
 
-    /**
-     * Nominal episode length used only to turn a provider-declared HLS bandwidth into a ranking
-     * size hint.
-     *
-     * An HLS master playlist declares bandwidth but no duration, so any size derived from it has
-     * to assume one; 24 minutes is the median TV episode. The result is a hint for ordering
-     * variants inside one ladder and is replaced by the host's measured bytes before anything is
-     * downloaded or shown as measured truth.
-     */
     internal const val HLS_SIZE_HINT_SECONDS = 1440.0
     internal const val HLS_TV_SIZE_HINT_SECONDS = 2520.0
     internal const val HLS_MOVIE_SIZE_HINT_SECONDS = 6000.0
@@ -6497,17 +5984,16 @@ object StreamPlayExtractor : StreamPlay() {
         else -> HLS_TV_SIZE_HINT_SECONDS
     }
 
-    /**
-     * True when the master declares an external audio rendition for at least one variant.
-     *
-     * HLS fixes attribute *names*, not their order, and real providers emit both
-     * `TYPE=AUDIO,...,URI="..."` and `...,URI="...",TYPE=AUDIO` in the wild. A single
-     * order-sensitive regex classified the second form as muxed audio, so the ladder was
-     * flattened into direct child playlists and the original audio track was lost. Each
-     * `#EXT-X-MEDIA` tag is therefore classified on its own: it is a demuxed-audio declaration
-     * only when it both declares `TYPE=AUDIO` and carries a non-empty `URI` (an entry without a
-     * URI describes audio muxed into the video segments and needs no master-preserving route).
-     */
+    internal fun resolveDurationHintSeconds(
+        isMovie: Boolean,
+        isAnime: Boolean,
+        runtimeMinutes: Int?,
+    ): Double = if (runtimeMinutes != null && runtimeMinutes > 0) {
+        runtimeMinutes * 60.0
+    } else {
+        resolveDurationHintSeconds(isMovie, isAnime)
+    }
+
     private fun hasDemuxedAudioRendition(manifestText: String): Boolean {
         return manifestText.lineSequence().any { rawLine ->
             val line = rawLine.trim()
@@ -6517,14 +6003,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * Maps HLS `#EXT-X-STREAM-INF` `RESOLUTION={width}x{height}` or DASH `<Representation>`
-     * dimensions to canonical quality tiers (`2160`, `1440`, `1080`, `720`, `480`, `360`),
-     * accurately handling both constant-width widescreen encodes (`1280x534` -> `720p`,
-     * `1920x800` -> `1080p`, `854x356` -> `480p`, `640x268` -> `360p`) and constant-height
-     * widescreen encodes (`1720x720` / `1800x720` -> `720p`, `2580x1080` -> `1080p`,
-     * `1200x480` -> `480p`, `864x360` -> `360p`).
-     */
     internal fun normalizeHlsResolutionToQuality(
         width: Int?,
         height: Int?,
@@ -6539,7 +6017,6 @@ object StreamPlayExtractor : StreamPlay() {
         return StreamLinkOptimizer.extractQualityFromText(uriLine)
     }
 
-    /** Nearest canonical tier, mirroring `VideoQualityLadder.snapToTier` in the host app. */
     private fun snapHlsTier(px: Int): Int = ResolutionTruth.snapToTier(px)
 
     internal fun resolveRelativeUrl(baseUrl: String, uriLine: String): String {
@@ -6555,11 +6032,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * Probes a single HLS media segment's exact byte size using `Range: bytes=0-0` and reading
-     * the total length from `Content-Range` (HTTP 206) or `Content-Length` (HTTP 200) while
-     * closing the response socket immediately without downloading the segment body.
-     */
     internal suspend fun probeSingleSegmentSizeBytes(
         segUrl: String,
         headers: Map<String, String>,
@@ -6606,14 +6078,6 @@ object StreamPlayExtractor : StreamPlay() {
         }
     }
 
-    /**
-     * Real HLS media playlist size measurer (`[XXX MB]`).
-     * - Fast Path A (`#EXT-X-BYTERANGE`): sums declared segment byte ranges + `#EXT-X-MAP` byte
-     *   ranges with zero extra network requests.
-     * - Path B (Concurrent 3-Segment `Range: bytes=0-0` / `Content-Range` Sampling): samples up
-     *   to 3 deterministic representative segments across the stream (20%, 50%, 80%) and scales
-     *   the measured bytes-per-second across total `#EXTINF` duration.
-     */
     internal suspend fun measureHlsMediaPlaylistSizeMb(
         playlistUrl: String,
         manifestText: String,
@@ -6621,7 +6085,6 @@ object StreamPlayExtractor : StreamPlay() {
     ): Int? {
         if (manifestText.isBlank() || !manifestText.contains("#EXTM3U", ignoreCase = true)) return null
 
-        // Fast Path A: #EXT-X-BYTERANGE
         var segmentByteRangeCount = 0
         var totalByteRangeSum = 0L
         for (match in HLS_BYTERANGE_REGEX.findAll(manifestText)) {
@@ -6639,7 +6102,6 @@ object StreamPlayExtractor : StreamPlay() {
             return bytesToMiB(totalByteRangeSum).takeIf { it > 0 }
         }
 
-        // Path B: Concurrent 3-Segment Range: bytes=0-0 / Content-Range Sampling
         val lines = manifestText.lines()
         val segments = mutableListOf<Pair<Double, String>>()
         var i = 0
@@ -6695,18 +6157,6 @@ object StreamPlayExtractor : StreamPlay() {
         return bytesToMiB(estimatedTotalBytes).takeIf { it > 0 }
     }
 
-    /**
-     * Parses an HLS master manifest into verified resolution variants while:
-     * 1. Preserving the master manifest URL (with `#vid={height}p` fragment) whenever the manifest
-     *    declares external `#EXT-X-MEDIA:TYPE=AUDIO` renditions (`URI="..."`), ensuring ExoPlayer
-     *    and `HLSDownloader` always mux the original audio track instead of downloading silent
-     *    video-only child playlists.
-     * 2. Computing deterministic bitrate-proportional file size estimates (`[XXX MB]`) from
-     *    `AVERAGE-BANDWIDTH` / `BANDWIDTH` so `DownloadSelectionPolicy` can compare HLS bitrates
-     *    and select the lowest-file-size 720p and lowest-file-size 1080p stream.
-     * 3. Normalizing cinema widescreen dimensions (`1280x534` -> `720p`, `1920x800` -> `1080p`)
-     *    and `NAME="720p"` attributes via [normalizeHlsResolutionToQuality].
-     */
     internal fun parseHlsMasterVariants(
         masterUrl: String,
         manifestText: String,
@@ -6752,11 +6202,6 @@ object StreamPlayExtractor : StreamPlay() {
                             if (uriLine.startsWith("http", ignoreCase = true)) uriLine else baseUrl
                         }
                     }
-                    // Size hint from the provider's own declared bandwidth: monotonic inside the
-                    // ladder, and only ever a ranking hint. The host replaces it with measured
-                    // bytes before committing a download. The floor is one megabyte so a very low
-                    // lane still carries a positive tag; the previous 25 MB floor overstated every
-                    // small rendition and made the tag look measured when it was not.
                     val estimatedMb = bw?.takeIf { it in 100_000L..80_000_000L }?.let { bps ->
                         val megabytes = (bps / 8.0) * effectiveDurationSec / (1024.0 * 1024.0)
                         maxOf(1, megabytes.toInt())
@@ -6779,9 +6224,6 @@ object StreamPlayExtractor : StreamPlay() {
             return sorted.distinctBy { "${it.quality}|${it.url}" }
         }
         return sorted.mapIndexed { index, variant ->
-            // A declared height is the strongest pin. Otherwise the provider's own bandwidth keeps
-            // the rendition addressable even when the master omits RESOLUTION; only a master that
-            // declares neither falls back to the ordinal. None of these invents a resolution.
             val tag = when {
                 variant.quality > 0 && variant.quality != Qualities.Unknown.value -> "${variant.quality}p"
                 (variant.bandwidthBps ?: 0L) > 0L -> "bw_${variant.bandwidthBps}"
@@ -6791,19 +6233,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.distinctBy { "${it.quality}|${it.url}" }
     }
 
-    /**
-     * Parses a DASH `.mpd` manifest into verified resolution variants pinned via `#vid={quality}p`
-     * fragments, computing deterministic file size estimates (`[XXX MB]`) from the MPD's
-     * `mediaPresentationDuration` (supporting optional days and fractional hours/minutes/seconds,
-     * or [durationHintSeconds] fallback) and combined video + audio `<Representation>` bandwidths.
-     *
-     * Attributes (`width`, `height`, `mimeType`) declared on `<AdaptationSet>` are inherited by
-     * child `<Representation>` tags when not overridden. When an MPD offers multiple bitrates at
-     * the same resolution tier (e.g. dual HEVC main/high bitrates at `1720x720`), representations
-     * are ordered ascending by bandwidth (`sortedBy { it.bandwidthBps }`) so `#vid={quality}p`
-     * deterministically selects the most storage/bandwidth-efficient encode per resolution tier,
-     * aligning with `DownloadSelectionPolicy`'s smallest-verified-size-first contract.
-     */
     internal fun parseDashMasterVariants(
         masterUrl: String,
         manifestText: String,
@@ -6826,10 +6255,6 @@ object StreamPlayExtractor : StreamPlay() {
             val sec = m.groupValues[4].toDoubleOrNull() ?: 0.0
             return (days * 86400.0 + h * 3600.0 + min * 60.0 + sec).takeIf { it > 0.0 }
         }
-        // Total duration resolution order: root mediaPresentationDuration (covers all periods),
-        // then the sum of per-Period `duration` attributes (multi-period MPDs without a root
-        // duration), then SegmentTemplate duration/timescale scaled by the declared repeat counts,
-        // and finally the caller's hint.
         val mpdDurationSec = DASH_DURATION_REGEX.find(manifestText)?.let { m ->
             val days = m.groupValues[1].toDoubleOrNull() ?: 0.0
             val h = m.groupValues[2].toDoubleOrNull() ?: 0.0
@@ -6842,11 +6267,6 @@ object StreamPlayExtractor : StreamPlay() {
             ?.sum()
             ?.takeIf { it > 0.0 }
         ?: run {
-            // Fully scoped SegmentTemplate pairing: each template's `timescale`/`duration`
-            // (attribute-order independent) is paired with the SegmentTimeline in its OWN scope
-            // (up to the next `<SegmentTemplate>`), so an audio template declared first can never
-            // lend its timing to the video ladder. The video ladder wins via the max duration
-            // (the most-segmented timeline), which is the size-dominant representation.
             var bestDurationSec = 0.0
             val templateMatches = DASH_SEGMENT_TEMPLATE_TAG_REGEX.findAll(manifestText).toList()
             for ((index, template) in templateMatches.withIndex()) {
@@ -6855,14 +6275,6 @@ object StreamPlayExtractor : StreamPlay() {
                 val templateDuration = DASH_SEGMENT_DURATION_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 }
                 val scopeEnd = templateMatches.getOrNull(index + 1)?.range?.first ?: manifestText.length
                 val scopeText = manifestText.substring(template.range.last + 1, scopeEnd)
-                // MP4Box-style MPDs declare one AdaptationSet-level template with per-Representation
-                // timelines: evaluate EVERY timeline in the template's scope and keep the LARGEST
-                // duration (the video ladder), never a cross-timeline sum.
-                // Complete timeline arithmetic: each `<S>` entry contributes (r + 1) segments
-                // (entries without `r` contribute one). When every entry carries a `d` attribute
-                // the timeline's own Σ(r+1)*d is authoritative — templates without a `duration`
-                // attribute still yield exact timing; otherwise the template `duration` scales
-                // the counted segments.
                 var bestTimelineUnits = 0L
                 var sawTimeline = false
                 for (timeline in DASH_SEGMENT_TIMELINE_REGEX.findAll(scopeText)) {
@@ -6908,9 +6320,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
         }
-        // Representative audio bitrate paired with every video representation: the median of the
-        // declared audio representations (not the max, which would inflate small-video estimates
-        // in multi-audio ladders). A real mux pairs ONE audio track with the video track.
         val audioBwBps = if (audioBandwidths.isEmpty()) {
             0L
         } else {
@@ -6983,9 +6392,6 @@ object StreamPlayExtractor : StreamPlay() {
                     )
                 }
             }
-            // Self-closing `<AdaptationSet/>` tags and bare representations outside every paired
-            // set body still declare video reps (their own width/height prove them) — parse them
-            // instead of silently dropping everything they carry.
             for (repMatch in DASH_REPRESENTATION_TAG_REGEX.findAll(manifestText)) {
                 if (coveredRanges.any { it.contains(repMatch.range.first) }) continue
                 addRepresentationVariant(repAttrs = repMatch.groupValues[1])
@@ -7007,14 +6413,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.distinctBy { "${it.quality}|${it.url}" }
     }
 
-    /**
-     * Shared expander for verified protocol outputs: parses HLS master manifests for
-     * demuxed-audio safety and bitrate-proportional size tags (or measures real leaf media
-     * playlist sizes when a single-quality `.m3u8` leaf is served), then delegates to the
-     * repo-standard non-synthetic top-tier emission.
-     *
-     * Returns `true` if at least one verified link was emitted, `false` otherwise.
-     */
     private suspend fun emitVerifiedStream(
         source: String,
         baseName: String,
@@ -7157,7 +6555,6 @@ object StreamPlayExtractor : StreamPlay() {
         return emittedCount > 0
     }
 
-    // -------------------- VidFast --------------------
 
     suspend fun invokeVidFast(
         tmdbId: Int? = null,
@@ -7250,12 +6647,20 @@ object StreamPlayExtractor : StreamPlay() {
                     val streamUrl = streamResult.optString("url").takeIf { it.startsWith("http") } ?: continue
 
                     streamResult.optJSONArray("tracks")?.let { tracks ->
+                        val vidFastSubHeaders = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to "$VIDFAST_HOST/",
+                            "X-StreamPlay-Source" to "vidfast",
+                            "X-StreamPlay-Origin" to "native",
+                        )
                         for (t in 0 until tracks.length()) {
                             val track = tracks.optJSONObject(t) ?: continue
                             if (track.optString("kind").equals("thumbnails", ignoreCase = true)) continue
                             val file = track.optString("file").takeIf { it.startsWith("http") } ?: continue
                             subtitleCallback?.invoke(
-                                newSubtitleFile(cleanSubtitleLabel(track.optString("label").ifBlank { "English" }), file)
+                                newSubtitleFile(cleanSubtitleLabel(track.optString("label").ifBlank { "English" }), file) {
+                                    this.headers = vidFastSubHeaders
+                                }
                             )
                         }
                     }
@@ -7304,7 +6709,6 @@ object StreamPlayExtractor : StreamPlay() {
         invokeVidFast(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
 
-    // -------------------- MeowTV --------------------
 
     suspend fun invokeMeowTV(
         tmdbId: Int? = null,
@@ -7408,8 +6812,6 @@ object StreamPlayExtractor : StreamPlay() {
 
                             var emitted720FromServer = false
                             for ((payloadN, payloadD) in payloadEntries) {
-                                // Primary 0ms offline decryption via WASM-extracted SHA-256 + XOR keystream;
-                                // enc-dec.app is retained strictly as a last-resort fallback.
                                 val decList = meowTvDecryptStreamsOffline(payloadN, payloadD).ifEmpty {
                                     val decRaw = encDecPost(
                                         "dec-meowtv",
@@ -7510,7 +6912,6 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         invokeMeowTV(tmdbId, season, episode, subtitleCallback = null, callback = callback)
     }
-    // ==================== VidRift SOTA Movie/TV Multi-Lane Extractor (embed.vidrift.net, Rank 91) ====================
 
     private const val VIDRIFT_HOST = "https://embed.vidrift.net"
     private const val VIDRIFT_PARENT_REFERER = "https://vidrift.net/"
@@ -7559,16 +6960,6 @@ object StreamPlayExtractor : StreamPlay() {
         return streams.sortedBy { StreamLinkOptimizer.isVidRiftRegionalDub(it.name) }
     }
 
-    /**
-     * Extracts an explicit vertical resolution height (`360`, `480`, `720`, `1080`, `1440`, `2160`)
-     * from a VidRift playlist URL path ONLY when:
-     * (a) The directory segment immediately preceding the playlist filename is an explicit resolution
-     *     (e.g. `/v4/eb/720/index_287.m3u8`, `/hls/720p/index.m3u8`, `/selfhost/1080/index.m3u8`,
-     *     `/tv/1396/1/1/720p/index.m3u8`) and the segment before `<res>` is NOT `movie` or `tv`
-     *     (so TMDB IDs like `/movie/720/index.m3u8` and `/tv/720/index.m3u8` never false-match), or
-     * (b) The playlist filename itself carries an explicit `<res>p` suffix (e.g. `/video_720p.m3u8`,
-     *     `/720p.m3u8`, `/1080p.mp4`), never bare stream track IDs like `index_360.m3u8`.
-     */
     internal fun extractVidRiftExplicitPathQuality(pathOnly: String): Int {
         val cleanPath = pathOnly.substringBefore('?').substringBefore('#')
         val segments = cleanPath.split('/').filter { it.isNotEmpty() }
@@ -7607,10 +6998,6 @@ object StreamPlayExtractor : StreamPlay() {
         return Qualities.Unknown.value
     }
 
-    /**
-     * Extracts and parses the inline `embedMeta = {...};</script>` JSON object from a VidRift
-     * `/embed/movie/{id}` or `/embed/tv/{id}/{season}/{episode}` HTML document.
-     */
     internal fun parseVidRiftEmbedMeta(html: String): VidRiftEmbedMeta? {
         if (html.isBlank()) return null
         val jsonStr = (
@@ -7683,16 +7070,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.getOrNull()
     }
 
-    /**
-     * Parses a VidRift `/api/source/{movie|tv}/...` JSON response (`titan`, `atlas`, `vela`, `lyra`)
-     * into verified stream descriptors.
-     *
-     * `titan` delivers direct viewer-direct 720p muxed H.264/AAC MPEG-TS HLS playlists (`maxRes: 720`,
-     * `direct: true`, `/720/index_*.m3u8`), while `atlas`, `vela`, and proxied `lyra` deliver adaptive
-     * multi-variant (`720p` + `1080p`) HLS master manifests. Unproxied URLs whose path/query token is
-     * cryptographically bound to the VidRift backend server IPv4 address (`:41.138.216.184:`) are
-     * rejected upfront so viewers never hit 403/timeout dead-ends.
-     */
     internal fun parseVidRiftSourceResponse(
         lane: String,
         rawJson: String,
@@ -7711,7 +7088,6 @@ object StreamPlayExtractor : StreamPlay() {
                 val obj = streamsArr.optJSONObject(i) ?: continue
                 val proxyUrl = resolveVidRiftUrl(obj.optString("proxyUrl"))
                 val rawUrl = resolveVidRiftUrl(obj.optString("url"))
-                // Reject unproxied server-IP-locked URLs (e.g. Lyra's `:41.138.216.184:` token in path/query)
                 val pathAndQuery = rawUrl?.substringAfter("://")?.substringAfter("/", "").orEmpty()
                 if (proxyUrl == null && pathAndQuery.isNotEmpty() && VIDRIFT_IP_LOCKED_PATH_REGEX.containsMatchIn(pathAndQuery)) {
                     continue
@@ -7737,10 +7113,6 @@ object StreamPlayExtractor : StreamPlay() {
                     extractVidRiftExplicitPathQuality(pathOnly)
                 }
                 val hasExplicitPathQuality = !isMasterPath && pathQuality > 0 && pathQuality != Qualities.Unknown.value
-                // Resolution Honesty Contract (§5): only treat as a verified single-quality leaf when
-                // `direct: true` is paired with an explicit numeric height in the playlist path
-                // (e.g. Titan's `/720/index_287.m3u8`) and not a master manifest. Never synthesize
-                // a resolution from response-level `maxRes` or bare track IDs (`index_360.m3u8`).
                 val isSingleQualityLeaf = if (isMasterPath) false else (isDirect && hasExplicitPathQuality)
                 val resolvedQuality = if (isMasterPath) {
                     Qualities.Unknown.value
@@ -7769,9 +7141,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.getOrDefault(emptyList())
     }
 
-    /**
-     * Parses a VidRift `/api/orion/.../subtitles.json` payload into `(LanguageLabel, AbsoluteVttUrl)` pairs.
-     */
     internal fun parseVidRiftOrionSubtitles(rawJson: String): List<Pair<String, String>> {
         if (rawJson.isBlank() || !rawJson.trimStart().startsWith("{")) return emptyList()
         return runCatching {
@@ -7792,15 +7161,6 @@ object StreamPlayExtractor : StreamPlay() {
         }.getOrDefault(emptyList())
     }
 
-    /**
-     * Emits a resolved VidRift API stream descriptor.
-     *
-     * When `stream.isDirectSingleQuality` is `true` (e.g. `Titan` viewer-direct `720p` muxed H.264
-     * MPEG-TS streams), the leaf media playlist is fetched and its real byte size is measured via
-     * [measureHlsMediaPlaylistSizeMb] (`#EXT-X-BYTERANGE` sum or 3-segment `Range: bytes=0-0` /
-     * `Content-Range` sampling). Only verified 720p streams with a real measured size at or below
-     * `VIDRIFT_MAX_720P_SIZE_BYTES` (650 MB) pass [isEligibleVidRift720BackupLink].
-     */
     private suspend fun emitVidRiftResolvedStream(
         stream: VidRiftResolvedStream,
         embedUrl: String,
@@ -7925,33 +7285,6 @@ object StreamPlayExtractor : StreamPlay() {
         return sizeBytes in 1L..VIDRIFT_MAX_720P_SIZE_BYTES
     }
 
-    /**
-     * SOTA Movie & TV Series 720p-Only Backup Extractor for VidRift (`embed.vidrift.net`, Rank 91).
-     *
-     * Architecture & Oversized-File Guard:
-     * 1. **Strict 720p-Only Backup Policy**:
-     *    VidRift is isolated as a Rank 91 720p-only backup behind VidLink (100), MeowTV (98),
-     *    Cineby (95), and CineSrc (94). Only verified `720p` variants with a known size at or below
-     *    `650 MB` (`isEligibleVidRift720BackupLink`) are emitted; all `1080p`, `480p`, `360p`, `4K`,
-     *    `[Auto]`, unsized, and oversized (>650 MB) `720p` streams are suppressed.
-     * 2. **Wave 1A — Instant Inline Owned CDN H.264 Lanes (`Direct`, `Vexon`, `Evion`)**:
-     *    Resolves `selfhostUrl`, `vexonUrl` (Movie Cloudflare R2 CDN), and `evionUrl` (TV Cloudflare R2 CDN)
-     *    directly from `embedMeta` with `#EXTM3U` verification, emitting in ~0.39s–1.5s.
-     * 3. **Wave 1B — Co-Staged Primary API H.264 Lanes (`Titan` & `Atlas`)**:
-     *    Launched as independent concurrent jobs at `t = 0ms`. Uses a bounded 600ms co-staging window
-     *    across `Direct`/`Vexon`/`Evion`, `Titan`, and `Atlas` so fast primary lanes finish together
-     *    and emit `720p` in `STREAM_PRIORITY_COMPARATOR` order (lowest file size first!), while a fast
-     *    lane is never blocked behind a slow sibling.
-     * 4. **Wave 2 — Secondary Adaptive H.264 Lanes (`Vela` & Proxied `Lyra`)**:
-     *    Launched in parallel at `t = 0ms` so their network I/O overlaps with Wave 1, emitting
-     *    non-blockingly as each completes.
-     * 5. **Wave 3 — Isolated 720p Fallback (`Orion` & `BigBang`)**:
-     *    Strictly isolated as a last-resort 720p-only fallback when Wave 1 and Wave 2 produce zero
-     *    non-dub verified H.264 720p streams.
-     * 6. **Multi-Language WebVTT Subtitles**:
-     *    Always harvested immediately from inline `bigbangSubtitles` and all `/api/orion/.../subtitles.json`
-     *    endpoints regardless of whether `Orion`/`BigBang` video lanes are suppressed.
-     */
     suspend fun invokeVidRift(
         tmdbId: Int? = null,
         season: Int? = null,
@@ -7991,11 +7324,10 @@ object StreamPlayExtractor : StreamPlay() {
                     "X-StreamPlay-Source" to "vidrift"
                 )
                 val emittedSubs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-                fun emitSub(lang: String, url: String) {
+                suspend fun emitSub(lang: String, url: String) {
                     if (subtitleCallback == null || !emittedSubs.add(url)) return
-                    @Suppress("DEPRECATION")
-                    val sub = SubtitleFile(lang = cleanSubtitleLabel(lang), url = url).apply {
-                        headers = mapOf(
+                    val sub = newSubtitleFile(lang = cleanSubtitleLabel(lang), url = url) {
+                        this.headers = mapOf(
                             "User-Agent" to USER_AGENT,
                             "Referer" to embedUrl,
                             "Origin" to VIDRIFT_HOST,
@@ -8005,7 +7337,6 @@ object StreamPlayExtractor : StreamPlay() {
                     subtitleCallback.invoke(sub)
                 }
 
-                // Emit immediate inline BigBang subtitles
                 meta.bigbangSubtitles.forEach { (lang, subUrl) ->
                     emitSub(lang, subUrl)
                 }
@@ -8043,7 +7374,6 @@ object StreamPlayExtractor : StreamPlay() {
                     if (encodedToken == null) return emptyList()
                     val collected = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
                     try {
-                        // Outer budget (9_000ms) >= API fetch (4_000ms) + manifest verification (4_500ms)
                         withTimeoutOrNull(9_000L) {
                             currentCoroutineContext().ensureActive()
                             val apiUrl = "$VIDRIFT_HOST$sourceBasePath?token=$encodedToken&provider=$lane&parent=vidrift.net&nofallback=1"
@@ -8056,8 +7386,6 @@ object StreamPlayExtractor : StreamPlay() {
                                 )
                             } ?: return@withTimeoutOrNull
                             val allStreams = parseVidRiftSourceResponse(lane, rawJson, embedUrl)
-                            // Order primary English/Original/Multi-audio streams ahead of regional dubs
-                            // while keeping regional dubs available in Health Tier 1 for Titan.
                             val orderedStreams = if (lane == "titan") {
                                 allStreams.sortedBy { StreamLinkOptimizer.isVidRiftRegionalDub(it.name) }
                             } else {
@@ -8087,7 +7415,6 @@ object StreamPlayExtractor : StreamPlay() {
                 }
 
                 coroutineScope {
-                    // 1. Orion subtitle track list harvest (iterates all distinct subtitleListUrls, non-dub first)
                     val orionSubsJob = async {
                         if (subtitleCallback == null) return@async
                         val subListUrls = orderVidRiftOrionStreams(meta.orionStreams)
@@ -8111,7 +7438,6 @@ object StreamPlayExtractor : StreamPlay() {
                         }
                     }
 
-                    // 2. Launch ALL healthy H.264 lanes concurrently at t = 0ms
                     val firstPrimaryWithLinks = CompletableDeferred<Unit>()
 
                     val wave1ADeferred = async {
@@ -8236,10 +7562,6 @@ object StreamPlayExtractor : StreamPlay() {
                         firstPrimaryWithLinks.complete(Unit)
                     }
 
-                    // 3. Co-staging & non-blocking completion order:
-                    //    Wait until the first healthy lane produces links (or all primary lanes finish),
-                    //    then allow a bounded 600ms co-staging window so fast primary lanes (Direct/Vexon/Evion,
-                    //    Titan, Atlas) finish together and their 720p links are sorted by lowest file size first.
                     firstPrimaryWithLinks.await()
                     withTimeoutOrNull(600L) {
                         wave1ADeferred.join()
@@ -8274,11 +7596,6 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                     primaryWatcher.await()
 
-                    // 4. Wave 3: Last-resort 720p-only fallback to Orion / BigBang when Wave 1 and Wave 2
-                    //    yielded zero non-dub verified H.264 720p streams. Duration-accurate size tags are
-                    //    preserved (`includeSizeTag = true`) so every fallback candidate is checked against
-                    //    the <= 650 MB backup cap while `getVidRiftHealthTier` (-30/-35) keeps them strictly
-                    //    below all healthy H.264 lanes.
                     if (nonDubHealthyLinksEmitted.get() == 0) {
                         val orderedOrions = if (healthyLinksEmitted.get() > 0) {
                             orderVidRiftOrionStreams(meta.orionStreams).filterNot {
