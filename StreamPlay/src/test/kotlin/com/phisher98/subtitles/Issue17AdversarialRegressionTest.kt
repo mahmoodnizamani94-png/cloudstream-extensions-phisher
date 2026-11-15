@@ -5,9 +5,10 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.phisher98.SubtitleSourceLedger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -2073,7 +2074,7 @@ class Issue17AdversarialRegressionTest {
         for (isPost in listOf(false, true)) {
             ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { server ->
                 val requestAccepted = CompletableDeferred<Unit>()
-                val remoteClosedMs = CompletableDeferred<Long>()
+                val remoteClosedAtNs = CompletableDeferred<Long>()
                 val serverThread = Thread {
                     try {
                         server.soTimeout = 5_000
@@ -2081,10 +2082,13 @@ class Issue17AdversarialRegressionTest {
                             client.soTimeout = 5_000
                             val inp = client.getInputStream()
                             val firstByte = inp.read()
-                            if (firstByte >= 0) {
-                                requestAccepted.complete(Unit)
+                            if (firstByte < 0) {
+                                val eofEx = IllegalStateException("Client closed socket before sending HTTP request (isPost=$isPost)")
+                                requestAccepted.completeExceptionally(eofEx)
+                                remoteClosedAtNs.completeExceptionally(eofEx)
+                                return@use
                             }
-                            val closeStart = System.nanoTime()
+                            requestAccepted.complete(Unit)
                             val drainBuf = ByteArray(512)
                             while (true) {
                                 val r = try {
@@ -2094,11 +2098,11 @@ class Issue17AdversarialRegressionTest {
                                 }
                                 if (r < 0) break
                             }
-                            remoteClosedMs.complete((System.nanoTime() - closeStart) / 1_000_000L)
+                            remoteClosedAtNs.complete(System.nanoTime())
                         }
                     } catch (t: Throwable) {
                         requestAccepted.completeExceptionally(t)
-                        remoteClosedMs.completeExceptionally(t)
+                        remoteClosedAtNs.completeExceptionally(t)
                     }
                 }.apply {
                     isDaemon = true
@@ -2106,19 +2110,25 @@ class Issue17AdversarialRegressionTest {
                 }
 
                 val url = "http://127.0.0.1:${server.localPort}/hang"
-                val startNs = System.nanoTime()
-                val timedOutResult = withTimeoutOrNull(140L) {
+                val callJob = async {
                     if (isPost) {
                         transport.executeFallbackPostJson(url, """{"q":"hello"}""", mapOf("Content-Type" to "application/json"))
                     } else {
                         transport.executeFallbackGet(url, mapOf("q" to "hello"), emptyMap())
                     }
                 }
-                val callerElapsedMs = (System.nanoTime() - startNs) / 1_000_000L
-                assertNull("Expected timeout cancellation to return null (isPost=$isPost)", timedOutResult)
-                assertTrue("Caller waited too long on cancelled socket (isPost=$isPost): ${callerElapsedMs}ms", callerElapsedMs < 1_500L)
-                requestAccepted.await()
-                val socketDisconnectMs = remoteClosedMs.await()
+                withTimeout(3_000L) {
+                    requestAccepted.await()
+                }
+                val cancelStartNs = System.nanoTime()
+                callJob.cancelAndJoin()
+                val callerElapsedMs = (System.nanoTime() - cancelStartNs) / 1_000_000L
+                assertTrue("Expected cancelled fallback call to report isCancelled (isPost=$isPost)", callJob.isCancelled)
+                assertTrue("Caller waited too long after cancellation (isPost=$isPost): ${callerElapsedMs}ms", callerElapsedMs < 1_500L)
+                val closedAtNs = withTimeout(3_000L) {
+                    remoteClosedAtNs.await()
+                }
+                val socketDisconnectMs = ((closedAtNs - cancelStartNs).coerceAtLeast(0L)) / 1_000_000L
                 assertTrue("Underlying fallback socket stayed open after cancellation (isPost=$isPost): ${socketDisconnectMs}ms", socketDisconnectMs < 1_500L)
                 serverThread.join(2_000L)
             }

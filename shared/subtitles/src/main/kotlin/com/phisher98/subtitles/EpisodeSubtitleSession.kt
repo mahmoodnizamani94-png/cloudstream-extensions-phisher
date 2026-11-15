@@ -661,7 +661,10 @@ class EpisodeSubtitleSession(
                 val (fbEntryId, fbDurMs, fbLocalized) = fallback
                 val fbDonor = findBufferedEnglishDonorLocked(fbEntryId)
                 val latestExactDur = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
-                if (fbDonor != null && latestExactDur == fbDurMs) {
+                if (fbDonor != null &&
+                    latestExactDur == fbDurMs &&
+                    DonorIdentityKey(fbDonor.donor, fbDonor.document.contentSha256) !in failedDonors
+                ) {
                     val refreshed = if (fbDonor.alignment != fbLocalized.alignment) {
                         fbLocalized.copy(alignment = fbDonor.alignment)
                     } else {
