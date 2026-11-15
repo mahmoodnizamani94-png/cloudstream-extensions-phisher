@@ -2,7 +2,7 @@
 
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 44
+version = 45
 
 android {
     sourceSets.named("main") {
