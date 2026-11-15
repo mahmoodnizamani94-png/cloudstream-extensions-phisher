@@ -3,17 +3,31 @@ package com.phisher98
 import android.content.Context
 import android.content.SharedPreferences
 import com.lagradost.cloudstream3.utils.Qualities
+import com.phisher98.subtitles.BolChalConfig
+import com.phisher98.subtitles.CatalogueSourceKey
+import com.phisher98.subtitles.ProvenanceCodec
+import com.phisher98.subtitles.SessionSubtitleMode
+import com.phisher98.subtitles.StreamProviderKey
+import com.phisher98.subtitles.SubtitleModeBridge
 import java.util.Locale
 
-const val SUBTITLE_MODE_PREFS_NAME = "cloudstream_subtitle_mode_prefs"
+const val SUBTITLE_BOLCHAL_PREFS_NAME = SubtitleModeBridge.PREFS_URDU_BOLCHAL
+const val SUBTITLE_MODE_PREFS_NAME = SubtitleModeBridge.PREFS_LEGACY_MODE
 const val HOST_SUBTITLE_AUTO_SELECT_KEY = "subtitles_auto_select"
-const val SUBTITLE_MODE_SYS_PROP = "cloudstream.subtitle.mode"
+const val SUBTITLE_MODE_SYS_PROP = SubtitleModeBridge.PROP_SUBTITLE_MODE
 const val SUBTITLE_MODE_KEY = "subtitle_mode"
 const val MODE_DEFAULT = "default"
 const val MODE_URDU = "urdu"
 
 @Volatile
 internal var superStreamAppContextRef: Context? = null
+
+private val SUPERSTREAM_SHARED_PREF_NAMES = listOf(
+    SUBTITLE_BOLCHAL_PREFS_NAME,
+    SUBTITLE_MODE_PREFS_NAME,
+    "SuperStream",
+    "StreamPlay",
+)
 
 private fun normalizeSubtitleModeValue(raw: String?): String? {
     return when (raw?.trim()?.lowercase(Locale.ROOT)) {
@@ -24,74 +38,59 @@ private fun normalizeSubtitleModeValue(raw: String?): String? {
 }
 
 private fun cacheSubtitleModeProperty(mode: String) {
-    try {
-        System.setProperty(SUBTITLE_MODE_SYS_PROP, mode)
-    } catch (_: Throwable) {
+    runCatching { System.setProperty(SUBTITLE_MODE_SYS_PROP, mode) }
+}
+
+internal fun readSuperStreamNamedPrefString(
+    prefsName: String,
+    key: String,
+    sharedPref: SharedPreferences? = null,
+    context: Context? = null,
+): String? {
+    val ctx = context?.applicationContext ?: context ?: superStreamAppContextRef
+    if (ctx != null) {
+        val namedVal = runCatching {
+            ctx.getSharedPreferences(prefsName, Context.MODE_PRIVATE)?.getString(key, null)
+        }.getOrNull()
+        if (!namedVal.isNullOrBlank()) return namedVal.trim()
     }
+    val directVal = runCatching { sharedPref?.getString(key, null) }.getOrNull()
+    return directVal?.takeIf { it.isNotBlank() }?.trim()
 }
 
 fun isUrduSubtitleMode(
     sharedPref: SharedPreferences? = null,
-    context: Context? = null
+    context: Context? = null,
 ): Boolean {
     if (context != null) {
         superStreamAppContextRef = context.applicationContext ?: context
     }
-    val sysProp = try {
-        System.getProperty(SUBTITLE_MODE_SYS_PROP)
-    } catch (_: Throwable) {
-        null
-    }
+    val sysProp = runCatching { System.getProperty(SUBTITLE_MODE_SYS_PROP) }.getOrNull()
     normalizeSubtitleModeValue(sysProp)?.let { return it == MODE_URDU }
 
     val ctx = context?.applicationContext ?: context ?: superStreamAppContextRef
     if (ctx != null) {
-        val sharedVal = try {
-            ctx.getSharedPreferences(SUBTITLE_MODE_PREFS_NAME, Context.MODE_PRIVATE)
-                ?.getString(SUBTITLE_MODE_KEY, null)
-        } catch (_: Throwable) {
-            null
-        }
-        normalizeSubtitleModeValue(sharedVal)?.let {
-            cacheSubtitleModeProperty(it)
-            return it == MODE_URDU
+        for (prefName in SUPERSTREAM_SHARED_PREF_NAMES) {
+            val sharedVal = runCatching {
+                ctx.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                    ?.getString(SUBTITLE_MODE_KEY, null)
+            }.getOrNull()
+            normalizeSubtitleModeValue(sharedVal)?.let {
+                cacheSubtitleModeProperty(it)
+                return it == MODE_URDU
+            }
         }
     }
 
-    val prefVal = try {
-        sharedPref?.getString(SUBTITLE_MODE_KEY, null)
-    } catch (_: Throwable) {
-        null
-    }
+    val prefVal = runCatching { sharedPref?.getString(SUBTITLE_MODE_KEY, null) }.getOrNull()
     normalizeSubtitleModeValue(prefVal)?.let {
         cacheSubtitleModeProperty(it)
         return it == MODE_URDU
     }
 
-    if (ctx != null) {
-        val superStreamVal = try {
-            ctx.getSharedPreferences("SuperStream", Context.MODE_PRIVATE)
-                ?.getString(SUBTITLE_MODE_KEY, null)
-        } catch (_: Throwable) {
-            null
-        }
-        normalizeSubtitleModeValue(superStreamVal)?.let {
-            cacheSubtitleModeProperty(it)
-            return it == MODE_URDU
-        }
-
-        val streamPlayVal = try {
-            ctx.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE)
-                ?.getString(SUBTITLE_MODE_KEY, null)
-        } catch (_: Throwable) {
-            null
-        }
-        normalizeSubtitleModeValue(streamPlayVal)?.let {
-            cacheSubtitleModeProperty(it)
-            return it == MODE_URDU
-        }
+    if (context != null || sharedPref != null) {
+        cacheSubtitleModeProperty(MODE_DEFAULT)
     }
-
     return false
 }
 
@@ -101,126 +100,164 @@ fun initializeSubtitleMode(context: Context?, sharedPref: SharedPreferences?) {
     }
     val urdu = isUrduSubtitleMode(sharedPref, context)
     val resolvedMode = if (urdu) MODE_URDU else MODE_DEFAULT
-    val currentSysProp = try {
-        System.getProperty(SUBTITLE_MODE_SYS_PROP)
-    } catch (_: Throwable) {
-        null
-    }
+    val currentSysProp = runCatching { System.getProperty(SUBTITLE_MODE_SYS_PROP) }.getOrNull()
     if (normalizeSubtitleModeValue(currentSysProp) == null) {
-        try {
-            System.setProperty(SUBTITLE_MODE_SYS_PROP, resolvedMode)
-        } catch (_: Throwable) {
-        }
+        cacheSubtitleModeProperty(resolvedMode)
     }
 }
 
-@Suppress("DEPRECATION")
 fun setSubtitleMode(mode: String, context: Context?, sharedPref: SharedPreferences?) {
     if (context != null) {
         superStreamAppContextRef = context.applicationContext ?: context
     }
     val normalizedMode = normalizeSubtitleModeValue(mode) ?: MODE_DEFAULT
-    try {
-        System.setProperty(SUBTITLE_MODE_SYS_PROP, normalizedMode)
-    } catch (_: Throwable) {
-    }
+    cacheSubtitleModeProperty(normalizedMode)
 
-    try {
+    runCatching {
         sharedPref?.edit()?.putString(SUBTITLE_MODE_KEY, normalizedMode)?.apply()
-    } catch (_: Throwable) {
     }
 
     val ctx = context?.applicationContext ?: context ?: superStreamAppContextRef
     if (ctx != null) {
-        try {
-            ctx.getSharedPreferences(SUBTITLE_MODE_PREFS_NAME, Context.MODE_PRIVATE)
-                ?.edit()
-                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
-                ?.apply()
-        } catch (_: Throwable) {
-        }
-        try {
-            ctx.getSharedPreferences("SuperStream", Context.MODE_PRIVATE)
-                ?.edit()
-                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
-                ?.apply()
-        } catch (_: Throwable) {
-        }
-        try {
-            ctx.getSharedPreferences("StreamPlay", Context.MODE_PRIVATE)
-                ?.edit()
-                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
-                ?.apply()
-        } catch (_: Throwable) {
+        for (prefName in SUPERSTREAM_SHARED_PREF_NAMES) {
+            runCatching {
+                ctx.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                    ?.edit()
+                    ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
+                    ?.apply()
+            }
         }
         val targetAutoSelect = if (normalizedMode == MODE_URDU) "ur" else "en"
-        try {
-            android.preference.PreferenceManager.getDefaultSharedPreferences(ctx)
-                ?.edit()
-                ?.putString(HOST_SUBTITLE_AUTO_SELECT_KEY, targetAutoSelect)
-                ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
-                ?.apply()
-        } catch (_: Throwable) {
-        }
-        try {
+        runCatching {
             ctx.getSharedPreferences("${ctx.packageName}_preferences", Context.MODE_PRIVATE)
                 ?.edit()
                 ?.putString(HOST_SUBTITLE_AUTO_SELECT_KEY, targetAutoSelect)
                 ?.putString(SUBTITLE_MODE_KEY, normalizedMode)
                 ?.apply()
-        } catch (_: Throwable) {
         }
     }
 }
 
-const val SUPERSTREAM_SOURCE_HEADER = "X-StreamPlay-Source"
+fun resolveSuperStreamSessionMode(
+    subtitleCallback: Any?,
+    sharedPref: SharedPreferences? = null,
+    context: Context? = null,
+): SessionSubtitleMode {
+    if (subtitleCallback != null &&
+        (SubtitleModeBridge.isBilingualDownloadCallback(subtitleCallback) ||
+            subtitleCallback.javaClass.name.contains("BilingualDownload", ignoreCase = true))
+    ) {
+        return SessionSubtitleMode.BILINGUAL_DOWNLOAD
+    }
+    return SubtitleModeBridge.resolveSessionMode(
+        subtitleCallback = subtitleCallback,
+        pluginFallbackUrduEnabled = isUrduSubtitleMode(sharedPref, context),
+        prefsLookup = { prefsName, key ->
+            readSuperStreamNamedPrefString(prefsName, key, sharedPref, context)
+        },
+    )
+}
 
-private val URDU_SOURCE_BADGE_REGEX = Regex("""\[\s*([^\[\]]+?)\s*\]""")
+fun resolveSuperStreamBolChalConfig(
+    sharedPref: SharedPreferences? = null,
+    context: Context? = null,
+): BolChalConfig {
+    val byok = SubtitleModeBridge.resolveByokLlmConfig { prefsName, key ->
+        readSuperStreamNamedPrefString(prefsName, key, sharedPref, context)
+    }
+    return if (byok != null) {
+        BolChalConfig(
+            llmEndpointUrl = byok.endpointUrl,
+            llmModelId = byok.modelId,
+            llmApiKey = byok.apiKey,
+        )
+    } else {
+        BolChalConfig()
+    }
+}
+
+const val SUPERSTREAM_SOURCE_HEADER = ProvenanceCodec.HEADER_SOURCE
+
+private val DECOMMISSIONED_OR_ENGLISH_ONLY_KEYS = setOf(
+    "addic7ed",
+    "vidsrc",
+    "superstream",
+)
+
+private val SUPERSTREAM_URDU_CANONICAL_DISPLAY_NAMES: Map<String, String> = buildMap {
+    for (src in CatalogueSourceKey.entries) {
+        put(src.wireId, src.displayBadge)
+    }
+    put("subtitles", "OpenSubtitles")
+    for (prov in StreamProviderKey.entries) {
+        put(prov.wireId, prov.displayBadge)
+    }
+    put("urdu-neural-fallback", "UrduAI")
+}
 
 fun canonicalSuperStreamUrduSourceKey(raw: String?): String? {
-    val norm = raw?.trim()?.lowercase(Locale.ROOT) ?: return null
-    return when {
-        norm.contains("subdl") -> "subdl"
-        norm.contains("subsource") -> "subsource"
-        norm.contains("wyzie") -> "wyziesub"
-        norm.contains("subsense") -> "subsense"
-        norm.contains("yts") || norm.contains("yify") -> "yify"
-        norm.contains("subf2m") -> "subf2m"
-        norm.contains("subtitlecat") -> "subtitlecat"
-        norm.contains("opensubtitles") -> "opensubtitles"
-        norm == "subtitles" || norm.contains("strem.io") || norm.contains("subtitleapi") -> "subtitles"
-        norm.contains("urdu-neural") || norm.contains("neural-ai") || norm.contains("neural ai") ||
-            norm.contains("spoken-ai") || norm.contains("spoken ai") || norm == "neural" -> "urdu-neural-fallback"
-        else -> null
+    val cleaned = raw?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return null
+    if (cleaned in DECOMMISSIONED_OR_ENGLISH_ONLY_KEYS) return null
+    if (cleaned == "urdu-neural-fallback" || cleaned == "urduai" || cleaned == "bolchal" ||
+        cleaned == "neural" || cleaned.contains("urdu-neural") || cleaned.contains("neural-ai") ||
+        cleaned.contains("neural ai") || cleaned.contains("spoken-ai") || cleaned.contains("spoken ai") ||
+        cleaned.startsWith("urduai ")
+    ) {
+        return "urdu-neural-fallback"
     }
+    if (cleaned == "stremio-os-urdu" || cleaned == "subtitles") {
+        return "subtitles"
+    }
+    CatalogueSourceKey.fromTextOrHost(cleaned)?.let { src ->
+        return if (src.wireId in DECOMMISSIONED_OR_ENGLISH_ONLY_KEYS) null else src.wireId
+    }
+    StreamProviderKey.fromTextOrHost(cleaned)?.let { return it.wireId }
+    return null
 }
 
 fun superStreamUrduSourceDisplayName(sourceKeyOrBadge: String?): String? {
     val canonical = canonicalSuperStreamUrduSourceKey(sourceKeyOrBadge) ?: return null
-    return when (canonical) {
-        "subdl" -> "SubDL"
-        "subsource" -> "SubSource"
-        "wyziesub" -> "Wyzie"
-        "subsense" -> "SubSense"
-        "yify" -> "YTS-Subs"
-        "subf2m" -> "Subf2m"
-        "subtitlecat" -> "SubtitleCat"
-        "opensubtitles", "subtitles" -> "OpenSubtitles"
-        "urdu-neural-fallback" -> "Neural AI"
-        else -> null
-    }
+    return SUPERSTREAM_URDU_CANONICAL_DISPLAY_NAMES[canonical]
 }
 
 fun extractSuperStreamUrduSourceBadge(label: String?): String? {
     if (label.isNullOrBlank()) return null
-    val match = URDU_SOURCE_BADGE_REGEX.find(label) ?: return null
-    val rawInside = match.groupValues.getOrNull(1)?.trim().orEmpty()
-    return superStreamUrduSourceDisplayName(rawInside)
+    val trimmed = label.trim()
+    val aiBracket = Regex("""\[\s*UrduAI(?:\s+([^\]]+))?\s*]""", RegexOption.IGNORE_CASE).find(trimmed)
+    if (aiBracket != null) {
+        val donorSuffix = aiBracket.groupValues[1].trim()
+        return if (donorSuffix.isNotEmpty()) "UrduAI $donorSuffix" else "UrduAI"
+    }
+    val knownBadges = (SUPERSTREAM_URDU_CANONICAL_DISPLAY_NAMES.values + listOf("Neural AI", "Spoken AI")).distinct()
+    for (badge in knownBadges) {
+        if (trimmed.equals(badge, ignoreCase = true) ||
+            trimmed.contains("[$badge]", ignoreCase = true) ||
+            trimmed.contains("($badge)", ignoreCase = true) ||
+            trimmed.endsWith("- $badge", ignoreCase = true) ||
+            trimmed.endsWith("• $badge", ignoreCase = true)
+        ) {
+            return if (badge.equals("Spoken AI", ignoreCase = true) || badge.equals("Neural AI", ignoreCase = true)) {
+                "UrduAI"
+            } else {
+                badge
+            }
+        }
+    }
+    return null
 }
 
-fun formatSuperStreamUrduSourceLabel(sourceKeyOrBadge: String?): String {
-    val display = superStreamUrduSourceDisplayName(sourceKeyOrBadge)
-    return if (display != null) "Urdu [$display]" else "Urdu"
+fun formatSuperStreamUrduSourceLabel(sourceKeyOrBadge: String?, modifier: String? = null): String {
+    val badge = superStreamUrduSourceDisplayName(sourceKeyOrBadge) ?: extractSuperStreamUrduSourceBadge(sourceKeyOrBadge)
+    val cleanMod = modifier?.trim()?.removePrefix("[")?.removeSuffix("]")?.trim()?.takeIf { it.isNotEmpty() }
+    return buildString {
+        append("Urdu")
+        if (badge != null) {
+            append(" [").append(badge).append("]")
+        }
+        if (cleanMod != null && !cleanMod.equals(badge, ignoreCase = true)) {
+            append(" [").append(cleanMod).append("]")
+        }
+    }
 }
 
 fun isUrduSubtitleCode(lang: String?): Boolean {
@@ -375,36 +412,6 @@ fun String?.createSlug(): String? {
         ?.trim()
         ?.replace(SLUG_WHITESPACE_REGEX, "-")
         ?.lowercase()
-}
-
-
-//Catflix
-
-fun CathexToBinary(hex: String): String {
-    val binary = StringBuilder()
-    for (i in hex.indices step 2) {
-        val hexPair = hex.substring(i, i + 2)
-        val charValue = hexPair.toInt(16).toChar()
-        binary.append(charValue)
-    }
-    return binary.toString()
-}
-
-fun CatxorDecrypt(binary: String, key: String): String {
-    val decrypted = StringBuilder()
-    val keyLength = key.length
-
-    for (i in binary.indices) {
-        val decryptedChar = binary[i].code xor key[i % keyLength].code
-        decrypted.append(decryptedChar.toChar())
-    }
-
-    return decrypted.toString()
-}
-
-fun CatdecryptHexWithKey(hex: String, key: String): String {
-    val binary = CathexToBinary(hex)
-    return CatxorDecrypt(binary, key)
 }
 
 fun cleanTitle(title: String): String {
