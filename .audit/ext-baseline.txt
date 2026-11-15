@@ -1,0 +1,6 @@
+EXT_ADAPTED_SAMPLE=آخر یہ کیا, hold on, you're kidding me!
+EXT_NASTALIQ_CODEPOINTS_IN_ENGLISH=8
+EXT_MT_DUMP_IS_BROKEN_SMT=false
+EXT_MT_DUMP_NATURALNESS_SCORE=0
+EXT_SVO_SOV_CUE1=مجھے اپنے باپ کو قتل
+EXT_SVO_SOV_CUE2=کرنے پر مجبور کیا گیا تھا
