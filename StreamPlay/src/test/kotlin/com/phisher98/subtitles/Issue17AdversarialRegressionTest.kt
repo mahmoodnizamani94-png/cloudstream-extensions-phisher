@@ -1362,4 +1362,232 @@ class Issue17AdversarialRegressionTest {
         )
         assertTrue(stored2.file.readText(Charsets.UTF_8).contains("Clear English dialogue line number 1"))
     }
+
+    @Test
+    fun subtitleBeforeHlsRaceFlushesProviderAnchorsAndCertifiesSinglePackNativeUrduFirst() = runBlocking {
+        val prevVaultV2 = System.getProperty(SubtitleModeBridge.PROP_VAULT_V2)
+        System.setProperty(SubtitleModeBridge.PROP_VAULT_V2, "true")
+        try {
+            val urduLines = listOf(
+                "یار بات سنو، ابھی ہمارے پاس وقت بہت کم ہے۔",
+                "تم نے دروازہ ٹھیک سے بند کیا تھا نا؟",
+                "میری بات غور سے سنو، اس فائل کا کسی کو پتا نہیں۔",
+                "گاڑی کے پاس رکو اور کوئی آئے تو فوراً فون کرنا۔",
+                "کل رات تم نے وعدہ کیا تھا کہ اب یہ سب ختم ہے۔",
+            )
+            fun buildTimedSrt(shiftMs: Long, isUrdu: Boolean, tag: String): ByteArray {
+                val sb = StringBuilder()
+                for (i in 0 until 20) {
+                    val startMs = 10_000L + i * 4_500L + shiftMs
+                    val endMs = startMs + 2_200L
+                    val sh = startMs / 3_600_000L
+                    val sm = (startMs % 3_600_000L) / 60_000L
+                    val ss = (startMs % 60_000L) / 1_000L
+                    val sms = startMs % 1_000L
+                    val eh = endMs / 3_600_000L
+                    val em = (endMs % 3_600_000L) / 60_000L
+                    val es = (endMs % 60_000L) / 1_000L
+                    val ems = endMs % 1_000L
+                    sb.append("${i + 1}\n")
+                    sb.append(String.format(Locale.ROOT, "%02d:%02d:%02d,%03d --> %02d:%02d:%02d,%03d\n", sh, sm, ss, sms, eh, em, es, ems))
+                    val text = if (isUrdu) urduLines[i % urduLines.size] else "$tag dialogue line ${i + 1}"
+                    sb.append(text).append("\n\n")
+                }
+                return sb.toString().toByteArray(Charsets.UTF_8)
+            }
+
+            val offlineTransport = BolChalTranslationTransport { window, _ ->
+                val out = window.targetCues.associate { cue ->
+                    cue.id to BolChalCueOut(cue.id, "ارے یار، ابھی ہمارے پاس وقت بہت کم ہے۔")
+                }
+                Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            }
+
+            // Part A: Dead provider ingests sidecar before failing HLS; VidLink registers video first;
+            // Cineby ingests sidecar BEFORE its HLS manifest probe registers CINEBY.
+            val casDirRace = Files.createTempDirectory("regression-anchor-race").toFile()
+            val raceEmitted = CopyOnWriteArrayList<SubtitleFile>()
+            val raceSession = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(
+                    imdbId = "tt1375666",
+                    tmdbId = 27205,
+                    titles = listOf("Inception"),
+                    releaseYear = 2010,
+                ),
+                mode = SessionSubtitleMode.URDU,
+                casStore = UrduCasStore(casDirRace),
+                bolChalTransport = offlineTransport,
+                multiProviderVideoSession = true,
+                subtitleCallback = { raceEmitted.add(it) },
+            )
+
+            val deadMeowEn = com.lagradost.cloudstream3.newSubtitleFile("English [MeowTV]", "https://rezesubs.com/dead.vtt") {
+                this.headers = mapOf("X-StreamPlay-Source" to "meowtv")
+            }
+            raceSession.ingestRawSubtitle(deadMeowEn, rawSourceHint = "meowtv", rawBytesOverride = buildTimedSrt(0L, false, "Meow"))
+
+            raceSession.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+            val vidLinkEn = com.lagradost.cloudstream3.newSubtitleFile("English [VidLink]", "https://vodvidl.site/en.vtt") {
+                this.headers = mapOf("X-StreamPlay-Source" to "vidlink")
+            }
+            raceSession.ingestRawSubtitle(vidLinkEn, rawSourceHint = "vidlink", rawBytesOverride = buildTimedSrt(0L, false, "VidLink"))
+
+            val cinebyEn = com.lagradost.cloudstream3.newSubtitleFile("English [Cineby]", "https://api.wecollege.net/en.vtt") {
+                this.headers = mapOf("X-StreamPlay-Source" to "cineby")
+            }
+            // Cineby calls subtitleCallback BEFORE HLS manifest probe registers CINEBY.
+            raceSession.ingestRawSubtitle(cinebyEn, rawSourceHint = "cineby", rawBytesOverride = buildTimedSrt(6_000L, false, "Cineby"))
+            raceSession.registerActiveVideoProvider(StreamProviderKey.CINEBY)
+
+            val raceReport = raceSession.completeSession()
+            assertEquals("Expected both active VidLink and Cineby provider anchors (excluding dead MeowTV)", 2, raceReport.emittedProviderAnchors)
+            val anchorSources = raceEmitted
+                .filter { it.headers?.get(ProvenanceCodec.HEADER_SYNC_ROLE) == ProvenanceCodec.SYNC_ROLE_PROVIDER_ANCHOR }
+                .mapNotNull { it.headers?.get(ProvenanceCodec.HEADER_SOURCE) }
+                .toSet()
+            assertEquals(setOf("vidlink", "cineby"), anchorSources)
+
+            // Part B: Single-pack StreamPlay session certifies StreamSyncedNative Urdu as NATIVE_STREAM_PACK and emits it FIRST.
+            val casDirSingle = Files.createTempDirectory("regression-single-pack-native").toFile()
+            val singleEmitted = CopyOnWriteArrayList<SubtitleFile>()
+            val singleSession = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(
+                    imdbId = "tt1375666",
+                    tmdbId = 27205,
+                    titles = listOf("Inception"),
+                    releaseYear = 2010,
+                ),
+                mode = SessionSubtitleMode.URDU,
+                casStore = UrduCasStore(casDirSingle),
+                bolChalTransport = offlineTransport,
+                multiProviderVideoSession = true,
+                subtitleCallback = { singleEmitted.add(it) },
+            )
+
+            val nativeUrSub = com.lagradost.cloudstream3.newSubtitleFile("Urdu [VidLink]", "https://vodvidl.site/ur.vtt") {
+                this.headers = mapOf("X-StreamPlay-Source" to "vidlink")
+            }
+            val nativeEnSub = com.lagradost.cloudstream3.newSubtitleFile("English [VidLink]", "https://vodvidl.site/en.vtt") {
+                this.headers = mapOf("X-StreamPlay-Source" to "vidlink")
+            }
+            val wyzieUrSub = com.lagradost.cloudstream3.newSubtitleFile("Urdu", "https://sub.wyzie.ru/c/ur/inc.srt") {
+                this.headers = mapOf("X-StreamPlay-Source" to "wyzie")
+            }
+
+            // Both sidecars arrive before VidLink's video link registers.
+            singleSession.ingestRawSubtitle(nativeUrSub, rawSourceHint = "vidlink", rawBytesOverride = buildTimedSrt(0L, true, "VidLinkUr"))
+            singleSession.ingestRawSubtitle(nativeEnSub, rawSourceHint = "vidlink", rawBytesOverride = buildTimedSrt(0L, false, "VidLinkEn"))
+            singleSession.ingestRawSubtitle(wyzieUrSub, rawSourceHint = "wyzie", rawBytesOverride = buildTimedSrt(0L, true, "WyzieUr"))
+            singleSession.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+
+            singleSession.completeSession()
+
+            val urduEmitted = singleEmitted.filter { it.lang.startsWith("Urdu ") }
+            assertEquals(listOf("Urdu [VidLink]", "Urdu [Wyzie]"), urduEmitted.map { it.lang })
+            val nativeSyncProof = ProvenanceCodec.decodeSyncProofOrNull(urduEmitted[0].headers?.get(ProvenanceCodec.HEADER_SYNC))
+            assertNotNull("Single-pack StreamSyncedNative Urdu must receive certified NATIVE_STREAM_PACK proof", nativeSyncProof)
+            assertEquals(AlignmentAnchorKind.NATIVE_STREAM_PACK, nativeSyncProof!!.anchorKind)
+            assertEquals(1.0, nativeSyncProof.syncConfidence, 1e-4)
+
+            val singleAnchor = singleEmitted.firstOrNull {
+                it.headers?.get(ProvenanceCodec.HEADER_SYNC_ROLE) == ProvenanceCodec.SYNC_ROLE_PROVIDER_ANCHOR
+            }
+            assertNotNull(singleAnchor)
+            val anchorProof = ProvenanceCodec.decodeSyncProofOrNull(singleAnchor!!.headers?.get(ProvenanceCodec.HEADER_SYNC))
+            assertNotNull(anchorProof)
+            assertEquals(AlignmentAnchorKind.NATIVE_STREAM_PACK, anchorProof!!.anchorKind)
+        } finally {
+            if (prevVaultV2 == null) {
+                System.clearProperty(SubtitleModeBridge.PROP_VAULT_V2)
+            } else {
+                System.setProperty(SubtitleModeBridge.PROP_VAULT_V2, prevVaultV2)
+            }
+        }
+    }
+
+    @Test
+    fun multiSpeakerWindowsDoNotLeakFeminineSelfGenderToMaleCuesOrOverrideLlmScene() = runBlocking {
+        val dummyProof = AlignmentProof(SubtitleTimeWarp.Identity, AlignmentAnchorKind.NATIVE_STREAM_PACK, 1.0, 0, 0, 0)
+        val multiSpeakerCues = (0 until 24).map { idx ->
+            val enText = when (idx) {
+                0 -> "I'm a mother, and I am coming home."
+                2 -> "I am going home right now."
+                19 -> "I am doing this for our family."
+                20 -> "I'm a father, and I have come back."
+                else -> "Hold on, wait for the signal line $idx."
+            }
+            CueEntry(CueId(idx), CueSpan(1_000L + idx * 3_500L, 3_200L + idx * 3_500L), enText)
+        }
+        val donorDoc = CueDocument.fromCues(SubtitleLanguage.ENGLISH, multiSpeakerCues)
+
+        val nmtTransport = BolChalTranslationTransport { window, _ ->
+            val out = window.targetCues.associate { cue ->
+                val rawUr = when (cue.id.value) {
+                    0 -> "میں ایک ماں ہوں اور میں گھر آ رہا ہوں۔"
+                    2 -> "میں ابھی گھر جا رہا ہوں۔"
+                    19 -> "میں یہ اپنے خاندان کے لیے کر رہا ہوں۔"
+                    20 -> "میں ایک باپ ہوں اور میں واپس آئی ہوں۔"
+                    else -> "ذرا رکو اور اشارے کا انتظار کرو۔"
+                }
+                cue.id to BolChalCueOut(cue.id, rawUr)
+            }
+            Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+        }
+
+        val keylessRes = SceneBolChalLocalizer.localize(
+            englishDonorDoc = donorDoc,
+            donorProvenance = DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK),
+            alignmentProof = dummyProof,
+            config = BolChalConfig(),
+            transport = nmtTransport,
+        ).getOrThrow()
+
+        val cuesById = keylessRes.document.cues.associateBy { it.id.value }
+        assertTrue(
+            "Female self-identified cue 0 should be rewritten to feminine: ${cuesById[0]?.text}",
+            cuesById[0]!!.text.contains("آ رہی ہوں"),
+        )
+        assertTrue(
+            "Same-window male cue 2 must NOT inherit feminine gender: ${cuesById[2]?.text}",
+            cuesById[2]!!.text.contains("جا رہا ہوں"),
+        )
+        assertTrue(
+            "Next-window male cue 19 must NOT inherit feminine gender: ${cuesById[19]?.text}",
+            cuesById[19]!!.text.contains("کر رہا ہوں"),
+        )
+        assertTrue(
+            "Male self-identified cue 20 ('آئی ہوں' -> 'آیا ہوں') must be rewritten symmetrically: ${cuesById[20]?.text}",
+            cuesById[20]!!.text.contains("آیا ہوں"),
+        )
+
+        // Verify LLM_SCENE preserves per-cue speaker gender even when initialSpeakerCard carries FEMININE.
+        val llmDoc = CueDocument.fromCues(
+            SubtitleLanguage.ENGLISH,
+            listOf(
+                CueEntry(CueId(0), CueSpan(1_000L, 3_000L), "I am going to the station."),
+                CueEntry(CueId(1), CueSpan(3_400L, 5_400L), "I am coming with you."),
+            ),
+        )
+        val llmTransport = BolChalTranslationTransport { _, _ ->
+            Result.success(
+                mapOf(
+                    CueId(0) to BolChalCueOut(CueId(0), "میں اسٹیشن جا رہی ہوں۔"),
+                    CueId(1) to BolChalCueOut(CueId(1), "میں بھی تمہارے ساتھ آ رہا ہوں۔"),
+                ) to LocalizationTierKey.LLM_SCENE
+            )
+        }
+        val llmRes = SceneBolChalLocalizer.localize(
+            englishDonorDoc = llmDoc,
+            donorProvenance = DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK),
+            alignmentProof = dummyProof,
+            config = BolChalConfig(),
+            transport = llmTransport,
+            initialSpeakerCard = SpeakerContextCard(speakerGenderHint = GenderHint.FEMININE),
+        ).getOrThrow()
+        assertTrue(llmRes.document.cues[0].text.contains("جا رہی ہوں"))
+        assertTrue(
+            "LLM_SCENE male speaker cue must never be overwritten by regex gender hint: ${llmRes.document.cues[1].text}",
+            llmRes.document.cues[1].text.contains("آ رہا ہوں"),
+        )
+    }
 }

@@ -189,7 +189,13 @@ object BolChalPurifier {
         """(?i)\b(?:you\s+bastard|you\s+idiot|you\s+coward|you\s+traitor|shut\s+up|get\s+lost|go\s+to\s+hell|damn\s+you)\b"""
     )
     private val ENGLISH_FIRST_PERSON_SUBJECT_REGEX = Regex(
-        """(?i)(?:^|[.!?]\s+)i(?:'m|'ll|'ve|'d|\s+(?:am|was|will|can|could|want|know|think|have|need|went|came))\b"""
+        """(?i)(?:^|[,;.!?]\s+(?:(?:and|but|so)\s+)?)i(?:'m|'ll|'ve|'d|\s+(?:am|was|will|can|could|want|know|think|have|need|went|came))\b"""
+    )
+    internal val CUE_FEMININE_SELF_REGEX = Regex(
+        """(?i)\b(?:i'?m\s+a\s+(?:woman|girl|mother|sister|wife|daughter|queen)|as\s+(?:his|her|your|their)\s+(?:wife|sister|mother|daughter))\b"""
+    )
+    internal val CUE_MASCULINE_SELF_REGEX = Regex(
+        """(?i)\b(?:i'?m\s+a\s+(?:man|boy|father|brother|husband|son|king)|as\s+(?:his|her|your|their)\s+(?:husband|brother|father|son))\b"""
     )
 
     private const val POSTPOSITION_GUARD = """(?!\s+(?:کا|کی|کے|کو|نے|سے|پر|میں|تک)(?=\s|[۔؟!،]|$))"""
@@ -313,18 +319,22 @@ object BolChalPurifier {
         Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 چاہتا ہوں",
         Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 جانتا ہوں",
         Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سوچتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 سوچتا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+گئی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 گیا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+آئی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 آیا ہوں",
     )
 
     fun purify(
         rawUrdu: String,
         sourceEnglish: LatinEnglishText? = null,
         speakerCard: SpeakerContextCard? = null,
-    ): String = purifyDetailed(rawUrdu, sourceEnglish, speakerCard).text
+        allowRegexGenderRewrite: Boolean = true,
+    ): String = purifyDetailed(rawUrdu, sourceEnglish, speakerCard, allowRegexGenderRewrite).text
 
     fun purifyDetailed(
         rawUrdu: String,
         sourceEnglish: LatinEnglishText? = null,
         speakerCard: SpeakerContextCard? = null,
+        allowRegexGenderRewrite: Boolean = true,
     ): PurifiedCueResult {
         var text = UrduOrthographyGate.normalizeUrduTypography(
             rawUrdu.replace("\u200F", "").replace("\u200E", "")
@@ -388,21 +398,26 @@ object BolChalPurifier {
             if (text != beforeRegister) {
                 registerRewritten = true
             }
+        }
 
-            if (en.isNotEmpty() && ENGLISH_FIRST_PERSON_SUBJECT_REGEX.containsMatchIn(en)) {
-                when (speakerCard.speakerGenderHint) {
-                    GenderHint.FEMININE -> {
-                        for ((pat, rep) in FIRST_PERSON_MASC_TO_FEM_REWRITES) {
-                            text = pat.replace(text, rep)
-                        }
+        if (allowRegexGenderRewrite && en.isNotEmpty() && ENGLISH_FIRST_PERSON_SUBJECT_REGEX.containsMatchIn(en)) {
+            val effectiveGender = when {
+                CUE_FEMININE_SELF_REGEX.containsMatchIn(en) -> GenderHint.FEMININE
+                CUE_MASCULINE_SELF_REGEX.containsMatchIn(en) -> GenderHint.MASCULINE
+                else -> speakerCard?.speakerGenderHint ?: GenderHint.UNKNOWN
+            }
+            when (effectiveGender) {
+                GenderHint.FEMININE -> {
+                    for ((pat, rep) in FIRST_PERSON_MASC_TO_FEM_REWRITES) {
+                        text = pat.replace(text, rep)
                     }
-                    GenderHint.MASCULINE -> {
-                        for ((pat, rep) in FIRST_PERSON_FEM_TO_MASC_REWRITES) {
-                            text = pat.replace(text, rep)
-                        }
-                    }
-                    GenderHint.UNKNOWN -> Unit
                 }
+                GenderHint.MASCULINE -> {
+                    for ((pat, rep) in FIRST_PERSON_FEM_TO_MASC_REWRITES) {
+                        text = pat.replace(text, rep)
+                    }
+                }
+                GenderHint.UNKNOWN -> Unit
             }
         }
 
@@ -1165,8 +1180,6 @@ object SceneBolChalLocalizer {
     private val INTIMATE_ANGER_REGEX = Regex(
         """(?i)\b(?:you\s+bastard|you\s+idiot|you\s+coward|you\s+traitor|shut\s+up|get\s+lost|go\s+to\s+hell|how\s+dare\s+you|damn\s+you)\b"""
     )
-    private val FEMININE_SELF_REGEX = Regex("""(?i)\b(?:i'?m\s+a\s+(?:woman|girl|mother|sister|wife|queen)|as\s+his\s+(?:wife|sister|mother|daughter))\b""")
-    private val MASCULINE_SELF_REGEX = Regex("""(?i)\b(?:i'?m\s+a\s+(?:man|boy|father|brother|husband|king)|as\s+her\s+(?:husband|brother|father|son))\b""")
     private val PROPER_NAME_VOCATIVE_REGEX = Regex("""(?:^|[.!?]\s+|,\s*)([A-Z][a-z]{2,14})(?=\s*[,!?])""")
 
     fun normalizeDonorCues(englishDoc: CueDocument): List<LatinSourceCue> {
@@ -1249,15 +1262,12 @@ object SceneBolChalLocalizer {
     ): SpeakerContextCard {
         var formalHits = 0
         var angerHits = 0
-        var gender = previous.speakerGenderHint
         val updatedChars = LinkedHashMap(previous.characters)
 
         for (cue in cues) {
             val t = cue.text.text
             if (FORMAL_HONORIFIC_REGEX.containsMatchIn(t)) formalHits++
             if (INTIMATE_ANGER_REGEX.containsMatchIn(t)) angerHits++
-            if (FEMININE_SELF_REGEX.containsMatchIn(t)) gender = GenderHint.FEMININE
-            else if (MASCULINE_SELF_REGEX.containsMatchIn(t)) gender = GenderHint.MASCULINE
 
             for (m in PROPER_NAME_VOCATIVE_REGEX.findAll(t)) {
                 val name = m.groupValues[1]
@@ -1281,7 +1291,6 @@ object SceneBolChalLocalizer {
         return previous.copy(
             characters = updatedChars,
             dominantSceneRegister = dominantRegister,
-            speakerGenderHint = gender,
         )
     }
 
@@ -1336,7 +1345,12 @@ object SceneBolChalLocalizer {
             mergedAnyWindow = true
             for ((cueId, outCue) in windowMap) {
                 val srcCue = sourceById[cueId] ?: continue
-                val detailed = BolChalPurifier.purifyDetailed(outCue.urduText, srcCue.text, window.speakerCard)
+                val detailed = BolChalPurifier.purifyDetailed(
+                    rawUrdu = outCue.urduText,
+                    sourceEnglish = srcCue.text,
+                    speakerCard = window.speakerCard,
+                    allowRegexGenderRewrite = tier != LocalizationTierKey.LLM_SCENE,
+                )
                 if (isAcceptablePurifiedUrduCue(detailed.text, srcCue)) {
                     translatedById[cueId] = detailed.text
                     if (tier != LocalizationTierKey.LLM_SCENE && detailed.registerRewrittenByRegex) {
