@@ -3,6 +3,8 @@ package com.phisher98.subtitles
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.SubtitleFile
 import com.phisher98.SubtitleSourceLedger
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -1862,5 +1864,202 @@ class Issue17AdversarialRegressionTest {
         )
         assertTrue("Past copula 'تھا' must survive CPS refinement: ${copulaRefined[0].text}", copulaRefined[0].text.contains("تھا"))
         assertFalse("'اس وقت' must not flip to 'ابھی': ${copulaRefined[0].text}", copulaRefined[0].text.contains("ابھی"))
+    }
+
+    @Test
+    fun mtHardRejectPatchedCueOriginAndConcurrentDonorRevalidationHoldUnderRace() = runBlocking {
+        val dummyProof = AlignmentProof(SubtitleTimeWarp.Identity, AlignmentAnchorKind.NATIVE_STREAM_PACK, 1.0, 0, 0, 0)
+
+        // 1. SceneBolChalLocalizer.localize enforces MT_HARD_REJECT_THRESHOLD (>= 60) and EpisodeSubtitleSession records Rejected.MtDump.
+        val mtDonorDoc = CueDocument.fromCues(
+            SubtitleLanguage.ENGLISH,
+            listOf(
+                CueEntry(CueId(0), CueSpan(1_000L, 4_000L), "What happened in the hallway?"),
+                CueEntry(CueId(1), CueSpan(4_500L, 7_500L), "Are you completely out of your mind?"),
+                CueEntry(CueId(2), CueSpan(8_000L, 11_000L), "He was arrested by the authorities."),
+                CueEntry(CueId(3), CueSpan(11_500L, 14_500L), "He was arrested by the guards too."),
+            ),
+        )
+        val severeMtTransport = BolChalTranslationTransport { window, _ ->
+            val mapped = window.targetCues.associate { cue ->
+                val dumpLine = when (cue.id.value) {
+                    0 -> "مقدس گندگی، یہاں کیا ہوا؟"
+                    1 -> "کیا تم اپنے دماغ سے باہر ہو؟"
+                    2 -> "اسے پولیس کی طرف سے گرفتار کیا گیا۔"
+                    else -> "بھری ہوئی بلی، اسے گارڈز کی طرف سے پکڑا گیا۔"
+                }
+                cue.id to BolChalCueOut(cue.id, dumpLine)
+            }
+            Result.success(mapped to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+        }
+        val mtLocalizedRes = SceneBolChalLocalizer.localize(
+            englishDonorDoc = mtDonorDoc,
+            donorProvenance = DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK),
+            alignmentProof = dummyProof,
+            config = BolChalConfig(),
+            transport = severeMtTransport,
+        )
+        assertTrue("MT dump scoring >= 60 must be rejected by localize()", mtLocalizedRes.isFailure)
+        val gateEx = mtLocalizedRes.exceptionOrNull() as? CandidateGateRejectedException
+        assertNotNull("Expected CandidateGateRejectedException for MT hard-reject", gateEx)
+        val mtRej = gateEx?.rejection as? VerifiedSubtitleCandidate.Rejected.MtDump
+        assertNotNull("Expected VerifiedSubtitleCandidate.Rejected.MtDump", mtRej)
+        assertTrue(mtRej!!.audit.mtDumpScore >= UrduQualityGate.MT_HARD_REJECT_THRESHOLD)
+
+        // 2. Patched keyless fallback cues inside a BYOK LLM_SCENE window retain KEYLESS_BOLCHAL_NMT origin for gender purification.
+        val patchedTransport = DefaultBolChalTranslationTransport(
+            httpPostJsonOverride = { _, _, _ ->
+                // BYOK LLM returns cue 0 only, omitting cue 1 so fallback keyless NMT patches cue 1.
+                """{"choices":[{"message":{"content":"[{\"id\":0,\"ur\":\"میں باہر انتظار کر رہی ہوں۔\"}]"}}]}"""
+            },
+            httpGetOverride = { _, params, _ ->
+                val q = params["q"].orEmpty()
+                val patchedOut = q.lines().joinToString("\n") { line ->
+                    val marker = line.substringBefore(' ')
+                    "$marker میں ابھی جا رہا ہوں۔"
+                }
+                nmtJson(patchedOut, q)
+            },
+        )
+        val patchedDoc = CueDocument.fromCues(
+            SubtitleLanguage.ENGLISH,
+            listOf(
+                CueEntry(CueId(0), CueSpan(1_000L, 3_500L), "I am waiting outside."),
+                CueEntry(CueId(1), CueSpan(4_000L, 6_500L), "I'm leaving now."),
+            ),
+        )
+        val patchedRes = SceneBolChalLocalizer.localize(
+            englishDonorDoc = patchedDoc,
+            donorProvenance = DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK),
+            alignmentProof = dummyProof,
+            config = BolChalConfig(
+                llmEndpointUrl = "https://api.example-llm.org/v1",
+                llmModelId = "gpt-4o-mini",
+                llmApiKey = "sk-test-secret",
+            ),
+            transport = patchedTransport,
+            initialSpeakerCard = SpeakerContextCard(speakerGenderHint = GenderHint.FEMININE),
+        ).getOrThrow()
+        assertEquals(LocalizationTierKey.LLM_SCENE, patchedRes.tier)
+        assertTrue(
+            "Patched keyless cue 1 must apply feminine speaker-card gender rewrite: ${patchedRes.document.cues[1].text}",
+            patchedRes.document.cues[1].text.contains("جا رہی ہوں"),
+        )
+
+        // 3A. Mid-translation timeline replacement revalidates donor alignment before committing emission.
+        fun buildDonorSrt(): ByteArray = buildString {
+            for (i in 0 until 20) {
+                val s = 10_000L + i * 4_500L
+                val e = s + 2_000L
+                append("${i + 1}\n")
+                append(
+                    String.format(
+                        Locale.ROOT,
+                        "00:%02d:%02d,%03d --> 00:%02d:%02d,%03d\n",
+                        (s / 60_000L), (s / 1_000L) % 60L, s % 1_000L,
+                        (e / 60_000L), (e / 1_000L) % 60L, e % 1_000L,
+                    )
+                )
+                append("Stay near the door line $i.\n\n")
+            }
+        }.toByteArray(Charsets.UTF_8)
+
+        val wyzieDonorSub = com.lagradost.cloudstream3.newSubtitleFile("English", "https://sub.wyzie.ru/en-reval.srt") {
+            headers = mapOf(
+                ProvenanceCodec.HEADER_SOURCE to "wyziesub",
+                ProvenanceCodec.HEADER_ORIGIN to ProvenanceCodec.ORIGIN_CATALOGUE,
+            )
+        }
+        val initialTimeline = SpeechActivityTimeline(
+            speechSpans = (0 until 20).map { i ->
+                val start = 12_000L + i * 4_500L
+                SpeechSpan(start, start + 2_000L, 0.95f)
+            },
+            observedWindows = listOf(ObservedWindow(5_000L, 125_000L)),
+            mediaDurationMs = 150_000L,
+        )
+        val updatedTimeline = SpeechActivityTimeline(
+            speechSpans = (0 until 20).map { i ->
+                val start = 24_000L + i * 4_500L
+                SpeechSpan(start, start + 2_000L, 0.95f)
+            },
+            observedWindows = listOf(ObservedWindow(5_000L, 135_000L)),
+            mediaDurationMs = 160_000L,
+        )
+
+        val translationEntered = CompletableDeferred<Unit>()
+        val resumeTranslation = CompletableDeferred<Unit>()
+        val transportCalls = AtomicInteger(0)
+        val pausingTransport = BolChalTranslationTransport { window, _ ->
+            if (transportCalls.incrementAndGet() == 1) {
+                translationEntered.complete(Unit)
+                resumeTranslation.await()
+            }
+            val out = window.targetCues.associate { cue ->
+                cue.id to BolChalCueOut(cue.id, "ارے یار، دروازے کے پاس رہو۔", LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            }
+            Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+        }
+
+        val raceDir = Files.createTempDirectory("regression-donor-reval").toFile()
+        val raceEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val raceSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(raceDir),
+            bolChalTransport = pausingTransport,
+            subtitleCallback = { raceEmitted.add(it) },
+        )
+        raceSession.ingestRawSubtitle(wyzieDonorSub, rawSourceHint = "wyzie", rawBytesOverride = buildDonorSrt())
+        raceSession.attachSpeechTimeline(initialTimeline)
+        val staleInitialWarp = raceSession.rankedEnglishDonorsSnapshot().single().alignment.warp
+
+        val completionDeferred = async { raceSession.completeSession() }
+        translationEntered.await()
+        raceSession.attachSpeechTimeline(updatedTimeline)
+        val refreshedExpectedWarp = raceSession.rankedEnglishDonorsSnapshot().single().alignment.warp
+        assertTrue(staleInitialWarp != refreshedExpectedWarp)
+        resumeTranslation.complete(Unit)
+
+        val raceReport = completionDeferred.await()
+        assertTrue("Expected localization to restart after mid-flight timeline update", transportCalls.get() >= 2)
+        assertEquals(refreshedExpectedWarp, raceReport.storedCasFiles.single().appliedWarp)
+        val emittedSyncProof = ProvenanceCodec.decodeSyncProofOrNull(raceEmitted.single().headers?.get(ProvenanceCodec.HEADER_SYNC))
+        assertEquals(refreshedExpectedWarp, emittedSyncProof?.warp)
+
+        // 3B. Mid-translation donor eviction (SyncMismatch) discards stale localization output instead of emitting a rejected donor.
+        val evictEntered = CompletableDeferred<Unit>()
+        val evictResume = CompletableDeferred<Unit>()
+        val evictDir = Files.createTempDirectory("regression-donor-evict").toFile()
+        val evictEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val evictSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(evictDir),
+            bolChalTransport = BolChalTranslationTransport { window, _ ->
+                evictEntered.complete(Unit)
+                evictResume.await()
+                val out = window.targetCues.associate { cue ->
+                    cue.id to BolChalCueOut(cue.id, "ارے یار، دروازے کے پاس رہو۔", LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                }
+                Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            },
+            subtitleCallback = { evictEmitted.add(it) },
+        )
+        evictSession.ingestRawSubtitle(wyzieDonorSub, rawSourceHint = "wyzie", rawBytesOverride = buildDonorSrt())
+        val evictDeferred = async { evictSession.completeSession() }
+        evictEntered.await()
+        evictSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = listOf(SpeechSpan(240_000L, 241_000L, 0.95f)),
+                observedWindows = listOf(ObservedWindow(0L, 250_000L)),
+                mediaDurationMs = 250_000L,
+            )
+        )
+        evictResume.complete(Unit)
+        val evictReport = evictDeferred.await()
+        assertTrue("Stale localization from evicted donor must be discarded", evictReport.emittedUrduCandidates.isEmpty())
+        assertTrue("No subtitle file may be emitted for evicted donor", evictEmitted.isEmpty())
+        assertTrue(evictReport.rejectedCandidates.any { it is VerifiedSubtitleCandidate.Rejected.SyncMismatch })
     }
 }

@@ -528,6 +528,22 @@ class EpisodeSubtitleSession(
         return discovery
     }
 
+    private data class DonorIdentityKey(
+        val donor: DonorProvenance,
+        val contentSha256: ContentSha256,
+    )
+
+    private fun needsBolChalLocked(forceBolChalLocalization: Boolean): Boolean {
+        if (!mode.wantsUrduTracks) return false
+        return forceBolChalLocalization ||
+            admittedUrduTracks.isEmpty() ||
+            (admittedUrduTracks.none {
+                it is VerifiedSubtitleCandidate.StreamSyncedNative &&
+                    it.alignment.anchorKind != AlignmentAnchorKind.UNANCHORED
+            } &&
+                admittedDistinctUrduDiversityCountLocked() < targetUrduDiversityCount)
+    }
+
     suspend fun completeSession(
         forceBolChalLocalization: Boolean = false,
     ): SessionCompletionReport {
@@ -538,24 +554,30 @@ class EpisodeSubtitleSession(
             flushPendingCatalogueUrduLocked(allowSinglePackInMultiSession = true)
         }
 
-        val (donorToLocalize, exactStreamDurationMs) = sessionMutex.withLock {
-            reconcileStreamDonorProofsLocked(allowSinglePackInMultiSession = true)
-            val wantsUrdu = mode.wantsUrduTracks
-            val needsBolChal = wantsUrdu && (
-                forceBolChalLocalization ||
-                    admittedUrduTracks.isEmpty() ||
-                    (admittedUrduTracks.none {
-                        it is VerifiedSubtitleCandidate.StreamSyncedNative &&
-                            it.alignment.anchorKind != AlignmentAnchorKind.UNANCHORED
-                    } &&
-                        admittedDistinctUrduDiversityCountLocked() < targetUrduDiversityCount)
-                )
-            val chosen = if (!needsBolChal) null else selectBestEnglishDonorLocked()
-            val exactDur = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
-            chosen to exactDur
-        }
+        val failedDonors = HashSet<DonorIdentityKey>()
+        val maxLocalizationAttempts = 4
+        var attempt = 0
+        while (attempt < maxLocalizationAttempts) {
+            val (donorToLocalize, exactStreamDurationMs) = sessionMutex.withLock {
+                reconcileStreamDonorProofsLocked(allowSinglePackInMultiSession = true)
+                flushDeferredProviderAnchorsLocked()
+                flushPendingNativeUrduLocked(allowSinglePackInMultiSession = true)
+                flushPendingCatalogueUrduLocked(allowSinglePackInMultiSession = true)
+                val chosen = if (!needsBolChalLocked(forceBolChalLocalization)) {
+                    null
+                } else {
+                    selectBestEnglishDonorLocked(excluding = failedDonors)
+                }
+                val exactDur = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
+                chosen to exactDur
+            }
+            if (donorToLocalize == null) break
+            attempt++
 
-        if (donorToLocalize != null) {
+            val donorKey = DonorIdentityKey(
+                donor = donorToLocalize.donor,
+                contentSha256 = donorToLocalize.document.contentSha256,
+            )
             val localizedResult = SceneBolChalLocalizer.localize(
                 englishDonorDoc = donorToLocalize.document,
                 donorProvenance = donorToLocalize.donor,
@@ -564,25 +586,59 @@ class EpisodeSubtitleSession(
                 transport = bolChalTransport,
                 videoDurationMs = exactStreamDurationMs,
             )
-            sessionMutex.withLock {
-                localizedResult.fold(
-                    onSuccess = { localized ->
-                        val dedupKey = localized.provenance.diversityKey to localized.document.contentSha256
-                        if (seenUrduDiversityAndContent.add(dedupKey)) {
-                            emitBakedUrduTrackLocked(localized)
-                            admittedUrduTracks.add(localized)
-                            localizedDonorSelected = localized.donor
-                        }
-                    },
-                    onFailure = { err ->
-                        rejectedTracks.add(
-                            VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(
-                                err.message ?: "bolchal_localization_failed"
-                            )
+
+            val shouldRetry = sessionMutex.withLock {
+                reconcileStreamDonorProofsLocked(allowSinglePackInMultiSession = true)
+                flushDeferredProviderAnchorsLocked()
+                flushPendingNativeUrduLocked(allowSinglePackInMultiSession = true)
+                flushPendingCatalogueUrduLocked(allowSinglePackInMultiSession = true)
+
+                if (!needsBolChalLocked(forceBolChalLocalization)) {
+                    false
+                } else {
+                    val currentDonor = findBufferedEnglishDonorLocked(donorKey)
+                    val latestBestDonor = selectBestEnglishDonorLocked(excluding = failedDonors)
+                    val latestExactDur = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
+                    val bestDonorShifted = latestBestDonor != null &&
+                        DonorIdentityKey(latestBestDonor.donor, latestBestDonor.document.contentSha256) != donorKey
+                    val evidenceStale = currentDonor != null &&
+                        (currentDonor.alignment != donorToLocalize.alignment || latestExactDur != exactStreamDurationMs)
+
+                    if (currentDonor == null || bestDonorShifted) {
+                        attempt < maxLocalizationAttempts && latestBestDonor != null
+                    } else if (evidenceStale && attempt < maxLocalizationAttempts) {
+                        true
+                    } else {
+                        localizedResult.fold(
+                            onSuccess = { localized ->
+                                val refreshed = if (currentDonor.alignment != localized.alignment) {
+                                    localized.copy(alignment = currentDonor.alignment)
+                                } else {
+                                    localized
+                                }
+                                val dedupKey = refreshed.provenance.diversityKey to refreshed.document.contentSha256
+                                if (seenUrduDiversityAndContent.add(dedupKey)) {
+                                    emitBakedUrduTrackLocked(refreshed)
+                                    admittedUrduTracks.add(refreshed)
+                                    localizedDonorSelected = refreshed.donor
+                                }
+                                false
+                            },
+                            onFailure = { err ->
+                                failedDonors.add(donorKey)
+                                val rejection = (err as? CandidateGateRejectedException)?.rejection
+                                    ?: VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(
+                                        err.message ?: "bolchal_localization_failed"
+                                    )
+                                rejectedTracks.add(rejection)
+                                attempt < maxLocalizationAttempts &&
+                                    selectBestEnglishDonorLocked(excluding = failedDonors) != null
+                            },
                         )
-                    },
-                )
+                    }
+                }
             }
+            if (!shouldRetry) break
         }
 
         return sessionMutex.withLock {
@@ -1277,9 +1333,25 @@ class EpisodeSubtitleSession(
         }
     }
 
-    private fun selectBestEnglishDonorLocked(): BufferedEnglishDonor? =
+    private fun findBufferedEnglishDonorLocked(key: DonorIdentityKey): BufferedEnglishDonor? =
         synchronized(englishDonors) {
-            englishDonors.minWithOrNull(englishDonorComparator())
+            englishDonors.firstOrNull {
+                it.donor == key.donor && it.document.contentSha256 == key.contentSha256
+            }
+        }
+
+    private fun selectBestEnglishDonorLocked(
+        excluding: Set<DonorIdentityKey> = emptySet(),
+    ): BufferedEnglishDonor? =
+        synchronized(englishDonors) {
+            val pool = if (excluding.isEmpty()) {
+                englishDonors
+            } else {
+                englishDonors.filterNot {
+                    DonorIdentityKey(it.donor, it.document.contentSha256) in excluding
+                }
+            }
+            pool.minWithOrNull(englishDonorComparator())
         }
 
     private fun englishDonorComparator(): Comparator<BufferedEnglishDonor> {

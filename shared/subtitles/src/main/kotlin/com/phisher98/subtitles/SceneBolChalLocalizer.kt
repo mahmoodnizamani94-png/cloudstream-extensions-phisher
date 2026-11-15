@@ -5,12 +5,16 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -67,6 +71,7 @@ data class SceneWindow(
 data class BolChalCueOut(
     val id: CueId,
     val urduText: String,
+    val tierOrigin: LocalizationTierKey? = null,
 )
 
 data class BolChalConfig(
@@ -950,7 +955,7 @@ class DefaultBolChalTranslationTransport(
             val urVal = item.path("ur").asText("").trim()
             val cueId = CueId(idVal)
             if (cueId in validTargetIds && urVal.isNotEmpty()) {
-                out[cueId] = BolChalCueOut(cueId, urVal)
+                out[cueId] = BolChalCueOut(cueId, urVal, LocalizationTierKey.LLM_SCENE)
             }
         }
         return out
@@ -965,7 +970,7 @@ class DefaultBolChalTranslationTransport(
             }.getOrNull().orEmpty()
             val stripped = MARKER_EXTRACT_REGEX.replace(raw, "").trim()
             return if (stripped.isNotEmpty()) {
-                mapOf(single.id to BolChalCueOut(single.id, stripped))
+                mapOf(single.id to BolChalCueOut(single.id, stripped, LocalizationTierKey.KEYLESS_BOLCHAL_NMT))
             } else {
                 emptyMap()
             }
@@ -1031,7 +1036,7 @@ class DefaultBolChalTranslationTransport(
             if (sourceHasLetters && !segText.any { Character.isLetter(it) }) {
                 return emptyMap()
             }
-            out[cueId] = BolChalCueOut(cueId, segText)
+            out[cueId] = BolChalCueOut(cueId, segText, LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
         }
         return if (out.size == expectedCues.size) out else emptyMap()
     }
@@ -1088,24 +1093,34 @@ class DefaultBolChalTranslationTransport(
     ): String {
         httpGetOverride?.let { return it(url, params, headers) }
         val niceResult = catchNonCancellation {
-            app.get(url, headers = headers, params = params).text
+            app.get(url, headers = headers, params = params, timeout = 6L).text
         }.getOrNull()
         if (!niceResult.isNullOrBlank()) return niceResult
 
         return withContext(Dispatchers.IO) {
+            ensureActive()
             val query = params.entries.joinToString("&") { (k, v) ->
                 "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
             }
             val full = if (query.isEmpty()) url else "$url?$query"
             val conn = (URL(full).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 12_000
-                readTimeout = 15_000
+                connectTimeout = 5_000
+                readTimeout = 6_000
                 headers.forEach { (k, v) -> setRequestProperty(k, v) }
             }
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+                if (cause != null) runCatching { conn.disconnect() }
+            }
             try {
-                conn.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                val text = conn.inputStream.use { readBoundedUtf8(it, MAX_TRANSLATION_RESPONSE_BYTES) }
+                ensureActive()
+                text
+            } catch (t: Throwable) {
+                ensureActive()
+                throw t
             } finally {
+                cancelHandle?.dispose()
                 conn.disconnect()
             }
         }
@@ -1122,25 +1137,51 @@ class DefaultBolChalTranslationTransport(
                 jsonBody,
                 object : com.fasterxml.jackson.core.type.TypeReference<Map<String, Any?>>() {},
             )
-            app.post(url, headers = headers, json = bodyMap).text
+            app.post(url, headers = headers, json = bodyMap, timeout = 12L).text
         }.getOrNull()
         if (!niceResult.isNullOrBlank()) return niceResult
 
         return withContext(Dispatchers.IO) {
+            ensureActive()
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
-                connectTimeout = 15_000
-                readTimeout = 25_000
+                connectTimeout = 8_000
+                readTimeout = 12_000
                 headers.forEach { (k, v) -> setRequestProperty(k, v) }
+            }
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+                if (cause != null) runCatching { conn.disconnect() }
             }
             try {
                 conn.outputStream.use { it.write(jsonBody.toByteArray(StandardCharsets.UTF_8)) }
-                conn.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                val text = conn.inputStream.use { readBoundedUtf8(it, MAX_TRANSLATION_RESPONSE_BYTES) }
+                ensureActive()
+                text
+            } catch (t: Throwable) {
+                ensureActive()
+                throw t
             } finally {
+                cancelHandle?.dispose()
                 conn.disconnect()
             }
         }
+    }
+
+    private fun readBoundedUtf8(stream: InputStream, maxBytes: Int): String {
+        val out = ByteArrayOutputStream(min(maxBytes, 8_192))
+        val buf = ByteArray(4_096)
+        var total = 0
+        while (true) {
+            val read = stream.read(buf)
+            if (read <= 0) break
+            total += read
+            if (total > maxBytes) {
+                throw IllegalStateException("Translation response exceeded $maxBytes bytes")
+            }
+            out.write(buf, 0, read)
+        }
+        return out.toString(StandardCharsets.UTF_8.name())
     }
 
     private inline fun <T> catchNonCancellation(block: () -> T): Result<T> =
@@ -1153,6 +1194,8 @@ class DefaultBolChalTranslationTransport(
         }
 
     companion object {
+        private const val MAX_TRANSLATION_RESPONSE_BYTES = 2 * 1024 * 1024
+
         // Matches ⟦12⟧ even if NMT inserts whitespace or localizes digits into Urdu/Arabic-Indic numerals.
         private val MARKER_EXTRACT_REGEX = Regex("""[⟦\u27E6]\s*([0-9\u06F0-\u06F9\u0660-\u0669]+)\s*[⟧\u27E7]""")
 
@@ -1343,15 +1386,17 @@ object SceneBolChalLocalizer {
             mergedAnyWindow = true
             for ((cueId, outCue) in windowMap) {
                 val srcCue = sourceById[cueId] ?: continue
+                val cueTier = outCue.tierOrigin ?: tier
+                val allowRegexGender = cueTier != LocalizationTierKey.LLM_SCENE
                 val detailed = BolChalPurifier.purifyDetailed(
                     rawUrdu = outCue.urduText,
                     sourceEnglish = srcCue.text,
                     speakerCard = window.speakerCard,
-                    allowRegexGenderRewrite = tier != LocalizationTierKey.LLM_SCENE,
+                    allowRegexGenderRewrite = allowRegexGender,
                 )
                 if (isAcceptablePurifiedUrduCue(detailed.text, srcCue)) {
                     translatedById[cueId] = detailed.text
-                    if (tier != LocalizationTierKey.LLM_SCENE && detailed.registerRewrittenByRegex) {
+                    if (allowRegexGender && detailed.registerRewrittenByRegex) {
                         regexOnlyRegisterCueIds.add(cueId)
                     } else {
                         regexOnlyRegisterCueIds.remove(cueId)
@@ -1471,6 +1516,13 @@ object SceneBolChalLocalizer {
             urduDoc = finalDoc,
             referenceEnglishDoc = englishDonorDoc,
         )
+        if (mtAudit.mtDumpScore >= UrduQualityGate.MT_HARD_REJECT_THRESHOLD) {
+            return Result.failure(
+                CandidateGateRejectedException(
+                    VerifiedSubtitleCandidate.Rejected.MtDump(audit = mtAudit)
+                )
+            )
+        }
         val regexPatchedCount = regexOnlyRegisterCueIds.count { it in translatedById }
         val registerVerifiedRatio = if (translatedById.isEmpty()) {
             0.0
