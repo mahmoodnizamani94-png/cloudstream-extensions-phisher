@@ -2,9 +2,12 @@
 
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 43
+version = 44
 
 android {
+    sourceSets.named("main") {
+        kotlin.directories.add(rootProject.file("shared/subtitles/src/main/kotlin").path)
+    }
     buildFeatures {
         buildConfig = true
         viewBinding = true
