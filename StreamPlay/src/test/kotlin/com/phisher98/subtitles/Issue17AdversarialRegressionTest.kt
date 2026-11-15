@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -16,6 +17,8 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.lang.management.ManagementFactory
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.URI
 import java.nio.file.Files
 import java.util.Base64
@@ -2061,5 +2064,230 @@ class Issue17AdversarialRegressionTest {
         assertTrue("Stale localization from evicted donor must be discarded", evictReport.emittedUrduCandidates.isEmpty())
         assertTrue("No subtitle file may be emitted for evicted donor", evictEmitted.isEmpty())
         assertTrue(evictReport.rejectedCandidates.any { it is VerifiedSubtitleCandidate.Rejected.SyncMismatch })
+    }
+
+    @Test
+    fun cancellableFallbackSocketsDuplicateDonorIdentityFailedFallbackAndStaleDurationGuardHold() = runBlocking {
+        // 1. Blocked fallback GET & POST sockets disconnect promptly when cancellation starts (well below 6s/12s readTimeout).
+        val transport = DefaultBolChalTranslationTransport()
+        for (isPost in listOf(false, true)) {
+            ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { server ->
+                val requestAccepted = CompletableDeferred<Unit>()
+                val remoteClosedMs = CompletableDeferred<Long>()
+                val serverThread = Thread {
+                    try {
+                        server.soTimeout = 5_000
+                        server.accept().use { client ->
+                            client.soTimeout = 5_000
+                            val inp = client.getInputStream()
+                            val firstByte = inp.read()
+                            if (firstByte >= 0) {
+                                requestAccepted.complete(Unit)
+                            }
+                            val closeStart = System.nanoTime()
+                            val drainBuf = ByteArray(512)
+                            while (true) {
+                                val r = try {
+                                    inp.read(drainBuf)
+                                } catch (_: Throwable) {
+                                    -1
+                                }
+                                if (r < 0) break
+                            }
+                            remoteClosedMs.complete((System.nanoTime() - closeStart) / 1_000_000L)
+                        }
+                    } catch (t: Throwable) {
+                        requestAccepted.completeExceptionally(t)
+                        remoteClosedMs.completeExceptionally(t)
+                    }
+                }.apply {
+                    isDaemon = true
+                    start()
+                }
+
+                val url = "http://127.0.0.1:${server.localPort}/hang"
+                val startNs = System.nanoTime()
+                val timedOutResult = withTimeoutOrNull(140L) {
+                    if (isPost) {
+                        transport.executeFallbackPostJson(url, """{"q":"hello"}""", mapOf("Content-Type" to "application/json"))
+                    } else {
+                        transport.executeFallbackGet(url, mapOf("q" to "hello"), emptyMap())
+                    }
+                }
+                val callerElapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+                assertNull("Expected timeout cancellation to return null (isPost=$isPost)", timedOutResult)
+                assertTrue("Caller waited too long on cancelled socket (isPost=$isPost): ${callerElapsedMs}ms", callerElapsedMs < 1_500L)
+                requestAccepted.await()
+                val socketDisconnectMs = remoteClosedMs.await()
+                assertTrue("Underlying fallback socket stayed open after cancellation (isPost=$isPost): ${socketDisconnectMs}ms", socketDisconnectMs < 1_500L)
+                serverThread.join(2_000L)
+            }
+        }
+
+        fun buildSrtWithMarker(marker: String, cueCount: Int = 20): ByteArray = buildString {
+            for (i in 0 until cueCount) {
+                val s = 10_000L + i * 4_500L
+                val e = s + 2_000L
+                append("${i + 1}\n")
+                append(
+                    String.format(
+                        Locale.ROOT,
+                        "00:%02d:%02d,%03d --> 00:%02d:%02d,%03d\n",
+                        (s / 60_000L), (s / 1_000L) % 60L, s % 1_000L,
+                        (e / 60_000L), (e / 1_000L) % 60L, e % 1_000L,
+                    )
+                )
+                append("$marker dialogue line $i.\n\n")
+            }
+        }.toByteArray(Charsets.UTF_8)
+
+        // 2. Failed donor (MtDump) during a concurrent timeline update still blacklists the failed donor and falls back to donor #2.
+        val mtFailEntered = CompletableDeferred<Unit>()
+        val mtFailResume = CompletableDeferred<Unit>()
+        val mtFallbackCalls = AtomicInteger(0)
+        val mtFailDir = Files.createTempDirectory("regression-mt-failover").toFile()
+        val mtFailEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val mtFailSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(mtFailDir),
+            bolChalTransport = BolChalTranslationTransport { window, _ ->
+                val callNo = mtFallbackCalls.incrementAndGet()
+                val firstText = window.targetCues.firstOrNull()?.text?.text.orEmpty()
+                if (callNo == 1) {
+                    mtFailEntered.complete(Unit)
+                    mtFailResume.await()
+                }
+                if (firstText.startsWith("BAD_MT_DONOR")) {
+                    val bad = window.targetCues.associate { cue ->
+                        val dump = when (cue.id.value % 4) {
+                            0 -> "مقدس گندگی، یہاں کیا ہوا؟"
+                            1 -> "کیا تم اپنے دماغ سے باہر ہو؟"
+                            2 -> "اسے پولیس کی طرف سے گرفتار کیا گیا۔"
+                            else -> "بھری ہوئی بلی، اسے گارڈز کی طرف سے پکڑا گیا۔"
+                        }
+                        cue.id to BolChalCueOut(cue.id, dump, LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                    }
+                    Result.success(bad to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                } else {
+                    val good = window.targetCues.associate { cue ->
+                        cue.id to BolChalCueOut(cue.id, "ارے یار، دروازے کے پاس رہو۔", LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                    }
+                    Result.success(good to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                }
+            },
+            subtitleCallback = { mtFailEmitted.add(it) },
+        )
+        mtFailSession.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+        val badStreamDonorSub = com.lagradost.cloudstream3.newSubtitleFile("English", "https://vidlink.pro/en-bad.srt") {
+            headers = mapOf(ProvenanceCodec.HEADER_SOURCE to "vidlink")
+        }
+        val goodCatDonorSub = com.lagradost.cloudstream3.newSubtitleFile("English", "https://sub.wyzie.ru/en-good.srt") {
+            headers = mapOf(
+                ProvenanceCodec.HEADER_SOURCE to "wyziesub",
+                ProvenanceCodec.HEADER_ORIGIN to ProvenanceCodec.ORIGIN_CATALOGUE,
+            )
+        }
+        mtFailSession.ingestRawSubtitle(badStreamDonorSub, rawSourceHint = "vidlink", rawBytesOverride = buildSrtWithMarker("BAD_MT_DONOR"))
+        mtFailSession.ingestRawSubtitle(goodCatDonorSub, rawSourceHint = "wyzie", rawBytesOverride = buildSrtWithMarker("GOOD_FALLBACK"))
+        val mtFailDeferred = async { mtFailSession.completeSession() }
+        mtFailEntered.await()
+        mtFailSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = (0 until 20).map { i -> SpeechSpan(12_000L + i * 4_500L, 14_000L + i * 4_500L, 0.95f) },
+                observedWindows = listOf(ObservedWindow(5_000L, 125_000L)),
+                mediaDurationMs = 150_000L,
+            )
+        )
+        mtFailResume.complete(Unit)
+        val mtFailReport = mtFailDeferred.await()
+        assertEquals("Expected failed stream donor on attempt 1 and clean catalogue fallback on attempt 2", 2, mtFallbackCalls.get())
+        assertTrue("Expected MtDump rejection recorded in report", mtFailReport.rejectedCandidates.any { it is VerifiedSubtitleCandidate.Rejected.MtDump })
+        assertEquals(DonorProvenance.CatalogueDonor(CatalogueSourceKey.WYZIE), mtFailReport.localizedDonorUsed)
+        assertEquals(1, mtFailEmitted.size)
+
+        // 3. Duplicate (donor, contentSha256) buffered entries revalidate the exact ranked entry rather than the first matching hash.
+        val dupCalls = AtomicInteger(0)
+        val dupDir = Files.createTempDirectory("regression-dup-donor").toFile()
+        val dupEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val dupSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(dupDir),
+            bolChalTransport = BolChalTranslationTransport { window, _ ->
+                dupCalls.incrementAndGet()
+                val out = window.targetCues.associate { cue ->
+                    cue.id to BolChalCueOut(cue.id, "ارے یار، دروازے کے پاس رہو۔", LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                }
+                Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            },
+            subtitleCallback = { dupEmitted.add(it) },
+        )
+        dupSession.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+        dupSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = (0 until 20).map { i -> SpeechSpan(12_500L + i * 4_500L, 14_500L + i * 4_500L, 0.95f) },
+                observedWindows = listOf(ObservedWindow(5_000L, 125_000L)),
+                mediaDurationMs = 150_000L,
+            )
+        )
+        val sharedBytes = buildSrtWithMarker("SHARED_BYTES")
+        val foreignVidlinkSub = com.lagradost.cloudstream3.newSubtitleFile("English", "https://vidlink.pro/en-foreign.srt") {
+            headers = mapOf(ProvenanceCodec.HEADER_SOURCE to "vidlink")
+        }
+        val nativeVidlinkSub = com.lagradost.cloudstream3.newSubtitleFile("English", "https://vidlink.pro/en-native.srt") {
+            headers = mapOf(ProvenanceCodec.HEADER_SOURCE to "vidlink")
+        }
+        dupSession.ingestRawSubtitle(foreignVidlinkSub, rawSourceHint = "febbox", rawBytesOverride = sharedBytes)
+        dupSession.ingestRawSubtitle(nativeVidlinkSub, rawSourceHint = "vidlink", rawBytesOverride = sharedBytes)
+        val rankedDup = dupSession.rankedEnglishDonorsSnapshot()
+        assertEquals(2, rankedDup.size)
+        assertFalse(rankedDup[0].isForeignSidecar)
+        assertTrue(rankedDup[1].isForeignSidecar)
+        assertTrue(rankedDup[0].alignment != rankedDup[1].alignment)
+        val dupReport = dupSession.completeSession()
+        assertEquals("Same-pack entry must not retry against earlier foreign sidecar sharing hash", 1, dupCalls.get())
+        assertEquals(SubtitleTimeWarp.Identity, dupReport.storedCasFiles.single().appliedWarp)
+        val dupSync = ProvenanceCodec.decodeSyncProofOrNull(dupEmitted.single().headers?.get(ProvenanceCodec.HEADER_SYNC))
+        assertEquals(AlignmentAnchorKind.NATIVE_STREAM_PACK, dupSync?.anchorKind)
+        assertEquals(SubtitleTimeWarp.Identity, dupSync?.warp)
+
+        // 4. Duration-stale output on final attempt is discarded rather than emitting shortened final cues.
+        val durCalls = AtomicInteger(0)
+        val durDir = Files.createTempDirectory("regression-stale-dur").toFile()
+        val durEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        lateinit var durSession: EpisodeSubtitleSession
+        durSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(durDir),
+            bolChalTransport = BolChalTranslationTransport { window, _ ->
+                val attemptIdx = durCalls.incrementAndGet()
+                durSession.attachSpeechTimeline(
+                    SpeechActivityTimeline(
+                        speechSpans = (0 until 20).map { i -> SpeechSpan(10_000L + i * 4_500L, 12_000L + i * 4_500L, 0.95f) },
+                        observedWindows = listOf(ObservedWindow(5_000L, 125_000L)),
+                        mediaDurationMs = 100_000L + attemptIdx * 10_000L,
+                    )
+                )
+                val out = window.targetCues.associate { cue ->
+                    cue.id to BolChalCueOut(cue.id, "ارے یار، دروازے کے پاس رہو۔", LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                }
+                Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            },
+            subtitleCallback = { durEmitted.add(it) },
+        )
+        durSession.ingestRawSubtitle(goodCatDonorSub, rawSourceHint = "wyzie", rawBytesOverride = buildSrtWithMarker("DUR_CHURN"))
+        durSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = (0 until 20).map { i -> SpeechSpan(10_000L + i * 4_500L, 12_000L + i * 4_500L, 0.95f) },
+                observedWindows = listOf(ObservedWindow(5_000L, 125_000L)),
+                mediaDurationMs = 100_000L,
+            )
+        )
+        val durReport = durSession.completeSession()
+        assertEquals(4, durCalls.get())
+        assertTrue("Duration-stale output on exhausted budget must not be emitted", durReport.emittedUrduCandidates.isEmpty())
+        assertTrue(durEmitted.isEmpty())
     }
 }
