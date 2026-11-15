@@ -51,7 +51,10 @@ class UrduCasStore(
         runCatching { rootDir.canonicalPath }.getOrElse { rootDir.absolutePath }
 
     private val sharedState: SharedRootState =
-        SHARED_ROOT_STATES.computeIfAbsent(canonicalRootPath) { SharedRootState() }
+        SHARED_ROOT_STATES[canonicalRootPath]
+            ?: SharedRootState().let { fresh ->
+                SHARED_ROOT_STATES.putIfAbsent(canonicalRootPath, fresh) ?: fresh
+            }
 
     fun writeAlignedSubtitle(
         doc: CueDocument,
@@ -65,6 +68,7 @@ class UrduCasStore(
             CasSubtitleFormat.SRT -> WebVttBaker.bakeSrt(doc, warp, videoDurationMs, includeUtf8Bom = true)
         }
         val serializedText = baked.utf8Content
+        val expectedBytes = serializedText.toByteArray(StandardCharsets.UTF_8)
         val cueCount = baked.cueCount
         val contentSha = baked.bakedContentSha256
 
@@ -79,13 +83,21 @@ class UrduCasStore(
                 rootDir.mkdirs()
             }
             val out = File(rootDir, fileName)
-            if (!out.isFile || out.length() == 0L) {
+            val existingMatchesSha = out.isFile &&
+                out.length() == expectedBytes.size.toLong() &&
+                runCatching { ContentSha256.sha256Hex(out.readBytes()) == contentSha.hex }.getOrDefault(false)
+
+            if (!existingMatchesSha) {
                 val tmp = File(rootDir, ".tmp_${UUID.randomUUID()}_$fileName")
                 try {
-                    tmp.writeBytes(serializedText.toByteArray(StandardCharsets.UTF_8))
+                    tmp.writeBytes(expectedBytes)
                     if (!tmp.renameTo(out)) {
                         tmp.copyTo(out, overwrite = true)
                         tmp.delete()
+                    }
+                    val actualReadbackSha = ContentSha256.sha256Hex(out.readBytes())
+                    check(actualReadbackSha == contentSha.hex) {
+                        "UrduCasStore SHA-256 readback verification failed for $fileName: expected ${contentSha.hex}, got $actualReadbackSha"
                     }
                 } finally {
                     if (tmp.exists()) tmp.delete()
@@ -240,6 +252,7 @@ data class BufferedEnglishDonor(
     val priorityTier: Int,
     val intraTierScore: Int,
     val isSubtitleCatOrigFallback: Boolean = false,
+    val isForeignSidecar: Boolean = false,
     val sourceSubtitleFile: SubtitleFile? = null,
 )
 
@@ -261,6 +274,8 @@ class EpisodeSubtitleSession(
     val bolChalTransport: BolChalTranslationTransport = DefaultBolChalTranslationTransport(),
     val casFormat: CasSubtitleFormat = CasSubtitleFormat.WEBVTT,
     val targetUrduDiversityCount: Int = 2,
+    val targetEnglishCatalogCount: Int = 5,
+    val multiProviderVideoSession: Boolean = false,
     initialSpeechTimeline: SpeechActivityTimeline? = null,
     private val callbackIdentityToken: Any? = null,
     private val subtitleCallback: (SubtitleFile) -> Unit,
@@ -272,8 +287,12 @@ class EpisodeSubtitleSession(
     private val pendingCatalogueUrdu = ArrayList<PendingCatalogueUrduEntry>()
     private val englishDonors = ArrayList<BufferedEnglishDonor>()
     private val seenUrduDiversityAndContent = HashSet<Pair<String, ContentSha256>>()
+    private val seenEnglishCatalogSources = HashSet<CatalogueSourceKey>()
+    private val seenEnglishCatalogContent = HashSet<ContentSha256>()
     private val seenProviderAnchorContent = HashSet<Pair<StreamProviderKey, ContentSha256>>()
     private val storedCasOutputs = ArrayList<CasStoredSubtitle>()
+    private val activeVideoProviders = LinkedHashSet<StreamProviderKey>()
+    private val nonForeignStreamProviders = LinkedHashSet<StreamProviderKey>()
     private var speechTimeline: SpeechActivityTimeline? = initialSpeechTimeline
     private var emittedAnchorCount = 0
     private var localizedDonorSelected: DonorProvenance? = null
@@ -283,9 +302,23 @@ class EpisodeSubtitleSession(
         val meta: CatalogueCandidateMeta?,
     )
 
+    fun registerActiveVideoProvider(provider: StreamProviderKey) {
+        synchronized(activeVideoProviders) {
+            activeVideoProviders.add(provider)
+        }
+    }
+
+    fun registerActiveVideoProviderHint(rawHint: String?) {
+        StreamProviderKey.fromTextOrHost(rawHint)?.let { registerActiveVideoProvider(it) }
+    }
+
+    fun snapshotActiveVideoProviders(): Set<StreamProviderKey> =
+        synchronized(activeVideoProviders) { activeVideoProviders.toSet() }
+
     suspend fun attachSpeechTimeline(timeline: SpeechActivityTimeline) {
         sessionMutex.withLock {
             speechTimeline = timeline
+            reconcileStreamDonorProofsLocked()
             if (bestStreamAnchorDonorLocked() == null && pendingCatalogueUrdu.isNotEmpty()) {
                 flushPendingCatalogueUrduLocked()
             }
@@ -312,6 +345,7 @@ class EpisodeSubtitleSession(
             }
 
         val resolvedProvenance = resolveRawSubtitleProvenance(sub, rawSourceHint, headers)
+        val isForeignSidecar = isForeignRawSidecar(rawSourceHint, headers, resolvedProvenance)
         val detectedLanguage = resolveSubtitleLanguage(sub, headers)
             ?: return null
 
@@ -333,6 +367,7 @@ class EpisodeSubtitleSession(
                     decodedText = decodedText,
                     provenance = resolvedProvenance,
                     meta = null,
+                    isForeignSidecar = isForeignSidecar,
                 )
                 SubtitleLanguage.ENGLISH -> ingestDecodedEnglishLocked(
                     decodedText = decodedText,
@@ -340,6 +375,7 @@ class EpisodeSubtitleSession(
                     sourceSub = sub,
                     preDownloadScore = 0,
                     isSubtitleCatOrigFallback = isSubtitleCatOrigHeaderOrUrl(headers, sub.url),
+                    isForeignSidecar = isForeignSidecar,
                 )
             }
         }
@@ -381,6 +417,7 @@ class EpisodeSubtitleSession(
                     decodedText = decodedText,
                     provenance = provenance,
                     meta = discovered.meta,
+                    isForeignSidecar = false,
                 )
                 SubtitleLanguage.ENGLISH -> {
                     val ingested = ingestDecodedEnglishLocked(
@@ -389,15 +426,30 @@ class EpisodeSubtitleSession(
                         sourceSub = null,
                         preDownloadScore = discovered.preDownloadScore,
                         isSubtitleCatOrigFallback = discovered.isSubtitleCatOrigDonor,
+                        isForeignSidecar = false,
                     )
                     if (ingested is VerifiedSubtitleCandidate.Admitted &&
                         (mode == SessionSubtitleMode.DEFAULT || mode == SessionSubtitleMode.BILINGUAL_DOWNLOAD) &&
-                        !discovered.isSubtitleCatOrigDonor
+                        !discovered.isSubtitleCatOrigDonor &&
+                        seenEnglishCatalogContent.add(ingested.document.contentSha256)
                     ) {
-                        val enHeaders = sanitizePublicSubtitleHeaders(discovered.requestHeaders) +
-                            ProvenanceCodec.encodeHeaders(provenance)
+                        val exactStreamDurationMs = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
+                        val stored = casStore.writeAlignedSubtitle(
+                            doc = ingested.document,
+                            warp = ingested.alignment.warp,
+                            videoDurationMs = exactStreamDurationMs,
+                            format = casFormat,
+                            pinActive = true,
+                        )
+                        storedCasOutputs.add(stored)
+                        seenEnglishCatalogSources.add(discovered.catalogue)
+                        val effectiveSyncProof = ingested.alignment.takeIf { it.anchorKind != AlignmentAnchorKind.UNANCHORED }
+                        val enHeaders = ProvenanceCodec.encodeHeaders(
+                            provenance = provenance,
+                            syncProof = effectiveSyncProof,
+                        )
                         subtitleCallback(
-                            newSubtitleFile("English", discovered.downloadUrl) {
+                            newSubtitleFile("English [${discovered.catalogue.displayBadge}]", stored.fileUri) {
                                 this.headers = enHeaders
                             }
                         )
@@ -438,9 +490,17 @@ class EpisodeSubtitleSession(
                 englishDonors.none { it.donor is DonorProvenance.StreamDonor }
         }
         if (needsEnglishDonor) {
+            val maxEnglishToAdmit = if (mode == SessionSubtitleMode.URDU) {
+                2
+            } else {
+                targetEnglishCatalogCount.coerceAtLeast(1)
+            }
             var ingestedCatalogueDonors = 0
-            for (enCand in discovery.candidatesFor(SubtitleLanguage.ENGLISH)) {
-                if (ingestedCatalogueDonors >= 2 && mode == SessionSubtitleMode.URDU) break
+            val englishCandidates = discovery.candidatesFor(SubtitleLanguage.ENGLISH)
+            val distinctPass = englishCandidates.distinctBy { it.catalogue }
+            val remainderPass = englishCandidates.filter { it !in distinctPass }
+            for (enCand in (distinctPass + remainderPass)) {
+                if (ingestedCatalogueDonors >= maxEnglishToAdmit) break
                 val res = ingestCatalogCandidate(enCand)
                 if (res is VerifiedSubtitleCandidate.Admitted) {
                     ingestedCatalogueDonors++
@@ -454,10 +514,12 @@ class EpisodeSubtitleSession(
         forceBolChalLocalization: Boolean = false,
     ): SessionCompletionReport {
         sessionMutex.withLock {
-            flushPendingCatalogueUrduLocked()
+            reconcileStreamDonorProofsLocked(allowSinglePackInMultiSession = true)
+            flushPendingCatalogueUrduLocked(allowSinglePackInMultiSession = true)
         }
 
         val (donorToLocalize, exactStreamDurationMs) = sessionMutex.withLock {
+            reconcileStreamDonorProofsLocked(allowSinglePackInMultiSession = true)
             val wantsUrdu = mode.wantsUrduTracks
             val needsBolChal = wantsUrdu && (
                 forceBolChalLocalization ||
@@ -519,17 +581,36 @@ class EpisodeSubtitleSession(
         decodedText: String,
         provenance: ProvenanceIdentity,
         meta: CatalogueCandidateMeta?,
+        isForeignSidecar: Boolean,
     ): VerifiedSubtitleCandidate {
+        if (provenance is ProvenanceIdentity.StreamProvider && !isForeignSidecar) {
+            nonForeignStreamProviders.add(provenance.provider)
+        }
+        reconcileStreamDonorProofsLocked()
+
         val referenceEnglish = selectBestEnglishDonorLocked()?.document
         val initialProof = when (provenance) {
-            is ProvenanceIdentity.StreamProvider -> AlignmentProof(
-                warp = SubtitleTimeWarp.Identity,
-                anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
-                syncConfidence = 1.0,
-                medianOnsetResidualMs = 0,
-                p95OnsetResidualMs = 0,
-                splitCount = 0,
-            )
+            is ProvenanceIdentity.StreamProvider -> {
+                if (isVerifiedSamePackProviderLocked(provenance.provider, isForeignSidecar)) {
+                    AlignmentProof(
+                        warp = SubtitleTimeWarp.Identity,
+                        anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
+                        syncConfidence = 1.0,
+                        medianOnsetResidualMs = 0,
+                        p95OnsetResidualMs = 0,
+                        splitCount = 0,
+                    )
+                } else {
+                    AlignmentProof(
+                        warp = SubtitleTimeWarp.Identity,
+                        anchorKind = AlignmentAnchorKind.UNANCHORED,
+                        syncConfidence = 0.5,
+                        medianOnsetResidualMs = 0,
+                        p95OnsetResidualMs = 0,
+                        splitCount = 0,
+                    )
+                }
+            }
             else -> AlignmentProof(
                 warp = SubtitleTimeWarp.Identity,
                 anchorKind = AlignmentAnchorKind.UNANCHORED,
@@ -556,14 +637,26 @@ class EpisodeSubtitleSession(
                 return gated
             }
             is VerifiedSubtitleCandidate.StreamSyncedNative -> {
-                val dedupKey = gated.provenance.diversityKey to gated.document.contentSha256
-                if (mode.wantsUrduTracks && seenUrduDiversityAndContent.add(dedupKey)) {
-                    emitBakedUrduTrackLocked(gated)
-                    admittedUrduTracks.add(gated)
+                val effectiveNative = if (gated.alignment.anchorKind == AlignmentAnchorKind.UNANCHORED && speechTimeline != null) {
+                    when (val outcome = AlassAligner.alignToSparseSpeech(gated.document, speechTimeline!!)) {
+                        is AlignmentOutcome.Aligned -> gated.copy(alignment = outcome.proof)
+                        is AlignmentOutcome.RejectedMismatch -> gated
+                    }
+                } else {
+                    gated
                 }
-                return gated
+                val dedupKey = effectiveNative.provenance.diversityKey to effectiveNative.document.contentSha256
+                if (mode.wantsUrduTracks && seenUrduDiversityAndContent.add(dedupKey)) {
+                    emitBakedUrduTrackLocked(effectiveNative)
+                    admittedUrduTracks.add(effectiveNative)
+                }
+                return effectiveNative
             }
             is VerifiedSubtitleCandidate.AlignedHumanCatalogue -> {
+                if (multiProviderVideoSession && speechTimeline == null) {
+                    pendingCatalogueUrdu.add(PendingCatalogueUrduEntry(gated, meta))
+                    return gated
+                }
                 val bestStreamAnchor = bestStreamAnchorDonorLocked()
                 if (bestStreamAnchor != null) {
                     return alignAndEmitHumanCatalogueUrduLocked(gated, bestStreamAnchor)
@@ -585,6 +678,7 @@ class EpisodeSubtitleSession(
         sourceSub: SubtitleFile?,
         preDownloadScore: Int,
         isSubtitleCatOrigFallback: Boolean,
+        isForeignSidecar: Boolean,
     ): VerifiedSubtitleCandidate {
         val parsed = CueDocument.parse(decodedText, SubtitleLanguage.ENGLISH).getOrElse { err ->
             val rej = VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(err.message ?: "english_parse_failed")
@@ -604,14 +698,24 @@ class EpisodeSubtitleSession(
 
         return when (provenance) {
             is ProvenanceIdentity.StreamProvider -> {
-                val proof = AlignmentProof(
-                    warp = SubtitleTimeWarp.Identity,
-                    anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
-                    syncConfidence = 1.0,
-                    medianOnsetResidualMs = 0,
-                    p95OnsetResidualMs = 0,
-                    splitCount = 0,
-                )
+                if (!isForeignSidecar) {
+                    nonForeignStreamProviders.add(provenance.provider)
+                }
+                reconcileStreamDonorProofsLocked()
+
+                val samePack = isVerifiedSamePackProviderLocked(provenance.provider, isForeignSidecar)
+                val proof = if (samePack) {
+                    AlignmentProof(
+                        warp = SubtitleTimeWarp.Identity,
+                        anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
+                        syncConfidence = 1.0,
+                        medianOnsetResidualMs = 0,
+                        p95OnsetResidualMs = 0,
+                        splitCount = 0,
+                    )
+                } else {
+                    computeFallbackDonorProofLocked(parsed)
+                }
                 val donor = DonorProvenance.StreamDonor(provenance.provider)
                 val rank = provenance.provider.rankFor(lookupSpec.isAnime)
                 englishDonors.add(
@@ -622,11 +726,16 @@ class EpisodeSubtitleSession(
                         priorityTier = DONOR_TIER_STREAM_PROVIDER,
                         intraTierScore = rank,
                         isSubtitleCatOrigFallback = false,
+                        isForeignSidecar = isForeignSidecar,
                         sourceSubtitleFile = sourceSub,
                     )
                 )
 
-                val shouldEmitAnchor = shouldForwardProviderAnchor()
+                val activeVideos = snapshotActiveVideoProviders()
+                val canServeAsProviderAnchor = !isForeignSidecar &&
+                    (activeVideos.isEmpty() || provenance.provider in activeVideos)
+                val shouldEmitAnchor = shouldForwardProviderAnchor() && canServeAsProviderAnchor
+                val effectiveSyncProof = proof.takeIf { it.anchorKind != AlignmentAnchorKind.UNANCHORED }
                 if (shouldEmitAnchor && sourceSub != null) {
                     val anchorDedup = provenance.provider to parsed.contentSha256
                     if (seenProviderAnchorContent.add(anchorDedup)) {
@@ -635,7 +744,7 @@ class EpisodeSubtitleSession(
                         mergedHeaders.putAll(
                             ProvenanceCodec.encodeHeaders(
                                 provenance = provenance,
-                                syncProof = proof,
+                                syncProof = effectiveSyncProof,
                                 syncRole = ProvenanceCodec.SYNC_ROLE_PROVIDER_ANCHOR,
                             )
                         )
@@ -650,15 +759,15 @@ class EpisodeSubtitleSession(
                 } else if (mode == SessionSubtitleMode.DEFAULT && sourceSub != null) {
                     val mergedHeaders = LinkedHashMap<String, String>()
                     sourceSub.headers?.let { mergedHeaders.putAll(sanitizePublicSubtitleHeaders(it)) }
-                    mergedHeaders.putAll(ProvenanceCodec.encodeHeaders(provenance, proof))
+                    mergedHeaders.putAll(ProvenanceCodec.encodeHeaders(provenance, effectiveSyncProof))
                     subtitleCallback(
-                        newSubtitleFile(sourceSub.lang.ifBlank { "English" }, sourceSub.url) {
+                        newSubtitleFile(sourceSub.lang.ifBlank { "English [${provenance.provider.displayBadge}]" }, sourceSub.url) {
                             this.headers = mergedHeaders
                         }
                     )
                 }
 
-                if (pendingCatalogueUrdu.isNotEmpty()) {
+                if (!multiProviderVideoSession && pendingCatalogueUrdu.isNotEmpty() && bestStreamAnchorDonorLocked() != null) {
                     flushPendingCatalogueUrduLocked()
                 }
 
@@ -731,6 +840,7 @@ class EpisodeSubtitleSession(
                         priorityTier = tier,
                         intraTierScore = intraScore,
                         isSubtitleCatOrigFallback = isSubtitleCatOrigFallback,
+                        isForeignSidecar = false,
                         sourceSubtitleFile = sourceSub,
                     )
                 )
@@ -763,6 +873,7 @@ class EpisodeSubtitleSession(
                         alignment = proof,
                         priorityTier = DONOR_TIER_HUMAN_CATALOGUE,
                         intraTierScore = 80,
+                        isForeignSidecar = isForeignSidecar,
                         sourceSubtitleFile = sourceSub,
                     )
                 )
@@ -779,9 +890,11 @@ class EpisodeSubtitleSession(
         }
     }
 
-    private suspend fun flushPendingCatalogueUrduLocked() {
+    private suspend fun flushPendingCatalogueUrduLocked(
+        allowSinglePackInMultiSession: Boolean = false,
+    ) {
         if (pendingCatalogueUrdu.isEmpty()) return
-        val bestAnchor = bestStreamAnchorDonorLocked()
+        val bestAnchor = bestStreamAnchorDonorLocked(allowSinglePackInMultiSession = allowSinglePackInMultiSession)
         val currentTimeline = speechTimeline
         val entries = pendingCatalogueUrdu.toList()
         pendingCatalogueUrdu.clear()
@@ -912,20 +1025,103 @@ class EpisodeSubtitleSession(
         return out
     }
 
-    private fun bestStreamAnchorDonorLocked(): BufferedEnglishDonor? =
-        englishDonors
+    private fun isVerifiedSamePackProviderLocked(
+        provider: StreamProviderKey,
+        isForeignSidecar: Boolean,
+        allowSinglePackInMultiSession: Boolean = false,
+    ): Boolean {
+        if (isForeignSidecar) return false
+        val activeVideos = snapshotActiveVideoProviders()
+        if (activeVideos.isNotEmpty()) {
+            if (multiProviderVideoSession && !allowSinglePackInMultiSession) return false
+            return activeVideos.size == 1 && provider in activeVideos
+        }
+        if (multiProviderVideoSession) return false
+        return nonForeignStreamProviders.size == 1 && provider in nonForeignStreamProviders
+    }
+
+    private fun computeFallbackDonorProofLocked(doc: CueDocument): AlignmentProof {
+        val currentTimeline = speechTimeline
+        if (currentTimeline != null) {
+            when (val outcome = AlassAligner.alignToSparseSpeech(doc, currentTimeline)) {
+                is AlignmentOutcome.Aligned -> return outcome.proof
+                is AlignmentOutcome.RejectedMismatch -> Unit
+            }
+        }
+        return AlignmentProof(
+            warp = SubtitleTimeWarp.Identity,
+            anchorKind = AlignmentAnchorKind.UNANCHORED,
+            syncConfidence = 0.5,
+            medianOnsetResidualMs = 0,
+            p95OnsetResidualMs = 0,
+            splitCount = 0,
+        )
+    }
+
+    private fun reconcileStreamDonorProofsLocked(
+        allowSinglePackInMultiSession: Boolean = false,
+    ) {
+        for (i in englishDonors.indices) {
+            val existing = englishDonors[i]
+            val streamDonor = existing.donor as? DonorProvenance.StreamDonor ?: continue
+            val samePack = isVerifiedSamePackProviderLocked(
+                provider = streamDonor.provider,
+                isForeignSidecar = existing.isForeignSidecar,
+                allowSinglePackInMultiSession = allowSinglePackInMultiSession,
+            )
+            if (!samePack && existing.alignment.anchorKind == AlignmentAnchorKind.NATIVE_STREAM_PACK) {
+                englishDonors[i] = existing.copy(alignment = computeFallbackDonorProofLocked(existing.document))
+            } else if (samePack && existing.alignment.anchorKind == AlignmentAnchorKind.UNANCHORED && !existing.isForeignSidecar) {
+                englishDonors[i] = existing.copy(
+                    alignment = AlignmentProof(
+                        warp = SubtitleTimeWarp.Identity,
+                        anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
+                        syncConfidence = 1.0,
+                        medianOnsetResidualMs = 0,
+                        p95OnsetResidualMs = 0,
+                        splitCount = 0,
+                    )
+                )
+            }
+        }
+    }
+
+    private fun bestStreamAnchorDonorLocked(
+        allowSinglePackInMultiSession: Boolean = false,
+    ): BufferedEnglishDonor? {
+        reconcileStreamDonorProofsLocked(allowSinglePackInMultiSession = allowSinglePackInMultiSession)
+        return englishDonors
             .asSequence()
-            .filter { it.donor is DonorProvenance.StreamDonor }
+            .filter { donorEntry ->
+                val sd = donorEntry.donor as? DonorProvenance.StreamDonor ?: return@filter false
+                isVerifiedSamePackProviderLocked(
+                    provider = sd.provider,
+                    isForeignSidecar = donorEntry.isForeignSidecar,
+                    allowSinglePackInMultiSession = allowSinglePackInMultiSession,
+                )
+            }
             .maxByOrNull { it.intraTierScore }
+    }
 
     private fun selectBestEnglishDonorLocked(): BufferedEnglishDonor? =
         englishDonors.minWithOrNull(englishDonorComparator())
 
-    private fun englishDonorComparator(): Comparator<BufferedEnglishDonor> =
-        compareByDescending<BufferedEnglishDonor> { it.priorityTier }
+    private fun englishDonorComparator(): Comparator<BufferedEnglishDonor> {
+        val activeVideos = snapshotActiveVideoProviders()
+        return compareByDescending<BufferedEnglishDonor> { it.priorityTier }
+            .thenByDescending { donor ->
+                val sd = donor.donor as? DonorProvenance.StreamDonor
+                if (sd == null) {
+                    false
+                } else {
+                    !donor.isForeignSidecar && (activeVideos.isEmpty() || sd.provider in activeVideos)
+                }
+            }
+            .thenByDescending { !it.isForeignSidecar }
             .thenByDescending { !it.isSubtitleCatOrigFallback }
             .thenByDescending { it.intraTierScore }
             .thenByDescending { it.document.cues.size }
+    }
 
     private fun shouldForwardProviderAnchor(): Boolean =
         mode == SessionSubtitleMode.BILINGUAL_DOWNLOAD ||
@@ -937,13 +1133,27 @@ class EpisodeSubtitleSession(
         rawSourceHint: String?,
         headers: Map<String, String>,
     ): ProvenanceIdentity {
-        if (!rawSourceHint.isNullOrBlank()) {
+        val explicitSource = headers.entries
+            .firstOrNull { it.key.equals(ProvenanceCodec.HEADER_SOURCE, ignoreCase = true) }
+            ?.value?.trim()?.takeIf { it.isNotEmpty() }
+        val explicitOrigin = headers.entries
+            .firstOrNull { it.key.equals(ProvenanceCodec.HEADER_ORIGIN, ignoreCase = true) }
+            ?.value?.trim()
+        val isTranslated = explicitOrigin.equals(ProvenanceCodec.ORIGIN_BOLCHAL, ignoreCase = true) ||
+            explicitSource?.startsWith(ProvenanceCodec.SOURCE_URDU_TRANSLATED, ignoreCase = true) == true
+
+        if (!isTranslated && explicitSource != null) {
+            StreamProviderKey.fromTextOrHost(explicitSource)?.let {
+                return ProvenanceIdentity.StreamProvider(it)
+            }
+            CatalogueSourceKey.fromTextOrHost(explicitSource)?.let {
+                return ProvenanceIdentity.HumanCatalogue(it)
+            }
+        }
+
+        if (!rawSourceHint.isNullOrBlank() && !isTranslated) {
             StreamProviderKey.fromTextOrHost(rawSourceHint)?.let { providerKey ->
-                val isTranslated = headers[ProvenanceCodec.HEADER_ORIGIN].equals(ProvenanceCodec.ORIGIN_BOLCHAL, true) ||
-                    headers[ProvenanceCodec.HEADER_SOURCE]?.startsWith(ProvenanceCodec.SOURCE_URDU_TRANSLATED, true) == true
-                if (!isTranslated) {
-                    return ProvenanceIdentity.StreamProvider(providerKey)
-                }
+                return ProvenanceIdentity.StreamProvider(providerKey)
             }
             CatalogueSourceKey.fromTextOrHost(rawSourceHint)?.let { catKey ->
                 return ProvenanceIdentity.HumanCatalogue(catKey)
@@ -954,6 +1164,17 @@ class EpisodeSubtitleSession(
             displayName = sub.lang,
             urlOrFileName = sub.url,
         )
+    }
+
+    private fun isForeignRawSidecar(
+        rawSourceHint: String?,
+        headers: Map<String, String>,
+        resolvedProvenance: ProvenanceIdentity,
+    ): Boolean {
+        if (ProvenanceCodec.isForeignSidecarHeader(headers)) return true
+        val resolvedStream = resolvedProvenance as? ProvenanceIdentity.StreamProvider ?: return false
+        val hintedStream = rawSourceHint?.takeIf { it.isNotBlank() }?.let { StreamProviderKey.fromTextOrHost(it) }
+        return hintedStream != null && hintedStream != resolvedStream.provider
     }
 
     private fun resolveSubtitleLanguage(sub: SubtitleFile, headers: Map<String, String>): SubtitleLanguage? {

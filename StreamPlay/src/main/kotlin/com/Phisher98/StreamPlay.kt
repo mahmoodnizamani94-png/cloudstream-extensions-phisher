@@ -1223,11 +1223,19 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             earlyController.onCandidateLink(optimizedLink)
             return when (deduplicator.emitDetailed(optimizedLink)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {
+                    episodeSubtitleSession?.registerActiveVideoProviderHint(
+                        optimizedLink.headers["X-StreamPlay-Source"]
+                            ?: optimizedLink.source.ifBlank { optimizedLink.name }
+                    )
                     linksFound.incrementAndGet()
                     earlyController.onLinkEmitted(optimizedLink)
                     true
                 }
                 StreamLinkOptimizer.DeduplicationResult.UPGRADED -> {
+                    episodeSubtitleSession?.registerActiveVideoProviderHint(
+                        optimizedLink.headers["X-StreamPlay-Source"]
+                            ?: optimizedLink.source.ifBlank { optimizedLink.name }
+                    )
                     earlyController.onLinkUpgraded(optimizedLink)
                     true
                 }
@@ -1286,7 +1294,11 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     if (sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
                         emitSessionSubtitle(shieldedSub)
                     } else if (deferredNonUrduSubtitles.size < 4) {
+                        val wasEmpty = deferredNonUrduSubtitles.isEmpty()
                         deferredNonUrduSubtitles.add(shieldedSub)
+                        if (wasEmpty && subtitlesFound.get() == 0) {
+                            earlyController.onSubtitleEmitted(shieldedSub)
+                        }
                     }
                 }
                 val job = launch(Dispatchers.IO) {
@@ -1378,7 +1390,12 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                                 episode = res.episode,
                                 isMovie = res.isMovie == true,
                                 dubtype = if (res.isMovie == true) "Movie" else if (res.isDub) "DUB" else "SUB",
-                                subtitleCallback = { sub -> emitSubtitle(sub, "kickassanime") }
+                                subtitleCallback = { sub ->
+                                    val taggedSub = SubtitleFile(lang = sub.lang, url = sub.url).apply {
+                                        headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Foreign-Sidecar" to "true")
+                                    }
+                                    emitSubtitle(taggedSub, "kickassanime")
+                                }
                             )
                         }
                     )

@@ -641,10 +641,18 @@ class StreamPlayAnime : MainAPI() {
             earlyController.onCandidateLink(optimized)
             when (deduplicator.emitDetailed(optimized)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {
+                    episodeSubtitleSession?.registerActiveVideoProviderHint(
+                        optimized.headers["X-StreamPlay-Source"]
+                            ?: optimized.source.ifBlank { optimized.name }
+                    )
                     animeLinksFound.incrementAndGet()
                     earlyController.onLinkEmitted(optimized)
                 }
                 StreamLinkOptimizer.DeduplicationResult.UPGRADED -> {
+                    episodeSubtitleSession?.registerActiveVideoProviderHint(
+                        optimized.headers["X-StreamPlay-Source"]
+                            ?: optimized.source.ifBlank { optimized.name }
+                    )
                     earlyController.onLinkUpgraded(optimized)
                 }
                 StreamLinkOptimizer.DeduplicationResult.DROPPED -> {}
@@ -691,7 +699,11 @@ class StreamPlayAnime : MainAPI() {
                     if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
                         emitSessionSubtitle(shieldedSubtitle)
                     } else if (englishDonorSubs.size < 4) {
+                        val wasEmpty = englishDonorSubs.isEmpty()
                         englishDonorSubs.add(shieldedSubtitle)
+                        if (wasEmpty && !subtitleLedger.hasAnyEmittedSubtitle()) {
+                            earlyController.onSubtitleEmitted(shieldedSubtitle)
+                        }
                     }
                 }
                 val job = launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -821,7 +833,12 @@ class StreamPlayAnime : MainAPI() {
                             episode = episode,
                             isMovie = isMovie,
                             dubtype = dubStatus,
-                            subtitleCallback = onSubtitle
+                            subtitleCallback = { sub ->
+                                val taggedSub = SubtitleFile(lang = sub.lang, url = sub.url).apply {
+                                    headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Foreign-Sidecar" to "true")
+                                }
+                                onSubtitle(taggedSub)
+                            }
                         )
                     }
                 )
@@ -919,7 +936,7 @@ class StreamPlayAnime : MainAPI() {
                 }
                 val jobsSnapshot = rawSubtitleIngestJobs.toList()
                 val joined = kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                    jobsSnapshot.forEach { it.join() }
+                    kotlinx.coroutines.joinAll(*jobsSnapshot.toTypedArray())
                 }
                 if (joined == null) {
                     jobsSnapshot.forEach { it.cancel() }

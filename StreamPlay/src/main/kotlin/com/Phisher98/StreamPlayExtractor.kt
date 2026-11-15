@@ -2629,8 +2629,9 @@ object StreamPlayExtractor : StreamPlay() {
                 if (englishTracks.size > 1) englishTracks.drop(1) + englishTracks.first() else englishTracks
             }
             val subHeaders = ANIZONE_HEADERS + mapOf(
-                "X-StreamPlay-Source" to "animepahe",
-                "X-StreamPlay-Compat" to "meowtv"
+                "X-StreamPlay-Source" to "anizone",
+                "X-StreamPlay-Compat" to "meowtv",
+                "X-StreamPlay-Foreign-Sidecar" to "true",
             )
             val emitted = HashSet<String>()
             ordered.forEach { track ->

@@ -38,7 +38,7 @@ object CatalogueCandidateGate {
     )
 
     private val HI_MARKER_REGEX = Regex(
-        """(?i)(?:\.hi-subtitle\b|\[cc\]|\(cc\)|\[sdh\]|\(sdh\)|\[hi\]|\(hi\)|\bhearing[\s._-]*impaired\b|(?:^|[.\s_\-\[(])(?:sdh|hi)(?:$|[.\s_\-\])]))"""
+        """(?i)(?:\.hi-subtitle\b|\[cc\]|\(cc\)|\[sdh\]|\(sdh\)|\[hi\]|\(hi\)|\bhearing[\s._-]*impaired\b|(?:^|[.\s_\-\[(])sdh(?:$|[.\s_\-\])]))"""
     )
     private val MT_MARKER_REGEX = Regex(
         """(?i)(?:\bai[\s._-]*translated\b|\bmachine[\s._-]*translated\b|\bauto[\s._-]*translated\b|\bgoogle\s*translate\b|\bsubtitle\s*edit\s*mt\b|\btranslated\s+by\s+(?:ai|chatgpt|gpt|deepl|google)\b)"""

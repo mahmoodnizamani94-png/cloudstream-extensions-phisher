@@ -174,65 +174,162 @@ object BolChalPurifier {
     private val ENGLISH_HONEY_VOCATIVE_REGEX = Regex("""(?i)\bhoney\s*,""")
     private val URDU_SHAHAD_VOCATIVE_REGEX = Regex("""شہد\s*[،,]""")
 
+    data class PurifiedCueResult(
+        val text: String,
+        val registerRewrittenByRegex: Boolean,
+    )
+
     private val CUE_FORMAL_OVERRIDE_REGEX = Regex(
         """(?i)\b(?:sir|ma'am|madam|your\s+honor|your\s+majesty|officer|detective|professor|doctor|dr\.|mr\.|mrs\.|president|general|father|mother|boss)\b"""
     )
     private val CUE_INFORMAL_OVERRIDE_REGEX = Regex(
-        """(?i)\b(?:you\s+bastard|you\s+idiot|shut\s+up|get\s+lost|bro|yaar|buddy|dude|mate|honey|darling)\b"""
+        """(?i)\b(?:you\s+bastard|you\s+idiot|you\s+coward|you\s+traitor|shut\s+up|get\s+lost|go\s+to\s+hell|how\s+dare\s+you|bro|yaar|buddy|dude|mate|honey|darling)\b"""
+    )
+    private val CUE_TU_OVERRIDE_REGEX = Regex(
+        """(?i)\b(?:you\s+bastard|you\s+idiot|you\s+coward|you\s+traitor|shut\s+up|get\s+lost|go\s+to\s+hell|damn\s+you)\b"""
+    )
+    private val ENGLISH_FIRST_PERSON_SUBJECT_REGEX = Regex(
+        """(?i)(?:^|[.!?]\s+)i(?:'m|'ll|'ve|'d|\s+(?:am|was|will|can|could|want|know|think|have|need|went|came))\b"""
     )
 
+    private const val POSTPOSITION_GUARD = """(?!\s+(?:کا|کی|کے|کو|نے|سے|پر|میں|تک)(?=\s|[۔؟!،]|$))"""
+    private const val INTRA_CLAUSE_SPAN =
+        """((?:\s+(?!(?:کہ|اور|مگر|لیکن|کیونکہ|جب|جو|اگر|ورنہ|یا|کا|کی|کے|کو|نے|وہ|ہم)(?=\s|[۔؟!،]|$))[^\s\n۔؟!،]+)*)"""
+
     private val AAP_TO_TUM_REWRITES: List<Pair<Regex, String>> = listOf(
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+رہے\s+ہیں""") to "تم$1 رہے ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+رہی\s+ہیں""") to "تم$1 رہی ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+سکتے\s+ہیں""") to "تم$1 سکتے ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+سکتی\s+ہیں""") to "تم$1 سکتی ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+کرتے\s+ہیں""") to "تم$1 کرتے ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+کرتی\s+ہیں""") to "تم$1 کرتی ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+چاہتے\s+ہیں""") to "تم$1 چاہتے ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+چاہتی\s+ہیں""") to "تم$1 چاہتی ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+جانتے\s+ہیں""") to "تم$1 جانتے ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+جانتی\s+ہیں""") to "تم$1 جانتی ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+گئے\s+ہیں""") to "تم$1 گئے ہو",
-        Regex("""(?<=^|\s|[،,])آپ(\s+[^\n۔؟!،]+?)\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 ہو",
-        Regex("""(?<=^|\s)آپ\s+کا(?=\s|[۔؟!،]|$)""") to "تمہارا",
-        Regex("""(?<=^|\s)آپ\s+کی(?=\s|[۔؟!،]|$)""") to "تمہاری",
-        Regex("""(?<=^|\s)آپ\s+کے(?=\s|[۔؟!،]|$)""") to "تمہارے",
-        Regex("""(?<=^|\s)آپ\s+کو(?=\s|[۔؟!،]|$)""") to "تمہیں",
-        Regex("""(?<=^|\s)آپ\s+نے(?=\s|[۔؟!،]|$)""") to "تم نے",
-        Regex("""(?<=^|\s)آپ\s+سے(?=\s|[۔؟!،]|$)""") to "تم سے",
-        Regex("""(?<=^|\s)آپ\s+پر(?=\s|[۔؟!،]|$)""") to "تم پر",
-        Regex("""(?<=^|\s)بتائیے(?=\s|[۔؟!،]|$)""") to "بتاؤ",
-        Regex("""(?<=^|\s)سنیے(?=\s|[۔؟!،]|$)""") to "سنو",
-        Regex("""(?<=^|\s)دیکھیے(?=\s|[۔؟!،]|$)""") to "دیکھو",
-        Regex("""(?<=^|\s)دیجیے(?=\s|[۔؟!،]|$)""") to "دو",
-        Regex("""(?<=^|\s)کیجیے(?=\s|[۔؟!،]|$)""") to "کرو",
-        Regex("""(?<=^|\s)آپ(?=\s|[۔؟!،]|$)""") to "تم",
+        // 1. Possessive and oblique postpositions MUST run first so non-nominative آپ never retargets 3rd-person auxiliaries.
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کا|تیرا)(?=\s|[۔؟!،]|$)""") to "تمہارا",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کی|تیری)(?=\s|[۔؟!،]|$)""") to "تمہاری",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کے|تیرے)(?=\s|[۔؟!،]|$)""") to "تمہارے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کو|تجھے|تجھ\s+کو)(?=\s|[۔؟!،]|$)""") to "تمہیں",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+نے|تو\s+نے)(?=\s|[۔؟!،]|$)""") to "تم نے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+سے|تجھ\s+سے)(?=\s|[۔؟!،]|$)""") to "تم سے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+پر|تجھ\s+پر)(?=\s|[۔؟!،]|$)""") to "تم پر",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+میں|تجھ\s+میں)(?=\s|[۔؟!،]|$)""") to "تم میں",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+تک|تجھ\s+تک)(?=\s|[۔؟!،]|$)""") to "تم تک",
+        // 2. Strictly nominative intra-clause verb agreement (never crosses کا/کی/کے/کو/نے or کہ/اور/جب/جو).
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہے\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 رہے ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہی\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 رہی ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتے\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 سکتے ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتی\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 سکتی ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتے\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 کرتے ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتی\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 کرتی ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتے\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 چاہتے ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتی\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 چاہتی ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتے\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 جانتے ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتی\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 جانتی ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+گئے\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 گئے ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+گئی\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 گئی ہو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+ہیں(?=[۔؟!،\s]|$)""") to "تم$1 ہو",
+        // 3. Honorific imperatives and standalone nominative آپ.
+        Regex("""(?<=^|\s|[،,])بتائیے(?=\s|[۔؟!،]|$)""") to "بتاؤ",
+        Regex("""(?<=^|\s|[،,])سنیے(?=\s|[۔؟!،]|$)""") to "سنو",
+        Regex("""(?<=^|\s|[،,])دیکھیے(?=\s|[۔؟!،]|$)""") to "دیکھو",
+        Regex("""(?<=^|\s|[،,])دیجیے(?=\s|[۔؟!،]|$)""") to "دو",
+        Regex("""(?<=^|\s|[،,])کیجیے(?=\s|[۔؟!،]|$)""") to "کرو",
+        Regex("""(?<=^|\s|[،,])آپ$POSTPOSITION_GUARD(?=\s|[۔؟!،]|$)""") to "تم",
+    )
+
+    private val TO_TU_REWRITES: List<Pair<Regex, String>> = listOf(
+        // 1. Possessive and oblique postpositions first.
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کا|تمہارا)(?=\s|[۔؟!،]|$)""") to "تیرا",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کی|تمہاری)(?=\s|[۔؟!،]|$)""") to "تیری",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کے|تمہارے)(?=\s|[۔؟!،]|$)""") to "تیرے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+کو|تمہیں|تم\s+کو)(?=\s|[۔؟!،]|$)""") to "تجھے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+نے|تم\s+نے)(?=\s|[۔؟!،]|$)""") to "تو نے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+سے|تم\s+سے)(?=\s|[۔؟!،]|$)""") to "تجھ سے",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+پر|تم\s+پر)(?=\s|[۔؟!،]|$)""") to "تجھ پر",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+میں|تم\s+میں)(?=\s|[۔؟!،]|$)""") to "تجھ میں",
+        Regex("""(?<=^|\s|[،,])(?:آپ\s+تک|تم\s+تک)(?=\s|[۔؟!،]|$)""") to "تجھ تک",
+        // 2. Strictly nominative intra-clause verb agreement for تو.
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہے\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 رہا ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہی\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 رہی ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتے\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 سکتا ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتی\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 سکتی ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتے\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 کرتا ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتی\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 کرتی ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتے\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 چاہتا ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتی\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 چاہتی ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتے\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 جانتا ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتی\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 جانتی ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+گئے\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 گیا ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+گئی\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 گئی ہے",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+(?:ہیں|ہو)(?=[۔؟!،\s]|$)""") to "تو$1 ہے",
+        // 3. Intimate/angry imperatives and standalone nominative تو.
+        Regex("""(?<=^|\s|[،,])چپ\s+(?:رہیے|رہو)(?=\s|[۔؟!،]|$)""") to "چپ رہ",
+        Regex("""(?<=^|\s|[،,])بند\s+(?:کیجیے|کرو)(?=\s|[۔؟!،]|$)""") to "بند کر",
+        Regex("""(?<=^|\s|[،,])دفع\s+ہو\s+(?:جائیے|جاؤ)(?=\s|[۔؟!،]|$)""") to "دفع ہو جا",
+        Regex("""(?<=^|\s|[،,])(?:بتائیے|بتاؤ)(?=\s|[۔؟!،]|$)""") to "بتا",
+        Regex("""(?<=^|\s|[،,])(?:سنیے|سنو)(?=\s|[۔؟!،]|$)""") to "سن",
+        Regex("""(?<=^|\s|[،,])(?:دیکھیے|دیکھو)(?=\s|[۔؟!،]|$)""") to "دیکھ",
+        Regex("""(?<=^|\s|[،,])دیجیے(?=\s|[۔؟!،]|$)""") to "دے",
+        Regex("""(?<=^|\s|[،,])(?:کیجیے|کرو)(?=\s|[۔؟!،]|$)""") to "کر",
+        Regex("""(?<=^|\s|[،,])(?:آپ|تم)$POSTPOSITION_GUARD(?=\s|[۔؟!،]|$)""") to "تو",
     )
 
     private val TUM_TO_AAP_REWRITES: List<Pair<Regex, String>> = listOf(
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+رہے\s+ہو""") to "آپ$1 رہے ہیں",
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+رہی\s+ہو""") to "آپ$1 رہی ہیں",
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+سکتے\s+ہو""") to "آپ$1 سکتے ہیں",
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+سکتی\s+ہو""") to "آپ$1 سکتی ہیں",
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+کرتے\s+ہو""") to "آپ$1 کرتے ہیں",
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+کرتی\s+ہو""") to "آپ$1 کرتی ہیں",
-        Regex("""(?<=^|\s|[،,])تم(\s+[^\n۔؟!،]+?)\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 ہیں",
-        Regex("""(?<=^|\s)تمہارا(?=\s|[۔؟!،]|$)""") to "آپ کا",
-        Regex("""(?<=^|\s)تمہاری(?=\s|[۔؟!،]|$)""") to "آپ کی",
-        Regex("""(?<=^|\s)تمہارے(?=\s|[۔؟!،]|$)""") to "آپ کے",
-        Regex("""(?<=^|\s)تمہیں(?=\s|[۔؟!،]|$)""") to "آپ کو",
-        Regex("""(?<=^|\s)تم(?=\s|[۔؟!،]|$)""") to "آپ",
+        // 1. Possessive and oblique postpositions first.
+        Regex("""(?<=^|\s|[،,])(?:تمہارا|تیرا)(?=\s|[۔؟!،]|$)""") to "آپ کا",
+        Regex("""(?<=^|\s|[،,])(?:تمہاری|تیری)(?=\s|[۔؟!،]|$)""") to "آپ کی",
+        Regex("""(?<=^|\s|[،,])(?:تمہارے|تیرے)(?=\s|[۔؟!،]|$)""") to "آپ کے",
+        Regex("""(?<=^|\s|[،,])(?:تمہیں|تجھے|تم\s+کو|تجھ\s+کو)(?=\s|[۔؟!،]|$)""") to "آپ کو",
+        Regex("""(?<=^|\s|[،,])(?:تم\s+نے|تو\s+نے)(?=\s|[۔؟!،]|$)""") to "آپ نے",
+        Regex("""(?<=^|\s|[،,])(?:تم\s+سے|تجھ\s+سے)(?=\s|[۔؟!،]|$)""") to "آپ سے",
+        Regex("""(?<=^|\s|[،,])(?:تم\s+پر|تجھ\s+پر)(?=\s|[۔؟!،]|$)""") to "آپ پر",
+        Regex("""(?<=^|\s|[،,])(?:تم\s+میں|تجھ\s+میں)(?=\s|[۔؟!،]|$)""") to "آپ میں",
+        Regex("""(?<=^|\s|[،,])(?:تم\s+تک|تجھ\s+تک)(?=\s|[۔؟!،]|$)""") to "آپ تک",
+        // 2. Strictly nominative intra-clause verb agreement.
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہے\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 رہے ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہی\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 رہی ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتے\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 سکتے ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتی\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 سکتی ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتے\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 کرتے ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتی\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 کرتی ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتے\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 چاہتے ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتی\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 چاہتی ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتے\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 جانتے ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتی\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 جانتی ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+ہو(?=[۔؟!،\s]|$)""") to "آپ$1 ہیں",
+        Regex("""(?<=^|\s|[،,])تم$POSTPOSITION_GUARD(?=\s|[۔؟!،]|$)""") to "آپ",
+    )
+
+    private val FIRST_PERSON_MASC_TO_FEM_REWRITES: List<Pair<Regex, String>> = listOf(
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 رہی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہا\s+تھا(?=[۔؟!،\s]|$)""") to "میں$1 رہی تھی",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 سکتی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 کرتی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 چاہتی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 جانتی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سوچتا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 سوچتی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+گیا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 گئی ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+آیا\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 آئی ہوں",
+    )
+
+    private val FIRST_PERSON_FEM_TO_MASC_REWRITES: List<Pair<Regex, String>> = listOf(
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 رہا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+رہی\s+تھی(?=[۔؟!،\s]|$)""") to "میں$1 رہا تھا",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سکتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 سکتا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+کرتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 کرتا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+چاہتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 چاہتا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+جانتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 جانتا ہوں",
+        Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+سوچتی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 سوچتا ہوں",
     )
 
     fun purify(
         rawUrdu: String,
         sourceEnglish: LatinEnglishText? = null,
         speakerCard: SpeakerContextCard? = null,
-    ): String {
+    ): String = purifyDetailed(rawUrdu, sourceEnglish, speakerCard).text
+
+    fun purifyDetailed(
+        rawUrdu: String,
+        sourceEnglish: LatinEnglishText? = null,
+        speakerCard: SpeakerContextCard? = null,
+    ): PurifiedCueResult {
         var text = UrduOrthographyGate.normalizeUrduTypography(
             rawUrdu.replace("\u200F", "").replace("\u200E", "")
         )
-        if (text.isEmpty()) return text
+        if (text.isEmpty()) return PurifiedCueResult(text, registerRewrittenByRegex = false)
 
         val en = sourceEnglish?.text?.trim().orEmpty()
         if (URDU_AAP_KA_ISTIQBAL_REGEX.containsMatchIn(text)) {
@@ -268,23 +365,43 @@ object BolChalPurifier {
             text = pattern.replace(text, replacement)
         }
 
+        var registerRewritten = false
         if (speakerCard != null) {
             val hasFormalOverride = en.isNotEmpty() && CUE_FORMAL_OVERRIDE_REGEX.containsMatchIn(en)
             val hasInformalOverride = en.isNotEmpty() && CUE_INFORMAL_OVERRIDE_REGEX.containsMatchIn(en)
-            when (speakerCard.dominantSceneRegister) {
-                AddressRegister.TUM, AddressRegister.TU -> {
-                    if (!hasFormalOverride) {
-                        for ((pat, rep) in AAP_TO_TUM_REWRITES) {
+            val hasTuOverride = !hasFormalOverride && en.isNotEmpty() && CUE_TU_OVERRIDE_REGEX.containsMatchIn(en)
+            val effectiveRegister = when {
+                hasFormalOverride -> AddressRegister.AAP
+                hasTuOverride -> AddressRegister.TU
+                speakerCard.dominantSceneRegister == AddressRegister.AAP && hasInformalOverride -> AddressRegister.TUM
+                else -> speakerCard.dominantSceneRegister
+            }
+            val beforeRegister = text
+            val table = when (effectiveRegister) {
+                AddressRegister.TUM -> AAP_TO_TUM_REWRITES
+                AddressRegister.TU -> TO_TU_REWRITES
+                AddressRegister.AAP -> TUM_TO_AAP_REWRITES
+            }
+            for ((pat, rep) in table) {
+                text = pat.replace(text, rep)
+            }
+            if (text != beforeRegister) {
+                registerRewritten = true
+            }
+
+            if (en.isNotEmpty() && ENGLISH_FIRST_PERSON_SUBJECT_REGEX.containsMatchIn(en)) {
+                when (speakerCard.speakerGenderHint) {
+                    GenderHint.FEMININE -> {
+                        for ((pat, rep) in FIRST_PERSON_MASC_TO_FEM_REWRITES) {
                             text = pat.replace(text, rep)
                         }
                     }
-                }
-                AddressRegister.AAP -> {
-                    if (!hasInformalOverride) {
-                        for ((pat, rep) in TUM_TO_AAP_REWRITES) {
+                    GenderHint.MASCULINE -> {
+                        for ((pat, rep) in FIRST_PERSON_FEM_TO_MASC_REWRITES) {
                             text = pat.replace(text, rep)
                         }
                     }
+                    GenderHint.UNKNOWN -> Unit
                 }
             }
         }
@@ -293,7 +410,10 @@ object BolChalPurifier {
             text = text.trimEnd('۔', '.', ' ') + "..."
         }
 
-        return UrduOrthographyGate.normalizeUrduTypography(text)
+        return PurifiedCueResult(
+            text = UrduOrthographyGate.normalizeUrduTypography(text),
+            registerRewrittenByRegex = registerRewritten,
+        )
     }
 }
 
@@ -631,7 +751,13 @@ class DefaultBolChalTranslationTransport(
         }
 
         if (config.hasByokLlm) {
-            val llmRes = catchNonCancellation { translateViaOpenAiCompatibleLlm(window, config) }.getOrNull()
+            val llmAttempt = catchNonCancellation { translateViaOpenAiCompatibleLlm(window, config) }
+            llmAttempt.exceptionOrNull()?.let { err ->
+                if (err is SecurityException) {
+                    return Result.failure(err)
+                }
+            }
+            val llmRes = llmAttempt.getOrNull()
             if (llmRes != null && llmRes.size == window.targetCues.size) {
                 return Result.success(llmRes to LocalizationTierKey.LLM_SCENE)
             }
@@ -649,12 +775,51 @@ class DefaultBolChalTranslationTransport(
         }
 
         return catchNonCancellation {
-            val translated = translateWithStrictBisect(window.targetCues)
+            val translated = translateKeylessWindowWithDiscourseContext(window)
             if (translated.isEmpty()) {
                 throw IllegalStateException("Keyless Bol-Chal NMT returned 0 cues for window ${window.windowIndex}")
             }
             translated to LocalizationTierKey.KEYLESS_BOLCHAL_NMT
         }
+    }
+
+    private suspend fun translateKeylessWindowWithDiscourseContext(
+        window: SceneWindow,
+    ): Map<CueId, BolChalCueOut> {
+        if (window.contextPrev.isEmpty() && window.contextNext.isEmpty()) {
+            return translateWithStrictBisect(window.targetCues)
+        }
+        val maxId = window.targetCues.maxOfOrNull { it.id.value }?.coerceAtLeast(0) ?: 0
+        val prevSynthetic = window.contextPrev.mapIndexed { idx, cue ->
+            cue.copy(id = CueId(maxId + 1_000 + idx))
+        }
+        val nextSynthetic = window.contextNext.mapIndexed { idx, cue ->
+            cue.copy(id = CueId(maxId + 2_000 + idx))
+        }
+        val combined = ArrayList<LatinSourceCue>(prevSynthetic.size + window.targetCues.size + nextSynthetic.size).apply {
+            addAll(prevSynthetic)
+            addAll(window.targetCues)
+            addAll(nextSynthetic)
+        }
+        val joined = combined.joinToString("\n") { cue ->
+            "⟦${cue.id.value}⟧ ${cue.text.text.replace('\n', ' ')}"
+        }
+        val translatedBlock = catchNonCancellation { requestGoogleKeylessNmt(joined) }.getOrNull().orEmpty()
+        val parsed = parseBracketedIdOutput(translatedBlock, combined)
+        if (parsed.size == combined.size) {
+            val targetIds = window.targetCues.mapTo(HashSet(window.targetCues.size * 2)) { it.id }
+            val filtered = LinkedHashMap<CueId, BolChalCueOut>(window.targetCues.size)
+            for (cue in window.targetCues) {
+                val out = parsed[cue.id] ?: continue
+                if (cue.id in targetIds) {
+                    filtered[cue.id] = out
+                }
+            }
+            if (filtered.size == window.targetCues.size) {
+                return filtered
+            }
+        }
+        return translateWithStrictBisect(window.targetCues)
     }
 
     private suspend fun translateViaOpenAiCompatibleLlm(
@@ -680,11 +845,26 @@ class DefaultBolChalTranslationTransport(
         root.put("temperature", 0.2)
         val messages = root.putArray("messages")
 
+        val card = window.speakerCard
+        val registerGuidance = when (card.dominantSceneRegister) {
+            AddressRegister.AAP -> "AAP (formal/respectful: آپ, آپ کا/کی/کے, آپ کو, رہے ہیں)"
+            AddressRegister.TU -> "TU (intimate/angry: تو, تیرا/تیری/تیرے, تجھے, رہا ہے/رہی ہے)"
+            AddressRegister.TUM -> "TUM (peer conversational: تم, تمہارا/تمہاری/تمہارے, تمہیں, رہے ہو)"
+        }
+        val genderGuidance = when (card.speakerGenderHint) {
+            GenderHint.FEMININE -> "Active first-person speaker gender: FEMININE (use رہی ہوں, کرتی ہوں, گئی for 'I'). "
+            GenderHint.MASCULINE -> "Active first-person speaker gender: MASCULINE (use رہا ہوں, کرتا ہوں, گیا for 'I'). "
+            GenderHint.UNKNOWN -> ""
+        }
         val sysPrompt = buildString {
             append("You localize movie/TV/anime dialogue into natural conversational Pakistani/Hindustani spoken Urdu (bol-chal) in Urdu Nastaliq script. ")
             append("Return ONLY a valid JSON array of objects [{\"id\": <int>, \"ur\": \"<urdu>\"}] matching EVERY target cue id 1-to-1. ")
             append("NEVER merge adjacent cues or move plot reveals across '...' boundaries. ")
-            append("Default peer address register: ${window.speakerCard.dominantSceneRegister.name}. ")
+            append("Dominant scene second-person address register: $registerGuidance. ")
+            append(genderGuidance)
+            if (!card.genreToneHint.isNullOrBlank()) {
+                append("Genre/tone: ${card.genreToneHint}. ")
+            }
             append("Avoid Hindi/Sanskritized words (use گھر والے, بھروسہ, وقت, پلیز, شکریہ, خدا) and keep natural Urdu-script English loanwords (فون، کال، میسج، اوکے، سوری، پلیز، ڈاکٹر، پولیس، آفس).")
         }
         messages.addObject().apply {
@@ -693,6 +873,23 @@ class DefaultBolChalTranslationTransport(
         }
 
         val userPayload = mapper.createObjectNode()
+        userPayload.putObject("speaker_card").apply {
+            put("dominant_register", card.dominantSceneRegister.name)
+            put("speaker_gender", card.speakerGenderHint.name)
+            if (!card.genreToneHint.isNullOrBlank()) {
+                put("genre_tone", card.genreToneHint)
+            }
+            if (card.characters.isNotEmpty()) {
+                val charsObj = putObject("characters")
+                for ((name, prof) in card.characters) {
+                    charsObj.putObject(name).apply {
+                        put("urdu_name", prof.urduTransliteration)
+                        put("gender", prof.gender.name)
+                        put("peer_register", prof.defaultRegisterToPeers.name)
+                    }
+                }
+            }
+        }
         if (window.contextPrev.isNotEmpty()) {
             val prevArr = userPayload.putArray("context_prev_readonly")
             window.contextPrev.forEach { prevArr.add(it.text.text) }
@@ -748,7 +945,9 @@ class DefaultBolChalTranslationTransport(
         if (cues.isEmpty()) return emptyMap()
         if (cues.size == 1) {
             val single = cues[0]
-            val raw = requestGoogleKeylessNmt("⟦${single.id.value}⟧ ${single.text.text.replace('\n', ' ')}")
+            val raw = catchNonCancellation {
+                requestGoogleKeylessNmt("⟦${single.id.value}⟧ ${single.text.text.replace('\n', ' ')}")
+            }.getOrNull().orEmpty()
             val stripped = MARKER_EXTRACT_REGEX.replace(raw, "").trim()
             return if (stripped.isNotEmpty()) {
                 mapOf(single.id to BolChalCueOut(single.id, stripped))
@@ -963,7 +1162,9 @@ object SceneBolChalLocalizer {
     private val FORMAL_HONORIFIC_REGEX = Regex(
         """(?i)\b(?:sir|ma'am|madam|your\s+honor|your\s+majesty|officer|detective|professor|doctor|dr\.|mr\.|mrs\.|president|general|father|mother)\b"""
     )
-    private val INTIMATE_ANGER_REGEX = Regex("""(?i)\b(?:you\s+bastard|you\s+idiot|shut\s+up|get\s+lost)\b""")
+    private val INTIMATE_ANGER_REGEX = Regex(
+        """(?i)\b(?:you\s+bastard|you\s+idiot|you\s+coward|you\s+traitor|shut\s+up|get\s+lost|go\s+to\s+hell|how\s+dare\s+you|damn\s+you)\b"""
+    )
     private val FEMININE_SELF_REGEX = Regex("""(?i)\b(?:i'?m\s+a\s+(?:woman|girl|mother|sister|wife|queen)|as\s+his\s+(?:wife|sister|mother|daughter))\b""")
     private val MASCULINE_SELF_REGEX = Regex("""(?i)\b(?:i'?m\s+a\s+(?:man|boy|father|brother|husband|king)|as\s+her\s+(?:husband|brother|father|son))\b""")
     private val PROPER_NAME_VOCATIVE_REGEX = Regex("""(?:^|[.!?]\s+|,\s*)([A-Z][a-z]{2,14})(?=\s*[,!?])""")
@@ -1106,6 +1307,7 @@ object SceneBolChalLocalizer {
         config: BolChalConfig = BolChalConfig(),
         transport: BolChalTranslationTransport = DefaultBolChalTranslationTransport(),
         videoDurationMs: Long? = null,
+        initialSpeakerCard: SpeakerContextCard = SpeakerContextCard(),
         onWindowZeroReady: (suspend (CueDocument) -> Unit)? = null,
     ): Result<VerifiedSubtitleCandidate.BolChalLocalized> {
         val sourceCues = normalizeDonorCues(englishDonorDoc)
@@ -1117,96 +1319,118 @@ object SceneBolChalLocalizer {
             sourceCues = sourceCues,
             useLlmWindowSizes = config.hasByokLlm,
             sceneGapSplitMs = config.sceneGapSplitMs,
+            initialCard = initialSpeakerCard,
         )
 
         val translatedById = LinkedHashMap<CueId, String>(sourceCues.size)
+        val regexOnlyRegisterCueIds = HashSet<CueId>()
         var effectiveTier = LocalizationTierKey.KEYLESS_BOLCHAL_NMT
+        var mergedAnyWindow = false
+        var firstWindowError: Throwable? = null
         val sourceById = sourceCues.associateBy { it.id }
 
-        fun mergeWindowResult(window: SceneWindow, windowMap: Map<CueId, BolChalCueOut>, tier: LocalizationTierKey, isFirst: Boolean) {
-            if (isFirst || tier.tierRank > effectiveTier.tierRank) {
+        fun mergeWindowResult(window: SceneWindow, windowMap: Map<CueId, BolChalCueOut>, tier: LocalizationTierKey) {
+            if (!mergedAnyWindow || tier.tierRank > effectiveTier.tierRank) {
                 effectiveTier = tier
             }
+            mergedAnyWindow = true
             for ((cueId, outCue) in windowMap) {
                 val srcCue = sourceById[cueId] ?: continue
-                val purified = BolChalPurifier.purify(outCue.urduText, srcCue.text, window.speakerCard)
-                if (isAcceptablePurifiedUrduCue(purified, srcCue)) {
-                    translatedById[cueId] = purified
+                val detailed = BolChalPurifier.purifyDetailed(outCue.urduText, srcCue.text, window.speakerCard)
+                if (isAcceptablePurifiedUrduCue(detailed.text, srcCue)) {
+                    translatedById[cueId] = detailed.text
+                    if (tier != LocalizationTierKey.LLM_SCENE && detailed.registerRewrittenByRegex) {
+                        regexOnlyRegisterCueIds.add(cueId)
+                    } else {
+                        regexOnlyRegisterCueIds.remove(cueId)
+                    }
                 }
             }
+        }
+
+        fun recordWindowFailure(err: Throwable): Throwable? {
+            if (err is CancellationException) throw err
+            if (err is SecurityException) return err
+            if (firstWindowError == null) firstWindowError = err
+            return null
         }
 
         val concurrency = config.maxConcurrentWindows.coerceIn(1, 16)
         if (onWindowZeroReady != null && windows.isNotEmpty()) {
             val win0 = windows[0]
-            val (win0Map, win0Tier) = transport.translateWindow(win0, config)
-                .getOrElse { return Result.failure(it) }
-            mergeWindowResult(win0, win0Map, win0Tier, isFirst = true)
-            if (translatedById.isNotEmpty()) {
-                val win0Entries = win0.targetCues.mapNotNull { sc ->
-                    translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
-                }
-                val refinedWin0 = UrduCpsRefiner.refineDocument(win0Entries, config, videoDurationMs)
-                if (refinedWin0.isNotEmpty()) {
-                    onWindowZeroReady(CueDocument.fromCues(SubtitleLanguage.URDU, refinedWin0))
-                }
-            }
+            transport.translateWindow(win0, config).fold(
+                onSuccess = { (win0Map, win0Tier) ->
+                    mergeWindowResult(win0, win0Map, win0Tier)
+                    if (translatedById.isNotEmpty()) {
+                        val win0Entries = win0.targetCues.mapNotNull { sc ->
+                            translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
+                        }
+                        val refinedWin0 = UrduCpsRefiner.refineDocument(win0Entries, config, videoDurationMs)
+                        if (refinedWin0.isNotEmpty()) {
+                            onWindowZeroReady(CueDocument.fromCues(SubtitleLanguage.URDU, refinedWin0))
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    recordWindowFailure(err)?.let { return Result.failure(it) }
+                },
+            )
             if (windows.size > 1) {
                 val tailWindows = windows.subList(1, windows.size)
                 val sem = Semaphore(concurrency)
-                val tailResults = try {
-                    coroutineScope {
-                        tailWindows.map { win ->
-                            async {
-                                sem.withPermit {
-                                    win to transport.translateWindow(win, config).getOrThrow()
-                                }
-                            }
-                        }.awaitAll()
-                    }
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (t: Throwable) {
-                    return Result.failure(t)
-                }
-                for ((win, pair) in tailResults) {
-                    mergeWindowResult(win, pair.first, pair.second, isFirst = false)
-                }
-            }
-        } else if (windows.size == 1 || concurrency == 1) {
-            for ((idx, window) in windows.withIndex()) {
-                val (windowMap, tier) = transport.translateWindow(window, config)
-                    .getOrElse { return Result.failure(it) }
-                mergeWindowResult(window, windowMap, tier, isFirst = idx == 0)
-            }
-        } else {
-            val sem = Semaphore(concurrency)
-            val allResults = try {
-                coroutineScope {
-                    windows.map { win ->
+                val tailResults = coroutineScope {
+                    tailWindows.map { win ->
                         async {
                             sem.withPermit {
-                                win to transport.translateWindow(win, config).getOrThrow()
+                                win to transport.translateWindow(win, config)
                             }
                         }
                     }.awaitAll()
                 }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (t: Throwable) {
-                return Result.failure(t)
+                for ((win, res) in tailResults) {
+                    res.fold(
+                        onSuccess = { (winMap, tier) -> mergeWindowResult(win, winMap, tier) },
+                        onFailure = { err -> recordWindowFailure(err)?.let { return Result.failure(it) } },
+                    )
+                }
             }
-            for ((idx, entry) in allResults.withIndex()) {
-                val (win, pair) = entry
-                mergeWindowResult(win, pair.first, pair.second, isFirst = idx == 0)
+        } else if (windows.size == 1 || concurrency == 1) {
+            for (window in windows) {
+                transport.translateWindow(window, config).fold(
+                    onSuccess = { (windowMap, tier) -> mergeWindowResult(window, windowMap, tier) },
+                    onFailure = { err -> recordWindowFailure(err)?.let { return Result.failure(it) } },
+                )
             }
+        } else {
+            val sem = Semaphore(concurrency)
+            val allResults = coroutineScope {
+                windows.map { win ->
+                    async {
+                        sem.withPermit {
+                            win to transport.translateWindow(win, config)
+                        }
+                    }
+                }.awaitAll()
+            }
+            for ((win, res) in allResults) {
+                res.fold(
+                    onSuccess = { (winMap, tier) -> mergeWindowResult(win, winMap, tier) },
+                    onFailure = { err -> recordWindowFailure(err)?.let { return Result.failure(it) } },
+                )
+            }
+        }
+
+        val fatalErr = firstWindowError
+        if (translatedById.isEmpty() && fatalErr != null) {
+            return Result.failure(fatalErr)
         }
 
         val survivalRatio = translatedById.size.toDouble() / sourceCues.size.toDouble()
         if (survivalRatio < config.minRequiredCueCoverage) {
             return Result.failure(
                 IllegalStateException(
-                    "Cue survival ratio ${"%.3f".format(Locale.ROOT, survivalRatio)} below required ${config.minRequiredCueCoverage}"
+                    "Cue survival ratio ${"%.3f".format(Locale.ROOT, survivalRatio)} below required ${config.minRequiredCueCoverage}",
+                    firstWindowError,
                 )
             )
         }
@@ -1235,8 +1459,16 @@ object SceneBolChalLocalizer {
             urduDoc = finalDoc,
             referenceEnglishDoc = englishDonorDoc,
         )
+        val regexPatchedCount = regexOnlyRegisterCueIds.count { it in translatedById }
+        val registerVerifiedRatio = if (translatedById.isEmpty()) {
+            0.0
+        } else {
+            ((translatedById.size - regexPatchedCount).coerceAtLeast(0).toDouble() / translatedById.size.toDouble())
+                .coerceIn(0.0, 1.0)
+        }
+        val regexRegisterPenalty = ((1.0 - registerVerifiedRatio) * 0.15).coerceIn(0.0, 0.15)
         val cpsPenalty = if (p95Cps <= config.maxComfortCps) 0.0 else ((p95Cps - config.maxComfortCps) * 0.03).coerceAtMost(0.25)
-        val qeScore = (survivalRatio * (1.0 - (mtAudit.mtDumpScore / 200.0)) - cpsPenalty).coerceIn(0.0, 1.0)
+        val qeScore = (survivalRatio * (1.0 - (mtAudit.mtDumpScore / 200.0)) - cpsPenalty - regexRegisterPenalty).coerceIn(0.0, 1.0)
 
         val report = BolChalQualityReport(
             qeScore = qeScore,
@@ -1244,6 +1476,8 @@ object SceneBolChalLocalizer {
             maxNormalDialogueCps = maxNormalCps,
             p95VisibleCps = p95Cps,
             mtResidualScore = mtAudit.mtDumpScore,
+            regexPatchedRegisterCues = regexPatchedCount,
+            registerVerifiedCueRatio = registerVerifiedRatio,
         )
 
         return Result.success(

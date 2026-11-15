@@ -46,10 +46,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -711,7 +713,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     lookupSpec = com.phisher98.subtitles.MediaLookupSpec.Movie(
                         imdbId = null,
                         tmdbId = null,
-                        titles = listOf(name),
+                        titles = emptyList(),
                         releaseYear = null,
                     ),
                     mode = sessionMode,
@@ -721,6 +723,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     earlyController.onSubtitleEmitted(sessionSub)
                     subtitleCallback(sessionSub)
                 }
+                personalSession.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
                 val rawTracks = CopyOnWriteArrayList<SubtitleFile>()
                 SuperStreamExtractor.extractSuperStreamHtmlSidecars(
                     htmlContent = source,
@@ -750,10 +753,14 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             val expectedRuntimeMs = res.runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
 
             val liveReleaseHints = CopyOnWriteArrayList<String>()
+            val firstReleaseHintSignal = CompletableDeferred<Unit>()
             val onReleaseHint: (String) -> Unit = { rawHint ->
                 val trimmed = rawHint.trim()
-                if (trimmed.isNotEmpty() && !liveReleaseHints.contains(trimmed)) {
-                    liveReleaseHints.add(trimmed)
+                if (trimmed.isNotEmpty()) {
+                    if (!liveReleaseHints.contains(trimmed)) {
+                        liveReleaseHints.add(trimmed)
+                    }
+                    firstReleaseHintSignal.complete(Unit)
                 }
             }
 
@@ -792,8 +799,10 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 )
             }
 
-            val emittedDedupeKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            val emittedDedupeKeys: MutableSet<String> =
+                java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
             val urduEmittedCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val englishEmittedCount = java.util.concurrent.atomic.AtomicInteger(0)
             val englishFallbackBuffer = CopyOnWriteArrayList<SubtitleFile>()
             val sidecarIngestJobs = java.util.concurrent.ConcurrentLinkedQueue<Job>()
 
@@ -809,11 +818,14 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 ) {
                     if (isUrduSubtitleCode(sessionSub.lang)) {
                         urduEmittedCount.incrementAndGet()
+                    } else if (isEnglishSubtitleCode(sessionSub.lang)) {
+                        englishEmittedCount.incrementAndGet()
                     }
                     earlyController.onSubtitleEmitted(sessionSub)
                     subtitleCallback(sessionSub)
                 }
             }
+            session.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
 
             val sidecarIngestCallback: (SubtitleFile) -> Unit = { rawSub ->
                 if (isEnglishSubtitleCode(rawSub.lang)) {
@@ -831,15 +843,6 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     }
                 }
                 sidecarIngestJobs.add(job)
-            }
-
-            val catalogJob = async(Dispatchers.IO) {
-                try {
-                    session.discoverAndIngestCatalog()
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
-                }
             }
 
             val tasks = buildList {
@@ -883,6 +886,24 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 }
             }
 
+            val catalogJob = if (urduMode) {
+                async(Dispatchers.IO) {
+                    try {
+                        if (tasks.isNotEmpty()) {
+                            withTimeoutOrNull(1_500L) {
+                                firstReleaseHintSignal.await()
+                            }
+                        }
+                        session.discoverAndIngestCatalog()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                    }
+                }
+            } else {
+                null
+            }
+
             if (tasks.isNotEmpty()) {
                 SpeculativePipeliner.executePipelined(
                     tasks = tasks,
@@ -893,18 +914,22 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
 
             val sidecarSnapshot = sidecarIngestJobs.toList()
             val sidecarsJoined = withTimeoutOrNull(6_000L) {
-                for (job in sidecarSnapshot) {
-                    job.join()
-                }
+                sidecarSnapshot.joinAll()
             }
             if (sidecarsJoined == null) {
                 sidecarSnapshot.forEach { it.cancel() }
             }
-            val catalogJoined = withTimeoutOrNull(15_000L) {
-                catalogJob.await()
-            }
-            if (catalogJoined == null) {
-                catalogJob.cancel()
+            if (catalogJob != null) {
+                val catalogJoined = withTimeoutOrNull(15_000L) {
+                    catalogJob.await()
+                }
+                if (catalogJoined == null) {
+                    catalogJob.cancel()
+                }
+            } else if (!urduMode && englishEmittedCount.get() == 0) {
+                withTimeoutOrNull(8_000L) {
+                    runCatching { session.discoverAndIngestCatalog() }
+                }
             }
             withTimeoutOrNull(20_000L) {
                 session.completeSession()

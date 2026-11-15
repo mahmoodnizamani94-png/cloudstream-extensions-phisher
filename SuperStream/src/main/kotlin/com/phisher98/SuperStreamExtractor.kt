@@ -403,7 +403,7 @@ object SuperStreamExtractor : SuperStream() {
         prewarmHistory.clear()
     }
 
-    internal fun emitFebBoxSidecar(
+    internal suspend fun emitFebBoxSidecar(
         rawLang: String?,
         rawLabelOrFileName: String?,
         rawUrl: String?,
@@ -431,18 +431,19 @@ object SuperStreamExtractor : SuperStream() {
         val mergedHeaders = LinkedHashMap<String, String>()
         mergedHeaders.putAll(extraHeaders)
         mergedHeaders.putAll(febBoxProvenanceHeaders)
-        runCatching {
-            kotlinx.coroutines.runBlocking {
-                subtitleCallback.invoke(
-                    newSubtitleFile(resolvedLangLabel, cleanUrl) {
-                        this.headers = mergedHeaders
-                    },
-                )
-            }
+        try {
+            subtitleCallback.invoke(
+                newSubtitleFile(resolvedLangLabel, cleanUrl) {
+                    this.headers = mergedHeaders
+                },
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
         }
     }
 
-    internal fun extractSuperStreamHtmlSidecars(
+    internal suspend fun extractSuperStreamHtmlSidecars(
         htmlContent: String,
         extraHeaders: Map<String, String> = VIDEO_HEADERS,
         subtitleCallback: ((SubtitleFile) -> Unit)?,
@@ -464,7 +465,7 @@ object SuperStreamExtractor : SuperStream() {
         }
     }
 
-    internal fun extractFebBoxPayloadHintsAndSidecars(
+    internal suspend fun extractFebBoxPayloadHintsAndSidecars(
         rawJson: String,
         subtitleCallback: ((SubtitleFile) -> Unit)?,
         onReleaseHint: ((String) -> Unit)? = null,
@@ -472,7 +473,7 @@ object SuperStreamExtractor : SuperStream() {
         if (rawJson.isBlank()) return
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return
 
-        fun inspectSubArray(arr: JSONArray?) {
+        suspend fun inspectSubArray(arr: JSONArray?) {
             if (arr == null || subtitleCallback == null) return
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue

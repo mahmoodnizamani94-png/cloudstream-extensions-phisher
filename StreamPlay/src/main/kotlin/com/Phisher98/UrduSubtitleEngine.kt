@@ -466,6 +466,7 @@ object UrduSubtitleEngine {
         context: android.content.Context? = null,
         sharedPref: android.content.SharedPreferences? = null,
         casFormat: CasSubtitleFormat = CasSubtitleFormat.WEBVTT,
+        multiProviderVideoSession: Boolean = true,
         callbackIdentityToken: Any? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ): EpisodeSubtitleSession = EpisodeSubtitleSession(
@@ -478,6 +479,7 @@ object UrduSubtitleEngine {
         bolChalTransport = bolChalTransport,
         casFormat = casFormat,
         targetUrduDiversityCount = TARGET_URDU_SUBTITLE_SOURCES,
+        multiProviderVideoSession = multiProviderVideoSession,
         callbackIdentityToken = callbackIdentityToken ?: subtitleCallback,
         subtitleCallback = subtitleCallback,
     )

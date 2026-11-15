@@ -73,7 +73,7 @@ value class LatinEnglishText private constructor(val text: String) {
         private val BRACKET_SDH_REGEX = Regex("""\[[^\]\n]{1,90}\]""")
         private val PAREN_PURE_LINE_SDH_REGEX = Regex("""(?m)^\s*\([^)\n]{1,80}\)\s*$""")
         private val PAREN_INLINE_SDH_REGEX = Regex(
-            """\((?:(?i:[^)\n]{0,45}\b(?:sighs?|laughs?|gasps?|groans?|grunts?|chuckles?|coughs?|sniffs?|sobs?|screams?|whispers?|shouts?|yells?|panting|breathing|music|applause|cheering|footsteps|door|phone|ringing|buzzing|beeping|clicking|knocking|gunshot|gunfire|explosion|thunder|wind|rain|siren|horn|barking|crying|weeping|clears\s+throat|inaudible|indistinct|speaking|singing|narrator|voiceover|on\s+tv|on\s+radio)\b[^)\n]{0,35})|(?=[A-Z0-9\s:'_-]*[A-Z])[A-Z0-9\s:'_-]{2,45})\)"""
+            """\((?:(?i:[^)\n]{0,45}\b(?:sighs?|laughs?|gasps?|groans?|grunts?|chuckles?|coughs?|sniffs?|sobs?|screams?|whispers?|shouts?|yells?|panting|breathing|music|applause|cheering|footsteps|door|phone|ringing|buzzing|beeping|clicking|knocking|gunshot|gunfire|explosion|thunder|wind|rain|siren|horn|barking|crying|weeping|clears\s+throat|inaudible|indistinct|speaking|singing|narrator|voiceover|on\s+tv|on\s+radio)\b[^)\n]{0,35})|(?=[A-Z0-9\s:'_-]*[A-Z])(?=[A-Z0-9\s:'_-]*[\s:])[A-Z0-9\s:'_-]{4,45})\)"""
         )
         private val SPEAKER_LABEL_REGEX = Regex("""(?m)^(\s*(?:-\s*)?)[A-Z][A-Z0-9 .#'_-]{0,24}:\s*""")
         private val MULTI_SPACE_REGEX = Regex("""[^\S\n]+""")
@@ -421,6 +421,7 @@ object ProvenanceCodec {
     const val HEADER_DONOR = "X-StreamPlay-Donor"
     const val HEADER_ENGINE = "X-StreamPlay-Engine"
     const val HEADER_SYNC_ROLE = "X-StreamPlay-Sync-Role"
+    const val HEADER_FOREIGN_SIDECAR = "X-StreamPlay-Foreign-Sidecar"
     const val HEADER_SYNC = "X-StreamPlay-Sync"
     const val HEADER_SYNC_CERT = HEADER_SYNC
 
@@ -439,6 +440,11 @@ object ProvenanceCodec {
 
     fun isProviderAnchorHeader(headers: Map<String, String>): Boolean =
         headers.headerIgnoreCase(HEADER_SYNC_ROLE)?.trim()?.equals(SYNC_ROLE_PROVIDER_ANCHOR, ignoreCase = true) == true
+
+    fun isForeignSidecarHeader(headers: Map<String, String>?): Boolean =
+        headers?.headerIgnoreCase(HEADER_FOREIGN_SIDECAR)?.trim()?.let {
+            it.equals("true", ignoreCase = true) || it == "1"
+        } == true
 
     fun encodeSyncProof(proof: AlignmentProof): String =
         "${proof.anchorKind.wireId}|${String.format(Locale.US, "%.4f", proof.syncConfidence.coerceIn(0.0, 1.0))}|" +
@@ -988,6 +994,8 @@ data class BolChalQualityReport(
     val maxNormalDialogueCps: Double,
     val p95VisibleCps: Double,
     val mtResidualScore: Int,
+    val regexPatchedRegisterCues: Int = 0,
+    val registerVerifiedCueRatio: Double = 1.0,
 )
 
 sealed interface VerifiedSubtitleCandidate {
@@ -1115,18 +1123,21 @@ object SubtitleModeBridge {
             System.getProperty(PROP_LLM_ENDPOINT)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, PROP_LLM_ENDPOINT)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "llm_endpoint")?.takeIf { it.isNotBlank() }
+                ?: reader(PREFS_URDU_BOLCHAL, "bolchal_llm_endpoint")?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "endpoint")?.takeIf { it.isNotBlank() }
             )?.trim() ?: return null
         val model = (
             System.getProperty(PROP_LLM_MODEL)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, PROP_LLM_MODEL)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "llm_model")?.takeIf { it.isNotBlank() }
+                ?: reader(PREFS_URDU_BOLCHAL, "bolchal_llm_model")?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "model")?.takeIf { it.isNotBlank() }
             )?.trim() ?: return null
         val key = (
             System.getProperty(PROP_LLM_KEY)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, PROP_LLM_KEY)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "llm_api_key")?.takeIf { it.isNotBlank() }
+                ?: reader(PREFS_URDU_BOLCHAL, "bolchal_llm_api_key")?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "key")?.takeIf { it.isNotBlank() }
             )?.trim() ?: return null
         return ByokLlmConfig(endpointUrl = endpoint, modelId = model, apiKey = key)

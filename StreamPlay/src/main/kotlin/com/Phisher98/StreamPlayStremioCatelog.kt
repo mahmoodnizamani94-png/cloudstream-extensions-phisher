@@ -36,6 +36,7 @@ import com.phisher98.StreamPlayExtractor.invokeSubtitleAPI
 import com.phisher98.StreamPlayExtractor.invokeWYZIESubs
 import com.phisher98.StreamPlayExtractor.token
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -182,17 +183,26 @@ class StreamPlayStremioCatelog(
         val catalogLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
         val catalogSubsFound = java.util.concurrent.atomic.AtomicInteger(0)
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        var episodeSubtitleSessionRef: com.phisher98.subtitles.EpisodeSubtitleSession? = null
 
         fun emitSingleLinkInternal(link: ExtractorLink): Boolean {
             val optimized = StreamLinkOptimizer.optimize(link)
             earlyController.onCandidateLink(optimized)
             return when (deduplicator.emitDetailed(optimized)) {
                 StreamLinkOptimizer.DeduplicationResult.NEW -> {
+                    episodeSubtitleSessionRef?.registerActiveVideoProviderHint(
+                        optimized.headers["X-StreamPlay-Source"]
+                            ?: optimized.source.ifBlank { optimized.name }
+                    )
                     catalogLinksFound.incrementAndGet()
                     earlyController.onLinkEmitted(optimized)
                     true
                 }
                 StreamLinkOptimizer.DeduplicationResult.UPGRADED -> {
+                    episodeSubtitleSessionRef?.registerActiveVideoProviderHint(
+                        optimized.headers["X-StreamPlay-Source"]
+                            ?: optimized.source.ifBlank { optimized.name }
+                    )
                     earlyController.onLinkUpgraded(optimized)
                     true
                 }
@@ -288,7 +298,7 @@ class StreamPlayStremioCatelog(
                 callbackIdentityToken = subtitleCallback,
             ) { sessionSub ->
                 emitSessionSubtitle(sessionSub)
-            }
+            }.also { episodeSubtitleSessionRef = it }
         } else {
             null
         }
@@ -327,7 +337,11 @@ class StreamPlayStremioCatelog(
                     if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
                         emitSessionSubtitle(shieldedSub)
                     } else if (englishDonorSubs.size < 4) {
+                        val wasEmpty = englishDonorSubs.isEmpty()
                         englishDonorSubs.add(shieldedSub)
+                        if (wasEmpty && catalogSubsFound.get() == 0) {
+                            earlyController.onSubtitleEmitted(shieldedSub)
+                        }
                     }
                 }
                 val job = launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -438,7 +452,7 @@ class StreamPlayStremioCatelog(
                 }
                 val jobsSnapshot = rawSubtitleIngestJobs.toList()
                 val joined = withTimeoutOrNull(6_000L) {
-                    jobsSnapshot.forEach { it.join() }
+                    jobsSnapshot.joinAll()
                 }
                 if (joined == null) {
                     jobsSnapshot.forEach { it.cancel() }

@@ -5,6 +5,7 @@ import com.phisher98.subtitles.CatalogueSourceKey
 import com.phisher98.subtitles.ProvenanceCodec
 import com.phisher98.subtitles.ProvenanceIdentity
 import com.phisher98.subtitles.StreamProviderKey
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -12,13 +13,13 @@ class SubtitleSourceLedger(
     val targetEnglishSources: Int,
     val targetUrduSources: Int = 0,
 ) {
-    private val emittedSubtitleKeys = ConcurrentHashMap.newKeySet<String>()
-    val englishSubtitleSources = ConcurrentHashMap.newKeySet<String>()
-    val urduSubtitleSources = ConcurrentHashMap.newKeySet<String>()
-    val nativeOrHumanUrduSources = ConcurrentHashMap.newKeySet<String>()
-    val completedEnglishSubtitleProviders = ConcurrentHashMap.newKeySet<String>()
-    val completedUrduSubtitleProviders = ConcurrentHashMap.newKeySet<String>()
-    val providerAnchorSources = ConcurrentHashMap.newKeySet<String>()
+    private val emittedSubtitleKeys: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val englishSubtitleSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val urduSubtitleSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val nativeOrHumanUrduSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val completedEnglishSubtitleProviders: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val completedUrduSubtitleProviders: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val providerAnchorSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     private fun wireTokenOf(identity: ProvenanceIdentity): String = when (identity) {
         is ProvenanceIdentity.StreamProvider -> identity.provider.wireId

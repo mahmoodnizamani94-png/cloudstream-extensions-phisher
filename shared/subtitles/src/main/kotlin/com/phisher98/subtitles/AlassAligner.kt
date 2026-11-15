@@ -524,7 +524,6 @@ object AlassAligner {
             val eTick = max(sTick + 1, (fps.scaleUs(cue.span.endMs * 1_000L) / tickUs).toInt())
             val ls = eTick - sTick
             val unitSlope = (FP_UNIT / ls.toDouble()).toFloat()
-            val fixedSlopeFp = if (unitWeightOnly) unitSlope.roundToInt() else 0
             val minRefEnd = sTick - maxOffsetTicks
             val maxRefStart = eTick + maxOffsetTicks
             while (rStart < refSize && refEnds[rStart] <= minRefEnd) {
@@ -535,7 +534,11 @@ object AlassAligner {
                 val rs = refStarts[j]
                 val re = refEnds[j]
                 if (re > rs) {
-                    val slopeFp = if (unitWeightOnly) fixedSlopeFp else (refWeights[j] * unitSlope).roundToInt()
+                    val slopeFp = if (unitWeightOnly) {
+                        (FP_UNIT / max(ls, re - rs).toDouble()).roundToInt()
+                    } else {
+                        (refWeights[j] * unitSlope).roundToInt()
+                    }
                     accumulatePairTrapezoidFp(
                         dd = dd,
                         v0Acc = v0Acc,
@@ -655,7 +658,11 @@ object AlassAligner {
         val dpRefSpans = downsampleTickSpans(refSpans, DP_TICK_STRIDE)
         val dpDd = IntArray(dpGridSize)
 
-        val screenCues = subsampleCuesForFpsScreen(candidate.cues, maxSample = 120)
+        val screenCues = if (observedWindows != null || dpRefSpans.size <= 256) {
+            candidate.cues
+        } else {
+            subsampleCuesForFpsScreen(candidate.cues, maxSample = 160)
+        }
         val unityProfile = sweepSingleFpsProfile(
             cues = screenCues,
             fps = FpsRatio.UNITY,
