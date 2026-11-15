@@ -5,11 +5,11 @@ import com.lagradost.cloudstream3.newSubtitleFile
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.net.URI
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 enum class CasSubtitleFormat(val extension: String) {
     WEBVTT("vtt"),
@@ -36,22 +36,22 @@ class UrduCasStore(
     private val rootDir: File = File(System.getProperty("java.io.tmpdir"), "cs_urdu_cas_v2"),
     val maxActiveSlots: Int = 256,
     val maxPrewarmMetadataSlots: Int = 128,
+    private val pinLeaseTtlMs: Long = DEFAULT_PIN_LEASE_TTL_MS,
 ) {
     init {
         require(maxActiveSlots >= 1) { "maxActiveSlots must be >= 1" }
         require(maxPrewarmMetadataSlots >= 1) { "maxPrewarmMetadataSlots must be >= 1" }
+        require(pinLeaseTtlMs >= 1_000L) { "pinLeaseTtlMs must be >= 1000" }
         require(!rootDir.name.contains("superstream", ignoreCase = true)) {
             "UrduCasStore directory name cannot contain provider-specific 'superstream'"
         }
     }
 
-    private val storeLock = Any()
-    private val pinnedFileNames = HashSet<String>()
+    private val canonicalRootPath: String =
+        runCatching { rootDir.canonicalPath }.getOrElse { rootDir.absolutePath }
 
-    private val prewarmMetadataLru = object : LinkedHashMap<String, PrewarmMetadataSummary>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PrewarmMetadataSummary>?): Boolean =
-            size > maxPrewarmMetadataSlots
-    }
+    private val sharedState: SharedRootState =
+        SHARED_ROOT_STATES.computeIfAbsent(canonicalRootPath) { SharedRootState() }
 
     fun writeAlignedSubtitle(
         doc: CueDocument,
@@ -60,30 +60,21 @@ class UrduCasStore(
         format: CasSubtitleFormat = CasSubtitleFormat.WEBVTT,
         pinActive: Boolean = false,
     ): CasStoredSubtitle {
-        val serializedText: String
-        val cueCount: Int
-        val contentSha: ContentSha256
-
-        when (format) {
-            CasSubtitleFormat.WEBVTT -> {
-                val baked = WebVttBaker.bake(doc, warp, videoDurationMs)
-                serializedText = baked.utf8Content
-                cueCount = baked.cueCount
-                contentSha = baked.bakedContentSha256
-            }
-            CasSubtitleFormat.SRT -> {
-                val srtBody = WebVttBaker.serializeSrt(doc, warp, videoDurationMs)
-                serializedText = "\uFEFF$srtBody"
-                cueCount = doc.cues.size
-                contentSha = ContentSha256.ofUtf8(srtBody)
-            }
+        val baked = when (format) {
+            CasSubtitleFormat.WEBVTT -> WebVttBaker.bake(doc, warp, videoDurationMs)
+            CasSubtitleFormat.SRT -> WebVttBaker.bakeSrt(doc, warp, videoDurationMs, includeUtf8Bom = true)
         }
+        val serializedText = baked.utf8Content
+        val cueCount = baked.cueCount
+        val contentSha = baked.bakedContentSha256
 
         val shaPrefix24 = contentSha.hex.take(24)
         val fileName = "${CAS_FILE_PREFIX}${shaPrefix24}.${format.extension}"
         check(!fileName.contains("superstream", ignoreCase = true))
 
-        val targetFile = synchronized(storeLock) {
+        val targetFile = synchronized(sharedState.lock) {
+            val nowMs = System.currentTimeMillis()
+            pruneExpiredPinsLocked(nowMs)
             if (!rootDir.exists()) {
                 rootDir.mkdirs()
             }
@@ -92,26 +83,20 @@ class UrduCasStore(
                 val tmp = File(rootDir, ".tmp_${UUID.randomUUID()}_$fileName")
                 try {
                     tmp.writeBytes(serializedText.toByteArray(StandardCharsets.UTF_8))
-                    runCatching {
-                        Files.move(
-                            tmp.toPath(),
-                            out.toPath(),
-                            StandardCopyOption.REPLACE_EXISTING,
-                            StandardCopyOption.ATOMIC_MOVE,
-                        )
-                    }.getOrElse {
-                        Files.move(tmp.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    if (!tmp.renameTo(out)) {
+                        tmp.copyTo(out, overwrite = true)
+                        tmp.delete()
                     }
                 } finally {
                     if (tmp.exists()) tmp.delete()
                 }
             } else {
-                out.setLastModified(System.currentTimeMillis())
+                out.setLastModified(nowMs)
             }
             if (pinActive) {
-                pinnedFileNames.add(fileName)
+                sharedState.pinExpiryMsByName[fileName] = nowMs + pinLeaseTtlMs
             }
-            evictExcessActiveFilesLocked(protectedName = fileName)
+            evictExcessActiveFilesLocked(protectedName = fileName, nowMs = nowMs)
             out
         }
 
@@ -125,12 +110,33 @@ class UrduCasStore(
     }
 
     fun unpin(fileName: String) {
-        synchronized(storeLock) {
-            pinnedFileNames.remove(fileName)
+        synchronized(sharedState.lock) {
+            sharedState.pinExpiryMsByName.remove(fileName)
         }
     }
 
-    fun listActiveSubtitleFiles(): List<File> = synchronized(storeLock) {
+    fun readOwnedCasFileBytesOrNull(fileUrl: String): ByteArray? {
+        if (!fileUrl.startsWith("file:", ignoreCase = true)) return null
+        val candidate = runCatching { File(URI(fileUrl.trim())) }.getOrElse {
+            val rawPath = fileUrl.trim().removePrefix("file://").removePrefix("file:")
+            File(rawPath)
+        }
+        val canonicalCandidate = runCatching { candidate.canonicalFile }.getOrNull() ?: return null
+        val canonicalRoot = runCatching { rootDir.canonicalFile }.getOrElse { rootDir.absoluteFile }
+        if (canonicalCandidate.parentFile != canonicalRoot) return null
+        if (!canonicalCandidate.isFile) return null
+        val name = canonicalCandidate.name
+        if (!name.startsWith(CAS_FILE_PREFIX) || (!name.endsWith(".vtt") && !name.endsWith(".srt"))) {
+            return null
+        }
+        val len = canonicalCandidate.length()
+        if (len <= 0L || len > SubtitleArchiveDecoder.MAX_DECODED_BYTES.toLong()) return null
+        return synchronized(sharedState.lock) {
+            runCatching { canonicalCandidate.readBytes() }.getOrNull()
+        }
+    }
+
+    fun listActiveSubtitleFiles(): List<File> = synchronized(sharedState.lock) {
         rootDir.listFiles { f ->
             f.isFile && f.name.startsWith(CAS_FILE_PREFIX) &&
                 (f.name.endsWith(".vtt") || f.name.endsWith(".srt"))
@@ -142,8 +148,8 @@ class UrduCasStore(
         catalogSources: SubtitleCatalogSources,
     ): PrewarmMetadataSummary {
         val key = buildLookupKey(spec)
-        synchronized(storeLock) {
-            prewarmMetadataLru[key]?.let { return it }
+        synchronized(sharedState.lock) {
+            sharedState.prewarmMetadataLru[key]?.let { return it }
         }
         val discovery = catalogSources.discoverCandidates(
             spec = spec,
@@ -158,17 +164,31 @@ class UrduCasStore(
             topUrduCatalogues = urCands.map { it.catalogue }.distinct(),
             topEnglishCatalogues = enCands.map { it.catalogue }.distinct(),
         )
-        synchronized(storeLock) {
-            prewarmMetadataLru[key] = summary
+        synchronized(sharedState.lock) {
+            sharedState.prewarmMetadataLru[key] = summary
+            while (sharedState.prewarmMetadataLru.size > maxPrewarmMetadataSlots) {
+                val eldestKey = sharedState.prewarmMetadataLru.keys.firstOrNull() ?: break
+                sharedState.prewarmMetadataLru.remove(eldestKey)
+            }
         }
         return summary
     }
 
-    fun getPrewarmedMetadata(spec: MediaLookupSpec): PrewarmMetadataSummary? = synchronized(storeLock) {
-        prewarmMetadataLru[buildLookupKey(spec)]
+    fun getPrewarmedMetadata(spec: MediaLookupSpec): PrewarmMetadataSummary? = synchronized(sharedState.lock) {
+        sharedState.prewarmMetadataLru[buildLookupKey(spec)]
     }
 
-    private fun evictExcessActiveFilesLocked(protectedName: String) {
+    private fun pruneExpiredPinsLocked(nowMs: Long) {
+        val iter = sharedState.pinExpiryMsByName.entries.iterator()
+        while (iter.hasNext()) {
+            if (iter.next().value <= nowMs) {
+                iter.remove()
+            }
+        }
+    }
+
+    private fun evictExcessActiveFilesLocked(protectedName: String, nowMs: Long) {
+        pruneExpiredPinsLocked(nowMs)
         val activeFiles = rootDir.listFiles { f ->
             f.isFile && f.name.startsWith(CAS_FILE_PREFIX) &&
                 (f.name.endsWith(".vtt") || f.name.endsWith(".srt"))
@@ -179,7 +199,9 @@ class UrduCasStore(
         var remaining = activeFiles.size
         for (candidate in activeFiles) {
             if (remaining <= maxActiveSlots) break
-            if (candidate.name == protectedName || candidate.name in pinnedFileNames) continue
+            val expiry = sharedState.pinExpiryMsByName[candidate.name]
+            val isPinned = expiry != null && expiry > nowMs
+            if (candidate.name == protectedName || isPinned) continue
             if (candidate.delete()) {
                 remaining--
             }
@@ -198,8 +220,16 @@ class UrduCasStore(
         }
     }
 
+    private class SharedRootState {
+        val lock = Any()
+        val pinExpiryMsByName = HashMap<String, Long>()
+        val prewarmMetadataLru = LinkedHashMap<String, PrewarmMetadataSummary>(32, 0.75f, true)
+    }
+
     companion object {
         const val CAS_FILE_PREFIX = "cs_urdu_v2_"
+        const val DEFAULT_PIN_LEASE_TTL_MS = 6L * 3_600_000L
+        private val SHARED_ROOT_STATES = ConcurrentHashMap<String, SharedRootState>()
     }
 }
 
@@ -231,6 +261,7 @@ class EpisodeSubtitleSession(
     val bolChalTransport: BolChalTranslationTransport = DefaultBolChalTranslationTransport(),
     val casFormat: CasSubtitleFormat = CasSubtitleFormat.WEBVTT,
     val targetUrduDiversityCount: Int = 2,
+    initialSpeechTimeline: SpeechActivityTimeline? = null,
     private val callbackIdentityToken: Any? = null,
     private val subtitleCallback: (SubtitleFile) -> Unit,
 ) {
@@ -243,6 +274,7 @@ class EpisodeSubtitleSession(
     private val seenUrduDiversityAndContent = HashSet<Pair<String, ContentSha256>>()
     private val seenProviderAnchorContent = HashSet<Pair<StreamProviderKey, ContentSha256>>()
     private val storedCasOutputs = ArrayList<CasStoredSubtitle>()
+    private var speechTimeline: SpeechActivityTimeline? = initialSpeechTimeline
     private var emittedAnchorCount = 0
     private var localizedDonorSelected: DonorProvenance? = null
 
@@ -251,19 +283,43 @@ class EpisodeSubtitleSession(
         val meta: CatalogueCandidateMeta?,
     )
 
+    suspend fun attachSpeechTimeline(timeline: SpeechActivityTimeline) {
+        sessionMutex.withLock {
+            speechTimeline = timeline
+            if (bestStreamAnchorDonorLocked() == null && pendingCatalogueUrdu.isNotEmpty()) {
+                flushPendingCatalogueUrduLocked()
+            }
+        }
+    }
+
     suspend fun ingestRawSubtitle(
         sub: SubtitleFile,
         rawSourceHint: String? = null,
         rawBytesOverride: ByteArray? = null,
     ): VerifiedSubtitleCandidate? {
         val headers = sub.headers.orEmpty()
+        headers.entries.firstOrNull { it.key.equals(HEADER_SPEECH_TIMELINE_B64, ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+            ?.let { b64 ->
+                SpeechTimelineCodec.decodeCompact(b64).getOrNull()?.let { decodedTimeline ->
+                    sessionMutex.withLock {
+                        if (speechTimeline == null) {
+                            speechTimeline = decodedTimeline
+                        }
+                    }
+                }
+            }
+
         val resolvedProvenance = resolveRawSubtitleProvenance(sub, rawSourceHint, headers)
         val detectedLanguage = resolveSubtitleLanguage(sub, headers)
             ?: return null
 
-        val rawBytes = rawBytesOverride
-            ?: httpTransport.get(sub.url, headers).getOrNull()?.bodyBytes
-            ?: return null
+        val rawBytes = when {
+            rawBytesOverride != null -> rawBytesOverride
+            sub.url.startsWith("file:", ignoreCase = true) -> casStore.readOwnedCasFileBytesOrNull(sub.url)
+            else -> httpTransport.get(sub.url, headers).getOrNull()?.bodyBytes
+        } ?: return null
 
         val decodedText = SubtitleArchiveDecoder.decode(rawBytes, lookupSpec).getOrElse { err ->
             val rej = VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(err.message ?: "archive_decode_failed")
@@ -327,23 +383,26 @@ class EpisodeSubtitleSession(
                     meta = discovered.meta,
                 )
                 SubtitleLanguage.ENGLISH -> {
-                    if (mode == SessionSubtitleMode.DEFAULT || mode == SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
-                        if (!discovered.isSubtitleCatOrigDonor) {
-                            val enHeaders = discovered.requestHeaders + ProvenanceCodec.encodeHeaders(provenance)
-                            subtitleCallback(
-                                newSubtitleFile("English", discovered.downloadUrl) {
-                                    this.headers = enHeaders
-                                }
-                            )
-                        }
-                    }
-                    ingestDecodedEnglishLocked(
+                    val ingested = ingestDecodedEnglishLocked(
                         decodedText = decodedText,
                         provenance = provenance,
                         sourceSub = null,
                         preDownloadScore = discovered.preDownloadScore,
                         isSubtitleCatOrigFallback = discovered.isSubtitleCatOrigDonor,
                     )
+                    if (ingested is VerifiedSubtitleCandidate.Admitted &&
+                        (mode == SessionSubtitleMode.DEFAULT || mode == SessionSubtitleMode.BILINGUAL_DOWNLOAD) &&
+                        !discovered.isSubtitleCatOrigDonor
+                    ) {
+                        val enHeaders = sanitizePublicSubtitleHeaders(discovered.requestHeaders) +
+                            ProvenanceCodec.encodeHeaders(provenance)
+                        subtitleCallback(
+                            newSubtitleFile("English", discovered.downloadUrl) {
+                                this.headers = enHeaders
+                            }
+                        )
+                    }
+                    ingested
                 }
             }
         }
@@ -368,7 +427,7 @@ class EpisodeSubtitleSession(
 
         for (urCand in discovery.candidatesFor(SubtitleLanguage.URDU)) {
             val enoughUrdu = sessionMutex.withLock {
-                admittedUrduTracks.size + pendingCatalogueUrdu.size >= targetUrduDiversityCount
+                distinctUrduDiversityCountLocked() >= targetUrduDiversityCount
             }
             if (enoughUrdu) break
             ingestCatalogCandidate(urCand)
@@ -398,19 +457,17 @@ class EpisodeSubtitleSession(
             flushPendingCatalogueUrduLocked()
         }
 
-        val donorToLocalize: BufferedEnglishDonor? = sessionMutex.withLock {
+        val (donorToLocalize, exactStreamDurationMs) = sessionMutex.withLock {
             val wantsUrdu = mode.wantsUrduTracks
             val needsBolChal = wantsUrdu && (
                 forceBolChalLocalization ||
                     admittedUrduTracks.isEmpty() ||
                     (admittedUrduTracks.none { it is VerifiedSubtitleCandidate.StreamSyncedNative } &&
-                        admittedUrduTracks.size < targetUrduDiversityCount)
+                        admittedDistinctUrduDiversityCountLocked() < targetUrduDiversityCount)
                 )
-            if (!needsBolChal) {
-                null
-            } else {
-                selectBestEnglishDonorLocked()
-            }
+            val chosen = if (!needsBolChal) null else selectBestEnglishDonorLocked()
+            val exactDur = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
+            chosen to exactDur
         }
 
         if (donorToLocalize != null) {
@@ -420,7 +477,7 @@ class EpisodeSubtitleSession(
                 alignmentProof = donorToLocalize.alignment,
                 config = bolChalConfig,
                 transport = bolChalTransport,
-                videoDurationMs = lookupSpec.expectedDurationMs,
+                videoDurationMs = exactStreamDurationMs,
             )
             sessionMutex.withLock {
                 localizedResult.fold(
@@ -511,6 +568,10 @@ class EpisodeSubtitleSession(
                 if (bestStreamAnchor != null) {
                     return alignAndEmitHumanCatalogueUrduLocked(gated, bestStreamAnchor)
                 }
+                val timeline = speechTimeline
+                if (timeline != null) {
+                    return alignToSpeechAndEmitHumanCatalogueUrduLocked(gated, timeline)
+                }
                 pendingCatalogueUrdu.add(PendingCatalogueUrduEntry(gated, meta))
                 return gated
             }
@@ -529,6 +590,16 @@ class EpisodeSubtitleSession(
             val rej = VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(err.message ?: "english_parse_failed")
             rejectedTracks.add(rej)
             return rej
+        }
+
+        val requiresStrictEnglishCheck = isSubtitleCatOrigFallback ||
+            (provenance is ProvenanceIdentity.HumanCatalogue && provenance.catalogue == CatalogueSourceKey.SUBTITLECAT)
+        if (requiresStrictEnglishCheck) {
+            UrduOrthographyGate.verifyEnglishDonorDocument(parsed).exceptionOrNull()?.let { err ->
+                val rej = VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(err.message ?: "non_english_donor")
+                rejectedTracks.add(rej)
+                return rej
+            }
         }
 
         return when (provenance) {
@@ -560,7 +631,7 @@ class EpisodeSubtitleSession(
                     val anchorDedup = provenance.provider to parsed.contentSha256
                     if (seenProviderAnchorContent.add(anchorDedup)) {
                         val mergedHeaders = LinkedHashMap<String, String>()
-                        sourceSub.headers?.let { mergedHeaders.putAll(it) }
+                        sourceSub.headers?.let { mergedHeaders.putAll(sanitizePublicSubtitleHeaders(it)) }
                         mergedHeaders.putAll(
                             ProvenanceCodec.encodeHeaders(
                                 provenance = provenance,
@@ -578,7 +649,7 @@ class EpisodeSubtitleSession(
                     }
                 } else if (mode == SessionSubtitleMode.DEFAULT && sourceSub != null) {
                     val mergedHeaders = LinkedHashMap<String, String>()
-                    sourceSub.headers?.let { mergedHeaders.putAll(it) }
+                    sourceSub.headers?.let { mergedHeaders.putAll(sanitizePublicSubtitleHeaders(it)) }
                     mergedHeaders.putAll(ProvenanceCodec.encodeHeaders(provenance, proof))
                     subtitleCallback(
                         newSubtitleFile(sourceSub.lang.ifBlank { "English" }, sourceSub.url) {
@@ -610,29 +681,46 @@ class EpisodeSubtitleSession(
                 }
 
                 val bestStreamAnchor = bestStreamAnchorDonorLocked()
-                val donorAlignment = if (bestStreamAnchor != null) {
-                    when (val outcome = AlassAligner.alignToAnchorCues(
-                        candidate = parsed,
-                        anchor = bestStreamAnchor.document,
-                        anchorKind = AlignmentAnchorKind.CROSS_PROVIDER_SIDECAR,
-                        videoDurationMs = lookupSpec.expectedDurationMs,
-                    )) {
-                        is AlignmentOutcome.Aligned -> outcome.proof
-                        is AlignmentOutcome.RejectedMismatch -> {
-                            val rej = VerifiedSubtitleCandidate.Rejected.SyncMismatch(outcome.bestScore, outcome.residualMs)
-                            rejectedTracks.add(rej)
-                            return rej
+                val currentTimeline = speechTimeline
+                val donorAlignment = when {
+                    bestStreamAnchor != null -> {
+                        when (val outcome = AlassAligner.alignToAnchorCues(
+                            candidate = parsed,
+                            anchor = bestStreamAnchor.document,
+                            anchorKind = AlignmentAnchorKind.CROSS_PROVIDER_SIDECAR,
+                            videoDurationMs = lookupSpec.expectedDurationMs,
+                        )) {
+                            is AlignmentOutcome.Aligned -> outcome.proof
+                            is AlignmentOutcome.RejectedMismatch -> {
+                                val rej = VerifiedSubtitleCandidate.Rejected.SyncMismatch(outcome.bestScore, outcome.residualMs)
+                                rejectedTracks.add(rej)
+                                return rej
+                            }
                         }
                     }
-                } else {
-                    AlignmentProof(
-                        warp = SubtitleTimeWarp.Identity,
-                        anchorKind = AlignmentAnchorKind.UNANCHORED,
-                        syncConfidence = 0.55,
-                        medianOnsetResidualMs = 0,
-                        p95OnsetResidualMs = 0,
-                        splitCount = 0,
-                    )
+                    currentTimeline != null -> {
+                        when (val outcome = AlassAligner.alignToSparseSpeech(
+                            candidate = parsed,
+                            timeline = currentTimeline,
+                        )) {
+                            is AlignmentOutcome.Aligned -> outcome.proof
+                            is AlignmentOutcome.RejectedMismatch -> {
+                                val rej = VerifiedSubtitleCandidate.Rejected.SyncMismatch(outcome.bestScore, outcome.residualMs)
+                                rejectedTracks.add(rej)
+                                return rej
+                            }
+                        }
+                    }
+                    else -> {
+                        AlignmentProof(
+                            warp = SubtitleTimeWarp.Identity,
+                            anchorKind = AlignmentAnchorKind.UNANCHORED,
+                            syncConfidence = 0.55,
+                            medianOnsetResidualMs = 0,
+                            p95OnsetResidualMs = 0,
+                            splitCount = 0,
+                        )
+                    }
                 }
 
                 englishDonors.add(
@@ -694,22 +782,25 @@ class EpisodeSubtitleSession(
     private suspend fun flushPendingCatalogueUrduLocked() {
         if (pendingCatalogueUrdu.isEmpty()) return
         val bestAnchor = bestStreamAnchorDonorLocked()
+        val currentTimeline = speechTimeline
         val entries = pendingCatalogueUrdu.toList()
         pendingCatalogueUrdu.clear()
 
         for (entry in entries) {
-            if (admittedUrduTracks.size >= targetUrduDiversityCount) continue
-            if (bestAnchor != null) {
-                alignAndEmitHumanCatalogueUrduLocked(entry.candidate, bestAnchor)
-            } else {
-                val dedupKey = entry.candidate.provenance.diversityKey to entry.candidate.document.contentSha256
-                val alreadySeenIdenticalBytes = admittedUrduTracks.any {
-                    it is VerifiedSubtitleCandidate.AlignedHumanCatalogue &&
-                        it.document.contentSha256 == entry.candidate.document.contentSha256
-                }
-                if (!alreadySeenIdenticalBytes && mode.wantsUrduTracks && seenUrduDiversityAndContent.add(dedupKey)) {
-                    emitBakedUrduTrackLocked(entry.candidate)
-                    admittedUrduTracks.add(entry.candidate)
+            if (admittedDistinctUrduDiversityCountLocked() >= targetUrduDiversityCount) continue
+            when {
+                bestAnchor != null -> alignAndEmitHumanCatalogueUrduLocked(entry.candidate, bestAnchor)
+                currentTimeline != null -> alignToSpeechAndEmitHumanCatalogueUrduLocked(entry.candidate, currentTimeline)
+                else -> {
+                    val dedupKey = entry.candidate.provenance.diversityKey to entry.candidate.document.contentSha256
+                    val alreadySeenIdenticalBytes = admittedUrduTracks.any {
+                        it is VerifiedSubtitleCandidate.AlignedHumanCatalogue &&
+                            it.document.contentSha256 == entry.candidate.document.contentSha256
+                    }
+                    if (!alreadySeenIdenticalBytes && mode.wantsUrduTracks && seenUrduDiversityAndContent.add(dedupKey)) {
+                        emitBakedUrduTrackLocked(entry.candidate)
+                        admittedUrduTracks.add(entry.candidate)
+                    }
                 }
             }
         }
@@ -726,6 +817,24 @@ class EpisodeSubtitleSession(
             anchorKind = anchorKind,
             videoDurationMs = lookupSpec.expectedDurationMs,
         )
+        return commitAlignedCatalogueUrduOutcomeLocked(candidate, outcome)
+    }
+
+    private suspend fun alignToSpeechAndEmitHumanCatalogueUrduLocked(
+        candidate: VerifiedSubtitleCandidate.AlignedHumanCatalogue,
+        timeline: SpeechActivityTimeline,
+    ): VerifiedSubtitleCandidate {
+        val outcome = AlassAligner.alignToSparseSpeech(
+            candidate = candidate.document,
+            timeline = timeline,
+        )
+        return commitAlignedCatalogueUrduOutcomeLocked(candidate, outcome)
+    }
+
+    private suspend fun commitAlignedCatalogueUrduOutcomeLocked(
+        candidate: VerifiedSubtitleCandidate.AlignedHumanCatalogue,
+        outcome: AlignmentOutcome,
+    ): VerifiedSubtitleCandidate {
         return when (outcome) {
             is AlignmentOutcome.RejectedMismatch -> {
                 val rej = VerifiedSubtitleCandidate.Rejected.SyncMismatch(outcome.bestScore, outcome.residualMs)
@@ -741,7 +850,7 @@ class EpisodeSubtitleSession(
                 }
                 if (!alreadySeenIdenticalBytes &&
                     mode.wantsUrduTracks &&
-                    admittedUrduTracks.size < targetUrduDiversityCount &&
+                    admittedDistinctUrduDiversityCountLocked() < targetUrduDiversityCount &&
                     seenUrduDiversityAndContent.add(dedupKey)
                 ) {
                     emitBakedUrduTrackLocked(alignedCandidate)
@@ -753,10 +862,11 @@ class EpisodeSubtitleSession(
     }
 
     private suspend fun emitBakedUrduTrackLocked(admitted: VerifiedSubtitleCandidate.Admitted) {
+        val exactStreamDurationMs = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
         val stored = casStore.writeAlignedSubtitle(
             doc = admitted.document,
             warp = admitted.alignment.warp,
-            videoDurationMs = lookupSpec.expectedDurationMs,
+            videoDurationMs = exactStreamDurationMs,
             format = casFormat,
             pinActive = true,
         )
@@ -774,6 +884,32 @@ class EpisodeSubtitleSession(
                 this.headers = headers
             }
         )
+    }
+
+    private fun admittedDistinctUrduDiversityCountLocked(): Int =
+        admittedUrduTracks.asSequence().map { it.provenance.diversityKey }.distinct().count()
+
+    private fun distinctUrduDiversityCountLocked(): Int =
+        (admittedUrduTracks.asSequence().map { it.provenance.diversityKey } +
+            pendingCatalogueUrdu.asSequence().map { it.candidate.provenance.diversityKey })
+            .distinct()
+            .count()
+
+    private fun sanitizePublicSubtitleHeaders(headers: Map<String, String>): Map<String, String> {
+        if (headers.isEmpty()) return emptyMap()
+        val out = LinkedHashMap<String, String>(headers.size)
+        for ((k, v) in headers) {
+            if (k.equals("X-API-Key", ignoreCase = true) ||
+                k.equals("api-key", ignoreCase = true) ||
+                k.equals("Authorization", ignoreCase = true) ||
+                k.equals("Proxy-Authorization", ignoreCase = true) ||
+                k.equals("Cookie", ignoreCase = true)
+            ) {
+                continue
+            }
+            out[k] = v
+        }
+        return out
     }
 
     private fun bestStreamAnchorDonorLocked(): BufferedEnglishDonor? =
@@ -846,5 +982,6 @@ class EpisodeSubtitleSession(
         const val DONOR_TIER_STREAM_PROVIDER = 3
         const val DONOR_TIER_HUMAN_CATALOGUE = 2
         const val DONOR_TIER_SUBTITLECAT_LAST_RESORT = 1
+        const val HEADER_SPEECH_TIMELINE_B64 = "X-Speech-Timeline-B64"
     }
 }

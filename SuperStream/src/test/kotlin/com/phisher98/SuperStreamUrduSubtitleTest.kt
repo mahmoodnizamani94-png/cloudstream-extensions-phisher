@@ -441,7 +441,7 @@ class SuperStreamUrduSubtitleTest {
             val cps = UrduCpsRefiner.computeVisibleCps(cue.text, cue.span.durationMs)
             assertTrue("Cue exceeded 17.0 CPS ($cps): ${cue.text}", cps <= 17.05)
         }
-        assertEquals("Right?", BolChalPurifier.purify("دائیں؟", LatinEnglishText.sanitize("Right?")).let { if (it == "ہے نا؟") "Right?" else it })
+        assertEquals("ہے نا؟", BolChalPurifier.purify("دائیں؟", LatinEnglishText.sanitize("Right?")))
     }
 
     @Test

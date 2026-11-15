@@ -375,13 +375,7 @@ class StreamPlayAnime : MainAPI() {
                     .filter { it.isNotBlank() }
                     .distinctBy { it.lowercase() }
                     .ifEmpty { listOf("Anime") }
-                val prewarmDurationMs = (
-                    StreamPlayExtractor.resolveDurationHintSeconds(
-                        isMovie = isMovie,
-                        isAnime = true,
-                        runtimeMinutes = firstRuntimeMinutes,
-                    ) * 1000.0
-                    ).toLong()
+                val prewarmDurationMs = firstRuntimeMinutes?.takeIf { it > 0 }?.times(60_000L)
                 val prewarmSpec = if (isMovie) {
                     com.phisher98.subtitles.MediaLookupSpec.Movie(
                         imdbId = imdbid,
@@ -393,7 +387,7 @@ class StreamPlayAnime : MainAPI() {
                     )
                 } else {
                     val prewarmCoord = firstVerifiedTmdb
-                        ?.takeIf { it.first > 0 && it.second > 0 }
+                        ?.takeIf { it.first >= 0 && it.second > 0 }
                         ?.let { com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(it.first, it.second) }
                         ?: com.phisher98.subtitles.EpisodeCoordinate.UnverifiedAnimeCour(
                             courTitles = prewarmTitles,
@@ -923,10 +917,14 @@ class StreamPlayAnime : MainAPI() {
                         episodeSubtitleSession.discoverAndIngestCatalog()
                     }
                 }
-                kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                    rawSubtitleIngestJobs.toList().forEach { it.join() }
+                val jobsSnapshot = rawSubtitleIngestJobs.toList()
+                val joined = kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+                    jobsSnapshot.forEach { it.join() }
                 }
-                kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                if (joined == null) {
+                    jobsSnapshot.forEach { it.cancel() }
+                }
+                kotlinx.coroutines.withTimeoutOrNull(20_000L) {
                     episodeSubtitleSession.completeSession()
                 }
                 if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.URDU &&
@@ -961,13 +959,7 @@ class StreamPlayAnime : MainAPI() {
                     .map { it.trim() }
                     .filter { it.isNotBlank() }
             }.ifEmpty { listOf("Anime") }
-            val expectedDurationMs = (
-                StreamPlayExtractor.resolveDurationHintSeconds(
-                    isMovie = isMovie,
-                    isAnime = true,
-                    runtimeMinutes = mediaData.runtimeMinutes,
-                ) * 1000.0
-                ).toLong()
+            val expectedDurationMs = mediaData.runtimeMinutes?.takeIf { it > 0 }?.times(60_000L)
             return if (isMovie) {
                 com.phisher98.subtitles.MediaLookupSpec.Movie(
                     imdbId = animeImdbId,
@@ -978,7 +970,7 @@ class StreamPlayAnime : MainAPI() {
                     isAnime = true,
                 )
             } else {
-                val coordinate = if (canUseTmdbProviders && tmdbSeason != null && tmdbSeason > 0 && tmdbEpisode != null && tmdbEpisode > 0) {
+                val coordinate = if (canUseTmdbProviders && tmdbSeason != null && tmdbSeason >= 0 && tmdbEpisode != null && tmdbEpisode > 0) {
                     com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
                         season = tmdbSeason,
                         episode = tmdbEpisode,

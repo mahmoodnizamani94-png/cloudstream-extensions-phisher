@@ -220,7 +220,7 @@ class StreamPlayStremioCatelog(
         )
         val englishDonorSubs = java.util.concurrent.CopyOnWriteArrayList<SubtitleFile>()
         val rawSubtitleIngestJobs = java.util.concurrent.ConcurrentLinkedQueue<kotlinx.coroutines.Job>()
-        val isMovieMedia = resolved.season == null || resolved.season <= 0
+        val isMovieMedia = resolved.season == null || resolved.season < 0
 
         fun emitSessionSubtitle(sessionSub: SubtitleFile): Boolean {
             val rawUrl = sessionSub.url.trim()
@@ -257,20 +257,13 @@ class StreamPlayStremioCatelog(
             .filter { it.isNotBlank() }
             .distinctBy { it.lowercase() }
             .ifEmpty { listOfNotNull(imdb).ifEmpty { listOf("Media") } }
-        val expectedDurationMs = (
-            StreamPlayExtractor.resolveDurationHintSeconds(
-                isMovie = isMovieMedia,
-                isAnime = false,
-                runtimeMinutes = null,
-            ) * 1000.0
-            ).toLong()
         val lookupSpec = if (isMovieMedia) {
             com.phisher98.subtitles.MediaLookupSpec.Movie(
                 imdbId = imdb,
                 tmdbId = cinemeta?.tmdbId,
                 titles = safeLookupTitles,
                 releaseYear = resolved.year,
-                expectedDurationMs = expectedDurationMs,
+                expectedDurationMs = null,
             )
         } else {
             com.phisher98.subtitles.MediaLookupSpec.Episode(
@@ -279,9 +272,9 @@ class StreamPlayStremioCatelog(
                 titles = safeLookupTitles,
                 seriesPremiereYear = resolved.year,
                 seasonAirYear = resolved.year,
-                expectedDurationMs = expectedDurationMs,
+                expectedDurationMs = null,
                 coordinate = com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
-                    season = resolved.season ?: 1,
+                    season = resolved.season,
                     episode = resolved.episode?.takeIf { it > 0 } ?: 1,
                 ),
             )
@@ -443,10 +436,14 @@ class StreamPlayStremioCatelog(
                         episodeSubtitleSession.discoverAndIngestCatalog()
                     }
                 }
-                withTimeoutOrNull(6_000L) {
-                    rawSubtitleIngestJobs.toList().forEach { it.join() }
+                val jobsSnapshot = rawSubtitleIngestJobs.toList()
+                val joined = withTimeoutOrNull(6_000L) {
+                    jobsSnapshot.forEach { it.join() }
                 }
-                withTimeoutOrNull(12_000L) {
+                if (joined == null) {
+                    jobsSnapshot.forEach { it.cancel() }
+                }
+                withTimeoutOrNull(20_000L) {
                     episodeSubtitleSession.completeSession()
                 }
                 if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.URDU &&
@@ -584,20 +581,13 @@ class StreamPlayStremioCatelog(
             if (urduMode) {
                 val safeTitles = listOfNotNull(name.trim().takeIf { it.isNotBlank() }, imdbId)
                     .ifEmpty { listOf("Media") }
-                val expectedDurationMs = (
-                    StreamPlayExtractor.resolveDurationHintSeconds(
-                        isMovie = isMovieEntry,
-                        isAnime = false,
-                        runtimeMinutes = null,
-                    ) * 1000.0
-                    ).toLong()
                 val prewarmSpec = if (isMovieEntry) {
                     com.phisher98.subtitles.MediaLookupSpec.Movie(
                         imdbId = imdbId,
                         tmdbId = null,
                         titles = safeTitles,
                         releaseYear = parsedYear,
-                        expectedDurationMs = expectedDurationMs,
+                        expectedDurationMs = null,
                     )
                 } else {
                     com.phisher98.subtitles.MediaLookupSpec.Episode(
@@ -606,7 +596,7 @@ class StreamPlayStremioCatelog(
                         titles = safeTitles,
                         seriesPremiereYear = parsedYear,
                         seasonAirYear = parsedYear,
-                        expectedDurationMs = expectedDurationMs,
+                        expectedDurationMs = null,
                         coordinate = com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
                             season = 1,
                             episode = 1,

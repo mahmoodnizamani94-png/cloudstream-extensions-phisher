@@ -414,6 +414,35 @@ fun String?.createSlug(): String? {
         ?.lowercase()
 }
 
+//Catflix
+
+fun CathexToBinary(hex: String): String {
+    val binary = StringBuilder()
+    for (i in hex.indices step 2) {
+        val hexPair = hex.substring(i, i + 2)
+        val charValue = hexPair.toInt(16).toChar()
+        binary.append(charValue)
+    }
+    return binary.toString()
+}
+
+fun CatxorDecrypt(binary: String, key: String): String {
+    val decrypted = StringBuilder()
+    val keyLength = key.length
+
+    for (i in binary.indices) {
+        val decryptedChar = binary[i].code xor key[i % keyLength].code
+        decrypted.append(decryptedChar.toChar())
+    }
+
+    return decrypted.toString()
+}
+
+fun CatdecryptHexWithKey(hex: String, key: String): String {
+    val binary = CathexToBinary(hex)
+    return CatxorDecrypt(binary, key)
+}
+
 fun cleanTitle(title: String): String {
     val name = title.replace(TITLE_EXT_REGEX, "")
 

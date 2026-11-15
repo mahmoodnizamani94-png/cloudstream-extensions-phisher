@@ -73,7 +73,7 @@ value class LatinEnglishText private constructor(val text: String) {
         private val BRACKET_SDH_REGEX = Regex("""\[[^\]\n]{1,90}\]""")
         private val PAREN_PURE_LINE_SDH_REGEX = Regex("""(?m)^\s*\([^)\n]{1,80}\)\s*$""")
         private val PAREN_INLINE_SDH_REGEX = Regex(
-            """(?i)\((?:[^)\n]{0,45}\b(?:sighs?|laughs?|gasps?|groans?|grunts?|chuckles?|coughs?|sniffs?|sobs?|screams?|whispers?|shouts?|yells?|panting|breathing|music|applause|cheering|footsteps|door|phone|ringing|buzzing|beeping|clicking|knocking|gunshot|gunfire|explosion|thunder|wind|rain|siren|horn|barking|crying|weeping|clears\s+throat|inaudible|indistinct|speaking|singing|narrator|voiceover|on\s+tv|on\s+radio)\b[^)\n]{0,35}|[A-Z0-9\s:'_-]{2,45})\)"""
+            """\((?:(?i:[^)\n]{0,45}\b(?:sighs?|laughs?|gasps?|groans?|grunts?|chuckles?|coughs?|sniffs?|sobs?|screams?|whispers?|shouts?|yells?|panting|breathing|music|applause|cheering|footsteps|door|phone|ringing|buzzing|beeping|clicking|knocking|gunshot|gunfire|explosion|thunder|wind|rain|siren|horn|barking|crying|weeping|clears\s+throat|inaudible|indistinct|speaking|singing|narrator|voiceover|on\s+tv|on\s+radio)\b[^)\n]{0,35})|(?=[A-Z0-9\s:'_-]*[A-Z])[A-Z0-9\s:'_-]{2,45})\)"""
         )
         private val SPEAKER_LABEL_REGEX = Regex("""(?m)^(\s*(?:-\s*)?)[A-Z][A-Z0-9 .#'_-]{0,24}:\s*""")
         private val MULTI_SPACE_REGEX = Regex("""[^\S\n]+""")
@@ -674,9 +674,11 @@ data class CueDocument(
         private val ASS_DRAWING_REGEX = Regex("""\{\\[^}]*\\p[1-9][^}]*\}""")
         private val ASS_OVERRIDE_REGEX = Regex("""\{[^}]*\}""")
         private val TTML_TICK_RATE_REGEX = Regex("""(?i)\btickRate\s*=\s*["'](\d+)["']""")
+        private val TTML_FRAME_RATE_REGEX = Regex("""(?i)\bframeRate\s*=\s*["'](\d+(?:\.\d+)?)["']""")
+        private val TTML_FRAME_RATE_MULT_REGEX = Regex("""(?i)\bframeRateMultiplier\s*=\s*["'](\d+)\s+(\d+)["']""")
         private val TTML_P_REGEX = Regex("""(?is)<p\b([^>]*)>(.*?)</p>""")
         private val TTML_ATTR_REGEX = Regex("""(?i)\b(begin|end|dur)\s*=\s*["']([^"']+)["']""")
-        private val TTML_CLOCK_REGEX = Regex("""^(\d{1,3}):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?$""")
+        private val TTML_CLOCK_REGEX = Regex("""^(\d{1,3}):(\d{2}):(\d{2})(?:([.:])(\d{1,3}))?$""")
         private val TTML_OFFSET_REGEX = Regex("""^(\d+(?:\.\d+)?)(h|m|s|ms|f|t)$""", RegexOption.IGNORE_CASE)
         private val XML_BR_REGEX = Regex("""(?i)<br\s*/?>""")
         private val XML_TAG_REGEX = Regex("""<[^>]+>""")
@@ -845,15 +847,24 @@ data class CueDocument(
             return out
         }
 
-        private fun parseTtmlTimeMs(raw: String, tickRate: Long): Long? {
+        private fun parseTtmlTimeMs(raw: String, tickRate: Long, frameRate: Double = 24.0): Long? {
             val trimmed = raw.trim()
+            val safeFps = if (frameRate > 0.0) frameRate else 24.0
             TTML_CLOCK_REGEX.matchEntire(trimmed)?.let { m ->
                 val h = m.groupValues[1].toLong()
                 val min = m.groupValues[2].toLong()
                 val sec = m.groupValues[3].toLong()
-                val frac = m.groupValues[4]
-                val ms = if (frac.isEmpty()) 0L else parseMillisFraction(frac)
-                return ((h * 3600L + min * 60L + sec) * 1000L) + ms
+                val sep = m.groupValues[4]
+                val frac = m.groupValues[5]
+                val subSecMs = when {
+                    frac.isEmpty() -> 0L
+                    sep == ":" && frac.length <= 2 -> {
+                        val frames = frac.toLongOrNull() ?: 0L
+                        ((frames.toDouble() * 1_000.0) / safeFps).toLong()
+                    }
+                    else -> parseMillisFraction(frac)
+                }
+                return ((h * 3600L + min * 60L + sec) * 1000L) + subSecMs
             }
             TTML_OFFSET_REGEX.matchEntire(trimmed)?.let { m ->
                 val value = m.groupValues[1].toDoubleOrNull() ?: return null
@@ -862,7 +873,7 @@ data class CueDocument(
                     "m" -> (value * 60_000.0).toLong()
                     "s" -> (value * 1_000.0).toLong()
                     "ms" -> value.toLong()
-                    "f" -> (value * (1_000.0 / 24.0)).toLong()
+                    "f" -> (value * (1_000.0 / safeFps)).toLong()
                     "t" -> ((value * 1_000.0) / tickRate.coerceAtLeast(1L).toDouble()).toLong()
                     else -> null
                 }
@@ -872,6 +883,15 @@ data class CueDocument(
 
         private fun parseTtml(text: String): List<CueEntry> {
             val tickRate = TTML_TICK_RATE_REGEX.find(text)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 10_000_000L
+            val baseFrameRate = TTML_FRAME_RATE_REGEX.find(text)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: 24.0
+            val multMatch = TTML_FRAME_RATE_MULT_REGEX.find(text)
+            val multNum = multMatch?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+            val multDen = multMatch?.groupValues?.getOrNull(2)?.toDoubleOrNull()
+            val effectiveFrameRate = if (multNum != null && multDen != null && multNum > 0.0 && multDen > 0.0) {
+                baseFrameRate * (multNum / multDen)
+            } else {
+                baseFrameRate
+            }
             val out = ArrayList<CueEntry>()
             var nextId = 0
             for (pMatch in TTML_P_REGEX.findAll(text)) {
@@ -882,7 +902,7 @@ data class CueDocument(
                 var durMs: Long? = null
                 for (attr in TTML_ATTR_REGEX.findAll(attrs)) {
                     val name = attr.groupValues[1].lowercase(Locale.ROOT)
-                    val parsed = parseTtmlTimeMs(attr.groupValues[2], tickRate) ?: continue
+                    val parsed = parseTtmlTimeMs(attr.groupValues[2], tickRate, effectiveFrameRate) ?: continue
                     when (name) {
                         "begin" -> beginMs = parsed
                         "end" -> endMs = parsed
@@ -1095,16 +1115,19 @@ object SubtitleModeBridge {
             System.getProperty(PROP_LLM_ENDPOINT)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, PROP_LLM_ENDPOINT)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "llm_endpoint")?.takeIf { it.isNotBlank() }
+                ?: reader(PREFS_URDU_BOLCHAL, "endpoint")?.takeIf { it.isNotBlank() }
             )?.trim() ?: return null
         val model = (
             System.getProperty(PROP_LLM_MODEL)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, PROP_LLM_MODEL)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "llm_model")?.takeIf { it.isNotBlank() }
+                ?: reader(PREFS_URDU_BOLCHAL, "model")?.takeIf { it.isNotBlank() }
             )?.trim() ?: return null
         val key = (
             System.getProperty(PROP_LLM_KEY)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, PROP_LLM_KEY)?.takeIf { it.isNotBlank() }
                 ?: reader(PREFS_URDU_BOLCHAL, "llm_api_key")?.takeIf { it.isNotBlank() }
+                ?: reader(PREFS_URDU_BOLCHAL, "key")?.takeIf { it.isNotBlank() }
             )?.trim() ?: return null
         return ByokLlmConfig(endpointUrl = endpoint, modelId = model, apiKey = key)
     }

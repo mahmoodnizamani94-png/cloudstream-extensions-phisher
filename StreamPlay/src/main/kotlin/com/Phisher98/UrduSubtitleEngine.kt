@@ -527,7 +527,7 @@ object UrduSubtitleEngine {
         val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
         if (cleanImdb == null && cleanTitle == null && (tmdbId == null || tmdbId <= 0)) return
         val titles = listOfNotNull(cleanTitle)
-        val spec = if (isMovie || season == null || season <= 0) {
+        val spec = if (isMovie || season == null || season < 0) {
             MediaLookupSpec.Movie(
                 imdbId = cleanImdb,
                 tmdbId = tmdbId?.takeIf { it > 0 },
@@ -563,7 +563,7 @@ object UrduSubtitleEngine {
         normalizeTypography: Boolean = true,
     ): String {
         if (rawBytes.isEmpty()) return ""
-        val spec = if (season != null && season > 0 && episode != null && episode > 0) {
+        val spec = if (season != null && season >= 0 && episode != null && episode > 0) {
             MediaLookupSpec.Episode(
                 imdbId = null,
                 tmdbId = null,
@@ -602,8 +602,12 @@ object UrduSubtitleEngine {
     ): String? = withContext(Dispatchers.IO) {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()) return@withContext null
-        val rawBytes = httpTransport.get(cleanUrl, headers).getOrNull()?.bodyBytes ?: return@withContext null
-        val lookupSpec = if (season != null && season > 0 && episode != null && episode > 0) {
+        val rawBytes = if (cleanUrl.startsWith("file:", ignoreCase = true)) {
+            casStore.readOwnedCasFileBytesOrNull(cleanUrl)
+        } else {
+            httpTransport.get(cleanUrl, headers).getOrNull()?.bodyBytes
+        } ?: return@withContext null
+        val lookupSpec = if (season != null && season >= 0 && episode != null && episode > 0) {
             MediaLookupSpec.Episode(
                 imdbId = null,
                 tmdbId = null,

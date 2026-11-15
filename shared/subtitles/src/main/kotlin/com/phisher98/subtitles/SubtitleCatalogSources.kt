@@ -12,9 +12,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.Jsoup
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -77,8 +78,12 @@ interface CatalogHttpTransport {
                 url: String,
                 headers: Map<String, String>,
                 timeoutMs: Long,
-            ): Result<CatalogHttpResponse> = runCatching {
-                handler(url, headers)
+            ): Result<CatalogHttpResponse> = try {
+                Result.success(handler(url, headers))
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                Result.failure(t)
             }
         }
     }
@@ -90,20 +95,17 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         headers: Map<String, String>,
         timeoutMs: Long,
     ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        if (url.startsWith("file:", ignoreCase = true)) {
-            return@withContext runCatching {
-                val cleanPath = url.removePrefix("file://").removePrefix("file:")
-                val file = File(cleanPath)
-                if (!file.isFile) {
-                    throw IllegalArgumentException("Missing local subtitle file: $cleanPath")
-                }
-                val bytes = file.readBytes()
-                if (bytes.size > SubtitleArchiveDecoder.MAX_DECODED_BYTES) {
-                    throw IllegalArgumentException("Subtitle file exceeds 8 MiB ceiling: ${bytes.size}")
-                }
-                CatalogHttpResponse(statusCode = 200, bodyBytes = bytes, finalUrl = url)
-            }
+        val cleanUrl = url.trim()
+        if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
+            !cleanUrl.startsWith("http://", ignoreCase = true)
+        ) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Unsupported catalog HTTP URL scheme: $cleanUrl")
+            )
         }
+
+        val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
+        val deadlineNs = System.nanoTime() + effectiveBudgetMs * 1_000_000L
 
         val reqHeaders = LinkedHashMap<String, String>(headers.size + 1).apply {
             put("User-Agent", headers["User-Agent"] ?: DEFAULT_BROWSER_UA)
@@ -113,11 +115,11 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         }
 
         try {
-            val niceResp = withTimeoutOrNull(timeoutMs) {
-                runCatching {
-                    val timeoutSec = ((timeoutMs + 999L) / 1_000L).coerceAtLeast(2L)
-                    val resp = app.get(url, headers = reqHeaders, timeout = timeoutSec)
-                    val bytes = resp.body.byteStream().use { readBoundedStream(it) }
+            val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
+                try {
+                    val timeoutSec = ((effectiveBudgetMs + 999L) / 1_000L).coerceAtLeast(1L)
+                    val resp = app.get(cleanUrl, headers = reqHeaders, timeout = timeoutSec)
+                    val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
                     val outHeaders = LinkedHashMap<String, String>()
                     for (name in resp.headers.names()) {
                         resp.headers[name]?.let { outHeaders[name] = it }
@@ -128,36 +130,45 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
                         finalUrl = resp.url,
                         headers = outHeaders,
                     )
-                }.getOrNull()
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    null
+                }
             }
             if (niceResp != null) {
                 return@withContext if (niceResp.isSuccess) {
                     Result.success(niceResp)
                 } else {
-                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} for $url"))
+                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} for $cleanUrl"))
                 }
             }
 
-            runCatching {
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    instanceFollowRedirects = true
-                    connectTimeout = timeoutMs.coerceIn(1_500L, 15_000L).toInt()
-                    readTimeout = timeoutMs.coerceIn(1_500L, 15_000L).toInt()
-                    reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+            if (remainingMs < 400L) {
+                return@withContext Result.failure(
+                    SocketTimeoutException("Catalog GET budget exhausted (${effectiveBudgetMs}ms) for $cleanUrl")
+                )
+            }
+
+            val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
+                readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
+                reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            }
+            try {
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val bytes = stream?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
+                val resolvedUrl = conn.url?.toString() ?: cleanUrl
+                if (code !in 200..299 || bytes.isEmpty()) {
+                    return@withContext Result.failure(IllegalStateException("HTTP $code for $cleanUrl"))
                 }
-                try {
-                    val code = conn.responseCode
-                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                    val bytes = stream?.use { readBoundedStream(it) } ?: ByteArray(0)
-                    val resolvedUrl = conn.url?.toString() ?: url
-                    if (code !in 200..299 || bytes.isEmpty()) {
-                        throw IllegalStateException("HTTP $code for $url")
-                    }
-                    CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = resolvedUrl)
-                } finally {
-                    conn.disconnect()
-                }
+                Result.success(CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = resolvedUrl))
+            } finally {
+                conn.disconnect()
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -172,6 +183,18 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         headers: Map<String, String>,
         timeoutMs: Long,
     ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
+        val cleanUrl = url.trim()
+        if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
+            !cleanUrl.startsWith("http://", ignoreCase = true)
+        ) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Unsupported catalog POST URL scheme: $cleanUrl")
+            )
+        }
+
+        val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
+        val deadlineNs = System.nanoTime() + effectiveBudgetMs * 1_000_000L
+
         val reqHeaders = LinkedHashMap<String, String>(headers.size + 1).apply {
             put("User-Agent", headers["User-Agent"] ?: DEFAULT_BROWSER_UA)
             for ((k, v) in headers) {
@@ -179,50 +202,59 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
             }
         }
         try {
-            val niceResp = withTimeoutOrNull(timeoutMs) {
-                runCatching {
-                    val timeoutSec = ((timeoutMs + 999L) / 1_000L).coerceAtLeast(2L)
-                    val resp = app.post(url, headers = reqHeaders, data = formFields, timeout = timeoutSec)
-                    val bytes = resp.body.byteStream().use { readBoundedStream(it) }
+            val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
+                try {
+                    val timeoutSec = ((effectiveBudgetMs + 999L) / 1_000L).coerceAtLeast(1L)
+                    val resp = app.post(cleanUrl, headers = reqHeaders, data = formFields, timeout = timeoutSec)
+                    val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
                     CatalogHttpResponse(
                         statusCode = resp.code,
                         bodyBytes = bytes,
                         finalUrl = resp.url,
                     )
-                }.getOrNull()
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    null
+                }
             }
             if (niceResp != null) {
                 return@withContext if (niceResp.isSuccess) {
                     Result.success(niceResp)
                 } else {
-                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} POST $url"))
+                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} POST $cleanUrl"))
                 }
             }
 
-            runCatching {
-                val formBody = formFields.entries.joinToString("&") { (k, v) ->
-                    "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
-                }.toByteArray(StandardCharsets.UTF_8)
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    doOutput = true
-                    connectTimeout = timeoutMs.coerceIn(1_500L, 15_000L).toInt()
-                    readTimeout = timeoutMs.coerceIn(1_500L, 15_000L).toInt()
-                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                    reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+            if (remainingMs < 400L) {
+                return@withContext Result.failure(
+                    SocketTimeoutException("Catalog POST budget exhausted (${effectiveBudgetMs}ms) for $cleanUrl")
+                )
+            }
+
+            val formBody = formFields.entries.joinToString("&") { (k, v) ->
+                "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
+            }.toByteArray(StandardCharsets.UTF_8)
+            val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
+                readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
+                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            }
+            try {
+                conn.outputStream.use { it.write(formBody) }
+                val code = conn.responseCode
+                val bytes = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
+                if (code !in 200..299 || bytes.isEmpty()) {
+                    return@withContext Result.failure(IllegalStateException("HTTP $code POST $cleanUrl"))
                 }
-                try {
-                    conn.outputStream.use { it.write(formBody) }
-                    val code = conn.responseCode
-                    val bytes = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                        ?.use { readBoundedStream(it) } ?: ByteArray(0)
-                    if (code !in 200..299 || bytes.isEmpty()) {
-                        throw IllegalStateException("HTTP $code POST $url")
-                    }
-                    CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = conn.url?.toString() ?: url)
-                } finally {
-                    conn.disconnect()
-                }
+                Result.success(CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = conn.url?.toString() ?: cleanUrl))
+            } finally {
+                conn.disconnect()
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -231,11 +263,14 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         }
     }
 
-    private fun readBoundedStream(stream: InputStream): ByteArray {
+    private fun readBoundedStream(stream: InputStream, deadlineNs: Long): ByteArray {
         val out = ByteArrayOutputStream(32 * 1024)
         val buf = ByteArray(8192)
         var total = 0
         while (true) {
+            if (System.nanoTime() > deadlineNs) {
+                throw SocketTimeoutException("Catalog HTTP stream read exceeded deadline")
+            }
             val n = stream.read(buf)
             if (n < 0) break
             total += n
@@ -467,8 +502,7 @@ class SubtitleCatalogSources(
     ): Boolean {
         val cleanUrl = downloadUrl.trim()
         if (!cleanUrl.startsWith("http://", ignoreCase = true) &&
-            !cleanUrl.startsWith("https://", ignoreCase = true) &&
-            !cleanUrl.startsWith("file:", ignoreCase = true)
+            !cleanUrl.startsWith("https://", ignoreCase = true)
         ) {
             return false
         }
@@ -526,7 +560,7 @@ class SubtitleCatalogSources(
         val se = verifiedSeasonEpisodeOrNull(spec)
         if (spec is MediaLookupSpec.Episode && se == null) return
 
-        val baseParams = if (se != null && se.first > 0) {
+        val baseParams = if (se != null && se.first >= 0) {
             "id=${urlEncode(lookupId)}&season=${se.first}&episode=${se.second}"
         } else {
             "id=${urlEncode(lookupId)}"
@@ -610,7 +644,7 @@ class SubtitleCatalogSources(
 
         if (subDlKey != null) {
             val langCodes = languages.joinToString(",") { if (it == SubtitleLanguage.URDU) "UR" else "EN" }
-            val mediaType = if (se != null && se.first > 0) "tv" else "movie"
+            val mediaType = if (se != null && se.first >= 0) "tv" else "movie"
             val apiUrl = buildString {
                 append(endpoints.subDlApiV1Url)
                 append("?api_key=").append(urlEncode(subDlKey))
@@ -621,7 +655,7 @@ class SubtitleCatalogSources(
                 } else if (primaryTitle != null) {
                     append("&film_name=").append(urlEncode(primaryTitle))
                 }
-                if (se != null && se.first > 0) {
+                if (se != null && se.first >= 0) {
                     append("&season_number=").append(se.first)
                     append("&episode_number=").append(se.second)
                 }
@@ -752,8 +786,8 @@ class SubtitleCatalogSources(
                 item.firstNonBlank("release_name", "name", "title"),
             ).joinToString(" ").trim()
 
-            if (se != null && se.first > 0) {
-                if (itemSeason > 0 && itemSeason != se.first) continue
+            if (se != null && se.first >= 0) {
+                if (itemSeason >= 0 && itemSeason != se.first) continue
                 if (itemEpisode > 0 && itemEpisode != se.second && !episodeTextOrPackMatches(releaseName, se.first, se.second)) {
                     continue
                 }
@@ -932,7 +966,7 @@ class SubtitleCatalogSources(
             if (spec is MediaLookupSpec.Movie && slugYear != null && slugYear > 0) {
                 append("&year=").append(slugYear)
             }
-            if (se != null && se.first > 0) {
+            if (se != null && se.first >= 0) {
                 append("&season=").append(se.first)
             }
         }
@@ -957,7 +991,7 @@ class SubtitleCatalogSources(
                         append(endpoints.subSourceApiV1Host.trimEnd('/'))
                         append("/subtitles?movieId=").append(urlEncode(movieId))
                         append("&language=").append(langParam)
-                        if (se != null && se.first > 0) {
+                        if (se != null && se.first >= 0) {
                             append("&season=").append(se.first)
                             append("&episode=").append(se.second)
                         }
@@ -968,7 +1002,7 @@ class SubtitleCatalogSources(
                         append(endpoints.subSourceApiV1Host.trimEnd('/'))
                         append("/subtitles?imdb=").append(urlEncode(cleanImdb))
                         append("&language=").append(langParam)
-                        if (se != null && se.first > 0) {
+                        if (se != null && se.first >= 0) {
                             append("&season=").append(se.first)
                             append("&episode=").append(se.second)
                         }
@@ -1007,8 +1041,8 @@ class SubtitleCatalogSources(
 
         for (item in arr) {
             val id = item.firstNonBlank("movieId", "id", "movie_id") ?: continue
-            val itemSeason = item.path("season").asInt(0)
-            if (season != null && season > 0 && itemSeason > 0 && itemSeason != season) continue
+            val itemSeason = item.path("season").asInt(-1)
+            if (season != null && season >= 0 && itemSeason >= 0 && itemSeason != season) continue
 
             val itemImdb = item.firstNonBlank("imdbId", "imdb_id", "imdb")?.lowercase(Locale.ROOT)
             if (imdbId != null && !itemImdb.isNullOrBlank()) {
@@ -1033,6 +1067,24 @@ class SubtitleCatalogSources(
         return null
     }
 
+    private fun isTrustedSubSourceDownloadUrl(resolvedUrl: String): Boolean {
+        val targetUri = runCatching { URI(resolvedUrl) }.getOrNull() ?: return false
+        val targetScheme = targetUri.scheme?.lowercase(Locale.ROOT).orEmpty()
+        val targetHost = targetUri.host?.lowercase(Locale.ROOT)?.trim('[', ']').orEmpty()
+        if (targetHost.isEmpty()) return false
+
+        val v1Uri = runCatching { URI(endpoints.subSourceApiV1Host) }.getOrNull()
+        val originUri = runCatching { URI(endpoints.subSourceOriginHost) }.getOrNull()
+        val trustedHosts = setOfNotNull(
+            v1Uri?.host?.lowercase(Locale.ROOT)?.trim('[', ']'),
+            originUri?.host?.lowercase(Locale.ROOT)?.trim('[', ']'),
+        )
+        if (targetHost !in trustedHosts) return false
+        if (targetScheme == "https") return true
+        val isLoopback = targetHost == "127.0.0.1" || targetHost == "localhost" || targetHost == "::1"
+        return targetScheme == "http" && isLoopback
+    }
+
     private fun parseAndGateSubSourceList(
         jsonBody: String,
         spec: MediaLookupSpec,
@@ -1050,9 +1102,15 @@ class SubtitleCatalogSources(
             root.path("results").isArray -> root.path("results")
             else -> return 0
         }
-        val dlHeaders = baseHeaders + ProvenanceCodec.encodeHeaders(
+        val provenanceHeaders = ProvenanceCodec.encodeHeaders(
             ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.SUBSOURCE)
         )
+        val authedDlHeaders = baseHeaders + provenanceHeaders
+        val unauthedDlHeaders = baseHeaders.filterKeys { k ->
+            !k.equals("X-API-Key", ignoreCase = true) &&
+                !k.equals("api-key", ignoreCase = true) &&
+                !k.equals("Authorization", ignoreCase = true)
+        } + provenanceHeaders
         var count = 0
         for (item in arr) {
             if (count >= MAX_CANDIDATES_PER_SOURCE_LANG) break
@@ -1072,8 +1130,8 @@ class SubtitleCatalogSources(
 
             val itemSeason = item.path("season").asInt(-1)
             val itemEpisode = item.path("episode").asInt(-1)
-            if (se != null && se.first > 0) {
-                if (itemSeason > 0 && itemSeason != se.first) continue
+            if (se != null && se.first >= 0) {
+                if (itemSeason >= 0 && itemSeason != se.first) continue
                 if (itemEpisode > 0 && itemEpisode != se.second && !episodeTextOrPackMatches(releaseText, se.first, se.second)) {
                     continue
                 }
@@ -1089,6 +1147,11 @@ class SubtitleCatalogSources(
                 !subId.isNullOrBlank() -> "${endpoints.subSourceApiV1Host.trimEnd('/')}/subtitles/$subId/download"
                 else -> continue
             }
+            val effectiveDlHeaders = if (isTrustedSubSourceDownloadUrl(resolvedUrl)) {
+                authedDlHeaders
+            } else {
+                unauthedDlHeaders
+            }
 
             val meta = CatalogueCandidateMeta(
                 catalogue = CatalogueSourceKey.SUBSOURCE,
@@ -1101,7 +1164,7 @@ class SubtitleCatalogSources(
                 declaredFps = item.path("fps").asDouble(0.0).takeIf { it > 0.0 },
                 releaseComment = item.firstNonBlank("comment", "commentary"),
             )
-            if (tryAdmitPreDownload(meta, spec, resolvedUrl, dlHeaders, admitted, rejections)) {
+            if (tryAdmitPreDownload(meta, spec, resolvedUrl, effectiveDlHeaders, admitted, rejections)) {
                 count++
             }
         }
@@ -1118,7 +1181,7 @@ class SubtitleCatalogSources(
         val se = verifiedSeasonEpisodeOrNull(spec)
         if (spec is MediaLookupSpec.Episode && se == null) return
 
-        val url = if (se != null && se.first > 0) {
+        val url = if (se != null && se.first >= 0) {
             "${endpoints.subSenseBaseUrl.trimEnd('/')}/series/$cleanImdb:${se.first}:${se.second}.json"
         } else {
             "${endpoints.subSenseBaseUrl.trimEnd('/')}/movie/$cleanImdb.json"
@@ -1356,7 +1419,7 @@ class SubtitleCatalogSources(
         val se = verifiedSeasonEpisodeOrNull(spec)
         if (spec is MediaLookupSpec.Episode && se == null) return
 
-        val url = if (se != null && se.first > 0) {
+        val url = if (se != null && se.first >= 0) {
             "${baseHost.trimEnd('/')}/subtitles/series/$cleanImdb:${se.first}:${se.second}.json"
         } else {
             "${baseHost.trimEnd('/')}/subtitles/movie/$cleanImdb.json"
@@ -1440,12 +1503,12 @@ class SubtitleCatalogSources(
                         if (itemLang != lang) continue
 
                         if (se != null) {
-                            val subSeason = item.path("SeriesSeason").asInt(0)
+                            val subSeason = item.path("SeriesSeason").asInt(-1)
                             val subEpisode = item.path("SeriesEpisode").asInt(0)
                             val fileAndRel = "${item.path("SubFileName").asText("")} ${item.path("MovieReleaseName").asText("")}"
                             if (subEpisode > 0) {
                                 if (subEpisode != se.second) continue
-                                if (se.first > 0 && subSeason > 0 && subSeason != se.first) continue
+                                if (se.first >= 0 && subSeason >= 0 && subSeason != se.first) continue
                             } else if (!episodeTextMatches(normalizeReleaseText(fileAndRel), se.first, se.second)) {
                                 continue
                             }
@@ -1499,7 +1562,7 @@ class SubtitleCatalogSources(
         return buildList {
             if (cleanImdb != null) {
                 val numericImdb = cleanImdb.removePrefix("tt")
-                if (se != null && se.first > 0) {
+                if (se != null && se.first >= 0) {
                     add("$base/search/imdbid-$numericImdb/season-${se.first}/episode-${se.second}/sublanguageid-$langId")
                 } else {
                     add("$base/search/imdbid-$numericImdb/sublanguageid-$langId")
@@ -1507,7 +1570,7 @@ class SubtitleCatalogSources(
             }
             for (q in cleanQueries) {
                 val encoded = urlEncode(q).replace("+", "%20")
-                if (se != null && se.first > 0) {
+                if (se != null && se.first >= 0) {
                     add("$base/search/episode-${se.second}/query-$encoded/season-${se.first}/sublanguageid-$langId")
                 } else {
                     add("$base/search/query-$encoded/sublanguageid-$langId")
@@ -1528,9 +1591,10 @@ class SubtitleCatalogSources(
 
         val ytsUrl = "${endpoints.ytsSubsHost.trimEnd('/')}/movie-imdb/$cleanImdb"
         val ytsResp = transport.get(ytsUrl, headers).getOrNull()
-        var totalAdmitted = 0
+        var urAdmitted = 0
+        var enAdmitted = 0
         if (ytsResp != null) {
-            totalAdmitted += parseAndGateYifyTable(
+            val counts = parseAndGateYifyTable(
                 htmlBody = ytsResp.textUtf8,
                 spec = spec,
                 languages = languages,
@@ -1539,15 +1603,22 @@ class SubtitleCatalogSources(
                 admitted = admitted,
                 rejections = rejections,
             )
+            urAdmitted += counts.first
+            enAdmitted += counts.second
         }
-        if (totalAdmitted > 0) return
+
+        val missingLanguages = buildSet {
+            if (SubtitleLanguage.URDU in languages && urAdmitted == 0) add(SubtitleLanguage.URDU)
+            if (SubtitleLanguage.ENGLISH in languages && enAdmitted == 0) add(SubtitleLanguage.ENGLISH)
+        }
+        if (missingLanguages.isEmpty()) return
 
         val yifyUrl = "${endpoints.yifyHost.trimEnd('/')}/movie-imdb/$cleanImdb"
         val yifyResp = transport.get(yifyUrl, headers).getOrNull() ?: return
         parseAndGateYifyTable(
             htmlBody = yifyResp.textUtf8,
             spec = spec,
-            languages = languages,
+            languages = missingLanguages,
             pageHost = endpoints.yifyHost,
             isYtsMirror = false,
             admitted = admitted,
@@ -1563,8 +1634,8 @@ class SubtitleCatalogSources(
         isYtsMirror: Boolean,
         admitted: MutableList<CatalogDiscoveredCandidate>,
         rejections: MutableList<VerifiedSubtitleCandidate.Rejected>,
-    ): Int {
-        if (htmlBody.isBlank()) return 0
+    ): Pair<Int, Int> {
+        if (htmlBody.isBlank()) return 0 to 0
         val doc = Jsoup.parse(htmlBody)
         var urCount = 0
         var enCount = 0
@@ -1612,7 +1683,7 @@ class SubtitleCatalogSources(
                 if (lang == SubtitleLanguage.URDU) urCount++ else enCount++
             }
         }
-        return urCount + enCount
+        return urCount to enCount
     }
 
 
@@ -1996,7 +2067,7 @@ class SubtitleCatalogSources(
 
                 if (requireMovieYear) {
                     val foundYear = STANDALONE_YEAR_REGEX.find(haystack)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                    if (foundYear == null || abs(foundYear - movieYear!!) > 1) return@filter false
+                    if (foundYear == null || abs(foundYear - movieYear) > 1) return@filter false
                 }
                 true
             }
@@ -2123,13 +2194,16 @@ class SubtitleCatalogSources(
 
         internal fun episodeTextMatches(normalizedOrRaw: String, season: Int?, episode: Int?): Boolean {
             if (episode == null || episode <= 0) return true
-            if (season != null && season > 0) {
+            if (season != null && season >= 0) {
                 val sxxExx = Regex(
                     """(?i)(?:^|[^a-z0-9])(?:s|season[\s._-]*)0*${season}[\s._-]*(?:e|ep|episode[\s._-]*)0*${episode}(?!\d)"""
                 )
                 val cross = Regex("""(?i)(?:^|[^0-9])0*${season}x0*${episode}(?!\d)""")
                 if (sxxExx.containsMatchIn(normalizedOrRaw) || cross.containsMatchIn(normalizedOrRaw)) {
                     return true
+                }
+                if (season == 0) {
+                    return false
                 }
             }
             return Regex("""(?i)(?:^|[^0-9a-z])(?:e|ep|episode[\s._-]*)?0*${episode}(?![0-9])""")
@@ -2149,8 +2223,10 @@ class SubtitleCatalogSources(
             val trimmed = hrefOrUrl.trim()
             return when {
                 trimmed.startsWith("http://", ignoreCase = true) ||
-                    trimmed.startsWith("https://", ignoreCase = true) ||
-                    trimmed.startsWith("file:", ignoreCase = true) -> trimmed
+                    trimmed.startsWith("https://", ignoreCase = true) -> trimmed
+                trimmed.contains("://") || trimmed.startsWith("file:", ignoreCase = true) ||
+                    trimmed.startsWith("javascript:", ignoreCase = true) ||
+                    trimmed.startsWith("data:", ignoreCase = true) -> ""
                 trimmed.startsWith("/") -> "${host.trimEnd('/')}$trimmed"
                 else -> "${host.trimEnd('/')}/$trimmed"
             }

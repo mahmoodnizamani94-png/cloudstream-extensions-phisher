@@ -668,38 +668,6 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 headers = mapOf("cookie" to (token ?: "")),
             ).text
 
-            if (source.contains("<track", ignoreCase = true)) {
-                val personalSession = SuperStreamExtractor.createEpisodeSession(
-                    lookupSpec = com.phisher98.subtitles.MediaLookupSpec.Movie(
-                        imdbId = null,
-                        tmdbId = null,
-                        titles = listOf(name),
-                        releaseYear = null,
-                    ),
-                    mode = sessionMode,
-                    sharedPref = effectivePref,
-                    callbackIdentityToken = subtitleCallback,
-                ) { sessionSub ->
-                    earlyController.onSubtitleEmitted(sessionSub)
-                    subtitleCallback(sessionSub)
-                }
-                val rawTracks = CopyOnWriteArrayList<SubtitleFile>()
-                SuperStreamExtractor.extractSuperStreamHtmlSidecars(
-                    htmlContent = source,
-                    extraHeaders = emptyMap(),
-                    subtitleCallback = { rawTracks.add(it) },
-                )
-                for (rawSub in rawTracks) {
-                    personalSession.ingestRawSubtitle(
-                        sub = rawSub,
-                        rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
-                    )
-                }
-                withTimeoutOrNull(8_000L) {
-                    personalSession.completeSession()
-                }
-            }
-
             val matcher = STREAM_SOURCE_PATTERN.matcher(source)
             var found = false
 
@@ -737,6 +705,38 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     ),
                 )
             }
+
+            if (source.contains("<track", ignoreCase = true)) {
+                val personalSession = SuperStreamExtractor.createEpisodeSession(
+                    lookupSpec = com.phisher98.subtitles.MediaLookupSpec.Movie(
+                        imdbId = null,
+                        tmdbId = null,
+                        titles = listOf(name),
+                        releaseYear = null,
+                    ),
+                    mode = sessionMode,
+                    sharedPref = effectivePref,
+                    callbackIdentityToken = subtitleCallback,
+                ) { sessionSub ->
+                    earlyController.onSubtitleEmitted(sessionSub)
+                    subtitleCallback(sessionSub)
+                }
+                val rawTracks = CopyOnWriteArrayList<SubtitleFile>()
+                SuperStreamExtractor.extractSuperStreamHtmlSidecars(
+                    htmlContent = source,
+                    extraHeaders = emptyMap(),
+                    subtitleCallback = { rawTracks.add(it) },
+                )
+                for (rawSub in rawTracks) {
+                    personalSession.ingestRawSubtitle(
+                        sub = rawSub,
+                        rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
+                    )
+                }
+                withTimeoutOrNull(20_000L) {
+                    personalSession.completeSession()
+                }
+            }
         } else {
             val res = parseJson<LinkData>(data)
             val cleanImdb = res.imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
@@ -757,7 +757,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 }
             }
 
-            val lookupSpec = if (res.season == null || res.season <= 0) {
+            val lookupSpec = if (res.season == null || res.season < 0) {
                 com.phisher98.subtitles.MediaLookupSpec.Movie(
                     imdbId = cleanImdb,
                     tmdbId = res.id?.takeIf { it > 0 },
@@ -820,19 +820,25 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     englishFallbackBuffer.add(rawSub)
                 }
                 val job = launch(Dispatchers.IO) {
-                    runCatching {
+                    try {
                         session.ingestRawSubtitle(
                             sub = rawSub,
                             rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
                         )
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
                     }
                 }
                 sidecarIngestJobs.add(job)
             }
 
             val catalogJob = async(Dispatchers.IO) {
-                runCatching {
+                try {
                     session.discoverAndIngestCatalog()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
                 }
             }
 
@@ -885,15 +891,22 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 )
             }
 
-            withTimeoutOrNull(6_000L) {
-                for (job in sidecarIngestJobs) {
-                    runCatching { job.join() }
+            val sidecarSnapshot = sidecarIngestJobs.toList()
+            val sidecarsJoined = withTimeoutOrNull(6_000L) {
+                for (job in sidecarSnapshot) {
+                    job.join()
                 }
             }
-            withTimeoutOrNull(15_000L) {
+            if (sidecarsJoined == null) {
+                sidecarSnapshot.forEach { it.cancel() }
+            }
+            val catalogJoined = withTimeoutOrNull(15_000L) {
                 catalogJob.await()
             }
-            withTimeoutOrNull(14_000L) {
+            if (catalogJoined == null) {
+                catalogJob.cancel()
+            }
+            withTimeoutOrNull(20_000L) {
                 session.completeSession()
             }
 

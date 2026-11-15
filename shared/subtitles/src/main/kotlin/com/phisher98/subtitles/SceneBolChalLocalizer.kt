@@ -3,9 +3,16 @@ package com.phisher98.subtitles
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.app
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -67,10 +74,11 @@ data class BolChalConfig(
     val minCueDurationMs: Long = 833L,
     val minSplittableCueDurationMs: Long = 1_800L,
     val interCueBlinkGapMs: Long = 84L,
-    val maxTrailingSilenceExtendMs: Long = 700L,
-    val maxLeadingSilenceExtendMs: Long = 100L,
+    val maxTrailingSilenceExtendMs: Long = 2_800L,
+    val maxLeadingSilenceExtendMs: Long = 200L,
     val sceneGapSplitMs: Long = 2_500L,
     val minRequiredCueCoverage: Double = 0.98,
+    val maxConcurrentWindows: Int = 6,
     val llmEndpointUrl: String? = null,
     val llmApiKey: String? = null,
     val llmModelId: String? = null,
@@ -89,6 +97,7 @@ data class BolChalConfig(
             "minSplittableCueDurationMs=$minSplittableCueDurationMs, interCueBlinkGapMs=$interCueBlinkGapMs, " +
             "maxTrailingSilenceExtendMs=$maxTrailingSilenceExtendMs, maxLeadingSilenceExtendMs=$maxLeadingSilenceExtendMs, " +
             "sceneGapSplitMs=$sceneGapSplitMs, minRequiredCueCoverage=$minRequiredCueCoverage, " +
+            "maxConcurrentWindows=$maxConcurrentWindows, " +
             "llmEndpointUrl=$llmEndpointUrl, llmApiKey=$redactedKey, llmModelId=$llmModelId)"
     }
 }
@@ -109,8 +118,12 @@ object BolChalPurifier {
         "منٹ", "سیکنڈ", "باس", "پلان", "پرابلم",
     )
 
+    private val URDU_AAP_KA_ISTIQBAL_REGEX = Regex("""آپ\s+کا\s+استقبال\s+ہے""")
+    private val WELCOME_GREETING_EN_REGEX = Regex(
+        """(?i)\bwelcome\s+(?:to|back|home|aboard|in|inside|here|everyone|all|folks|friends|ladies|gentlemen|sir|ma'am|madam)\b"""
+    )
+
     private val HINDI_AND_CALQUE_REWRITES: List<Pair<Regex, String>> = listOf(
-        Regex("""آپ\s+کا\s+استقبال\s+ہے""") to "کوئی بات نہیں",
         Regex("""یہ\s+ایک\s+اچھا\s+خیال\s+ہے""") to "اچھا خیال ہے",
         Regex("""وہ\s+ایک\s+اچھا\s+آدمی\s+ہے""") to "وہ اچھا آدمی ہے",
         Regex("""(?:مقدس|بیل\s+کی)\s+گندگی""") to "کیا بکواس ہے",
@@ -222,6 +235,14 @@ object BolChalPurifier {
         if (text.isEmpty()) return text
 
         val en = sourceEnglish?.text?.trim().orEmpty()
+        if (URDU_AAP_KA_ISTIQBAL_REGEX.containsMatchIn(text)) {
+            val welcomeRewrite = if (en.isNotEmpty() && WELCOME_GREETING_EN_REGEX.containsMatchIn(en)) {
+                "خوش آمدید"
+            } else {
+                "کوئی بات نہیں"
+            }
+            text = URDU_AAP_KA_ISTIQBAL_REGEX.replace(text, welcomeRewrite)
+        }
         if (en.isNotEmpty()) {
             ENGLISH_RIGHT_REGEX.matchEntire(en)?.let { m ->
                 if (text.contains("دائیں")) {
@@ -379,10 +400,9 @@ object UrduCpsRefiner {
         }
 
         val terminalPunct = cur.lastOrNull()?.takeIf { it == '۔' || it == '؟' || it == '!' }?.toString().orEmpty()
-        val trailingCoordRegex = Regex("""(?:\s*،)?\s+(?:اور|جبکہ|کیونکہ|ورنہ)\s+[^۔؟!\n]+[۔؟!]?$""")
-        val trimmedCoord = trailingCoordRegex.replace(cur, terminalPunct).trim()
-        if (trimmedCoord.split(' ').count { it.isNotBlank() } >= 3) {
-            cur = UrduOrthographyGate.normalizeUrduTypography(trimmedCoord)
+        val coordCommaRegex = Regex("""(?:\s*،)?\s+اور\s+(?=[^\s۔؟!\n])""")
+        if (coordCommaRegex.containsMatchIn(cur)) {
+            cur = UrduOrthographyGate.normalizeUrduTypography(coordCommaRegex.replace(cur, "، "))
             if (visibleCharCount(cur) <= maxChars) return cur
         }
 
@@ -401,7 +421,7 @@ object UrduCpsRefiner {
 
         while (words.size > 3 && visibleCharCount(words.joinToString(" ")) > maxChars) {
             val firstClean = stripPunctuation(words.first())
-            if (firstClean == "کیونکہ" || firstClean == "لیکن" || firstClean == "مگر" || firstClean == "دراصل") {
+            if (firstClean == "کیونکہ" || firstClean == "دراصل" || firstClean == "ویسے" || firstClean == "خیر") {
                 words.removeAt(0)
                 continue
             }
@@ -493,7 +513,7 @@ object UrduCpsRefiner {
             val cur = working[i]
             val nextStartMs = working.getOrNull(i + 1)?.span?.startMs
                 ?: videoDurationMs
-                ?: (cur.span.endMs + 2_800L + config.interCueBlinkGapMs)
+                ?: (cur.span.endMs + config.maxTrailingSilenceExtendMs + config.interCueBlinkGapMs)
 
             var text = cur.text.replace('\n', ' ').replace(Regex("""\s+"""), " ").trim()
             var startMs = max(cur.span.startMs, prevFinalEndMs + config.interCueBlinkGapMs)
@@ -504,9 +524,9 @@ object UrduCpsRefiner {
                 endMs = maxAllowedEnd
             }
 
-            val maxLeadBorrowMs = max(200L, config.maxLeadingSilenceExtendMs)
+            val maxLeadBorrowMs = config.maxLeadingSilenceExtendMs.coerceAtLeast(0L)
             val minEarliestStart = max(0L, max(cur.span.startMs - maxLeadBorrowMs, prevFinalEndMs + config.interCueBlinkGapMs))
-            val maxUnoccupiedSilenceEnd = min(maxAllowedEnd, cur.span.endMs + max(2_800L, config.maxTrailingSilenceExtendMs))
+            val maxUnoccupiedSilenceEnd = min(maxAllowedEnd, cur.span.endMs + config.maxTrailingSilenceExtendMs.coerceAtLeast(0L))
 
             if (endMs - startMs < config.minCueDurationMs) {
                 endMs = min(maxUnoccupiedSilenceEnd, startMs + config.minCueDurationMs)
@@ -611,22 +631,24 @@ class DefaultBolChalTranslationTransport(
         }
 
         if (config.hasByokLlm) {
-            val llmRes = runCatching { translateViaOpenAiCompatibleLlm(window, config) }.getOrNull()
+            val llmRes = catchNonCancellation { translateViaOpenAiCompatibleLlm(window, config) }.getOrNull()
             if (llmRes != null && llmRes.size == window.targetCues.size) {
                 return Result.success(llmRes to LocalizationTierKey.LLM_SCENE)
             }
             if (llmRes != null && llmRes.isNotEmpty()) {
                 val missing = window.targetCues.filter { it.id !in llmRes }
                 val patched = LinkedHashMap(llmRes)
-                val fallbackMap = translateWithStrictBisect(missing)
-                patched.putAll(fallbackMap)
+                val fallbackMap = catchNonCancellation { translateWithStrictBisect(missing) }.getOrNull()
+                if (fallbackMap != null) {
+                    patched.putAll(fallbackMap)
+                }
                 if (patched.size == window.targetCues.size) {
                     return Result.success(patched to LocalizationTierKey.LLM_SCENE)
                 }
             }
         }
 
-        return runCatching {
+        return catchNonCancellation {
             val translated = translateWithStrictBisect(window.targetCues)
             if (translated.isEmpty()) {
                 throw IllegalStateException("Keyless Bol-Chal NMT returned 0 cues for window ${window.windowIndex}")
@@ -644,6 +666,13 @@ class DefaultBolChalTranslationTransport(
             rawEndpoint.endsWith("/chat/completions", ignoreCase = true) -> rawEndpoint
             rawEndpoint.endsWith("/v1", ignoreCase = true) -> "$rawEndpoint/chat/completions"
             else -> "$rawEndpoint/chat/completions"
+        }
+        val parsedUri = URI(fullUrl)
+        val scheme = parsedUri.scheme?.lowercase(Locale.ROOT).orEmpty()
+        val host = parsedUri.host?.lowercase(Locale.ROOT)?.trim('[', ']').orEmpty()
+        val isLoopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
+        if (scheme != "https" && !(scheme == "http" && isLoopback)) {
+            throw SecurityException("Refusing to send BYOK LLM Bearer token over non-HTTPS endpoint: $fullUrl")
         }
 
         val root = mapper.createObjectNode()
@@ -731,7 +760,7 @@ class DefaultBolChalTranslationTransport(
         val joined = cues.joinToString("\n") { cue ->
             "⟦${cue.id.value}⟧ ${cue.text.text.replace('\n', ' ')}"
         }
-        val translatedBlock = runCatching { requestGoogleKeylessNmt(joined) }.getOrNull().orEmpty()
+        val translatedBlock = catchNonCancellation { requestGoogleKeylessNmt(joined) }.getOrNull().orEmpty()
         val parsed = parseBracketedIdOutput(translatedBlock, cues)
         if (parsed.size == cues.size) {
             return parsed
@@ -805,7 +834,7 @@ class DefaultBolChalTranslationTransport(
             "dt" to "t",
             "q" to sourceText,
         )
-        val primaryJson = runCatching {
+        val primaryJson = catchNonCancellation {
             executeGet("https://translate.googleapis.com/translate_a/single", gtxParams, headers)
         }.getOrNull()
         if (!primaryJson.isNullOrBlank()) {
@@ -846,7 +875,7 @@ class DefaultBolChalTranslationTransport(
         headers: Map<String, String>,
     ): String {
         httpGetOverride?.let { return it(url, params, headers) }
-        val niceResult = runCatching {
+        val niceResult = catchNonCancellation {
             app.get(url, headers = headers, params = params).text
         }.getOrNull()
         if (!niceResult.isNullOrBlank()) return niceResult
@@ -876,7 +905,7 @@ class DefaultBolChalTranslationTransport(
         headers: Map<String, String>,
     ): String {
         httpPostJsonOverride?.let { return it(url, jsonBody, headers) }
-        val niceResult = runCatching {
+        val niceResult = catchNonCancellation {
             val bodyMap = mapper.readValue(
                 jsonBody,
                 object : com.fasterxml.jackson.core.type.TypeReference<Map<String, Any?>>() {},
@@ -901,6 +930,15 @@ class DefaultBolChalTranslationTransport(
             }
         }
     }
+
+    private inline fun <T> catchNonCancellation(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
 
     companion object {
         // Matches ⟦12⟧ even if NMT inserts whitespace or localizes digits into Urdu/Arabic-Indic numerals.
@@ -1051,6 +1089,16 @@ object SceneBolChalLocalizer {
         "stop", "come", "impossible", "please", "sorry", "okay", "right",
     )
 
+    private fun isAcceptablePurifiedUrduCue(purified: String, sourceCue: LatinSourceCue): Boolean {
+        if (purified.isBlank()) return false
+        val srcHasLetters = sourceCue.text.text.any { Character.isLetter(it) }
+        if (!srcHasLetters) return true
+        return purified.any { ch ->
+            val code = ch.code
+            code in 0x0600..0x06FF || code in 0x0750..0x077F || code in 0xFB50..0xFDFF || code in 0xFE70..0xFEFF
+        }
+    }
+
     suspend fun localize(
         englishDonorDoc: CueDocument,
         donorProvenance: DonorProvenance,
@@ -1075,28 +1123,82 @@ object SceneBolChalLocalizer {
         var effectiveTier = LocalizationTierKey.KEYLESS_BOLCHAL_NMT
         val sourceById = sourceCues.associateBy { it.id }
 
-        for ((idx, window) in windows.withIndex()) {
-            val (windowMap, tier) = transport.translateWindow(window, config)
-                .getOrElse { return Result.failure(it) }
-            if (idx == 0 || tier.tierRank > effectiveTier.tierRank) {
+        fun mergeWindowResult(window: SceneWindow, windowMap: Map<CueId, BolChalCueOut>, tier: LocalizationTierKey, isFirst: Boolean) {
+            if (isFirst || tier.tierRank > effectiveTier.tierRank) {
                 effectiveTier = tier
             }
             for ((cueId, outCue) in windowMap) {
                 val srcCue = sourceById[cueId] ?: continue
                 val purified = BolChalPurifier.purify(outCue.urduText, srcCue.text, window.speakerCard)
-                if (purified.isNotBlank()) {
+                if (isAcceptablePurifiedUrduCue(purified, srcCue)) {
                     translatedById[cueId] = purified
                 }
             }
+        }
 
-            if (idx == 0 && onWindowZeroReady != null && translatedById.isNotEmpty()) {
-                val win0Entries = window.targetCues.mapNotNull { sc ->
+        val concurrency = config.maxConcurrentWindows.coerceIn(1, 16)
+        if (onWindowZeroReady != null && windows.isNotEmpty()) {
+            val win0 = windows[0]
+            val (win0Map, win0Tier) = transport.translateWindow(win0, config)
+                .getOrElse { return Result.failure(it) }
+            mergeWindowResult(win0, win0Map, win0Tier, isFirst = true)
+            if (translatedById.isNotEmpty()) {
+                val win0Entries = win0.targetCues.mapNotNull { sc ->
                     translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
                 }
                 val refinedWin0 = UrduCpsRefiner.refineDocument(win0Entries, config, videoDurationMs)
                 if (refinedWin0.isNotEmpty()) {
                     onWindowZeroReady(CueDocument.fromCues(SubtitleLanguage.URDU, refinedWin0))
                 }
+            }
+            if (windows.size > 1) {
+                val tailWindows = windows.subList(1, windows.size)
+                val sem = Semaphore(concurrency)
+                val tailResults = try {
+                    coroutineScope {
+                        tailWindows.map { win ->
+                            async {
+                                sem.withPermit {
+                                    win to transport.translateWindow(win, config).getOrThrow()
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    return Result.failure(t)
+                }
+                for ((win, pair) in tailResults) {
+                    mergeWindowResult(win, pair.first, pair.second, isFirst = false)
+                }
+            }
+        } else if (windows.size == 1 || concurrency == 1) {
+            for ((idx, window) in windows.withIndex()) {
+                val (windowMap, tier) = transport.translateWindow(window, config)
+                    .getOrElse { return Result.failure(it) }
+                mergeWindowResult(window, windowMap, tier, isFirst = idx == 0)
+            }
+        } else {
+            val sem = Semaphore(concurrency)
+            val allResults = try {
+                coroutineScope {
+                    windows.map { win ->
+                        async {
+                            sem.withPermit {
+                                win to transport.translateWindow(win, config).getOrThrow()
+                            }
+                        }
+                    }.awaitAll()
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                return Result.failure(t)
+            }
+            for ((idx, entry) in allResults.withIndex()) {
+                val (win, pair) = entry
+                mergeWindowResult(win, pair.first, pair.second, isFirst = idx == 0)
             }
         }
 

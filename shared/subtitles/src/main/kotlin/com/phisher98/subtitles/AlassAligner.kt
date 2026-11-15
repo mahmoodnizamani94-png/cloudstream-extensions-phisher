@@ -1,11 +1,90 @@
 package com.phisher98.subtitles
 
 import java.io.ByteArrayOutputStream
-import java.util.Base64
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+private object Rfc4648Base64 {
+    private const val ENCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    private val DECODE_TABLE = IntArray(128) { -1 }.apply {
+        for (i in ENCODE_ALPHABET.indices) {
+            this[ENCODE_ALPHABET[i].code] = i
+        }
+        this['-'.code] = 62
+        this['_'.code] = 63
+    }
+
+    fun encode(bytes: ByteArray): String {
+        if (bytes.isEmpty()) return ""
+        val out = StringBuilder(((bytes.size + 2) / 3) * 4)
+        var i = 0
+        while (i + 2 < bytes.size) {
+            val n = ((bytes[i].toInt() and 0xFF) shl 16) or
+                ((bytes[i + 1].toInt() and 0xFF) shl 8) or
+                (bytes[i + 2].toInt() and 0xFF)
+            out.append(ENCODE_ALPHABET[(n ushr 18) and 0x3F])
+            out.append(ENCODE_ALPHABET[(n ushr 12) and 0x3F])
+            out.append(ENCODE_ALPHABET[(n ushr 6) and 0x3F])
+            out.append(ENCODE_ALPHABET[n and 0x3F])
+            i += 3
+        }
+        val rem = bytes.size - i
+        if (rem == 1) {
+            val n = (bytes[i].toInt() and 0xFF) shl 16
+            out.append(ENCODE_ALPHABET[(n ushr 18) and 0x3F])
+            out.append(ENCODE_ALPHABET[(n ushr 12) and 0x3F])
+            out.append("==")
+        } else if (rem == 2) {
+            val n = ((bytes[i].toInt() and 0xFF) shl 16) or ((bytes[i + 1].toInt() and 0xFF) shl 8)
+            out.append(ENCODE_ALPHABET[(n ushr 18) and 0x3F])
+            out.append(ENCODE_ALPHABET[(n ushr 12) and 0x3F])
+            out.append(ENCODE_ALPHABET[(n ushr 6) and 0x3F])
+            out.append('=')
+        }
+        return out.toString()
+    }
+
+    fun decode(input: String): ByteArray {
+        val cleaned = input.trim()
+        if (cleaned.isEmpty()) return ByteArray(0)
+        require(cleaned.length % 4 != 1) { "Invalid Base64 length: ${cleaned.length}" }
+        val out = ByteArrayOutputStream((cleaned.length * 3) / 4)
+        var buffer = 0
+        var sextets = 0
+        var seenPad = false
+        for (idx in cleaned.indices) {
+            val ch = cleaned[idx]
+            if (ch == '=') {
+                seenPad = true
+                continue
+            }
+            require(!seenPad) { "Invalid character after Base64 padding at $idx" }
+            val code = ch.code
+            val v = if (code in 0..127) DECODE_TABLE[code] else -1
+            require(v >= 0) { "Illegal Base64 character '$ch' at $idx" }
+            buffer = (buffer shl 6) or v
+            sextets++
+            if (sextets == 4) {
+                out.write((buffer ushr 16) and 0xFF)
+                out.write((buffer ushr 8) and 0xFF)
+                out.write(buffer and 0xFF)
+                buffer = 0
+                sextets = 0
+            }
+        }
+        when (sextets) {
+            1 -> throw IllegalArgumentException("Truncated Base64 quantum")
+            2 -> out.write((buffer ushr 4) and 0xFF)
+            3 -> {
+                out.write((buffer ushr 10) and 0xFF)
+                out.write((buffer ushr 2) and 0xFF)
+            }
+        }
+        return out.toByteArray()
+    }
+}
 
 data class ObservedWindow(val startMs: Long, val endMs: Long) {
     init {
@@ -111,18 +190,13 @@ object SpeechTimelineCodec {
             out.write(qWeight)
             prevSpanStart = sp.startMs
         }
-        return Base64.getEncoder().encodeToString(out.toByteArray())
+        return Rfc4648Base64.encode(out.toByteArray())
     }
 
     fun decodeCompact(blob: String): Result<SpeechActivityTimeline> = runCatching {
         val trimmed = blob.trim()
         require(trimmed.isNotEmpty()) { "Empty speech timeline payload" }
-        var normalized = trimmed.replace('-', '+').replace('_', '/')
-        val rem = normalized.length % 4
-        if (rem != 0) {
-            normalized += "=".repeat(4 - rem)
-        }
-        val raw = Base64.getDecoder().decode(normalized)
+        val raw = Rfc4648Base64.decode(trimmed)
         require(raw.size >= 2 && (raw[0].toInt() and 0xFF) == WIRE_VERSION) {
             "Unsupported speech timeline version"
         }
@@ -484,7 +558,7 @@ object AlassAligner {
         dd[0] = 0
         if (profile != null) profile[0] = v
         var bestValFp = v
-        var bestK = maxOffsetTicks
+        var bestK = 0
         var bestDist = abs(0 - maxOffsetTicks)
         for (k in 1 until gridSize) {
             d += dd[k].toLong()

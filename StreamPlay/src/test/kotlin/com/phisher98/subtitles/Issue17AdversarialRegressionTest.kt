@@ -2,6 +2,8 @@ package com.phisher98.subtitles
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.SubtitleFile
+import com.phisher98.SubtitleSourceLedger
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,16 +11,35 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.lang.management.ManagementFactory
+import java.net.URI
 import java.nio.file.Files
 import java.util.Base64
 import java.util.Locale
 import java.util.Random
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.math.abs
 
 class Issue17AdversarialRegressionTest {
 
     private val mapper = ObjectMapper()
+
+    private fun currentThreadCpuTimeNs(): Long {
+        val bean = runCatching { ManagementFactory.getThreadMXBean() }.getOrNull()
+        if (bean != null && bean.isCurrentThreadCpuTimeSupported) {
+            if (!bean.isThreadCpuTimeEnabled) {
+                runCatching { bean.isThreadCpuTimeEnabled = true }
+            }
+            val cpu = bean.currentThreadCpuTime
+            if (cpu > 0L) return cpu
+        }
+        return System.nanoTime()
+    }
 
     private fun nmtJson(translatedPayload: String, src: String): String {
         val outer = mapper.createArrayNode()
@@ -70,10 +91,10 @@ class Issue17AdversarialRegressionTest {
             AlassAligner.alignToAnchorCues(candidate, anchor, AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR)
         }
         val samplesMs = DoubleArray(5) {
-            val t0 = System.nanoTime()
+            val t0 = currentThreadCpuTimeNs()
             val out = AlassAligner.alignToAnchorCues(candidate, anchor, AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR)
             assertTrue(out is AlignmentOutcome.Aligned)
-            (System.nanoTime() - t0) / 1_000_000.0
+            (currentThreadCpuTimeNs() - t0) / 1_000_000.0
         }.sortedArray()
         val medianCpuMs = samplesMs[samplesMs.size / 2]
         val minCpuMs = samplesMs.first()
@@ -213,7 +234,11 @@ class Issue17AdversarialRegressionTest {
         }
         val rawBytes = sb.toString().toByteArray(Charsets.UTF_8)
         val rawSub = com.lagradost.cloudstream3.newSubtitleFile("Urdu", "https://sub.wyzie.ru/c/ur/test.srt") {
-            this.headers = mapOf("X-StreamPlay-Source" to "wyzie")
+            this.headers = mapOf(
+                "X-StreamPlay-Source" to "wyzie",
+                "Authorization" to "Bearer secret-token",
+                "Cookie" to "sid=private",
+            )
         }
         session.ingestRawSubtitle(rawSub, rawSourceHint = "wyzie", rawBytesOverride = rawBytes)
         session.completeSession()
@@ -221,6 +246,8 @@ class Issue17AdversarialRegressionTest {
         assertEquals(1, emitted.size)
         val outHeaders = emitted[0].headers.orEmpty()
         assertNull(outHeaders[ProvenanceCodec.HEADER_SYNC])
+        assertNull(outHeaders["Authorization"])
+        assertNull(outHeaders["Cookie"])
     }
 
     @Test
@@ -281,10 +308,13 @@ class Issue17AdversarialRegressionTest {
             }
         )
         repeat(2) { AlassAligner.alignToAnchorCues(movieCand, movieMedia, AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR) }
-        val t0 = System.nanoTime()
-        val movieAligned = AlassAligner.alignToAnchorCues(movieCand, movieMedia, AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR)
-        val solverCpuMs = (System.nanoTime() - t0) / 1_000_000.0
-        assertTrue(movieAligned is AlignmentOutcome.Aligned)
+        val solverSamplesMs = DoubleArray(3) {
+            val t0 = currentThreadCpuTimeNs()
+            val movieAligned = AlassAligner.alignToAnchorCues(movieCand, movieMedia, AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR)
+            assertTrue(movieAligned is AlignmentOutcome.Aligned)
+            (currentThreadCpuTimeNs() - t0) / 1_000_000.0
+        }.sortedArray()
+        val solverCpuMs = solverSamplesMs[solverSamplesMs.size / 2]
 
         println(
             String.format(
@@ -419,7 +449,7 @@ class Issue17AdversarialRegressionTest {
     }
 
     @Test
-    fun urduCpsRefinerStaysWithin17CpsAndPreservesCompoundVerbsAndPostpositions() {
+    fun urduCpsRefinerStaysWithin17CpsAndPreservesCompoundVerbsPostpositionsAndClauses() {
         val cpsDoc = listOf(
             CueEntry(CueId(0), CueSpan(1_000L, 2_500L), "تم نے مجھے پہلے سچ کیوں نہیں بتایا تھا؟"),
             CueEntry(CueId(1), CueSpan(2_600L, 4_600L), "کیونکہ وہاں سب لوگ تمہاری ہر ایک حرکت پر مسلسل نظر رکھے ہوئے تھے اور خطرہ بہت زیادہ تھا۔"),
@@ -427,6 +457,13 @@ class Issue17AdversarialRegressionTest {
         )
         val refinedCps = UrduCpsRefiner.refineDocument(cpsDoc)
         val maxCps = refinedCps.maxOf { UrduCpsRefiner.computeVisibleCps(it.text, it.span.durationMs) }
+
+        val plotDoc = listOf(
+            CueEntry(CueId(20), CueSpan(1_000L, 2_000L), "سنو۔"),
+            CueEntry(CueId(21), CueSpan(2_100L, 3_600L), "وہ کمرے میں داخل ہوا اور اس نے خفیہ فائل جلا دی۔"),
+            CueEntry(CueId(22), CueSpan(3_700L, 5_000L), "بھاگو۔"),
+        )
+        val refinedPlot = UrduCpsRefiner.refineDocument(plotDoc)
 
         val wrapInputs = listOf(
             CueEntry(CueId(10), CueSpan(10_000L, 14_000L), "اب یہاں خطرہ مسلسل بڑھتا جا رہا ہے ہمارے سب دوستوں کے لیے"),
@@ -443,7 +480,350 @@ class Issue17AdversarialRegressionTest {
             )
         )
         assertTrue("Expected maxCps <= 17.0, got $maxCps", maxCps <= 17.0)
+        assertTrue("Second coordinated clause must survive condensation", refinedCps.any { it.text.contains("خطرہ") })
+        assertTrue("Plot action after 'اور' must survive condensation", refinedPlot.any { it.text.contains("فائل جلا دی") })
         assertFalse(wrapped[0].text.contains("بڑھتا\nجا"))
         assertFalse(wrapped[1].text.contains("میرے\nساتھ"))
+    }
+
+    @Test
+    fun bolChalLocalizerRunsConcurrentWindowsAndRejectsUntranslatedLatinEcho() = runBlocking {
+        val dummyProof = AlignmentProof(SubtitleTimeWarp.Identity, AlignmentAnchorKind.NATIVE_STREAM_PACK, 1.0, 0, 0, 0)
+        val inFlight = AtomicInteger(0)
+        val maxObservedInFlight = AtomicInteger(0)
+        val concurrentTransport = BolChalTranslationTransport { window, _ ->
+            val cur = inFlight.incrementAndGet()
+            maxObservedInFlight.updateAndGet { prev -> maxOf(prev, cur) }
+            try {
+                delay(75L)
+                val out = window.targetCues.associate { cue ->
+                    cue.id to BolChalCueOut(id = cue.id, urduText = "ارے یار، ابھی ہمارے پاس وقت بہت کم ہے۔")
+                }
+                Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            } finally {
+                inFlight.decrementAndGet()
+            }
+        }
+
+        val multiWindowCues = (0 until 45).map { idx ->
+            CueEntry(
+                id = CueId(idx),
+                span = CueSpan(1_000L + idx * 3_500L, 2_800L + idx * 3_500L),
+                text = "Listen carefully right now line $idx.",
+            )
+        }
+        val multiDoc = CueDocument.fromCues(SubtitleLanguage.ENGLISH, multiWindowCues)
+        val localized = SceneBolChalLocalizer.localize(
+            englishDonorDoc = multiDoc,
+            donorProvenance = DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK),
+            alignmentProof = dummyProof,
+            config = BolChalConfig(maxConcurrentWindows = 3),
+            transport = concurrentTransport,
+        ).getOrThrow()
+        assertEquals(45, localized.document.cues.size)
+        assertEquals(
+            "Expected bounded concurrency of 3 concurrent windows",
+            3,
+            maxObservedInFlight.get(),
+        )
+
+        val latinEchoTransport = BolChalTranslationTransport { window, _ ->
+            val echoed = window.targetCues.associate { cue ->
+                cue.id to BolChalCueOut(id = cue.id, urduText = cue.text.text)
+            }
+            Result.success(echoed to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+        }
+        val latinRes = SceneBolChalLocalizer.localize(
+            englishDonorDoc = multiDoc,
+            donorProvenance = DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK),
+            alignmentProof = dummyProof,
+            config = BolChalConfig(),
+            transport = latinEchoTransport,
+        )
+        assertTrue("Untranslated Latin echo must fail Urdu localization gate", latinRes.isFailure)
+    }
+
+    @Test
+    fun episodeSessionRejectsNonEnglishSubtitleCatOrigDonor() = runBlocking {
+        val casDir = Files.createTempDirectory("regression-orig-donor").toFile()
+        val frenchSrt = buildString {
+            for (i in 1..18) {
+                val s = i * 4
+                val e = s + 2
+                append("$i\n")
+                append(String.format(Locale.ROOT, "00:%02d:%02d,000 --> 00:%02d:%02d,500\n", s / 60, s % 60, e / 60, e % 60))
+                append("Bonjour mon ami, nous devons partir maintenant avant la nuit sombre.\n\n")
+            }
+        }
+        val transport = CatalogHttpTransport.fromGet { url, _ ->
+            val body = when {
+                url.contains("index.php") -> """
+                    <html><body><table>
+                      <tr><td><a href="/subs/888/Dark.2017.S01E01.html">Dark 2017 S01E01</a></td></tr>
+                    </table></body></html>
+                """.trimIndent()
+                url.contains("/subs/888/Dark.2017.S01E01.html") -> """
+                    <html><body>
+                      <a href="/subs/888/Dark.2017.S01E01-orig.srt">Original Subtitle</a>
+                    </body></html>
+                """.trimIndent()
+                url.endsWith("-orig.srt") -> frenchSrt
+                else -> ""
+            }
+            CatalogHttpResponse(statusCode = 200, bodyBytes = body.toByteArray(Charsets.UTF_8), finalUrl = url)
+        }
+        val emitted = CopyOnWriteArrayList<SubtitleFile>()
+        val session = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Episode(
+                imdbId = "tt5753856",
+                tmdbId = 70523,
+                titles = listOf("Dark"),
+                seriesPremiereYear = 2017,
+                seasonAirYear = 2017,
+                coordinate = EpisodeCoordinate.VerifiedSeasonEpisode(1, 1),
+            ),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(casDir),
+            httpTransport = transport,
+            catalogSources = SubtitleCatalogSources(transport = transport),
+            bolChalTransport = BolChalTranslationTransport { window, _ ->
+                val out = window.targetCues.associate { cue ->
+                    cue.id to BolChalCueOut(id = cue.id, urduText = "ارے یار، ابھی ہمارے پاس وقت بہت کم ہے۔")
+                }
+                Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+            },
+            subtitleCallback = { emitted.add(it) },
+        )
+        session.discoverAndIngestCatalog(enabledSources = setOf(CatalogueSourceKey.SUBTITLECAT))
+        val summary = session.completeSession()
+        assertEquals("French -orig.srt must not be localized as an English donor", 0, emitted.size)
+        assertTrue(summary.emittedUrduCandidates.isEmpty())
+        assertNull(summary.localizedDonorUsed)
+    }
+
+    @Test
+    fun archiveDecoderEnforcesTotalInflatedBudgetOnSkippedEntriesAndMatchesUnderscoreEpisodes() {
+        val spec = MediaLookupSpec.Episode(
+            imdbId = "tt0903747",
+            tmdbId = 1396,
+            titles = listOf("Breaking Bad"),
+            seriesPremiereYear = 2008,
+            seasonAirYear = 2008,
+            coordinate = EpisodeCoordinate.VerifiedSeasonEpisode(1, 1),
+        )
+
+        val validUnderscoreZip = ByteArrayOutputStream().use { baos ->
+            ZipOutputStream(baos).use { zos ->
+                zos.putNextEntry(ZipEntry("Breaking_Bad_S01E02_1080p.srt"))
+                zos.write("1\n00:00:01,000 --> 00:00:03,000\nWrong episode\n\n".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("Breaking_Bad_S01E01_1080p.srt"))
+                zos.write("1\n00:00:01,000 --> 00:00:03,000\nCorrect underscore episode\n\n".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+            baos.toByteArray()
+        }
+        val underscoreDecoded = SubtitleArchiveDecoder.decode(validUnderscoreZip, spec).getOrThrow()
+        assertTrue(underscoreDecoded.contains("Correct underscore episode"))
+
+        val threeMiBPayload = ByteArray(3 * 1024 * 1024) { 'A'.code.toByte() }
+        val skippedBombZip = ByteArrayOutputStream().use { baos ->
+            ZipOutputStream(baos).use { zos ->
+                for (ep in 2..13) {
+                    zos.putNextEntry(ZipEntry(String.format(Locale.ROOT, "Breaking_Bad_S01E%02d.srt", ep)))
+                    zos.write(threeMiBPayload)
+                    zos.closeEntry()
+                }
+                zos.putNextEntry(ZipEntry("Breaking_Bad_S01E01.srt"))
+                zos.write("1\n00:00:01,000 --> 00:00:03,000\nAfter 36MiB skipped entries\n\n".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+            baos.toByteArray()
+        }
+        val bombResult = SubtitleArchiveDecoder.decode(skippedBombZip, spec)
+        assertTrue("Expected ZIP decoder to abort when skipped entries exceed 32 MiB inflated budget", bombResult.isFailure)
+    }
+
+    @Test
+    fun subSourceApiKeyHeadersScopedStrictlyToTrustedSubSourceHosts() = runBlocking {
+        val transport = CatalogHttpTransport.fromGet { url, _ ->
+            val json = when {
+                url.contains("/movies/search") -> """{"data":[{"movieId":42,"imdbId":"tt1375666","title":"Inception","releaseYear":2010}]}"""
+                url.contains("/subtitles") -> """
+                    {"data":[
+                      {"subtitleId":101,"language":"english","releaseInfo":"Inception.2010.1080p.BluRay","downloadUrl":"https://api.subsource.net/v1/subtitles/download/101"},
+                      {"subtitleId":102,"language":"english","releaseInfo":"Inception.2010.720p.BluRay","downloadUrl":"https://evil-collector.example.org/steal.srt"}
+                    ]}
+                """.trimIndent()
+                else -> "{}"
+            }
+            CatalogHttpResponse(statusCode = 200, bodyBytes = json.toByteArray(Charsets.UTF_8), finalUrl = url)
+        }
+        val sources = SubtitleCatalogSources(
+            transport = transport,
+            apiKeys = CatalogApiKeys(subSourceApiKey = "secret-subsource-key"),
+        )
+        val discovered = sources.discoverCandidates(
+            spec = MediaLookupSpec.Movie(
+                imdbId = "tt1375666",
+                tmdbId = 27205,
+                titles = listOf("Inception"),
+                releaseYear = 2010,
+            ),
+            languages = setOf(SubtitleLanguage.ENGLISH),
+            enabledSources = setOf(CatalogueSourceKey.SUBSOURCE),
+        )
+        val trusted = discovered.admittedCandidates.firstOrNull { it.downloadUrl.contains("api.subsource.net") }
+        val untrusted = discovered.admittedCandidates.firstOrNull { it.downloadUrl.contains("evil-collector.example.org") }
+        assertNotNull(trusted)
+        assertNotNull(untrusted)
+        assertEquals("secret-subsource-key", trusted!!.requestHeaders["X-API-Key"])
+        assertNull("Untrusted redirect/download host must never receive X-API-Key", untrusted!!.requestHeaders["X-API-Key"])
+        assertNull("Untrusted redirect/download host must never receive api-key", untrusted.requestHeaders["api-key"])
+    }
+
+    @Test
+    fun urduOrthographyGateAdmitsValidAssAndTtmlWithFrameRateOffsets() {
+        val urduLines = listOf(
+            "یار بات سنو، ابھی ہمارے پاس وقت بہت کم ہے۔",
+            "تم نے دروازہ ٹھیک سے بند کیا تھا نا؟",
+            "میری بات غور سے سنو، اس فائل کا کسی کو پتا نہیں۔",
+            "گاڑی کے پاس رکو اور کوئی آئے تو فوراً فون کرنا۔",
+            "کل رات تم نے وعدہ کیا تھا کہ اب یہ سب ختم ہے۔",
+        )
+        val assText = buildString {
+            append("[Script Info]\nTitle: Urdu Test\n\n[Events]\n")
+            append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+            for (i in 0 until 15) {
+                val s = 2 + i * 4
+                val e = s + 2
+                val line = urduLines[i % urduLines.size]
+                append(String.format(Locale.ROOT, "Dialogue: 0,0:%02d:%02d.00,0:%02d:%02d.50,Default,,0,0,0,,{\\an8}%s\n", s / 60, s % 60, e / 60, e % 60, line))
+            }
+        }
+        val ttmlText = buildString {
+            append("""<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" ttp:frameRate="24"><body><div>""")
+            for (i in 0 until 15) {
+                val startFrames = (2 + i * 4) * 24
+                val endFrames = startFrames + 48
+                val line = urduLines[i % urduLines.size]
+                append("""<p begin="${startFrames}f" end="${endFrames}f">$line</p>""")
+            }
+            append("</div></body></tt>")
+        }
+
+        val unitProof = AlignmentProof(SubtitleTimeWarp.Identity, AlignmentAnchorKind.UNANCHORED, 1.0, 0, 0, 0)
+        val assAdmitted = UrduQualityGate.admitNativeOrCatalogue(
+            rawDecodedText = assText,
+            language = SubtitleLanguage.URDU,
+            provenance = ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.SUBDL),
+            alignment = unitProof,
+            lookupSpec = null,
+        )
+        val ttmlAdmitted = UrduQualityGate.admitNativeOrCatalogue(
+            rawDecodedText = ttmlText,
+            language = SubtitleLanguage.URDU,
+            provenance = ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.SUBDL),
+            alignment = unitProof,
+            lookupSpec = null,
+        )
+        assertTrue("Valid Urdu ASS should be admitted: $assAdmitted", assAdmitted is VerifiedSubtitleCandidate.Admitted)
+        assertTrue("Valid Urdu TTML should be admitted: $ttmlAdmitted", ttmlAdmitted is VerifiedSubtitleCandidate.Admitted)
+        val ttmlDoc = (ttmlAdmitted as VerifiedSubtitleCandidate.Admitted).document
+        assertEquals(2_000L, ttmlDoc.cues.first().span.startMs)
+        assertEquals(4_000L, ttmlDoc.cues.first().span.endMs)
+    }
+
+    @Test
+    fun subtitleSourceLedgerClassifiesBolChalCatalogueDonorsAsTranslated() = runBlocking {
+        val ledger = SubtitleSourceLedger(targetEnglishSources = 2, targetUrduSources = 2)
+        ledger.recordUrduDelivery("bolchal:cat:subtitlecat", "subtitlecat")
+        val sub = com.lagradost.cloudstream3.newSubtitleFile("Urdu [Bol-Chal]", "file:///tmp/cs_urdu_v2_test.vtt") {
+            this.headers = ProvenanceCodec.encodeHeaders(
+                ProvenanceIdentity.BolChalTranslated(
+                    donor = DonorProvenance.CatalogueDonor(CatalogueSourceKey.WYZIE),
+                    engine = LocalizationTierKey.KEYLESS_BOLCHAL_NMT,
+                )
+            )
+        }
+        ledger.recordSubtitleFile(sub)
+        assertEquals(2, ledger.urduSourceCount())
+        assertEquals("Translated catalogue donors must never count as native/human Urdu", 0, ledger.nativeOrHumanUrduSourceCount())
+        assertTrue(ledger.needsUrduCompletion())
+    }
+
+    @Test
+    fun episodeSessionAppliesSparseAudioVadSpeechTimelineToShiftedHumanUrdu() = runBlocking {
+        val casDir = Files.createTempDirectory("regression-vad-session").toFile()
+        val emitted = CopyOnWriteArrayList<SubtitleFile>()
+        val session = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Episode(
+                imdbId = "tt0903747",
+                tmdbId = 1396,
+                titles = listOf("Breaking Bad"),
+                seriesPremiereYear = 2008,
+                seasonAirYear = 2008,
+                coordinate = EpisodeCoordinate.VerifiedSeasonEpisode(1, 1),
+            ),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(casDir),
+            subtitleCallback = { emitted.add(it) },
+        )
+
+        val urduLines = listOf(
+            "یار بات سنو، ابھی ہمارے پاس وقت بہت کم ہے۔",
+            "تم نے دروازہ ٹھیک سے بند کیا تھا نا؟",
+            "میری بات غور سے سنو، اس فائل کا کسی کو پتا نہیں۔",
+            "گاڑی کے پاس رکو اور کوئی آئے تو فوراً فون کرنا۔",
+            "کل رات تم نے وعدہ کیا تھا کہ اب یہ سب ختم ہے۔",
+        )
+        val speechSpans = ArrayList<SpeechSpan>()
+        val shiftedSrt = buildString {
+            for (i in 0 until 24) {
+                val candStartMs = 8_000L + i * 5_500L
+                val candEndMs = candStartMs + 2_200L
+                val trueSpeechStartMs = candStartMs + 3_200L
+                val trueSpeechEndMs = candEndMs + 3_200L
+                speechSpans.add(SpeechSpan(trueSpeechStartMs, trueSpeechEndMs, 0.95f))
+
+                val sh = candStartMs / 3_600_000L
+                val sm = (candStartMs % 3_600_000L) / 60_000L
+                val ss = (candStartMs % 60_000L) / 1_000L
+                val sms = candStartMs % 1_000L
+                val eh = candEndMs / 3_600_000L
+                val em = (candEndMs % 3_600_000L) / 60_000L
+                val es = (candEndMs % 60_000L) / 1_000L
+                val ems = candEndMs % 1_000L
+                append("${i + 1}\n")
+                append(String.format(Locale.ROOT, "%02d:%02d:%02d,%03d --> %02d:%02d:%02d,%03d\n", sh, sm, ss, sms, eh, em, es, ems))
+                append(urduLines[i % urduLines.size]).append("\n\n")
+            }
+        }
+        session.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = speechSpans,
+                observedWindows = listOf(ObservedWindow(5_000L, 150_000L)),
+                mediaDurationMs = 180_000L,
+            )
+        )
+        val rawSub = com.lagradost.cloudstream3.newSubtitleFile("Urdu", "https://sub.wyzie.ru/c/ur/shifted.srt") {
+            this.headers = mapOf("X-StreamPlay-Source" to "wyzie")
+        }
+        session.ingestRawSubtitle(rawSub, rawSourceHint = "wyzie", rawBytesOverride = shiftedSrt.toByteArray(Charsets.UTF_8))
+        session.completeSession()
+
+        assertEquals(1, emitted.size)
+        val syncHeader = emitted[0].headers?.get(ProvenanceCodec.HEADER_SYNC)
+        assertNotNull("Expected SPARSE_AUDIO_VAD sync header on VAD-aligned human Urdu", syncHeader)
+        val proof = ProvenanceCodec.decodeSyncProofOrNull(syncHeader)
+        assertNotNull(proof)
+        assertEquals(AlignmentAnchorKind.SPARSE_AUDIO_VAD, proof!!.anchorKind)
+        val bakedText = File(URI(emitted[0].url)).readText(Charsets.UTF_8)
+        val bakedDoc = CueDocument.parse(bakedText, SubtitleLanguage.URDU).getOrThrow()
+        assertTrue(
+            "Expected first cue shifted from 8000ms to ~11200ms, got ${bakedDoc.cues.first().span.startMs}",
+            abs(bakedDoc.cues.first().span.startMs - 11_200L) <= 100L,
+        )
     }
 }

@@ -44,9 +44,9 @@ object CatalogueCandidateGate {
         """(?i)(?:\bai[\s._-]*translated\b|\bmachine[\s._-]*translated\b|\bauto[\s._-]*translated\b|\bgoogle\s*translate\b|\bsubtitle\s*edit\s*mt\b|\btranslated\s+by\s+(?:ai|chatgpt|gpt|deepl|google)\b)"""
     )
     private val SUBTITLECAT_MT_SUFFIX_REGEX = Regex("""(?i)-ur\.srt(?:\b|$)""")
-    private val SXX_EXX_REGEX = Regex("""(?i)\bs(\d{1,2})\s*[._\-x]?\s*e(\d{1,3})\b""")
-    private val NX_NN_REGEX = Regex("""(?i)\b(\d{1,2})x(\d{1,3})\b""")
-    private val YEAR_REGEX = Regex("""\b(19\d{2}|20\d{2})\b""")
+    private val SXX_EXX_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])s(\d{1,2})\s*[._\-x]?\s*e(\d{1,3})(?:$|[^a-zA-Z0-9])""")
+    private val NX_NN_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(\d{1,2})x(\d{1,3})(?:$|[^a-zA-Z0-9])""")
+    private val YEAR_REGEX = Regex("""(?:^|[^a-zA-Z0-9])(19\d{2}|20\d{2})(?:$|[^a-zA-Z0-9])""")
 
     private val STREAM_WEB_LINEAGE_REGEX = Regex("""(?i)\b(?:web-?dl|webrip|web|amzn|nf|netflix|dsnp|atvp|hmax|pcok|cr|crunchyroll)\b""")
     private val HDTV_LINEAGE_REGEX = Regex("""(?i)\b(?:hdtv|pdtv)\b""")
@@ -296,9 +296,81 @@ object UrduOrthographyGate {
     )
     private val ARABIC_PRESENTATION_FORMS_REGEX = Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
 
+    private val ASS_DIALOGUE_DRAWING_REGEX = Regex("""\{\\[^}]*\\p[1-9][^}]*\}""")
+    private val ASS_LINEBREAK_REGEX = Regex("""\\[Nn]""")
+    private val TTML_RAW_P_REGEX = Regex("""(?is)<p\b[^>]*>(.*?)</p>""")
+    private val TTML_RAW_BR_REGEX = Regex("""(?i)<br\s*/?>""")
+    private val ENGLISH_DONOR_FUNCTION_WORDS_REGEX = Regex(
+        """(?i)\b(?:the|and|you|that|this|what|with|have|for|not|are|was|but|from|they|your|just|know|don't|it's|i'm|we're|can't|here|there|where|when|would|could|should)\b"""
+    )
+
+    private fun extractAssDialogueCueTexts(cleaned: String): List<String> {
+        val lines = cleaned.split('\n')
+        var textColIndex = 9
+        val out = ArrayList<String>()
+        for (rawLine in lines) {
+            val trimmed = rawLine.trim()
+            if (trimmed.startsWith("Format:", ignoreCase = true)) {
+                val cols = trimmed.substringAfter(':').split(',').map { it.trim().lowercase(Locale.ROOT) }
+                val idx = cols.indexOf("text")
+                if (idx >= 0) textColIndex = idx
+            } else if (trimmed.startsWith("Dialogue:", ignoreCase = true)) {
+                val payload = trimmed.substringAfter(':')
+                var commaPos = -1
+                var commasFound = 0
+                for (k in payload.indices) {
+                    if (payload[k] == ',') {
+                        commasFound++
+                        if (commasFound == textColIndex) {
+                            commaPos = k
+                            break
+                        }
+                    }
+                }
+                if (commaPos >= 0 && commaPos + 1 <= payload.length) {
+                    val rawText = payload.substring(commaPos + 1)
+                    if (ASS_DIALOGUE_DRAWING_REGEX.containsMatchIn(rawText)) continue
+                    val stripped = INLINE_MARKUP_REGEX.replace(
+                        ASS_LINEBREAK_REGEX.replace(rawText, "\n"),
+                        ""
+                    ).lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+                    if (stripped.isNotEmpty()) out.add(stripped)
+                }
+            }
+        }
+        return out
+    }
+
+    private fun extractTtmlRawCueTexts(cleaned: String): List<String> {
+        val out = ArrayList<String>()
+        for (m in TTML_RAW_P_REGEX.findAll(cleaned)) {
+            val inner = m.groupValues[1]
+            val body = LatinEnglishText.decodeHtmlEntities(
+                INLINE_MARKUP_REGEX.replace(TTML_RAW_BR_REGEX.replace(inner, "\n"), "")
+            ).lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+            if (body.isNotEmpty()) out.add(body)
+        }
+        return out
+    }
+
     fun extractRawCueTexts(rawContent: String): List<String> {
         if (rawContent.isBlank()) return emptyList()
-        val lines = rawContent.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val cleaned = rawContent.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
+        val head = cleaned.take(4096)
+        if (head.contains("[Events]", ignoreCase = true) ||
+            cleaned.contains("\nDialogue:", ignoreCase = true) ||
+            cleaned.startsWith("Dialogue:", ignoreCase = true)
+        ) {
+            val assCues = extractAssDialogueCueTexts(cleaned)
+            if (assCues.isNotEmpty()) return assCues
+        }
+        if ((head.contains("<tt", ignoreCase = true) || head.contains("<body", ignoreCase = true)) &&
+            cleaned.contains("<p", ignoreCase = true)
+        ) {
+            val ttmlCues = extractTtmlRawCueTexts(cleaned)
+            if (ttmlCues.isNotEmpty()) return ttmlCues
+        }
+        val lines = cleaned.split('\n')
         val cues = ArrayList<String>()
         var i = 0
         while (i < lines.size) {
@@ -322,8 +394,8 @@ object UrduOrthographyGate {
                 i = tsIdx + 1
                 val buf = ArrayList<String>()
                 while (i < lines.size && lines[i].trim().isNotEmpty()) {
-                    val cleaned = INLINE_MARKUP_REGEX.replace(lines[i], "").trim()
-                    if (cleaned.isNotEmpty()) buf.add(cleaned)
+                    val lineCleaned = INLINE_MARKUP_REGEX.replace(lines[i], "").trim()
+                    if (lineCleaned.isNotEmpty()) buf.add(lineCleaned)
                     i++
                 }
                 if (buf.isNotEmpty()) {
@@ -457,10 +529,15 @@ object UrduOrthographyGate {
     }
 
     fun verifyUrduOrthography(rawDecodedText: String): Result<Unit> {
-        val stripped = INLINE_MARKUP_REGEX.replace(
-            TIMESTAMP_OR_TAG_LINE_REGEX.replace(rawDecodedText, " "),
-            " "
-        )
+        val cueTexts = extractRawCueTexts(rawDecodedText)
+        val stripped = if (cueTexts.isNotEmpty()) {
+            INLINE_MARKUP_REGEX.replace(cueTexts.joinToString("\n"), " ")
+        } else {
+            INLINE_MARKUP_REGEX.replace(
+                TIMESTAMP_OR_TAG_LINE_REGEX.replace(rawDecodedText, " "),
+                " "
+            )
+        }
         var arabicScriptLetters = 0
         var latinLetters = 0
         var urduExclusiveCount = 0
@@ -485,7 +562,6 @@ object UrduOrthographyGate {
             return Result.failure(IllegalArgumentException("Excessive embedded Latin script in Urdu candidate"))
         }
 
-        val cueTexts = extractRawCueTexts(rawDecodedText)
         val smtSandwichHits = BROKEN_SMT_EMBEDDED_ASCII_REGEX.findAll(stripped).count()
         if (smtSandwichHits >= 3 || isBrokenSmtCueTexts(cueTexts)) {
             return Result.failure(IllegalArgumentException("Broken phrase-SMT Urdu with embedded English tokens ($smtSandwichHits)"))
@@ -500,7 +576,37 @@ object UrduOrthographyGate {
         if (!containsVerifiedUrduScript(rawDecodedText)) {
             return Result.failure(IllegalArgumentException("Rejected non-Urdu Persian/Arabic or unverified script"))
         }
+        return Result.success(Unit)
+    }
 
+    fun verifyEnglishDonorDocument(doc: CueDocument): Result<Unit> {
+        if (doc.cues.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Empty English donor document"))
+        }
+        val combined = doc.cues.joinToString("\n") { it.text }
+        var asciiLatinLetters = 0
+        var otherLetters = 0
+        for (ch in combined) {
+            if (ch in 'A'..'Z' || ch in 'a'..'z') {
+                asciiLatinLetters++
+            } else if (ch.isLetter()) {
+                otherLetters++
+            }
+        }
+        val totalLetters = asciiLatinLetters + otherLetters
+        if (asciiLatinLetters < 6 || totalLetters == 0) {
+            return Result.failure(IllegalArgumentException("Insufficient Latin script in English donor"))
+        }
+        if (asciiLatinLetters.toDouble() / totalLetters.toDouble() < 0.80) {
+            return Result.failure(IllegalArgumentException("Non-English script ratio in donor candidate"))
+        }
+        val enFunctionMatches = ENGLISH_DONOR_FUNCTION_WORDS_REGEX.findAll(combined).count()
+        if (doc.cues.size >= 4 && enFunctionMatches < 2) {
+            return Result.failure(IllegalArgumentException("Non-English Latin donor (missing English function words)"))
+        }
+        if (doc.cues.size in 2..3 && enFunctionMatches < 1) {
+            return Result.failure(IllegalArgumentException("Non-English short Latin donor"))
+        }
         return Result.success(Unit)
     }
 

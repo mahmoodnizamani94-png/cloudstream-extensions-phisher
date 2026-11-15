@@ -29,6 +29,9 @@ class SubtitleSourceLedger(
 
     fun normalizeProvenance(raw: String?): String? {
         val cleaned = raw?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return null
+        if (cleaned.startsWith("bolchal:") || cleaned == "urdu-neural-fallback") {
+            return cleaned
+        }
         CatalogueSourceKey.fromTextOrHost(cleaned)?.let { return it.wireId }
         StreamProviderKey.fromTextOrHost(cleaned)?.let { return it.wireId }
         return cleaned

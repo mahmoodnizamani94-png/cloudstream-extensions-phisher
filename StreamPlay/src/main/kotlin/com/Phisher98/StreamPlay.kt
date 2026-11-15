@@ -242,7 +242,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             if (cleanImdb == null && cleanTitle == null && (tmdbId == null || tmdbId <= 0)) return
             val expectedDurationMs = runtimeMinutes?.takeIf { it > 0 }?.times(60_000L)
             val titles = listOfNotNull(cleanTitle)
-            val spec = if (season == null || season <= 0) {
+            val spec = if (season == null || season < 0) {
                 MediaLookupSpec.Movie(
                     imdbId = cleanImdb,
                     tmdbId = tmdbId?.takeIf { it > 0 },
@@ -278,13 +278,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             val cleanImdb = res.imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
             val cleanTmdb = res.id?.takeIf { it > 0 }
             val expectedDurationMs = res.runtimeMinutes?.takeIf { it > 0 }?.times(60_000L)
-            return if (res.isMovie == true || res.season == null || res.season <= 0) {
+            return if (res.isMovie == true || res.season == null || res.season < 0) {
                 MediaLookupSpec.Movie(
                     imdbId = cleanImdb,
                     tmdbId = cleanTmdb,
                     titles = titles,
                     releaseYear = res.year ?: res.airedYear,
                     expectedDurationMs = expectedDurationMs,
+                    isAnime = res.isAnime,
                 )
             } else {
                 MediaLookupSpec.Episode(
@@ -298,6 +299,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     seriesPremiereYear = res.airedYear ?: res.year,
                     seasonAirYear = res.year,
                     expectedDurationMs = expectedDurationMs,
+                    isAnime = res.isAnime,
                 )
             }
         }
@@ -1700,10 +1702,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                         episodeSubtitleSession.discoverAndIngestCatalog()
                     }
                 }
-                withTimeoutOrNull(6_000L) {
-                    rawSubtitleIngestJobs.toList().joinAll()
+                val jobsSnapshot = rawSubtitleIngestJobs.toList()
+                val joined = withTimeoutOrNull(6_000L) {
+                    jobsSnapshot.joinAll()
                 }
-                withTimeoutOrNull(12_000L) {
+                if (joined == null) {
+                    jobsSnapshot.forEach { it.cancel() }
+                }
+                withTimeoutOrNull(20_000L) {
                     episodeSubtitleSession.completeSession()
                 }
             }

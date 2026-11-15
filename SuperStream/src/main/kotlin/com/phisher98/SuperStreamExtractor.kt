@@ -293,7 +293,7 @@ object SuperStreamExtractor : SuperStream() {
         val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() }
         if (cleanImdb == null && cleanTitle == null && (tmdbId == null || tmdbId <= 0)) return
         val titles = listOfNotNull(cleanTitle)
-        val spec = if (season == null || season <= 0) {
+        val spec = if (season == null || season < 0) {
             MediaLookupSpec.Movie(
                 imdbId = cleanImdb,
                 tmdbId = tmdbId?.takeIf { it > 0 },
@@ -331,7 +331,7 @@ object SuperStreamExtractor : SuperStream() {
         normalizeTypography: Boolean = true,
     ): String {
         if (rawBytes.isEmpty()) return ""
-        val spec = if (season != null && season > 0 && episode != null && episode > 0) {
+        val spec = if (season != null && season >= 0 && episode != null && episode > 0) {
             MediaLookupSpec.Episode(
                 imdbId = null,
                 tmdbId = null,
@@ -356,8 +356,12 @@ object SuperStreamExtractor : SuperStream() {
     ): String? = withContext(Dispatchers.IO) {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()) return@withContext null
-        val rawBytes = httpTransport.get(cleanUrl, headers).getOrNull()?.bodyBytes ?: return@withContext null
-        val lookupSpec = if (season != null && season > 0 && episode != null && episode > 0) {
+        val rawBytes = if (cleanUrl.startsWith("file:", ignoreCase = true)) {
+            casStore.readOwnedCasFileBytesOrNull(cleanUrl)
+        } else {
+            httpTransport.get(cleanUrl, headers).getOrNull()?.bodyBytes
+        } ?: return@withContext null
+        val lookupSpec = if (season != null && season >= 0 && episode != null && episode > 0) {
             MediaLookupSpec.Episode(
                 imdbId = null,
                 tmdbId = null,
@@ -409,8 +413,7 @@ object SuperStreamExtractor : SuperStream() {
         if (subtitleCallback == null) return
         val cleanUrl = rawUrl?.trim()?.takeIf {
             it.startsWith("https://", ignoreCase = true) ||
-                it.startsWith("http://", ignoreCase = true) ||
-                it.startsWith("file://", ignoreCase = true)
+                it.startsWith("http://", ignoreCase = true)
         } ?: return
 
         val combinedProbe = listOfNotNull(rawLang, rawLabelOrFileName, cleanUrl.substringAfterLast('/'))
@@ -447,7 +450,8 @@ object SuperStreamExtractor : SuperStream() {
         if (subtitleCallback == null || htmlContent.isBlank()) return
         for (trackMatch in HTML_TRACK_TAG_REGEX.findAll(htmlContent)) {
             val tag = trackMatch.value
-            val src = HTML_ATTR_SRC_REGEX.find(tag)?.groupValues?.getOrNull(1)?.trim() ?: continue
+            val rawSrc = HTML_ATTR_SRC_REGEX.find(tag)?.groupValues?.getOrNull(1)?.trim() ?: continue
+            val src = com.phisher98.subtitles.LatinEnglishText.decodeHtmlEntities(rawSrc).trim()
             val srclang = HTML_ATTR_SRCLANG_REGEX.find(tag)?.groupValues?.getOrNull(1)?.trim()
             val label = HTML_ATTR_LABEL_REGEX.find(tag)?.groupValues?.getOrNull(1)?.trim()
             emitFebBoxSidecar(

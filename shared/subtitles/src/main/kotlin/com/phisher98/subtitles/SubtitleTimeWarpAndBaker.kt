@@ -249,11 +249,13 @@ sealed interface SubtitleTimeWarp {
 
 object SubtitleArchiveDecoder {
     const val MAX_DECODED_BYTES: Int = 8 * 1024 * 1024
+    const val MAX_ZIP_ENTRIES: Int = 512
+    const val MAX_TOTAL_ZIP_INFLATED_BYTES: Long = 32L * 1024L * 1024L
 
     private val SUBTITLE_EXTENSIONS = listOf(".vtt", ".srt", ".ass", ".ssa", ".ttml", ".dfxp", ".xml", ".sub")
     private val HI_FILENAME_REGEX = Regex("""(?i)(?:^|[._\-\s\[(])(?:hi|sdh|cc|hearing[._\-\s]*impaired)(?:$|[._\-\s\])])""")
-    private val SXX_EXX_REGEX = Regex("""(?i)\bs(\d{1,2})\s*[._\-x]?\s*e(\d{1,3})\b""")
-    private val NX_NN_REGEX = Regex("""(?i)\b(\d{1,2})x(\d{1,3})\b""")
+    private val SXX_EXX_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])s(\d{1,2})\s*[._\-x]?\s*e(\d{1,3})(?:$|[^a-zA-Z0-9])""")
+    private val NX_NN_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(\d{1,2})x(\d{1,3})(?:$|[^a-zA-Z0-9])""")
     private val EP_ONLY_REGEX = Regex("""(?i)(?:^|[._\-\s\[(])(?:ep?|episode)\s*0*(\d{1,4})(?:$|[._\-\s\])])""")
     private val ANIME_DASH_EP_REGEX = Regex("""(?:-\s*|\[)0*(\d{1,4})(?:\s*(?:v\d)?\s*[\]._\-\s])""")
 
@@ -330,6 +332,20 @@ object SubtitleArchiveDecoder {
             out.write(buf, 0, read)
         }
         return Result.success(out.toByteArray())
+    }
+
+    private fun drainBounded(stream: InputStream, maxRemainingBytes: Long): Long {
+        val buf = ByteArray(8192)
+        var drained = 0L
+        while (true) {
+            val read = stream.read(buf)
+            if (read < 0) break
+            drained += read.toLong()
+            if (drained > maxRemainingBytes) {
+                throw IllegalArgumentException("ZIP archive exceeded cumulative inflation budget")
+            }
+        }
+        return drained
     }
 
     private fun gunzipBounded(rawBytes: ByteArray): Result<ByteArray> =
@@ -416,17 +432,31 @@ object SubtitleArchiveDecoder {
     ): Result<ByteArray> = runCatching {
         var bestScore = Int.MIN_VALUE
         var bestBytes: ByteArray? = null
+        var entryCount = 0
+        var totalInflatedBytes = 0L
         ZipInputStream(ByteArrayInputStream(rawBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
+                entryCount++
+                if (entryCount > MAX_ZIP_ENTRIES) {
+                    throw IllegalArgumentException("ZIP archive exceeds $MAX_ZIP_ENTRIES entries")
+                }
+                if (entry.size > MAX_TOTAL_ZIP_INFLATED_BYTES) {
+                    throw IllegalArgumentException("ZIP entry declared size exceeds safety budget (${entry.size})")
+                }
+                val remainingArchiveBudget = (MAX_TOTAL_ZIP_INFLATED_BYTES - totalInflatedBytes).coerceAtLeast(0L)
                 if (!entry.isDirectory) {
                     val score = scoreZipEntryName(entry.name, lookupSpec, preferredFileHint)
                     if (score != null && score > bestScore) {
-                        val candidateBytes = readBounded(zis, MAX_DECODED_BYTES).getOrThrow()
+                        val entryCap = minOf(MAX_DECODED_BYTES.toLong(), remainingArchiveBudget).toInt()
+                        val candidateBytes = readBounded(zis, entryCap).getOrThrow()
+                        totalInflatedBytes += candidateBytes.size.toLong()
                         if (candidateBytes.isNotEmpty()) {
                             bestScore = score
                             bestBytes = candidateBytes
                         }
+                    } else {
+                        totalInflatedBytes += drainBounded(zis, remainingArchiveBudget)
                     }
                 }
                 zis.closeEntry()
@@ -586,13 +616,17 @@ object WebVttBaker {
         )
     }
 
-    fun serializeSrt(
+    fun bakeSrt(
         doc: CueDocument,
         warp: SubtitleTimeWarp = SubtitleTimeWarp.Identity,
         videoDurationMs: Long? = null,
-    ): String {
+        includeUtf8Bom: Boolean = false,
+    ): BakedWebVtt {
         val warped = warpAndFilterCues(doc, warp, videoDurationMs)
-        val sb = StringBuilder(warped.size * 84)
+        val sb = StringBuilder(warped.size * 84 + 2)
+        if (includeUtf8Bom) {
+            sb.append('\uFEFF')
+        }
         for ((index, cue) in warped.withIndex()) {
             sb.append(index + 1).append('\n')
                 .append(formatTimestamp(cue.span.startMs, ','))
@@ -602,6 +636,19 @@ object WebVttBaker {
                 .append(cue.text)
                 .append("\n\n")
         }
-        return sb.toString()
+        val content = sb.toString()
+        return BakedWebVtt(
+            utf8Content = content,
+            cueCount = warped.size,
+            preWarpTimingSha256 = doc.timingSha256,
+            bakedContentSha256 = ContentSha256.ofUtf8(content),
+            appliedWarp = warp,
+        )
     }
+
+    fun serializeSrt(
+        doc: CueDocument,
+        warp: SubtitleTimeWarp = SubtitleTimeWarp.Identity,
+        videoDurationMs: Long? = null,
+    ): String = bakeSrt(doc, warp, videoDurationMs, includeUtf8Bom = false).utf8Content
 }
