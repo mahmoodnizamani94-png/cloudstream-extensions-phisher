@@ -1589,5 +1589,178 @@ class Issue17AdversarialRegressionTest {
             "LLM_SCENE male speaker cue must never be overwritten by regex gender hint: ${llmRes.document.cues[1].text}",
             llmRes.document.cues[1].text.contains("آ رہا ہوں"),
         )
+
+        // Third-person 'as his mother arrives' must not override first-person 'I'm a man', and standalone 'Welcome!' maps to خوش آمدید.
+        val mixedClausePurified = BolChalPurifier.purify(
+            rawUrdu = "میں ابھی جا رہا ہوں۔",
+            sourceEnglish = LatinEnglishText.normalizeFromRawCue("I'm a man, and I am leaving as his mother arrives.").getOrThrow(),
+        )
+        assertTrue(
+            "Third-person 'as his mother arrives' must retain masculine Urdu: $mixedClausePurified",
+            mixedClausePurified.contains("جا رہا ہوں"),
+        )
+        val appositivePurified = BolChalPurifier.purify(
+            rawUrdu = "میں گھر آ رہا ہوں۔",
+            sourceEnglish = LatinEnglishText.normalizeFromRawCue("As your mother, I am coming home.").getOrThrow(),
+        )
+        assertTrue(
+            "First-person appositive 'As your mother, I...' must rewrite to feminine: $appositivePurified",
+            appositivePurified.contains("آ رہی ہوں"),
+        )
+        val standaloneWelcome = BolChalPurifier.purify(
+            rawUrdu = "آپ کا استقبال ہے",
+            sourceEnglish = LatinEnglishText.normalizeFromRawCue("Welcome!").getOrThrow(),
+        )
+        assertEquals("خوش آمدید", standaloneWelcome)
+
+        // Adjacent numeric title + release year ('1917.2019.1080p.BluRay') must admit releaseYear = 2019.
+        val yearAdmitted = CatalogueCandidateGate.evaluatePreDownload(
+            meta = CatalogueCandidateMeta(
+                catalogue = CatalogueSourceKey.OPENSUBTITLES,
+                language = SubtitleLanguage.URDU,
+                titleOrReleaseText = "1917.2019.1080p.BluRay.x264",
+            ),
+            spec = MediaLookupSpec.Movie(
+                imdbId = "tt8579674",
+                tmdbId = 530915,
+                titles = listOf("1917"),
+                releaseYear = 2019,
+            ),
+        )
+        assertTrue("1917.2019.1080p.BluRay must pass year gate: $yearAdmitted", yearAdmitted.isSuccess)
+    }
+
+    @Test
+    fun uncertifiedNativeUrduDoesNotSuppressLocalizationAndCasAndVadReconcileCleanly() = runBlocking {
+        val urduLines = listOf(
+            "یار بات سنو، ابھی ہمارے پاس وقت بہت کم ہے۔",
+            "تم نے دروازہ ٹھیک سے بند کیا تھا نا؟",
+            "میری بات غور سے سنو، اس فائل کا کسی کو پتا نہیں۔",
+            "گاڑی کے پاس رکو اور کوئی آئے تو فوراً فون کرنا۔",
+            "کل رات تم نے وعدہ کیا تھا کہ اب یہ سب ختم ہے۔",
+        )
+        fun buildSrt(shiftMs: Long, isUrdu: Boolean): ByteArray {
+            val sb = StringBuilder()
+            for (i in 0 until 20) {
+                val s = 10_000L + shiftMs + i * 4_500L
+                val e = s + 2_000L
+                sb.append("${i + 1}\n")
+                sb.append(
+                    String.format(
+                        Locale.ROOT,
+                        "%02d:%02d:%02d,%03d --> %02d:%02d:%02d,%03d\n",
+                        s / 3_600_000L, (s % 3_600_000L) / 60_000L, (s % 60_000L) / 1_000L, s % 1_000L,
+                        e / 3_600_000L, (e % 3_600_000L) / 60_000L, (e % 60_000L) / 1_000L, e % 1_000L,
+                    )
+                )
+                sb.append(if (isUrdu) urduLines[i % urduLines.size] else "Hold the door line ${i + 1}.").append("\n\n")
+            }
+            return sb.toString().toByteArray(Charsets.UTF_8)
+        }
+
+        val offlineTransport = BolChalTranslationTransport { window, _ ->
+            val out = window.targetCues.associate { cue ->
+                cue.id to BolChalCueOut(cue.id, "ارے یار، دروازہ ابھی کھلا رکھو۔")
+            }
+            Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+        }
+
+        // 1. Dead MeowTV Urdu (video fails) must NOT suppress Bol-Chal localization from verified VidLink English donor;
+        //    multi-provider unanchored anchors must strip any pre-existing x-streamplay-sync header.
+        val casDir = Files.createTempDirectory("regression-uncertified-native").toFile()
+        val casStore = UrduCasStore(casDir)
+        val emitted = CopyOnWriteArrayList<SubtitleFile>()
+        val session = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            casStore = casStore,
+            bolChalTransport = offlineTransport,
+            multiProviderVideoSession = true,
+            subtitleCallback = { emitted.add(it) },
+        )
+        val deadMeowUr = com.lagradost.cloudstream3.newSubtitleFile("Urdu [MeowTV]", "https://rezesubs.com/ur.vtt") {
+            this.headers = mapOf("X-StreamPlay-Source" to "meowtv")
+        }
+        val vidLinkEn = com.lagradost.cloudstream3.newSubtitleFile("English [VidLink]", "https://vodvidl.site/en.vtt") {
+            this.headers = mapOf(
+                "X-StreamPlay-Source" to "vidlink",
+                "x-streamplay-sync" to "native-pack|1.0000|0|0|0|id",
+            )
+        }
+        val cinebyEn = com.lagradost.cloudstream3.newSubtitleFile("English [Cineby]", "https://api.wecollege.net/en.vtt") {
+            this.headers = mapOf(
+                "X-StreamPlay-Source" to "cineby",
+                "x-streamplay-sync" to "native-pack|1.0000|0|0|0|id",
+            )
+        }
+        session.ingestRawSubtitle(deadMeowUr, rawSourceHint = "meowtv", rawBytesOverride = buildSrt(0L, true))
+        session.ingestRawSubtitle(vidLinkEn, rawSourceHint = "vidlink", rawBytesOverride = buildSrt(0L, false))
+        session.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+        val report = session.completeSession()
+        assertNotNull("Uncertified dead-MeowTV Urdu must not suppress verified VidLink localization", report.localizedDonorUsed)
+        assertTrue("Expected localized VidLink track in ${emitted.map { it.lang }}", emitted.any { it.lang == "Urdu [UrduAI VidLink]" })
+
+        // Verify stale lowercase x-streamplay-sync is stripped when a multi-provider session leaves anchors UNANCHORED.
+        val multiEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val multiSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            casStore = casStore,
+            bolChalTransport = offlineTransport,
+            multiProviderVideoSession = true,
+            subtitleCallback = { multiEmitted.add(it) },
+        )
+        multiSession.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+        multiSession.registerActiveVideoProvider(StreamProviderKey.CINEBY)
+        multiSession.ingestRawSubtitle(vidLinkEn, rawSourceHint = "vidlink", rawBytesOverride = buildSrt(0L, false))
+        multiSession.ingestRawSubtitle(cinebyEn, rawSourceHint = "cineby", rawBytesOverride = buildSrt(0L, false))
+        multiSession.completeSession()
+        val multiAnchors = multiEmitted.filter {
+            it.headers?.get(ProvenanceCodec.HEADER_SYNC_ROLE) == ProvenanceCodec.SYNC_ROLE_PROVIDER_ANCHOR
+        }
+        assertEquals(2, multiAnchors.size)
+        for (anc in multiAnchors) {
+            assertTrue(
+                "Unanchored multi-provider anchor must strip pre-existing sync headers: ${anc.headers}",
+                anc.headers.orEmpty().keys.none { it.equals(ProvenanceCodec.HEADER_SYNC, ignoreCase = true) },
+            )
+        }
+
+        // 2. CAS readback verifies SHA-256 prefix and rejects tampered files.
+        val storedFile = report.storedCasFiles.first()
+        assertNotNull(casStore.readOwnedCasFileBytesOrNull(storedFile.fileUri))
+        storedFile.file.writeText("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\ntampered\n", Charsets.UTF_8)
+        assertNull("Tampered CAS file must fail SHA-256 prefix verification", casStore.readOwnedCasFileBytesOrNull(storedFile.fileUri))
+
+        // 3. Buffered CatalogueDonor reconciles timing when attachSpeechTimeline arrives later.
+        val vadDir = Files.createTempDirectory("regression-cat-vad").toFile()
+        val vadEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val vadSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(vadDir),
+            bolChalTransport = offlineTransport,
+            subtitleCallback = { vadEmitted.add(it) },
+        )
+        val wyzieEn = com.lagradost.cloudstream3.newSubtitleFile("English [Wyzie]", "https://sub.wyzie.ru/c/en/inc.srt") {
+            this.headers = mapOf("X-StreamPlay-Source" to "wyzie")
+        }
+        vadSession.ingestRawSubtitle(wyzieEn, rawSourceHint = "wyzie", rawBytesOverride = buildSrt(0L, false))
+        val speechSpans = (0 until 20).map { i ->
+            val start = 13_200L + i * 4_500L
+            SpeechSpan(start, start + 2_000L, 0.95f)
+        }
+        vadSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = speechSpans,
+                observedWindows = listOf(ObservedWindow(5_000L, 120_000L)),
+                mediaDurationMs = 150_000L,
+            )
+        )
+        vadSession.completeSession()
+        val localizedSub = vadEmitted.single()
+        val localizedSync = ProvenanceCodec.decodeSyncProofOrNull(localizedSub.headers?.get(ProvenanceCodec.HEADER_SYNC))
+        assertNotNull("Catalogue donor localized after attachSpeechTimeline must carry SPARSE_AUDIO_VAD proof", localizedSync)
+        assertEquals(AlignmentAnchorKind.SPARSE_AUDIO_VAD, localizedSync!!.anchorKind)
     }
 }

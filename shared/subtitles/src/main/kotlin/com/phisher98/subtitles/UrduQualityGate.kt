@@ -46,7 +46,7 @@ object CatalogueCandidateGate {
     private val SUBTITLECAT_MT_SUFFIX_REGEX = Regex("""(?i)-ur\.srt(?:\b|$)""")
     private val SXX_EXX_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])s(\d{1,2})\s*[._\-x]?\s*e(\d{1,3})(?:$|[^a-zA-Z0-9])""")
     private val NX_NN_REGEX = Regex("""(?i)(?:^|[^a-zA-Z0-9])(\d{1,2})x(\d{1,3})(?:$|[^a-zA-Z0-9])""")
-    private val YEAR_REGEX = Regex("""(?:^|[^a-zA-Z0-9])(19\d{2}|20\d{2})(?:$|[^a-zA-Z0-9])""")
+    private val YEAR_REGEX = Regex("""(?:^|[^a-zA-Z0-9])(19\d{2}|20\d{2})(?=$|[^a-zA-Z0-9])""")
 
     private val STREAM_WEB_LINEAGE_REGEX = Regex("""(?i)\b(?:web-?dl|webrip|web|amzn|nf|netflix|dsnp|atvp|hmax|pcok|cr|crunchyroll)\b""")
     private val HDTV_LINEAGE_REGEX = Regex("""(?i)\b(?:hdtv|pdtv)\b""")

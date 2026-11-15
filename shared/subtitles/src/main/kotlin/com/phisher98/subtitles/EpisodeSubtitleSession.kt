@@ -141,10 +141,20 @@ class UrduCasStore(
         if (!name.startsWith(CAS_FILE_PREFIX) || (!name.endsWith(".vtt") && !name.endsWith(".srt"))) {
             return null
         }
+        val expectedShaPrefix = name.removePrefix(CAS_FILE_PREFIX).substringBeforeLast('.')
+        if (expectedShaPrefix.length != 24 ||
+            !expectedShaPrefix.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        ) {
+            return null
+        }
         val len = canonicalCandidate.length()
         if (len <= 0L || len > SubtitleArchiveDecoder.MAX_DECODED_BYTES.toLong()) return null
         return synchronized(sharedState.lock) {
-            runCatching { canonicalCandidate.readBytes() }.getOrNull()
+            val bytes = runCatching { canonicalCandidate.readBytes() }.getOrNull() ?: return@synchronized null
+            if (!ContentSha256.sha256Hex(bytes).startsWith(expectedShaPrefix, ignoreCase = true)) {
+                return@synchronized null
+            }
+            bytes
         }
     }
 
@@ -345,6 +355,7 @@ class EpisodeSubtitleSession(
                     sessionMutex.withLock {
                         if (speechTimeline == null) {
                             speechTimeline = decodedTimeline
+                            reconcileStreamDonorProofsLocked()
                         }
                     }
                 }
@@ -532,7 +543,10 @@ class EpisodeSubtitleSession(
             val needsBolChal = wantsUrdu && (
                 forceBolChalLocalization ||
                     admittedUrduTracks.isEmpty() ||
-                    (admittedUrduTracks.none { it is VerifiedSubtitleCandidate.StreamSyncedNative } &&
+                    (admittedUrduTracks.none {
+                        it is VerifiedSubtitleCandidate.StreamSyncedNative &&
+                            it.alignment.anchorKind != AlignmentAnchorKind.UNANCHORED
+                    } &&
                         admittedDistinctUrduDiversityCountLocked() < targetUrduDiversityCount)
                 )
             val chosen = if (!needsBolChal) null else selectBestEnglishDonorLocked()
@@ -1103,7 +1117,13 @@ class EpisodeSubtitleSession(
                 k.equals("api-key", ignoreCase = true) ||
                 k.equals("Authorization", ignoreCase = true) ||
                 k.equals("Proxy-Authorization", ignoreCase = true) ||
-                k.equals("Cookie", ignoreCase = true)
+                k.equals("Cookie", ignoreCase = true) ||
+                k.equals(ProvenanceCodec.HEADER_SYNC, ignoreCase = true) ||
+                k.equals(ProvenanceCodec.HEADER_SYNC_ROLE, ignoreCase = true) ||
+                k.equals(ProvenanceCodec.HEADER_SOURCE, ignoreCase = true) ||
+                k.equals(ProvenanceCodec.HEADER_ORIGIN, ignoreCase = true) ||
+                k.equals(ProvenanceCodec.HEADER_DONOR, ignoreCase = true) ||
+                k.equals(ProvenanceCodec.HEADER_ENGINE, ignoreCase = true)
             ) {
                 continue
             }
@@ -1148,27 +1168,44 @@ class EpisodeSubtitleSession(
     private fun reconcileStreamDonorProofsLocked(
         allowSinglePackInMultiSession: Boolean = false,
     ) {
+        val currentTimeline = speechTimeline
         for (i in englishDonors.indices) {
             val existing = englishDonors[i]
-            val streamDonor = existing.donor as? DonorProvenance.StreamDonor ?: continue
-            val samePack = isVerifiedSamePackProviderLocked(
-                provider = streamDonor.provider,
-                isForeignSidecar = existing.isForeignSidecar,
-                allowSinglePackInMultiSession = allowSinglePackInMultiSession,
-            )
-            if (!samePack && existing.alignment.anchorKind == AlignmentAnchorKind.NATIVE_STREAM_PACK) {
-                englishDonors[i] = existing.copy(alignment = computeFallbackDonorProofLocked(existing.document))
-            } else if (samePack && existing.alignment.anchorKind == AlignmentAnchorKind.UNANCHORED && !existing.isForeignSidecar) {
-                englishDonors[i] = existing.copy(
-                    alignment = AlignmentProof(
-                        warp = SubtitleTimeWarp.Identity,
-                        anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
-                        syncConfidence = 1.0,
-                        medianOnsetResidualMs = 0,
-                        p95OnsetResidualMs = 0,
-                        splitCount = 0,
+            when (val donor = existing.donor) {
+                is DonorProvenance.StreamDonor -> {
+                    val samePack = isVerifiedSamePackProviderLocked(
+                        provider = donor.provider,
+                        isForeignSidecar = existing.isForeignSidecar,
+                        allowSinglePackInMultiSession = allowSinglePackInMultiSession,
                     )
-                )
+                    if (!samePack && existing.alignment.anchorKind == AlignmentAnchorKind.NATIVE_STREAM_PACK) {
+                        englishDonors[i] = existing.copy(alignment = computeFallbackDonorProofLocked(existing.document))
+                    } else if (samePack && existing.alignment.anchorKind == AlignmentAnchorKind.UNANCHORED && !existing.isForeignSidecar) {
+                        englishDonors[i] = existing.copy(
+                            alignment = AlignmentProof(
+                                warp = SubtitleTimeWarp.Identity,
+                                anchorKind = AlignmentAnchorKind.NATIVE_STREAM_PACK,
+                                syncConfidence = 1.0,
+                                medianOnsetResidualMs = 0,
+                                p95OnsetResidualMs = 0,
+                                splitCount = 0,
+                            )
+                        )
+                    } else if (!samePack && existing.alignment.anchorKind == AlignmentAnchorKind.UNANCHORED && currentTimeline != null) {
+                        val refreshed = computeFallbackDonorProofLocked(existing.document)
+                        if (refreshed.anchorKind != AlignmentAnchorKind.UNANCHORED) {
+                            englishDonors[i] = existing.copy(alignment = refreshed)
+                        }
+                    }
+                }
+                is DonorProvenance.CatalogueDonor -> {
+                    if (existing.alignment.anchorKind == AlignmentAnchorKind.UNANCHORED && currentTimeline != null) {
+                        val refreshed = computeFallbackDonorProofLocked(existing.document)
+                        if (refreshed.anchorKind != AlignmentAnchorKind.UNANCHORED) {
+                            englishDonors[i] = existing.copy(alignment = refreshed)
+                        }
+                    }
+                }
             }
         }
     }

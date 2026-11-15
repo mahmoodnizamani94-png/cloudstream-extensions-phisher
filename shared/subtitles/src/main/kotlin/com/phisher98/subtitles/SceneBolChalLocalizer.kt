@@ -120,7 +120,7 @@ object BolChalPurifier {
 
     private val URDU_AAP_KA_ISTIQBAL_REGEX = Regex("""آپ\s+کا\s+استقبال\s+ہے""")
     private val WELCOME_GREETING_EN_REGEX = Regex(
-        """(?i)\bwelcome\s+(?:to|back|home|aboard|in|inside|here|everyone|all|folks|friends|ladies|gentlemen|sir|ma'am|madam)\b"""
+        """(?i)(?:^\s*welcome\s*[.!]*\s*$|\bwelcome\s+(?:to|back|home|aboard|in|inside|here|everyone|all|folks|friends|ladies|gentlemen|sir|ma'am|madam)\b)"""
     )
 
     private val HINDI_AND_CALQUE_REWRITES: List<Pair<Regex, String>> = listOf(
@@ -192,10 +192,10 @@ object BolChalPurifier {
         """(?i)(?:^|[,;.!?]\s+(?:(?:and|but|so)\s+)?)i(?:'m|'ll|'ve|'d|\s+(?:am|was|will|can|could|want|know|think|have|need|went|came))\b"""
     )
     internal val CUE_FEMININE_SELF_REGEX = Regex(
-        """(?i)\b(?:i'?m\s+a\s+(?:woman|girl|mother|sister|wife|daughter|queen)|as\s+(?:his|her|your|their)\s+(?:wife|sister|mother|daughter))\b"""
+        """(?i)(?:\bi'?m\s+a\s+(?:woman|girl|mother|sister|wife|daughter|queen)\b|(?:^|[,;.!?]\s*)as\s+(?:his|her|your|their)\s+(?:wife|sister|mother|daughter)\s*,\s*i\b)"""
     )
     internal val CUE_MASCULINE_SELF_REGEX = Regex(
-        """(?i)\b(?:i'?m\s+a\s+(?:man|boy|father|brother|husband|son|king)|as\s+(?:his|her|your|their)\s+(?:husband|brother|father|son))\b"""
+        """(?i)(?:\bi'?m\s+a\s+(?:man|boy|father|brother|husband|son|king)\b|(?:^|[,;.!?]\s*)as\s+(?:his|her|your|their)\s+(?:husband|brother|father|son)\s*,\s*i\b)"""
     )
 
     private const val POSTPOSITION_GUARD = """(?!\s+(?:کا|کی|کے|کو|نے|سے|پر|میں|تک)(?=\s|[۔؟!،]|$))"""
@@ -401,9 +401,11 @@ object BolChalPurifier {
         }
 
         if (allowRegexGenderRewrite && en.isNotEmpty() && ENGLISH_FIRST_PERSON_SUBJECT_REGEX.containsMatchIn(en)) {
+            val femMatch = CUE_FEMININE_SELF_REGEX.containsMatchIn(en)
+            val mascMatch = CUE_MASCULINE_SELF_REGEX.containsMatchIn(en)
             val effectiveGender = when {
-                CUE_FEMININE_SELF_REGEX.containsMatchIn(en) -> GenderHint.FEMININE
-                CUE_MASCULINE_SELF_REGEX.containsMatchIn(en) -> GenderHint.MASCULINE
+                femMatch && !mascMatch -> GenderHint.FEMININE
+                mascMatch && !femMatch -> GenderHint.MASCULINE
                 else -> speakerCard?.speakerGenderHint ?: GenderHint.UNKNOWN
             }
             when (effectiveGender) {
