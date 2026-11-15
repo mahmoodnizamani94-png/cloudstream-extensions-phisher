@@ -1762,5 +1762,105 @@ class Issue17AdversarialRegressionTest {
         val localizedSync = ProvenanceCodec.decodeSyncProofOrNull(localizedSub.headers?.get(ProvenanceCodec.HEADER_SYNC))
         assertNotNull("Catalogue donor localized after attachSpeechTimeline must carry SPARSE_AUDIO_VAD proof", localizedSync)
         assertEquals(AlignmentAnchorKind.SPARSE_AUDIO_VAD, localizedSync!!.anchorKind)
+
+        // 4. Same-pack StreamDonor & native Urdu promote to NATIVE_STREAM_PACK (Identity) even if speechTimeline arrived before video registration.
+        val orderDir = Files.createTempDirectory("regression-samepack-over-vad").toFile()
+        val orderEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        val orderSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            casStore = UrduCasStore(orderDir),
+            bolChalTransport = offlineTransport,
+            multiProviderVideoSession = true,
+            subtitleCallback = { orderEmitted.add(it) },
+        )
+        orderSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = speechSpans,
+                observedWindows = listOf(ObservedWindow(5_000L, 120_000L)),
+                mediaDurationMs = 150_000L,
+            )
+        )
+        orderSession.ingestRawSubtitle(vidLinkEn, rawSourceHint = "vidlink", rawBytesOverride = buildSrt(0L, false))
+        assertEquals(
+            AlignmentAnchorKind.SPARSE_AUDIO_VAD,
+            orderSession.rankedEnglishDonorsSnapshot().single().alignment.anchorKind,
+        )
+        orderSession.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+        val orderReport = orderSession.completeSession()
+        val promotedDonor = orderSession.rankedEnglishDonorsSnapshot().single()
+        assertEquals(AlignmentAnchorKind.NATIVE_STREAM_PACK, promotedDonor.alignment.anchorKind)
+        assertEquals(SubtitleTimeWarp.Identity, promotedDonor.alignment.warp)
+        assertEquals(SubtitleTimeWarp.Identity, orderReport.storedCasFiles.single().appliedWarp)
+        val orderAnchor = orderEmitted.single {
+            it.headers?.get(ProvenanceCodec.HEADER_SYNC_ROLE) == ProvenanceCodec.SYNC_ROLE_PROVIDER_ANCHOR
+        }
+        assertEquals(
+            AlignmentAnchorKind.NATIVE_STREAM_PACK,
+            ProvenanceCodec.decodeSyncProofOrNull(orderAnchor.headers?.get(ProvenanceCodec.HEADER_SYNC))?.anchorKind,
+        )
+
+        // 5. Replacing speechTimeline updates SPARSE_AUDIO_VAD proofs and evicts late-rejected CatalogueDonors.
+        val rejectDir = Files.createTempDirectory("regression-cat-reject").toFile()
+        val rejectSession = EpisodeSubtitleSession(
+            lookupSpec = MediaLookupSpec.Movie(imdbId = "tt1375666", tmdbId = 27205, titles = listOf("Inception"), releaseYear = 2010),
+            mode = SessionSubtitleMode.URDU,
+            casStore = UrduCasStore(rejectDir),
+            bolChalTransport = offlineTransport,
+            subtitleCallback = {},
+        )
+        rejectSession.ingestRawSubtitle(wyzieEn, rawSourceHint = "wyzie", rawBytesOverride = buildSrt(0L, false))
+        assertEquals(1, rejectSession.rankedEnglishDonorsSnapshot().size)
+        rejectSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = speechSpans,
+                observedWindows = listOf(ObservedWindow(5_000L, 120_000L)),
+                mediaDurationMs = 150_000L,
+            )
+        )
+        val firstWarp = rejectSession.rankedEnglishDonorsSnapshot().single().alignment.warp
+        val shiftedSpans = (0 until 20).map { i ->
+            val start = 15_500L + i * 4_500L
+            SpeechSpan(start, start + 2_000L, 0.95f)
+        }
+        rejectSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = shiftedSpans,
+                observedWindows = listOf(ObservedWindow(5_000L, 125_000L)),
+                mediaDurationMs = 150_000L,
+            )
+        )
+        assertTrue(firstWarp != rejectSession.rankedEnglishDonorsSnapshot().single().alignment.warp)
+        rejectSession.attachSpeechTimeline(
+            SpeechActivityTimeline(
+                speechSpans = listOf(SpeechSpan(240_000L, 241_000L, 0.95f)),
+                observedWindows = listOf(ObservedWindow(0L, 250_000L)),
+                mediaDurationMs = 250_000L,
+            )
+        )
+        assertTrue("CatalogueDonor rejected by speechTimeline must be removed", rejectSession.rankedEnglishDonorsSnapshot().isEmpty())
+
+        // 6. Malformed ASS hour bounds, DDP5.1 episode matching, SubSource anonymous rows, and UrduCpsRefiner tense preservation.
+        val badAss = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" +
+            "Dialogue: 0,99999999999999999999:00:01.00,99999999999999999999:00:03.00,Default,,0,0,0,,Hello\n"
+        assertTrue(CueDocument.parse(badAss, SubtitleLanguage.ENGLISH).isFailure)
+        assertFalse(SubtitleCatalogSources.episodeTextMatches("Show.2023.WEB.DDP5.1", 1, 1))
+        assertTrue(SubtitleCatalogSources.episodeTextMatches("Show.2023.S01E01.WEB.DDP5.1", 1, 1))
+        assertNull(
+            SubtitleCatalogSources().parseSubSourceMovieId(
+                jsonBody = """{"data":[{"movieId":99,"releaseYear":2010}]}""",
+                imdbId = "tt1375666",
+                title = "Inception",
+                expectedPremiereYear = 2010,
+            )
+        )
+        val copulaRefined = UrduCpsRefiner.refineDocument(
+            listOf(
+                CueEntry(CueId(1), CueSpan(1_000L, 2_100L), "اس وقت یہ سارا قصور صرف میرا تھا۔"),
+                CueEntry(CueId(2), CueSpan(2_200L, 3_500L), "اب خاموش رہو۔"),
+            )
+        )
+        assertTrue("Past copula 'تھا' must survive CPS refinement: ${copulaRefined[0].text}", copulaRefined[0].text.contains("تھا"))
+        assertFalse("'اس وقت' must not flip to 'ابھی': ${copulaRefined[0].text}", copulaRefined[0].text.contains("ابھی"))
     }
 }

@@ -386,8 +386,8 @@ class StreamPlayStremioCatelog(
                         taskTimeoutMs = 12_000L,
                         priorityBoost = 99f
                     ) {
-                        catalogSessionRan.set(true)
                         episodeSubtitleSession.discoverAndIngestCatalog()
+                        catalogSessionRan.set(true)
                     }
                 )
             } else {

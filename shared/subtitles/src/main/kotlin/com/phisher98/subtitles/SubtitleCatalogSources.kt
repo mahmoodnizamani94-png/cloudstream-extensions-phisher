@@ -788,7 +788,7 @@ class SubtitleCatalogSources(
 
             if (se != null && se.first >= 0) {
                 if (itemSeason >= 0 && itemSeason != se.first) continue
-                if (itemEpisode > 0 && itemEpisode != se.second && !episodeTextOrPackMatches(releaseName, se.first, se.second)) {
+                if (itemEpisode > 0 && itemEpisode != se.second && !explicitEpisodeOrPackMatches(releaseName, se.first, se.second)) {
                     continue
                 }
                 if (itemEpisode <= 0 && releaseName.isNotBlank() && !episodeTextOrPackMatches(releaseName, se.first, se.second)) {
@@ -1054,6 +1054,8 @@ class SubtitleCatalogSources(
             if (wantedTitle != null && !itemTitle.isNullOrBlank()) {
                 val normItem = normalizeReleaseText(itemTitle)
                 if (normItem != wantedTitle && !normItem.startsWith("$wantedTitle ")) continue
+            } else {
+                continue
             }
 
             val itemYear = item.path("releaseYear").asInt(item.path("year").asInt(0))
@@ -1132,7 +1134,7 @@ class SubtitleCatalogSources(
             val itemEpisode = item.path("episode").asInt(-1)
             if (se != null && se.first >= 0) {
                 if (itemSeason >= 0 && itemSeason != se.first) continue
-                if (itemEpisode > 0 && itemEpisode != se.second && !episodeTextOrPackMatches(releaseText, se.first, se.second)) {
+                if (itemEpisode > 0 && itemEpisode != se.second && !explicitEpisodeOrPackMatches(releaseText, se.first, se.second)) {
                     continue
                 }
                 if (itemEpisode <= 0 && releaseText.isNotBlank() && !episodeTextOrPackMatches(releaseText, se.first, se.second)) {
@@ -2192,7 +2194,7 @@ class SubtitleCatalogSources(
         internal fun normalizeReleaseText(raw: String): String =
             NON_ALNUM_RELEASE_REGEX.replace(raw.lowercase(Locale.ROOT), " ").trim()
 
-        internal fun episodeTextMatches(normalizedOrRaw: String, season: Int?, episode: Int?): Boolean {
+        internal fun explicitEpisodeMatches(normalizedOrRaw: String, season: Int?, episode: Int?): Boolean {
             if (episode == null || episode <= 0) return true
             if (season != null && season >= 0) {
                 val sxxExx = Regex(
@@ -2206,8 +2208,23 @@ class SubtitleCatalogSources(
                     return false
                 }
             }
-            return Regex("""(?i)(?:^|[^0-9a-z])(?:e|ep|episode[\s._-]*)?0*${episode}(?![0-9])""")
+            return Regex("""(?i)(?:^|[^0-9a-z])(?:e|ep|episode[\s._-]*)0*${episode}(?![0-9])""")
                 .containsMatchIn(normalizedOrRaw)
+        }
+
+        internal fun episodeTextMatches(normalizedOrRaw: String, season: Int?, episode: Int?): Boolean {
+            if (explicitEpisodeMatches(normalizedOrRaw, season, episode)) return true
+            if (season == 0) return false
+            return Regex("""(?i)(?:^|(?<!\d)\.|[^0-9a-z.])0*${episode}(?![0-9])""")
+                .containsMatchIn(normalizedOrRaw)
+        }
+
+        internal fun explicitEpisodeOrPackMatches(text: String, season: Int?, episode: Int?): Boolean {
+            if (episode == null || episode <= 0) return true
+            if (text.isBlank()) return false
+            if (explicitEpisodeMatches(text, season, episode)) return true
+            val lower = text.lowercase(Locale.ROOT)
+            return lower.contains("complete") || lower.contains("full season") || lower.contains("season pack")
         }
 
         internal fun episodeTextOrPackMatches(text: String, season: Int?, episode: Int?): Boolean {

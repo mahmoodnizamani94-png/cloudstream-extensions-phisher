@@ -846,8 +846,8 @@ class StreamPlayAnime : MainAPI() {
             if (urduMode && episodeSubtitleSession != null) {
                 add(
                     AnimeSource("urdu-catalog-session", 99f) { _, _ ->
-                        catalogSessionRan.set(true)
                         episodeSubtitleSession.discoverAndIngestCatalog()
+                        catalogSessionRan.set(true)
                     }
                 )
             }

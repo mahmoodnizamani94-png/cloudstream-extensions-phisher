@@ -676,7 +676,7 @@ data class CueDocument(
         private val SRT_VTT_ARROW_REGEX = Regex(
             """^\s*(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})\s*-->\s*(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})(?:\s+.*)?$"""
         )
-        private val ASS_TIME_REGEX = Regex("""^\s*(\d+):(\d{1,2}):(\d{1,2})[.:](\d{1,3})\s*$""")
+        private val ASS_TIME_REGEX = Regex("""^\s*(\d{1,3}):(\d{1,2}):(\d{1,2})[.:](\d{1,3})\s*$""")
         private val ASS_DRAWING_REGEX = Regex("""\{\\[^}]*\\p[1-9][^}]*\}""")
         private val ASS_OVERRIDE_REGEX = Regex("""\{[^}]*\}""")
         private val TTML_TICK_RATE_REGEX = Regex("""(?i)\btickRate\s*=\s*["'](\d+)["']""")
@@ -789,14 +789,14 @@ data class CueDocument(
 
         private fun parseAssTimestampMs(raw: String): Long? {
             val m = ASS_TIME_REGEX.matchEntire(raw) ?: return null
-            val h = m.groupValues[1].toLong()
-            val min = m.groupValues[2].toLong()
-            val sec = m.groupValues[3].toLong()
+            val h = m.groupValues[1].toLongOrNull() ?: return null
+            val min = m.groupValues[2].toLongOrNull() ?: return null
+            val sec = m.groupValues[3].toLongOrNull() ?: return null
             val frac = m.groupValues[4]
             val ms = when (frac.length) {
-                1 -> frac.toLong() * 100L
-                2 -> frac.toLong() * 10L
-                else -> frac.take(3).toLong()
+                1 -> (frac.toLongOrNull() ?: return null) * 100L
+                2 -> (frac.toLongOrNull() ?: return null) * 10L
+                else -> (frac.take(3).toLongOrNull() ?: return null)
             }
             return ((h * 3600L + min * 60L + sec) * 1000L) + ms
         }

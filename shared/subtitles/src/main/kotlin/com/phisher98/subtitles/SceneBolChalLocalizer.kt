@@ -442,7 +442,6 @@ object UrduCpsRefiner {
         Regex("""میرا\s+مطلب\s+(?:یہ\s+)?ہے\s+کہ\s*""") to "",
         Regex("""دراصل\s+بات\s+یہ\s+ہے\s+کہ\s*""") to "بات یہ ہے ",
         Regex("""میرے\s+خیال\s+(?:میں|سے)""") to "لگتا ہے",
-        Regex("""اس\s+وقت""") to "ابھی",
         Regex("""(?:براہ|برائے)\s+مہربانی""") to "پلیز",
         Regex("""مہربانی\s+فرما\s+کر""") to "پلیز",
         Regex("""معاف\s+کیجیے(?:\s+گا)?""") to "سوری",
@@ -461,10 +460,9 @@ object UrduCpsRefiner {
         Regex("""رکھا\s+ہوا\s+تھا""") to "رکھا تھا",
         Regex("""تمہاری\s+ہر\s+حرکت\s+پر\s+نظر""") to "تم پر نظر",
         Regex("""آپ\s+کی\s+ہر\s+حرکت\s+پر\s+نظر""") to "آپ پر نظر",
-        Regex("""بہت\s+زیادہ\s+""") to "",
-        Regex("""(?<=^|\s)مجھے\s+پہلے\s+""") to "",
+        Regex("""((?:^|\s)تم\s+نے\s+)مجھے\s+پہلے\s+(?=سچ\s+کیوں)""") to "$1",
         Regex("""(?<=^|\s)پہلے\s+(?=سچ\s+کیوں)""") to "",
-        Regex("""(?<=[یاے])\s+تھا(?=[؟!۔]|$)""") to "",
+        Regex("""((?:^|\s)(?:بتایا|سنایا|دکھایا|پوچھا|بھیجا))\s+تھا(?=[؟!۔]|$)""") to "$1",
     )
 
     private val OPTIONAL_MODIFIER_WORDS = setOf(
@@ -1050,13 +1048,11 @@ class DefaultBolChalTranslationTransport(
             "dt" to "t",
             "q" to sourceText,
         )
-        val primaryJson = catchNonCancellation {
-            executeGet("https://translate.googleapis.com/translate_a/single", gtxParams, headers)
+        val primaryExtracted = catchNonCancellation {
+            val raw = executeGet("https://translate.googleapis.com/translate_a/single", gtxParams, headers)
+            if (raw.isBlank()) "" else extractGoogleSingleSentences(mapper.readTree(raw))
         }.getOrNull()
-        if (!primaryJson.isNullOrBlank()) {
-            val extracted = extractGoogleSingleSentences(mapper.readTree(primaryJson))
-            if (extracted.isNotBlank()) return extracted
-        }
+        if (!primaryExtracted.isNullOrBlank()) return primaryExtracted
 
         val fallbackParams = mapOf(
             "client" to "dict-chrome-ex",
