@@ -891,6 +891,7 @@ object StreamPlayExtractor : StreamPlay() {
         val subtitleHeaders = buildMap {
             putAll(streamHeaders)
             put("X-StreamPlay-Source", subProvenance)
+            put("X-StreamPlay-Origin", "native")
             if (subProvenance == "animex") {
                 put("X-StreamPlay-Compat", "cinesrc")
             }
@@ -2628,8 +2629,9 @@ object StreamPlayExtractor : StreamPlay() {
                 if (englishTracks.size > 1) englishTracks.drop(1) + englishTracks.first() else englishTracks
             }
             val subHeaders = ANIZONE_HEADERS + mapOf(
-                "X-StreamPlay-Source" to "animepahe",
-                "X-StreamPlay-Compat" to "meowtv"
+                "X-StreamPlay-Source" to "anizone",
+                "X-StreamPlay-Compat" to "meowtv",
+                "X-StreamPlay-Foreign-Sidecar" to "true",
             )
             val emitted = HashSet<String>()
             ordered.forEach { track ->
@@ -3231,7 +3233,7 @@ object StreamPlayExtractor : StreamPlay() {
                 if (lang == null && display == null) return@mapNotNull null
                 val subUrl = sub.url.trim()
                 if (subUrl.startsWith("http", ignoreCase = true)) {
-                    val isUr = UrduSubtitleEngine.isUrduLanguageTag(display) || UrduSubtitleEngine.isUrduLanguageTag(lang)
+                    val isUr = isUrduSubtitleLabel(display) || isUrduSubtitleLabel(lang)
                     val isEn = isEnglishSubtitleLabel(display) || isEnglishSubtitleLabel(lang)
                     val label = when {
                         isUr -> wyzieLabel
@@ -3248,6 +3250,10 @@ object StreamPlayExtractor : StreamPlay() {
             } else {
                 allSubs.filter { it.third.second && !it.third.first }.map { it.first to it.second }
             }
+            val wyzieHeaders = SUBTITLE_BROWSER_HEADERS + mapOf(
+                "X-StreamPlay-Source" to "wyziesub",
+                "X-StreamPlay-Origin" to "catalogue",
+            )
             orderedSubs.forEach { (lan, suburl) ->
                 if (isUrduSubtitleLabel(lan)) {
                     if (emittedUrdu >= 2) return@forEach
@@ -3260,12 +3266,16 @@ object StreamPlayExtractor : StreamPlay() {
                     ) ?: return@forEach
                     subtitleCallback.invoke(
                         newSubtitleFile(wyzieLabel, materializedUri) {
-                            headers = SUBTITLE_BROWSER_HEADERS + ("X-StreamPlay-Source" to "wyziesub")
+                            headers = wyzieHeaders
                         }
                     )
                     emittedUrdu++
                 } else {
-                    subtitleCallback.invoke(newSubtitleFile(lan, suburl))
+                    subtitleCallback.invoke(
+                        newSubtitleFile(lan, suburl) {
+                            headers = wyzieHeaders
+                        }
+                    )
                 }
             }
         } catch (e: Exception) {
@@ -3303,7 +3313,8 @@ object StreamPlayExtractor : StreamPlay() {
                     if (emittedUrdu >= 2) break
                     val dlHeaders = SUBTITLE_BROWSER_HEADERS + mapOf(
                         "Referer" to candidate.referer,
-                        "X-StreamPlay-Source" to "yify"
+                        "X-StreamPlay-Source" to "yify",
+                        "X-StreamPlay-Origin" to "catalogue",
                     )
                     val materializedUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
                         url = candidate.url,
@@ -3321,7 +3332,11 @@ object StreamPlayExtractor : StreamPlay() {
                 enRows.forEach { candidate ->
                     subtitleCallback.invoke(
                         newSubtitleFile("English", candidate.url) {
-                            headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
+                            headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                                "Referer" to candidate.referer,
+                                "X-StreamPlay-Source" to "yify",
+                                "X-StreamPlay-Origin" to "catalogue",
+                            )
                         }
                     )
                     emittedYts++
@@ -3340,7 +3355,8 @@ object StreamPlayExtractor : StreamPlay() {
                     if (emittedYifyUrdu >= 2) break
                     val dlHeaders = SUBTITLE_BROWSER_HEADERS + mapOf(
                         "Referer" to candidate.referer,
-                        "X-StreamPlay-Source" to "yify"
+                        "X-StreamPlay-Source" to "yify",
+                        "X-StreamPlay-Origin" to "catalogue",
                     )
                     val materializedUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
                         url = candidate.url,
@@ -3358,7 +3374,11 @@ object StreamPlayExtractor : StreamPlay() {
             parseYifySubtitleRows(yifyBody).forEach { candidate ->
                 subtitleCallback.invoke(
                     newSubtitleFile("English", candidate.url) {
-                        headers = SUBTITLE_BROWSER_HEADERS + mapOf("Referer" to candidate.referer)
+                        headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                            "Referer" to candidate.referer,
+                            "X-StreamPlay-Source" to "yify",
+                            "X-StreamPlay-Origin" to "catalogue",
+                        )
                     }
                 )
             }
@@ -3454,11 +3474,9 @@ object StreamPlayExtractor : StreamPlay() {
      * SubtitleCat harvest.
      *
      * Note: SubtitleCat's pre-cached `-ur.srt` (`State A`) is 100% literal Google Translate, NOT a
-     * human-translated Urdu archive. In Urdu mode, `invokeSubtitleCat` never emits `-ur.srt` as a
-     * Phase 1 `Urdu [SubtitleCat]` human track (which would preempt real human Urdu archives or our
-     * Spoken-Urdu Contextual Engine); instead it harvests and records the verified English donor
-     * (`-orig.srt` / `-en.srt` / `-eng.srt`) via `UrduSubtitleEngine.recordSubtitleCatOrigCandidate`
-     * (and records `-ur.srt` only as a last-resort Phase 4 fallback).
+     * human-translated Urdu archive. `invokeSubtitleCat` never emits `-ur.srt` as a human Urdu track;
+     * instead it emits the verified English donor (`-orig.srt` / `-en.srt` / `-eng.srt`) tagged with
+     * `X-SubtitleCat-Orig-Url` metadata so `EpisodeSubtitleSession` can localize it via Bol-Chal.
      */
     suspend fun invokeSubtitleCat(
         titles: List<String>,
@@ -3472,7 +3490,6 @@ object StreamPlayExtractor : StreamPlay() {
     ) {
         val queries = buildSubtitleCatQueries(titles, season, episode, isMovie, isAnime)
         if (queries.isEmpty()) return
-        val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
         try {
             for (query in queries) {
                 val searchUrl = "$SUBTITLECAT_HOST/index.php?search=" +
@@ -3545,43 +3562,19 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }.distinctBy { it.first }
 
-                val preCachedUrduUrls = if (urduMode) {
-                    resolvedDetails.mapNotNull { parseSubtitleCatUrduDetail(it) }.distinct()
-                } else {
-                    emptyList()
-                }
-
-                if (urduMode) {
-                    englishEntries.forEach { (_, origUrl, origFilename) ->
-                        UrduSubtitleEngine.recordSubtitleCatOrigCandidate(
-                            origUrl = origUrl,
-                            origFilename = origFilename,
-                            imdbId = imdbId,
-                            season = season,
-                            episode = episode
-                        )
-                    }
-                    preCachedUrduUrls.forEach { urUrl ->
-                        UrduSubtitleEngine.recordSubtitleCatPreCachedUrduCandidate(
-                            urduUrl = urUrl,
-                            imdbId = imdbId,
-                            season = season,
-                            episode = episode
-                        )
-                    }
-                }
-
-                if (englishEntries.isEmpty() && preCachedUrduUrls.isEmpty()) continue
+                if (englishEntries.isEmpty()) continue
 
                 // Always emit English donor candidates (with X-SubtitleCat-Orig-Url metadata) so
-                // StreamPlay's Phase 4 Spoken-Urdu Contextual Engine can translate them; never emit
-                // SubtitleCat's pre-cached literal Google Translate (-ur.srt) as a Phase 1 human Urdu track!
+                // EpisodeSubtitleSession can localize them via Bol-Chal; never emit SubtitleCat's
+                // pre-cached literal Google Translate (-ur.srt) as a human Urdu track!
                 englishEntries.forEach { (url, origUrl, origFilename) ->
                     subtitleCallback.invoke(
                         newSubtitleFile("English", url) {
                             headers = SUBTITLE_BROWSER_HEADERS + mapOf(
+                                "X-StreamPlay-Source" to "subtitlecat",
+                                "X-StreamPlay-Origin" to "catalogue",
                                 "X-SubtitleCat-Orig-Url" to origUrl,
-                                "X-SubtitleCat-Orig-Name" to origFilename
+                                "X-SubtitleCat-Orig-Name" to origFilename,
                             )
                         }
                     )
@@ -6497,6 +6490,16 @@ object StreamPlayExtractor : StreamPlay() {
         else -> HLS_TV_SIZE_HINT_SECONDS
     }
 
+    internal fun resolveDurationHintSeconds(
+        isMovie: Boolean,
+        isAnime: Boolean,
+        runtimeMinutes: Int?,
+    ): Double = if (runtimeMinutes != null && runtimeMinutes > 0) {
+        runtimeMinutes * 60.0
+    } else {
+        resolveDurationHintSeconds(isMovie, isAnime)
+    }
+
     /**
      * True when the master declares an external audio rendition for at least one variant.
      *
@@ -7250,12 +7253,20 @@ object StreamPlayExtractor : StreamPlay() {
                     val streamUrl = streamResult.optString("url").takeIf { it.startsWith("http") } ?: continue
 
                     streamResult.optJSONArray("tracks")?.let { tracks ->
+                        val vidFastSubHeaders = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to "$VIDFAST_HOST/",
+                            "X-StreamPlay-Source" to "vidfast",
+                            "X-StreamPlay-Origin" to "native",
+                        )
                         for (t in 0 until tracks.length()) {
                             val track = tracks.optJSONObject(t) ?: continue
                             if (track.optString("kind").equals("thumbnails", ignoreCase = true)) continue
                             val file = track.optString("file").takeIf { it.startsWith("http") } ?: continue
                             subtitleCallback?.invoke(
-                                newSubtitleFile(cleanSubtitleLabel(track.optString("label").ifBlank { "English" }), file)
+                                newSubtitleFile(cleanSubtitleLabel(track.optString("label").ifBlank { "English" }), file) {
+                                    this.headers = vidFastSubHeaders
+                                }
                             )
                         }
                     }
@@ -7991,15 +8002,15 @@ object StreamPlayExtractor : StreamPlay() {
                     "X-StreamPlay-Source" to "vidrift"
                 )
                 val emittedSubs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-                fun emitSub(lang: String, url: String) {
+                suspend fun emitSub(lang: String, url: String) {
                     if (subtitleCallback == null || !emittedSubs.add(url)) return
-                    @Suppress("DEPRECATION")
-                    val sub = SubtitleFile(lang = cleanSubtitleLabel(lang), url = url).apply {
-                        headers = mapOf(
+                    val sub = newSubtitleFile(lang = cleanSubtitleLabel(lang), url = url) {
+                        this.headers = mapOf(
                             "User-Agent" to USER_AGENT,
                             "Referer" to embedUrl,
                             "Origin" to VIDRIFT_HOST,
-                            "X-StreamPlay-Source" to "vidrift"
+                            "X-StreamPlay-Source" to "vidrift",
+                            "X-StreamPlay-Origin" to "native",
                         )
                     }
                     subtitleCallback.invoke(sub)

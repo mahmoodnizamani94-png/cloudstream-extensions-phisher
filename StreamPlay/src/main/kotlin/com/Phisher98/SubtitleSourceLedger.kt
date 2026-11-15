@@ -1,48 +1,85 @@
 package com.phisher98
 
+import com.lagradost.cloudstream3.SubtitleFile
+import com.phisher98.subtitles.CatalogueSourceKey
+import com.phisher98.subtitles.ProvenanceCodec
+import com.phisher98.subtitles.ProvenanceIdentity
+import com.phisher98.subtitles.StreamProviderKey
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Real bookkeeping behind the English/Urdu subtitle source-diversity contract (AGENTS.md §6),
- * shared verbatim by the Movie/TV surface (`StreamPlay`) and the Anime surface (`StreamPlayAnime`).
- *
- * The contract decomposes into two independent tracking problems that were previously conflated:
- * - **Source diversity** counts distinct lowercase *provenances* (`X-StreamPlay-Source` marker, or
- *   the subtitle host when no marker exists) that actually delivered an English subtitle. An
- *   episode is complete when [targetEnglishSources] distinct provenances have spoken — 6 for anime,
- *   5 for movies/TV.
- * - **Re-query suppression** tracks *container providers* whose fan-out already completed, so the
- *   subtitle completion phase never re-queries a provider that delivered (or was satisfied) even
- *   when its provenance differs from the container id (e.g. ZokoAnime subtitles under the Animex
- *   container), while still re-querying providers whose fan-out produced nothing.
- *
- * URL-level deduplication is `language|canonical-url` with the `#fragment` routing suffix stripped
- * before comparison, so the same sidecar offered twice under different routing fragments (e.g.
- * `url#animepahe`) cannot double-count toward diversity.
- */
 class SubtitleSourceLedger(
     val targetEnglishSources: Int,
-    val targetUrduSources: Int = 0
+    val targetUrduSources: Int = 0,
 ) {
-    private val emittedSubtitleKeys = ConcurrentHashMap.newKeySet<String>()
-    val englishSubtitleSources = ConcurrentHashMap.newKeySet<String>()
-    val urduSubtitleSources = ConcurrentHashMap.newKeySet<String>()
-    val completedEnglishSubtitleProviders = ConcurrentHashMap.newKeySet<String>()
-    val completedUrduSubtitleProviders = ConcurrentHashMap.newKeySet<String>()
+    private val emittedSubtitleKeys: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val englishSubtitleSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val urduSubtitleSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val nativeOrHumanUrduSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val completedEnglishSubtitleProviders: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val completedUrduSubtitleProviders: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    val providerAnchorSources: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
-    fun normalizeProvenance(raw: String?): String? =
-        raw?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+    private fun wireTokenOf(identity: ProvenanceIdentity): String = when (identity) {
+        is ProvenanceIdentity.StreamProvider -> identity.provider.wireId
+        is ProvenanceIdentity.HumanCatalogue -> identity.catalogue.wireId
+        is ProvenanceIdentity.BolChalTranslated -> "bolchal:${identity.donor.wireDonorId}"
+        is ProvenanceIdentity.UnknownExternal -> identity.registrableHost.ifBlank { "external" }
+    }
+
+    fun normalizeProvenance(raw: String?): String? {
+        val cleaned = raw?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return null
+        if (cleaned.startsWith("bolchal:") || cleaned == "urdu-neural-fallback") {
+            return cleaned
+        }
+        CatalogueSourceKey.fromTextOrHost(cleaned)?.let { return it.wireId }
+        StreamProviderKey.fromTextOrHost(cleaned)?.let { return it.wireId }
+        return cleaned
+    }
+
+    fun resolveProvenanceIdentity(
+        headers: Map<String, String>?,
+        fallbackSourceKey: String? = null,
+        displayName: String = "",
+        urlOrFileName: String = "",
+    ): ProvenanceIdentity {
+        val decoded = ProvenanceCodec.decode(
+            headers = headers.orEmpty(),
+            displayName = displayName,
+            urlOrFileName = urlOrFileName,
+        )
+        if (decoded !is ProvenanceIdentity.UnknownExternal) {
+            return decoded
+        }
+        val hint = fallbackSourceKey?.trim()?.takeIf { it.isNotEmpty() } ?: return decoded
+        StreamProviderKey.fromTextOrHost(hint)?.let { return ProvenanceIdentity.StreamProvider(it) }
+        CatalogueSourceKey.fromTextOrHost(hint)?.let { return ProvenanceIdentity.HumanCatalogue(it) }
+        return ProvenanceIdentity.UnknownExternal(hint.lowercase(Locale.ROOT))
+    }
+
+    fun isProviderAnchor(headers: Map<String, String>?): Boolean =
+        headers != null && ProvenanceCodec.isProviderAnchorHeader(headers)
 
     fun canonicalSubtitleUrl(url: String): String = url.substringBefore('#').trim()
 
     fun subtitleDedupeKey(lang: String, url: String): String =
         "${lang.trim().lowercase(Locale.ROOT)}|${canonicalSubtitleUrl(url)}"
 
-    /** Returns true when this exact language + canonical-URL subtitle has never been emitted before. */
-    fun markEmitted(lang: String, url: String): Boolean = emittedSubtitleKeys.add(subtitleDedupeKey(lang, url))
+    fun subtitleDedupeKey(lang: String, url: String, headers: Map<String, String>?): String {
+        if (isProviderAnchor(headers)) {
+            val provKey = wireTokenOf(resolveProvenanceIdentity(headers, displayName = lang, urlOrFileName = url))
+            return "anchor|$provKey|${canonicalSubtitleUrl(url)}"
+        }
+        return subtitleDedupeKey(lang, url)
+    }
 
-    /** True when at least one subtitle (any language) was emitted on this episode. */
+    fun markEmitted(lang: String, url: String): Boolean =
+        emittedSubtitleKeys.add(subtitleDedupeKey(lang, url))
+
+    fun markEmitted(lang: String, url: String, headers: Map<String, String>?): Boolean =
+        emittedSubtitleKeys.add(subtitleDedupeKey(lang, url, headers))
+
     fun hasAnyEmittedSubtitle(): Boolean = emittedSubtitleKeys.isNotEmpty()
 
     fun recordEnglishDelivery(provenance: String?, sourceKey: String?) {
@@ -59,35 +96,64 @@ class SubtitleSourceLedger(
         if (p != null) {
             urduSubtitleSources.add(p)
             completedUrduSubtitleProviders.add(p)
+            val isTranslated = p == "urdu-neural-fallback" || p.startsWith("bolchal:")
+            if (!isTranslated) {
+                nativeOrHumanUrduSources.add(p)
+            }
         }
         normalizeProvenance(sourceKey)?.let { completedUrduSubtitleProviders.add(it) }
     }
 
+    fun recordSubtitleFile(sub: SubtitleFile, fallbackSourceKey: String? = null) {
+        val headers = sub.headers
+        val identity = resolveProvenanceIdentity(
+            headers = headers,
+            fallbackSourceKey = fallbackSourceKey,
+            displayName = sub.lang,
+            urlOrFileName = sub.url,
+        )
+        val wireToken = wireTokenOf(identity)
+        if (isProviderAnchor(headers)) {
+            providerAnchorSources.add(wireToken)
+            return
+        }
+        when {
+            isUrduSubtitleLabel(sub.lang) -> {
+                urduSubtitleSources.add(wireToken)
+                completedUrduSubtitleProviders.add(wireToken)
+                if (identity is ProvenanceIdentity.StreamProvider || identity is ProvenanceIdentity.HumanCatalogue) {
+                    nativeOrHumanUrduSources.add(wireToken)
+                }
+                normalizeProvenance(fallbackSourceKey)?.let { completedUrduSubtitleProviders.add(it) }
+            }
+            isEnglishSubtitleLabel(sub.lang) -> {
+                recordEnglishDelivery(wireToken, fallbackSourceKey)
+            }
+        }
+    }
+
     fun englishSourceCount(): Int = englishSubtitleSources.size
     fun urduSourceCount(): Int = urduSubtitleSources.size
+    fun nativeOrHumanUrduSourceCount(): Int = nativeOrHumanUrduSources.size
 
     fun needsEnglishCompletion(): Boolean = englishSubtitleSources.size < targetEnglishSources
-    fun needsUrduCompletion(): Boolean = targetUrduSources > 0 && urduSubtitleSources.size < targetUrduSources
+    fun needsUrduCompletion(): Boolean = targetUrduSources > 0 && nativeOrHumanUrduSources.size < targetUrduSources
 
-    /** True when [providerId]'s fan-out already delivered an English subtitle on this episode. */
     fun isEnglishProviderCompleted(providerId: String): Boolean {
         val id = normalizeProvenance(providerId) ?: return false
         return id in completedEnglishSubtitleProviders
     }
 
-    /** True when [providerId]'s fan-out already delivered an Urdu subtitle on this episode. */
     fun isUrduProviderCompleted(providerId: String): Boolean {
         val id = normalizeProvenance(providerId) ?: return false
         return id in completedUrduSubtitleProviders
     }
 
-    /** True when [providerId] is a distinct provenance already counted toward English diversity. */
     fun isEnglishSource(providerId: String): Boolean {
         val id = normalizeProvenance(providerId) ?: return false
         return id in englishSubtitleSources
     }
 
-    /** True when [providerId] is a distinct provenance already counted toward Urdu diversity. */
     fun isUrduSource(providerId: String): Boolean {
         val id = normalizeProvenance(providerId) ?: return false
         return id in urduSubtitleSources

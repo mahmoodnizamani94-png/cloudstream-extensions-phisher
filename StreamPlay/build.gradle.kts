@@ -11,9 +11,12 @@ import org.jetbrains.kotlin.konan.properties.Properties
 //    without ever needing to rewrite history.
 //  - Never decrement or re-issue an already-published number: users' apps compare
 //    `>` against the installed version, so any regression silently stops updates.
-version = 732
+version = 733
 
 android {
+    sourceSets.named("main") {
+        kotlin.directories.add(rootProject.file("shared/subtitles/src/main/kotlin").path)
+    }
     buildFeatures {
         buildConfig = true
         viewBinding = true
