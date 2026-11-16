@@ -1388,5 +1388,95 @@ class Pr21ReviewFixesTest {
             executor.shutdownNow()
         }
     }
+
+    @Test
+    fun removedCatalogueDonorReleasesEditionReservationForLaterSameFingerprintDonor() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-donor-reservation").toFile()
+        val emitted = CopyOnWriteArrayList<SubtitleFile>()
+        val inTranslate = CompletableDeferred<Unit>()
+        val allowFinish = CompletableDeferred<Unit>()
+        val transportCalls = AtomicInteger(0)
+        val englishSrt = makeEnglishSrt(12, startSec = 10, stepSec = 4)
+        try {
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(
+                    imdbId = "tt9800001",
+                    tmdbId = null,
+                    titles = listOf("Reservation Release"),
+                    releaseYear = 2024,
+                ),
+                mode = SessionSubtitleMode.URDU,
+                casStore = UrduCasStore(tempRoot),
+                httpTransport = DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+                targetUrduDiversityCount = 1,
+                progressiveBilingualMode = true,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    if (transportCalls.incrementAndGet() == 1) {
+                        inTranslate.complete(Unit)
+                        allowFinish.await()
+                    }
+                    val translated = window.targetCues.associate { cue ->
+                        cue.id to BolChalCueOut(cue.id, "یہ اردو ترجمہ ہے نمبر ${cue.id.value}")
+                    }
+                    Result.success(translated to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                },
+                subtitleCallback = { emitted.add(it) },
+            )
+
+            val catalogue = newSubtitleFile("English [Wyzie]", "https://example.invalid/reservation-en.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(
+                    ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.WYZIE),
+                )
+            }
+            session.ingestRawSubtitle(catalogue, rawBytesOverride = englishSrt.toByteArray())
+            assertEquals(1, session.rankedEnglishDonorsSnapshot().size)
+
+            val firstJob = async { session.completeSession() }
+            withTimeout(5_000L) { inTranslate.await() }
+            session.attachSpeechTimeline(
+                SpeechActivityTimeline(
+                    speechSpans = listOf(SpeechSpan(240_000L, 241_000L, 0.95f)),
+                    observedWindows = listOf(ObservedWindow(0L, 250_000L)),
+                    mediaDurationMs = 250_000L,
+                ),
+            )
+            assertEquals(
+                "Mismatched speech must remove the catalogue donor before translation commits",
+                0,
+                session.rankedEnglishDonorsSnapshot().size,
+            )
+            allowFinish.complete(Unit)
+            val evicted = withTimeout(5_000L) { firstJob.await() }
+            assertEquals(
+                "Evicted catalogue localization must not commit a track",
+                0,
+                evicted.emittedUrduCandidates.size,
+            )
+
+            session.registerActiveVideoProvider(StreamProviderKey.VIDLINK)
+            val streamCopy = newSubtitleFile("English [VidLink]", "https://example.invalid/reservation-stream-en.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(
+                    ProvenanceIdentity.StreamProvider(StreamProviderKey.VIDLINK),
+                )
+            }
+            session.ingestRawSubtitle(streamCopy, rawSourceHint = "vidlink", rawBytesOverride = englishSrt.toByteArray())
+            assertEquals(1, session.rankedEnglishDonorsSnapshot().size)
+
+            val recovered = withTimeout(5_000L) { session.completeSession() }
+            assertEquals(
+                "Same-fingerprint stream donor must still receive the conversational edition",
+                1,
+                recovered.emittedUrduCandidates.size,
+            )
+            val committed = recovered.emittedUrduCandidates.single() as VerifiedSubtitleCandidate.BolChalLocalized
+            assertEquals(null, committed.editionTag)
+            assertEquals(DonorProvenance.StreamDonor(StreamProviderKey.VIDLINK), recovered.localizedDonorUsed)
+            val baked = emitted.last { it.headers?.get(ProvenanceCodec.HEADER_PROGRESSIVE) == null }
+            assertEquals(null, baked.headers?.get(ProvenanceCodec.HEADER_EDITION))
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
 }
 

@@ -1291,6 +1291,11 @@ class EpisodeSubtitleSession(
                     }
                     val currentDonor = findBufferedEnglishDonorLocked(donorEntry.bufferEntryId)
                     if (currentDonor == null) {
+                        // Freed so a later donor with the same fingerprint can retry this edition.
+                        // donorEditionAttempts still caps that retry.
+                        inFlightOrCompletedDonorEditions.remove(
+                            donorEntry.document.dialogueFingerprint to edition
+                        )
                         rejectedTracks.add(
                             VerifiedSubtitleCandidate.Rejected.SyncMismatch(0.0, Int.MAX_VALUE)
                         )
