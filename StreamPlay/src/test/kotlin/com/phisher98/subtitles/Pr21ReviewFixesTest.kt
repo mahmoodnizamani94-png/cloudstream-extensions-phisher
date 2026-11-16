@@ -1149,5 +1149,54 @@ class Pr21ReviewFixesTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun catalogHttpTransportBlocksDnsRebindingAtConnectionTimeAcrossGetAndPost() = runBlocking {
+        val hitCount = AtomicInteger(0)
+        val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+        server.createContext("/rebind") { ex ->
+            hitCount.incrementAndGet()
+            val bytes = "1\n00:00:01,000 --> 00:00:02,000\nSecret\n".toByteArray()
+            ex.sendResponseHeaders(200, bytes.size.toLong())
+            ex.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val dnsCalls = AtomicInteger(0)
+            val publicIp = InetAddress.getByAddress(
+                "rebind.example.test",
+                byteArrayOf(93.toByte(), 184.toByte(), 216.toByte(), 34.toByte()),
+            )
+            val rebindingTransport = DefaultCatalogHttpTransport(
+                allowPrivateNetworks = false,
+                dnsLookup = { host ->
+                    if (host == "rebind.example.test" && dnsCalls.getAndIncrement() % 2 == 0) {
+                        // Preflight validateDestinationUrl sees a public IP
+                        listOf(publicIp)
+                    } else {
+                        // Socket connection-time DNS resolution rebinds to 127.0.0.1
+                        listOf(InetAddress.getLoopbackAddress())
+                    }
+                },
+            )
+
+            val targetUrl = "http://rebind.example.test:${server.address.port}/rebind"
+            val getRes = rebindingTransport.get(targetUrl)
+            assertTrue("GET must block connection-time DNS rebinding, got $getRes", getRes.isFailure)
+            assertTrue(getRes.exceptionOrNull() is SecurityException)
+
+            val formRes = rebindingTransport.postForm(targetUrl, mapOf("q" to "test"))
+            assertTrue("postForm must block connection-time DNS rebinding, got $formRes", formRes.isFailure)
+            assertTrue(formRes.exceptionOrNull() is SecurityException)
+
+            val jsonRes = rebindingTransport.postJson(targetUrl, """{"q":"test"}""")
+            assertTrue("postJson must block connection-time DNS rebinding, got $jsonRes", jsonRes.isFailure)
+            assertTrue(jsonRes.exceptionOrNull() is SecurityException)
+
+            assertEquals("No HTTP request may ever reach the local server via DNS rebinding", 0, hitCount.get())
+        } finally {
+            server.stop(0)
+        }
+    }
 }
 

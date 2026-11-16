@@ -105,4 +105,56 @@ class StremioXSubtitleCoordinatorTest {
             imdbEpisode.coordinate,
         )
     }
+
+    @Test
+    fun resolveProviderDispatchPlanPropagatesParsedStreamIdCoordinatesAndGuardsEpisodeOnlySpecs() {
+        val streamIdOnlyEpisode = StremioXSubtitleCoordinator.buildLookupSpec(
+            imdbId = null,
+            title = "ID-Only Episode",
+            mediaType = "series",
+            streamId = "tt1234567:2:5",
+        )
+        val plan = StremioXSubtitleCoordinator.resolveProviderDispatchPlan(
+            lookupSpec = streamIdOnlyEpisode,
+            imdbId = null,
+            season = null,
+            episode = null,
+        )
+        assertEquals("tt1234567", plan.imdbId)
+        assertEquals(2, plan.season)
+        assertEquals(5, plan.episode)
+        assertTrue(plan.invokeImdbProviders)
+
+        val episodeOnlySeries = StremioXSubtitleCoordinator.buildLookupSpec(
+            imdbId = "tt1234567",
+            title = "Episode-Only Series",
+            mediaType = "series",
+            streamId = "tt1234567:5",
+        )
+        val episodeOnlyPlan = StremioXSubtitleCoordinator.resolveProviderDispatchPlan(
+            lookupSpec = episodeOnlySeries,
+            imdbId = "tt1234567",
+            season = null,
+            episode = null,
+        )
+        org.junit.Assert.assertFalse(
+            "Episode without season must NOT fall back to OpenSubtitles/Watchsomuch movie branch",
+            episodeOnlyPlan.invokeImdbProviders,
+        )
+
+        val movieSpec = StremioXSubtitleCoordinator.buildLookupSpec(
+            imdbId = "tt7654321",
+            title = "Actual Movie",
+            mediaType = "movie",
+        )
+        val moviePlan = StremioXSubtitleCoordinator.resolveProviderDispatchPlan(
+            lookupSpec = movieSpec,
+            imdbId = "tt7654321",
+            season = null,
+            episode = null,
+        )
+        assertTrue(moviePlan.invokeImdbProviders)
+        assertEquals(null, moviePlan.season)
+        assertEquals(null, moviePlan.episode)
+    }
 }

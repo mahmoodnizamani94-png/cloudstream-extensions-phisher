@@ -2,29 +2,37 @@ package com.phisher98.subtitles
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.ConnectionPool
+import okhttp3.Dns
+import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
-import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.Proxy
 import java.net.SocketTimeoutException
 import java.net.URI
-import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 
 data class CatalogHttpResponse(
@@ -139,9 +147,61 @@ interface CatalogHttpTransport {
 
 class DefaultCatalogHttpTransport(
     val allowPrivateNetworks: Boolean = false,
+    private val dnsLookup: (String) -> List<InetAddress> = { host ->
+        InetAddress.getAllByName(host).toList()
+    },
 ) : CatalogHttpTransport {
     override val supportsExtendedLiveScrapers: Boolean = true
-    private val jsonMapper = ObjectMapper()
+
+    private val ssrfGuardingDns = Dns { hostname ->
+        if (allowPrivateNetworks) {
+            dnsLookup(hostname)
+        } else {
+            resolveAndValidateAddresses(hostname)
+        }
+    }
+
+    private val baseHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectionPool(ConnectionPool(8, 30, TimeUnit.SECONDS))
+            .dns(ssrfGuardingDns)
+            .apply {
+                if (!allowPrivateNetworks) {
+                    proxy(Proxy.NO_PROXY)
+                }
+            }
+            .build()
+    }
+
+    private fun validateHostName(host: String) {
+        if (host.equals("localhost", ignoreCase = true) ||
+            host.endsWith(".localhost", ignoreCase = true) ||
+            host.endsWith(".local", ignoreCase = true) ||
+            host.endsWith(".internal", ignoreCase = true)
+        ) {
+            throw SecurityException("Refusing private/local catalog host: $host")
+        }
+    }
+
+    private fun resolveAndValidateAddresses(host: String): List<InetAddress> {
+        val cleanHost = host.trim().removeSurrounding("[", "]")
+        if (cleanHost.isEmpty()) {
+            throw SecurityException("Refusing empty catalog host")
+        }
+        validateHostName(cleanHost)
+        val resolved = dnsLookup(cleanHost)
+        if (resolved.isEmpty()) {
+            throw SecurityException("DNS resolved 0 addresses for host: $cleanHost")
+        }
+        for (addr in resolved) {
+            if (isBlockedAddress(addr)) {
+                throw SecurityException("Refusing non-public catalog destination IP for host: $cleanHost")
+            }
+        }
+        return resolved
+    }
 
     internal fun validateDestinationUrl(rawUrl: String): String {
         val cleanUrl = rawUrl.trim()
@@ -159,22 +219,7 @@ class DefaultCatalogHttpTransport(
             ?: throw IllegalArgumentException("Missing host in catalog HTTP URL: $cleanUrl")
 
         if (!allowPrivateNetworks) {
-            if (host.equals("localhost", ignoreCase = true) ||
-                host.endsWith(".localhost", ignoreCase = true) ||
-                host.endsWith(".local", ignoreCase = true) ||
-                host.endsWith(".internal", ignoreCase = true)
-            ) {
-                throw SecurityException("Refusing private/local catalog host: $host")
-            }
-            val resolved = InetAddress.getAllByName(host)
-            if (resolved.isEmpty()) {
-                throw SecurityException("DNS resolved 0 addresses for host: $host")
-            }
-            for (addr in resolved) {
-                if (isBlockedAddress(addr)) {
-                    throw SecurityException("Refusing non-public catalog destination IP for host: $host")
-                }
-            }
+            resolveAndValidateAddresses(host)
         }
         return cleanUrl
     }
@@ -234,13 +279,15 @@ class DefaultCatalogHttpTransport(
         return currentHeaders.filterKeys { k -> k.lowercase(Locale.ROOT) !in CREDENTIAL_HEADER_NAMES }
     }
 
-    override suspend fun get(
-        url: String,
-        headers: Map<String, String>,
+    private suspend fun executeRequest(
+        initialUrl: String,
+        initialMethod: String,
+        initialBody: RequestBody?,
+        initialHeaders: Map<String, String>,
         timeoutMs: Long,
     ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        val initialUrl = try {
-            validateDestinationUrl(url)
+        val validatedInitialUrl = try {
+            validateDestinationUrl(initialUrl)
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -250,116 +297,87 @@ class DefaultCatalogHttpTransport(
         val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
         val deadlineNs = System.nanoTime() + effectiveBudgetMs * 1_000_000L
 
-        val reqHeaders = LinkedHashMap<String, String>(headers.size + 1).apply {
-            put("User-Agent", headers["User-Agent"] ?: DEFAULT_BROWSER_UA)
-            for ((k, v) in headers) {
-                if (!k.equals("User-Agent", ignoreCase = true)) put(k, v)
-            }
-        }
-
         try {
-            val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
+            var currentUrl = validatedInitialUrl
+            var currentMethod = initialMethod
+            var currentBody: RequestBody? = initialBody
+            var hopHeaders: Map<String, String> = initialHeaders
+            var hops = 0
+
+            while (true) {
+                val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+                if (remainingMs < 200L) {
+                    return@withContext Result.failure(
+                        SocketTimeoutException("Catalog $currentMethod budget exhausted (${effectiveBudgetMs}ms) for $currentUrl")
+                    )
+                }
+
+                val hopTimeoutMs = remainingMs.coerceIn(250L, 20_000L)
+                val hopClient = baseHttpClient.newBuilder()
+                    .connectTimeout(hopTimeoutMs, TimeUnit.MILLISECONDS)
+                    .readTimeout(hopTimeoutMs, TimeUnit.MILLISECONDS)
+                    .writeTimeout(hopTimeoutMs, TimeUnit.MILLISECONDS)
+                    .callTimeout(hopTimeoutMs, TimeUnit.MILLISECONDS)
+                    .build()
+
+                val reqBuilder = Request.Builder().url(currentUrl)
+                for ((k, v) in hopHeaders) {
+                    reqBuilder.header(k, v)
+                }
+                reqBuilder.method(currentMethod, currentBody)
+
+                val call = hopClient.newCall(reqBuilder.build())
+                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+                    if (cause != null) call.cancel()
+                }
                 try {
-                    var currentUrl = initialUrl
-                    var hopHeaders: Map<String, String> = reqHeaders
-                    var hops = 0
-                    var finalNice: CatalogHttpResponse? = null
-                    while (true) {
-                        val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
-                        if (remainingMs < 200L) break
-                        val timeoutSec = ((remainingMs + 999L) / 1_000L).coerceAtLeast(1L)
-                        val resp = app.get(
-                            currentUrl,
-                            headers = hopHeaders,
-                            timeout = timeoutSec,
-                            allowRedirects = false,
-                        )
+                    call.execute().use { resp ->
                         if (resp.code in REDIRECT_STATUS_CODES) {
-                            val loc = resp.headers["location"] ?: resp.headers["Location"]
+                            val loc = resp.header("Location")
                             if (loc.isNullOrBlank() || hops >= MAX_REDIRECTS) {
-                                finalNice = CatalogHttpResponse(resp.code, ByteArray(0), currentUrl)
-                                break
+                                return@withContext Result.failure(
+                                    IllegalStateException("Too many or empty redirects (${resp.code}) for $currentUrl")
+                                )
                             }
                             val nextUrl = resolveRedirectUrl(currentUrl, loc)
-                            hopHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
+                            var nextHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
+                            if (resp.code == 301 || resp.code == 302 || resp.code == 303) {
+                                if (currentMethod != "GET") {
+                                    currentMethod = "GET"
+                                    currentBody = null
+                                    nextHeaders = nextHeaders.filterKeys {
+                                        !it.equals("Content-Type", ignoreCase = true) &&
+                                            !it.equals("Content-Length", ignoreCase = true)
+                                    }
+                                }
+                            }
+                            hopHeaders = nextHeaders
                             currentUrl = nextUrl
                             hops++
-                            continue
+                            return@use
                         }
+
                         val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
+                        if (resp.code !in 200..299 || bytes.isEmpty()) {
+                            return@withContext Result.failure(
+                                IllegalStateException("HTTP ${resp.code} for $currentUrl")
+                            )
+                        }
                         val outHeaders = LinkedHashMap<String, String>()
                         for (name in resp.headers.names()) {
                             resp.headers[name]?.let { outHeaders[name] = it }
                         }
-                        finalNice = CatalogHttpResponse(
-                            statusCode = resp.code,
-                            bodyBytes = bytes,
-                            finalUrl = resp.url,
-                            headers = outHeaders,
-                        )
-                        break
-                    }
-                    finalNice
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (se: SecurityException) {
-                    throw se
-                } catch (_: Throwable) {
-                    null
-                }
-            }
-            if (niceResp != null) {
-                return@withContext if (niceResp.isSuccess) {
-                    Result.success(niceResp)
-                } else {
-                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} for $initialUrl"))
-                }
-            }
-
-            var currentUrl = initialUrl
-            var hopHeaders: Map<String, String> = reqHeaders
-            var hops = 0
-            while (true) {
-                val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
-                if (remainingMs < 400L) {
-                    return@withContext Result.failure(
-                        SocketTimeoutException("Catalog GET budget exhausted (${effectiveBudgetMs}ms) for $currentUrl")
-                    )
-                }
-
-                val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    instanceFollowRedirects = false
-                    connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                    readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                    hopHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
-                }
-                try {
-                    val code = conn.responseCode
-                    if (code in REDIRECT_STATUS_CODES) {
-                        val loc = conn.getHeaderField("Location")
-                        if (loc.isNullOrBlank() || hops >= MAX_REDIRECTS) {
-                            return@withContext Result.failure(
-                                IllegalStateException("Too many or empty redirects ($code) for $currentUrl")
+                        return@withContext Result.success(
+                            CatalogHttpResponse(
+                                statusCode = resp.code,
+                                bodyBytes = bytes,
+                                finalUrl = resp.request.url.toString(),
+                                headers = outHeaders,
                             )
-                        }
-                        val nextUrl = resolveRedirectUrl(currentUrl, loc)
-                        hopHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
-                        currentUrl = nextUrl
-                        hops++
-                        continue
+                        )
                     }
-                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                    val bytes = stream?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
-                    val resolvedUrl = conn.url?.toString() ?: currentUrl
-                    if (code !in 200..299 || bytes.isEmpty()) {
-                        return@withContext Result.failure(IllegalStateException("HTTP $code for $currentUrl"))
-                    }
-                    return@withContext Result.success(
-                        CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = resolvedUrl)
-                    )
                 } finally {
-                    conn.disconnect()
+                    cancelHandle?.dispose()
                 }
             }
             @Suppress("UNREACHABLE_CODE")
@@ -371,118 +389,50 @@ class DefaultCatalogHttpTransport(
         }
     }
 
-    override suspend fun postForm(
+    override suspend fun get(
         url: String,
-        formFields: Map<String, String>,
         headers: Map<String, String>,
         timeoutMs: Long,
-    ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        val cleanUrl = try {
-            validateDestinationUrl(url)
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            return@withContext Result.failure(t)
-        }
-
-        val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
-        val deadlineNs = System.nanoTime() + effectiveBudgetMs * 1_000_000L
-
+    ): Result<CatalogHttpResponse> {
         val reqHeaders = LinkedHashMap<String, String>(headers.size + 1).apply {
             put("User-Agent", headers["User-Agent"] ?: DEFAULT_BROWSER_UA)
             for ((k, v) in headers) {
                 if (!k.equals("User-Agent", ignoreCase = true)) put(k, v)
             }
         }
-        try {
-            val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
-                try {
-                    val timeoutSec = ((effectiveBudgetMs + 999L) / 1_000L).coerceAtLeast(1L)
-                    val resp = app.post(
-                        cleanUrl,
-                        headers = reqHeaders,
-                        data = formFields,
-                        timeout = timeoutSec,
-                        allowRedirects = false,
-                    )
-                    if (resp.code in REDIRECT_STATUS_CODES) {
-                        val loc = resp.headers["location"] ?: resp.headers["Location"]
-                        if (loc.isNullOrBlank()) {
-                            return@withTimeoutOrNull CatalogHttpResponse(resp.code, ByteArray(0), cleanUrl)
-                        }
-                        val nextUrl = resolveRedirectUrl(cleanUrl, loc)
-                        val redirHeaders = headersForRedirect(cleanUrl, nextUrl, reqHeaders)
-                        val redir = app.get(nextUrl, headers = redirHeaders, timeout = timeoutSec, allowRedirects = false)
-                        val bytes = redir.body.byteStream().use { readBoundedStream(it, deadlineNs) }
-                        return@withTimeoutOrNull CatalogHttpResponse(redir.code, bytes, redir.url)
-                    }
-                    val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
-                    CatalogHttpResponse(
-                        statusCode = resp.code,
-                        bodyBytes = bytes,
-                        finalUrl = resp.url,
-                    )
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (se: SecurityException) {
-                    throw se
-                } catch (_: Throwable) {
-                    null
-                }
-            }
-            if (niceResp != null) {
-                return@withContext if (niceResp.isSuccess) {
-                    Result.success(niceResp)
-                } else {
-                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} POST $cleanUrl"))
-                }
-            }
+        return executeRequest(
+            initialUrl = url,
+            initialMethod = "GET",
+            initialBody = null,
+            initialHeaders = reqHeaders,
+            timeoutMs = timeoutMs,
+        )
+    }
 
-            val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
-            if (remainingMs < 400L) {
-                return@withContext Result.failure(
-                    SocketTimeoutException("Catalog POST budget exhausted (${effectiveBudgetMs}ms) for $cleanUrl")
-                )
+    override suspend fun postForm(
+        url: String,
+        formFields: Map<String, String>,
+        headers: Map<String, String>,
+        timeoutMs: Long,
+    ): Result<CatalogHttpResponse> {
+        val reqHeaders = LinkedHashMap<String, String>(headers.size + 1).apply {
+            put("User-Agent", headers["User-Agent"] ?: DEFAULT_BROWSER_UA)
+            for ((k, v) in headers) {
+                if (!k.equals("User-Agent", ignoreCase = true)) put(k, v)
             }
-
-            val formBody = formFields.entries.joinToString("&") { (k, v) ->
-                "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
-            }.toByteArray(StandardCharsets.UTF_8)
-            val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                instanceFollowRedirects = false
-                doOutput = true
-                connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
-            }
-            try {
-                conn.outputStream.use { it.write(formBody) }
-                val code = conn.responseCode
-                if (code in REDIRECT_STATUS_CODES) {
-                    val loc = conn.getHeaderField("Location")
-                    if (loc.isNullOrBlank()) {
-                        return@withContext Result.failure(IllegalStateException("HTTP $code POST $cleanUrl"))
-                    }
-                    val nextUrl = resolveRedirectUrl(cleanUrl, loc)
-                    val redirHeaders = headersForRedirect(cleanUrl, nextUrl, reqHeaders)
-                    return@withContext get(nextUrl, redirHeaders, ((deadlineNs - System.nanoTime()) / 1_000_000L).coerceAtLeast(250L))
-                }
-                val bytes = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                    ?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
-                if (code !in 200..299 || bytes.isEmpty()) {
-                    return@withContext Result.failure(IllegalStateException("HTTP $code POST $cleanUrl"))
-                }
-                Result.success(CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = conn.url?.toString() ?: cleanUrl))
-            } finally {
-                conn.disconnect()
-            }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            Result.failure(t)
         }
+        val body = FormBody.Builder(StandardCharsets.UTF_8).apply {
+            for ((k, v) in formFields) {
+                add(k, v)
+            }
+        }.build()
+        return executeRequest(
+            initialUrl = url,
+            initialMethod = "POST",
+            initialBody = body,
+            initialHeaders = reqHeaders,
+            timeoutMs = timeoutMs,
+        )
     }
 
     override suspend fun postJson(
@@ -490,21 +440,12 @@ class DefaultCatalogHttpTransport(
         jsonBody: String,
         headers: Map<String, String>,
         timeoutMs: Long,
-    ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        val cleanUrl = try {
-            validateDestinationUrl(url)
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            return@withContext Result.failure(t)
-        }
-
-        val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
-        val deadlineNs = System.nanoTime() + effectiveBudgetMs * 1_000_000L
-
+    ): Result<CatalogHttpResponse> {
+        val contentTypeHeader = headers.entries.firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }?.value
+            ?: "application/json; charset=utf-8"
         val reqHeaders = LinkedHashMap<String, String>(headers.size + 2).apply {
             put("User-Agent", headers["User-Agent"] ?: DEFAULT_BROWSER_UA)
-            put("Content-Type", headers["Content-Type"] ?: "application/json")
+            put("Content-Type", contentTypeHeader)
             for ((k, v) in headers) {
                 if (!k.equals("User-Agent", ignoreCase = true) &&
                     !k.equals("Content-Type", ignoreCase = true)
@@ -513,76 +454,14 @@ class DefaultCatalogHttpTransport(
                 }
             }
         }
-        try {
-            val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
-                try {
-                    val timeoutSec = ((effectiveBudgetMs + 999L) / 1_000L).coerceAtLeast(1L)
-                    val bodyMap = jsonMapper.readValue(
-                        jsonBody,
-                        object : com.fasterxml.jackson.core.type.TypeReference<Map<String, Any?>>() {},
-                    )
-                    val resp = app.post(
-                        cleanUrl,
-                        headers = reqHeaders,
-                        json = bodyMap,
-                        timeout = timeoutSec,
-                        allowRedirects = false,
-                    )
-                    val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
-                    CatalogHttpResponse(
-                        statusCode = resp.code,
-                        bodyBytes = bytes,
-                        finalUrl = resp.url,
-                    )
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (se: SecurityException) {
-                    throw se
-                } catch (_: Throwable) {
-                    null
-                }
-            }
-            if (niceResp != null) {
-                return@withContext if (niceResp.isSuccess) {
-                    Result.success(niceResp)
-                } else {
-                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} POST JSON $cleanUrl"))
-                }
-            }
-
-            val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
-            if (remainingMs < 400L) {
-                return@withContext Result.failure(
-                    SocketTimeoutException("Catalog POST JSON budget exhausted (${effectiveBudgetMs}ms) for $cleanUrl")
-                )
-            }
-
-            val payload = jsonBody.toByteArray(StandardCharsets.UTF_8)
-            val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                instanceFollowRedirects = false
-                doOutput = true
-                connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
-            }
-            try {
-                conn.outputStream.use { it.write(payload) }
-                val code = conn.responseCode
-                val bytes = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                    ?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
-                if (code !in 200..299 || bytes.isEmpty()) {
-                    return@withContext Result.failure(IllegalStateException("HTTP $code POST JSON $cleanUrl"))
-                }
-                Result.success(CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = conn.url?.toString() ?: cleanUrl))
-            } finally {
-                conn.disconnect()
-            }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            Result.failure(t)
-        }
+        val body = jsonBody.toRequestBody(contentTypeHeader.toMediaType())
+        return executeRequest(
+            initialUrl = url,
+            initialMethod = "POST",
+            initialBody = body,
+            initialHeaders = reqHeaders,
+            timeoutMs = timeoutMs,
+        )
     }
 
     private fun readBoundedStream(stream: InputStream, deadlineNs: Long): ByteArray {

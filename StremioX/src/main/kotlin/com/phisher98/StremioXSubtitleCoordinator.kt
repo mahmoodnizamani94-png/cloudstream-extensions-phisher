@@ -110,17 +110,17 @@ internal object StremioXSubtitleCoordinator {
         mediaType: String? = null,
         streamId: String? = null,
     ): MediaLookupSpec {
-        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
-        val cleanTmdb = tmdbId?.takeIf { it > 0 }
-        val titles = listOfNotNull(title?.trim()?.takeIf { it.isNotBlank() })
-        val expectedDurationMs = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
-
         val idParts = streamId?.trim()?.takeIf { it.isNotEmpty() }?.split(':')
         val headToken = idParts?.firstOrNull().orEmpty()
         val headLower = headToken.lowercase(Locale.ROOT)
         val isImdbHead = headLower.length > 2 &&
             headLower.startsWith("tt") &&
             headLower.substring(2).all { it.isDigit() }
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+            ?: headToken.takeIf { isImdbHead }
+        val cleanTmdb = tmdbId?.takeIf { it > 0 }
+        val titles = listOfNotNull(title?.trim()?.takeIf { it.isNotBlank() })
+        val expectedDurationMs = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
         val isBareNumericHead = headToken.isNotEmpty() && headToken.all { it.isDigit() }
         val entityTokenCount = if (isImdbHead || isBareNumericHead) 1 else 2
         val parsedSeasonFromId = if (idParts != null && idParts.size >= entityTokenCount + 2) {
@@ -220,6 +220,41 @@ internal object StremioXSubtitleCoordinator {
         }
     }
 
+    internal data class ProviderDispatchPlan(
+        val imdbId: String?,
+        val season: Int?,
+        val episode: Int?,
+        val invokeImdbProviders: Boolean,
+    )
+
+    internal fun resolveProviderDispatchPlan(
+        lookupSpec: MediaLookupSpec,
+        imdbId: String?,
+        season: Int?,
+        episode: Int?,
+    ): ProviderDispatchPlan {
+        val verifiedCoord =
+            (lookupSpec as? MediaLookupSpec.Episode)?.coordinate as? EpisodeCoordinate.VerifiedSeasonEpisode
+        val effectiveSeason = season?.takeIf { it >= 0 } ?: verifiedCoord?.season
+        val effectiveEpisode = episode?.takeIf { it > 0 } ?: verifiedCoord?.episode
+        val effectiveImdbId = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+            ?: when (lookupSpec) {
+                is MediaLookupSpec.Episode -> lookupSpec.imdbId
+                is MediaLookupSpec.Movie -> lookupSpec.imdbId
+            }
+        val invokeImdbProviders =
+            !effectiveImdbId.isNullOrBlank() && (
+                lookupSpec is MediaLookupSpec.Movie ||
+                    (effectiveSeason != null && effectiveEpisode != null)
+                )
+        return ProviderDispatchPlan(
+            imdbId = effectiveImdbId,
+            season = effectiveSeason,
+            episode = effectiveEpisode,
+            invokeImdbProviders = invokeImdbProviders,
+        )
+    }
+
     fun startPlaybackSession(
         lookupSpec: MediaLookupSpec,
         imdbId: String?,
@@ -282,25 +317,40 @@ internal object StremioXSubtitleCoordinator {
             forwardSidecar(rawSub, CatalogueSourceKey.STREMIO.wireId)
         }
 
+        val dispatchPlan = resolveProviderDispatchPlan(
+            lookupSpec = lookupSpec,
+            imdbId = imdbId,
+            season = season,
+            episode = episode,
+        )
+
         launchOn(playbackScope) {
             val catalogJob = launchOn(playbackScope) {
                 session.discoverAndIngestCatalog()
             }
-            val watchSoMuchJob = launchOn(playbackScope) {
-                invokeWatchsomuch(imdbId, season, episode) { rawSub ->
-                    forwardSidecar(rawSub, CatalogueSourceKey.WATCHSOMUCH.wireId)
+            val watchSoMuchJob = if (dispatchPlan.invokeImdbProviders) {
+                launchOn(playbackScope) {
+                    invokeWatchsomuch(dispatchPlan.imdbId, dispatchPlan.season, dispatchPlan.episode) { rawSub ->
+                        forwardSidecar(rawSub, CatalogueSourceKey.WATCHSOMUCH.wireId)
+                    }
                 }
+            } else {
+                null
             }
-            val openSubsJob = launchOn(playbackScope) {
-                invokeOpenSubs(imdbId, season, episode) { rawSub ->
-                    forwardSidecar(rawSub, CatalogueSourceKey.OPENSUBTITLES.wireId)
+            val openSubsJob = if (dispatchPlan.invokeImdbProviders) {
+                launchOn(playbackScope) {
+                    invokeOpenSubs(dispatchPlan.imdbId, dispatchPlan.season, dispatchPlan.episode) { rawSub ->
+                        forwardSidecar(rawSub, CatalogueSourceKey.OPENSUBTITLES.wireId)
+                    }
                 }
+            } else {
+                null
             }
 
             try {
                 videoExtractionDone.await()
-                watchSoMuchJob.join()
-                openSubsJob.join()
+                watchSoMuchJob?.join()
+                openSubsJob?.join()
                 var guard = 0
                 while (guard < 12) {
                     val pending = sidecarIngestJobs.filter { !it.isCompleted }
