@@ -116,13 +116,25 @@ internal object StremioXSubtitleCoordinator {
         val expectedDurationMs = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
 
         val idParts = streamId?.trim()?.takeIf { it.isNotEmpty() }?.split(':')
-        val parsedSeasonFromId = if (idParts != null && idParts.size >= 3) idParts[idParts.size - 2].toIntOrNull() else null
-        val parsedEpisodeFromId = if (idParts != null && idParts.size >= 2) {
+        val headToken = idParts?.firstOrNull().orEmpty()
+        val headLower = headToken.lowercase(Locale.ROOT)
+        val isImdbHead = headLower.length > 2 &&
+            headLower.startsWith("tt") &&
+            headLower.substring(2).all { it.isDigit() }
+        val isBareNumericHead = headToken.isNotEmpty() && headToken.all { it.isDigit() }
+        val entityTokenCount = if (isImdbHead || isBareNumericHead) 1 else 2
+        val parsedSeasonFromId = if (idParts != null && idParts.size >= entityTokenCount + 2) {
+            idParts[idParts.size - 2].toIntOrNull()?.takeIf { it >= 0 }
+        } else {
+            null
+        }
+        val parsedEpisodeFromId = if (idParts != null && idParts.size >= entityTokenCount + 1) {
             idParts.last().toIntOrNull()?.takeIf { it > 0 }
         } else {
             null
         }
-        val effectiveSeason = season?.takeIf { it >= 0 } ?: parsedSeasonFromId?.takeIf { it >= 0 }
+        val effectiveIsAnime = isAnime || headLower in ANIME_ID_PREFIXES
+        val effectiveSeason = season?.takeIf { it >= 0 } ?: parsedSeasonFromId
         val effectiveEpisode = episode?.takeIf { it > 0 } ?: parsedEpisodeFromId
 
         val hasExplicitSeason = effectiveSeason != null
@@ -140,7 +152,7 @@ internal object StremioXSubtitleCoordinator {
                 titles = titles,
                 releaseYear = year ?: seriesYear,
                 expectedDurationMs = expectedDurationMs,
-                isAnime = isAnime,
+                isAnime = effectiveIsAnime,
             )
         } else {
             val coordinate = when {
@@ -148,7 +160,7 @@ internal object StremioXSubtitleCoordinator {
                     season = effectiveSeason,
                     episode = effectiveEpisode,
                 )
-                isAnime -> EpisodeCoordinate.UnverifiedAnimeCour(
+                effectiveIsAnime -> EpisodeCoordinate.UnverifiedAnimeCour(
                     courTitles = titles.ifEmpty { listOf("Anime") },
                     episodeInCour = effectiveEpisode ?: 1,
                 )
@@ -164,10 +176,12 @@ internal object StremioXSubtitleCoordinator {
                 seriesPremiereYear = seriesYear ?: year,
                 seasonAirYear = year ?: seriesYear,
                 expectedDurationMs = expectedDurationMs,
-                isAnime = isAnime,
+                isAnime = effectiveIsAnime,
             )
         }
     }
+
+    private val ANIME_ID_PREFIXES = setOf("kitsu", "anilist", "mal", "anidb")
 
     fun prewarmAsync(
         lookupSpec: MediaLookupSpec,

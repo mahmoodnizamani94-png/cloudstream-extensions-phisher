@@ -1086,5 +1086,68 @@ class Pr21ReviewFixesTest {
         assertFalse("Compact lexical rewrite must not convert 1st-person plural into 2nd-person imperative: $captured", captured.contains("نکلو"))
         assertTrue("Expected obligation rewrite 'یہاں سے نکلنا ہے' in: $captured", captured.contains("یہاں سے نکلنا ہے"))
     }
+
+    @Test
+    fun mirrorReplacementDuringTranslationPreservesBufferIdentityAndCommitsWinner() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-mirror-inflight").toFile()
+        val prevProp = System.getProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT)
+        System.setProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT, "true")
+        try {
+            val emitted = CopyOnWriteArrayList<SubtitleFile>()
+            val inTranslate = CompletableDeferred<Unit>()
+            val allowFinish = CompletableDeferred<Unit>()
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(imdbId = "tt9600001", tmdbId = null, titles = listOf("Mirror Replace"), releaseYear = 2024),
+                mode = SessionSubtitleMode.URDU,
+                casStore = UrduCasStore(tempRoot),
+                httpTransport = DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+                targetUrduDiversityCount = 1,
+                progressiveBilingualMode = true,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    inTranslate.complete(Unit)
+                    allowFinish.await()
+                    val m = window.targetCues.associate { it.id to BolChalCueOut(it.id, "یہ اردو ترجمہ ہے نمبر ${it.id.value}") }
+                    Result.success(m to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                },
+                subtitleCallback = { emitted.add(it) },
+            )
+
+            val enSrt = makeEnglishSrt(25, startSec = 10, stepSec = 4)
+            // 1. Ingest lower-tier mirror (SubtitleCat, non-orig tier 1)
+            val lowMirror = newSubtitleFile("English [SubtitleCat]", "https://example.invalid/mirror_subcat-en.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.SUBTITLECAT))
+            }
+            session.ingestRawSubtitle(lowMirror, rawBytesOverride = enSrt.toByteArray())
+
+            // 2. Start translation and pause before window 0 finishes
+            val completeJob = async { session.completeSession() }
+            inTranslate.await()
+
+            // 3. Ingest higher-ranked mirror (Wyzie, tier 2) with identical cues while translation is running
+            val highMirror = newSubtitleFile("English [Wyzie]", "https://example.invalid/mirror_wyzie.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.WYZIE))
+            }
+            session.ingestRawSubtitle(highMirror, rawBytesOverride = enSrt.toByteArray())
+            allowFinish.complete(Unit)
+
+            val report = withTimeout(5_000L) { completeJob.await() }
+            assertEquals("Replaced mirror donor must still count as 1 entry", 1, session.rankedEnglishDonorsSnapshot().size)
+            assertTrue(
+                "Window-0 Instant track must NOT be dropped after mirror replacement",
+                emitted.any { it.headers?.get(ProvenanceCodec.HEADER_PROGRESSIVE) == "window0" },
+            )
+            assertEquals("Final localized Urdu track must still commit", 1, report.emittedUrduCandidates.size)
+            assertEquals(
+                "Committed localization must attribute the winning higher-ranked mirror",
+                DonorProvenance.CatalogueDonor(CatalogueSourceKey.WYZIE),
+                report.localizedDonorUsed,
+            )
+        } finally {
+            if (prevProp == null) System.clearProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT)
+            else System.setProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT, prevProp)
+            tempRoot.deleteRecursively()
+        }
+    }
 }
 

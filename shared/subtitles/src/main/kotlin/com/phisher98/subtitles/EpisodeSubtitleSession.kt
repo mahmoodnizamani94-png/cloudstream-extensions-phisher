@@ -1112,6 +1112,7 @@ class EpisodeSubtitleSession(
             if (!emittedProgressiveWindowZero.compareAndSet(false, true)) return@withLock
             progressiveOwnerDonorId.compareAndSet(-1L, donorBufferId)
             val currentAlignment = currentDonor.alignment
+            val effectiveDonor = currentDonor.donor
             val exactStreamDurationMs = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
             val stored = casStore.writeAlignedSubtitle(
                 doc = partialDoc,
@@ -1122,7 +1123,7 @@ class EpisodeSubtitleSession(
             )
             storedCasOutputs.add(stored)
             val prov = ProvenanceIdentity.BolChalTranslated(
-                donor = donor,
+                donor = effectiveDonor,
                 engine = LocalizationTierKey.KEYLESS_BOLCHAL_NMT,
                 editionTag = "instant",
             )
@@ -1135,7 +1136,7 @@ class EpisodeSubtitleSession(
             )
             headers[ProvenanceCodec.HEADER_PROGRESSIVE] = "window0"
             subtitleCallback(
-                newSubtitleFile("Urdu [${donor.displayBadge} · Instant]", stored.fileUri) {
+                newSubtitleFile("Urdu [${effectiveDonor.displayBadge} · Instant]", stored.fileUri) {
                     this.headers = headers
                 }
             )
@@ -1147,8 +1148,8 @@ class EpisodeSubtitleSession(
         completedWindows: Int,
         totalWindows: Int,
         partialDoc: CueDocument,
-        donor: DonorProvenance,
-        alignment: AlignmentProof,
+        @Suppress("UNUSED_PARAMETER") donor: DonorProvenance,
+        @Suppress("UNUSED_PARAMETER") alignment: AlignmentProof,
         edition: BolChalEditionProfile,
     ) {
         if (!SubtitleModeBridge.isProgressiveVttEnabled() && !progressiveBilingualMode) return
@@ -1165,6 +1166,7 @@ class EpisodeSubtitleSession(
             if (!wantsUrduTracksOutput || admittedUrduTracks.isNotEmpty()) return@withLock
             val currentDonor = findBufferedEnglishDonorLocked(donorBufferId) ?: return@withLock
             val currentAlignment = currentDonor.alignment
+            val effectiveDonor = currentDonor.donor
             val exactStreamDurationMs = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
             val stored = casStore.writeAlignedSubtitle(
                 doc = partialDoc,
@@ -1175,7 +1177,7 @@ class EpisodeSubtitleSession(
             )
             storedCasOutputs.add(stored)
             val prov = ProvenanceIdentity.BolChalTranslated(
-                donor = donor,
+                donor = effectiveDonor,
                 engine = LocalizationTierKey.KEYLESS_BOLCHAL_NMT,
                 editionTag = "partial-$completedWindows",
             )
@@ -1189,7 +1191,7 @@ class EpisodeSubtitleSession(
             headers[ProvenanceCodec.HEADER_PROGRESSIVE] = "partial:$completedWindows/$totalWindows"
             subtitleCallback(
                 newSubtitleFile(
-                    "Urdu [${donor.displayBadge} · Instant $completedWindows/$totalWindows]",
+                    "Urdu [${effectiveDonor.displayBadge} · Instant $completedWindows/$totalWindows]",
                     stored.fileUri,
                 ) {
                     this.headers = headers
@@ -1266,8 +1268,11 @@ class EpisodeSubtitleSession(
                         )
                         return@fold false
                     }
-                    val refreshed = if (currentDonor.alignment != localized.alignment) {
-                        localized.copy(alignment = currentDonor.alignment)
+                    val refreshed = if (currentDonor.alignment != localized.alignment || currentDonor.donor != localized.donor) {
+                        localized.copy(
+                            alignment = currentDonor.alignment,
+                            donor = currentDonor.donor,
+                        )
                     } else {
                         localized
                     }
@@ -1487,8 +1492,11 @@ class EpisodeSubtitleSession(
                                 true
                             } else {
                                 fallbackLocalized = null
-                                val refreshed = if (currentDonor.alignment != localized.alignment) {
-                                    localized.copy(alignment = currentDonor.alignment)
+                                val refreshed = if (currentDonor.alignment != localized.alignment || currentDonor.donor != localized.donor) {
+                                    localized.copy(
+                                        alignment = currentDonor.alignment,
+                                        donor = currentDonor.donor,
+                                    )
                                 } else {
                                     localized
                                 }
@@ -1863,7 +1871,9 @@ class EpisodeSubtitleSession(
                     if (dupIdx < 0) {
                         englishDonors.add(candidateDonor)
                     } else if (englishDonorComparator().compare(candidateDonor, englishDonors[dupIdx]) < 0) {
-                        englishDonors[dupIdx] = candidateDonor
+                        englishDonors[dupIdx] = candidateDonor.copy(
+                            bufferEntryId = englishDonors[dupIdx].bufferEntryId,
+                        )
                     }
                 }
                 flushPendingUrduIfAnchorReadyLocked()
