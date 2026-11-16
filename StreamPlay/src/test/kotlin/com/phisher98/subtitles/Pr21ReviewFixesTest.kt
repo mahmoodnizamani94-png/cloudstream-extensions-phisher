@@ -613,4 +613,478 @@ class Pr21ReviewFixesTest {
         UrduSubtitleEngine.cancelPlayback(newerPlayback)
         assertFalse(newerPlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
     }
+
+    @Test
+    fun prewarmWindowZeroMatchesFullLocalizeKeyAndReusesCachedWindowZero() = runBlocking {
+        BolChalWindowCache.clearForTesting()
+        val tempRoot = Files.createTempDirectory("pr21-prewarm-w0").toFile()
+        try {
+            val casStore = UrduCasStore(rootDir = tempRoot)
+            val enSrt = makeEnglishSrt(45, startSec = 10, stepSec = 4, prefix = "Window zero parity line")
+            val parsedFull = CueDocument.parse(enSrt, SubtitleLanguage.ENGLISH).getOrThrow()
+
+            val transport = CatalogHttpTransport.fromGet { url, _ ->
+                when {
+                    url.contains("/search?") && url.contains("language=en") ->
+                        CatalogHttpResponse(
+                            200,
+                            """[{"url":"https://wyzie.mock/en0.srt","language":"en","release":"Parity.Movie.2024.1080p.WEB-DL"}]""".toByteArray(),
+                            url,
+                        )
+                    url == "https://wyzie.mock/en0.srt" ->
+                        CatalogHttpResponse(200, enSrt.toByteArray(), url)
+                    else -> CatalogHttpResponse(404, ByteArray(0), url)
+                }
+            }
+            val sources = SubtitleCatalogSources(
+                transport = transport,
+                apiKeys = CatalogApiKeys(wyzieApiKey = "test-wyzie-key"),
+            )
+            val spec = MediaLookupSpec.Movie(
+                imdbId = "tt9100001",
+                tmdbId = null,
+                titles = listOf("Parity Movie"),
+                releaseYear = 2024,
+            )
+
+            val seenWindowIndices = CopyOnWriteArrayList<Int>()
+            val countingBolChal = BolChalTranslationTransport { window, cfg ->
+                val cacheKey = BolChalWindowCache.buildWindowKey(window, cfg)
+                val expectedIds = window.targetCues.mapTo(HashSet(window.targetCues.size * 2)) { it.id }
+                BolChalWindowCache.getOrTranslateSingleFlight(cacheKey, expectedIds) {
+                    seenWindowIndices.add(window.windowIndex)
+                    val out = window.targetCues.associate { cue ->
+                        cue.id to BolChalCueOut(cue.id, "یہ ونڈو ${window.windowIndex} کی لائن ${cue.id.value} ہے۔")
+                    }
+                    Result.success(out to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                }
+            }
+
+            val bundle = casStore.prewarmSubtitlesAsync(
+                spec = spec,
+                catalogSources = sources,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = countingBolChal,
+                warmBolChalWindows = true,
+            )
+            assertEquals("Prewarm should warm only window 0", 1, bundle.prewarmedWindowCount)
+            assertEquals("Prewarm should invoke translation transport once for window 0", listOf(0), seenWindowIndices.toList())
+
+            seenWindowIndices.clear()
+            val fullRes = SceneBolChalLocalizer.localize(
+                englishDonorDoc = parsedFull,
+                donorProvenance = DonorProvenance.CatalogueDonor(CatalogueSourceKey.WYZIE),
+                alignmentProof = AlignmentProof(SubtitleTimeWarp.Identity, AlignmentAnchorKind.UNANCHORED, 0.8, 0, 0, 0),
+                config = BolChalConfig(maxConcurrentWindows = 1),
+                transport = countingBolChal,
+            )
+            assertTrue("Expected full localization to succeed, got ${fullRes.exceptionOrNull()}", fullRes.isSuccess)
+            assertFalse("Window 0 must be served from cache without re-translating", 0 in seenWindowIndices)
+            assertTrue("Expected remaining windows to be translated", seenWindowIndices.isNotEmpty())
+        } finally {
+            BolChalWindowCache.clearForTesting()
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun prewarmBundleAndPlaybackDiscoveryEnforceWantedLanguagesCoverage() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-lang-coverage").toFile()
+        try {
+            val casStore = UrduCasStore(rootDir = tempRoot)
+            val enSrt = makeEnglishSrt(10, startSec = 10, stepSec = 4, prefix = "Coverage dialogue")
+            val urSrt = makeUrduSrt(10, startSec = 10, stepSec = 4)
+            val specA = MediaLookupSpec.Movie(imdbId = "tt9200001", tmdbId = null, titles = listOf("Coverage A"), releaseYear = 2024)
+
+            val discoveryCalls = AtomicInteger(0)
+            val transport = CatalogHttpTransport.fromGet { url, _ ->
+                if (url.contains("/search?")) discoveryCalls.incrementAndGet()
+                when {
+                    url.contains("/search?") && url.contains("language=en") ->
+                        CatalogHttpResponse(
+                            200,
+                            """[{"url":"https://wyzie.mock/cov_en.srt","language":"en","release":"Coverage.A.2024.WEB-DL"}]""".toByteArray(),
+                            url,
+                        )
+                    url.contains("/search?") && url.contains("language=ur") ->
+                        CatalogHttpResponse(
+                            200,
+                            """[{"url":"https://wyzie.mock/cov_ur.srt","language":"ur","release":"Coverage.A.2024.WEB-DL"}]""".toByteArray(),
+                            url,
+                        )
+                    url == "https://wyzie.mock/cov_en.srt" -> CatalogHttpResponse(200, enSrt.toByteArray(), url)
+                    url == "https://wyzie.mock/cov_ur.srt" -> CatalogHttpResponse(200, urSrt.toByteArray(), url)
+                    else -> CatalogHttpResponse(404, ByteArray(0), url)
+                }
+            }
+            val sources = SubtitleCatalogSources(
+                transport = transport,
+                apiKeys = CatalogApiKeys(wyzieApiKey = "test-wyzie-key"),
+            )
+
+            // 1. Prewarm full bilingual bundle {URDU, ENGLISH}
+            val bilingualPrewarm = casStore.prewarmSubtitlesAsync(specA, sources, warmBolChalWindows = false)
+            assertEquals(setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH), bilingualPrewarm.wantedLanguages)
+
+            // 2. DEFAULT session {ENGLISH} consumes discovery without downgrading existing {URDU, ENGLISH} bundle
+            val defaultEmitted = CopyOnWriteArrayList<SubtitleFile>()
+            val defaultSession = EpisodeSubtitleSession(
+                lookupSpec = specA,
+                mode = SessionSubtitleMode.DEFAULT,
+                casStore = casStore,
+                catalogSources = sources,
+                subtitleCallback = { defaultEmitted.add(it) },
+            )
+            defaultSession.discoverAndIngestCatalog()
+            defaultSession.completeSession()
+            val afterDefault = casStore.getPrewarmedBundle(specA)
+            assertNotNull(afterDefault)
+            assertEquals(
+                "ENGLISH-only session must preserve broader {URDU, ENGLISH} prewarm bundle",
+                setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH),
+                afterDefault!!.wantedLanguages,
+            )
+
+            // 3. Narrow {ENGLISH}-only bundle must NOT satisfy an URDU session {URDU, ENGLISH}
+            val specB = MediaLookupSpec.Movie(imdbId = "tt9200002", tmdbId = null, titles = listOf("Coverage B"), releaseYear = 2024)
+            val candB = CatalogDiscoveredCandidate(
+                meta = CatalogueCandidateMeta(CatalogueSourceKey.WYZIE, SubtitleLanguage.ENGLISH, "Coverage.B.2024.WEB-DL"),
+                downloadUrl = "https://wyzie.mock/cov_en.srt",
+                preDownloadScore = 100,
+            )
+            casStore.rememberPlaybackDiscovery(
+                spec = specB,
+                discovery = CatalogDiscoveryResult(
+                    admittedCandidates = listOf(candB),
+                    rejectedPreDownload = emptyList(),
+                ),
+                decodedPayloads = mapOf(UrduCasStore.candidateCacheKey(candB) to enSrt),
+                wantedLanguages = setOf(SubtitleLanguage.ENGLISH),
+            )
+            val urduEmitted = CopyOnWriteArrayList<SubtitleFile>()
+            discoveryCalls.set(0)
+            val urduSession = EpisodeSubtitleSession(
+                lookupSpec = specB,
+                mode = SessionSubtitleMode.URDU,
+                casStore = casStore,
+                catalogSources = sources,
+                subtitleCallback = { urduEmitted.add(it) },
+            )
+            urduSession.discoverAndIngestCatalog()
+            urduSession.completeSession()
+            assertTrue("URDU session must query catalogs instead of reusing ENGLISH-only bundle", discoveryCalls.get() > 0)
+            assertTrue("URDU session must emit discovered Urdu track", urduEmitted.any { it.lang.startsWith("Urdu") })
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun discoverAndIngestCatalogHonorsEnglishMirrorCapAndUrduDonorLimit() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-quota-discovery").toFile()
+        try {
+            val casStore = UrduCasStore(rootDir = tempRoot)
+            val mirrorDialogue = makeEnglishSrt(10, startSec = 10, stepSec = 4, prefix = "Identical mirror text")
+            val unique1 = makeEnglishSrt(10, startSec = 10, stepSec = 4, prefix = "Unique alpha dialogue")
+            val unique2 = makeEnglishSrt(10, startSec = 10, stepSec = 4, prefix = "Unique beta dialogue")
+            val unique3 = makeEnglishSrt(10, startSec = 10, stepSec = 4, prefix = "Unique gamma dialogue")
+
+            val fetchedUrls = CopyOnWriteArrayList<String>()
+            val progWyzieJson = """
+                [
+                  {"url":"https://wyzie.mock/m1.srt","language":"en","release":"Quota.2024.1080p.WEB-DL.m1"},
+                  {"url":"https://wyzie.mock/m2.srt","language":"en","release":"Quota.2024.1080p.WEB-DL.m2"},
+                  {"url":"https://wyzie.mock/u1.srt","language":"en","release":"Quota.2024.720p.WEB-DL.u1"},
+                  {"url":"https://wyzie.mock/u2.srt","language":"en","release":"Quota.2024.720p.WEB-DL.u2"}
+                ]
+            """.trimIndent()
+            val progSubDlJson = """
+                {
+                  "status": true,
+                  "subtitles": [
+                    {"lang":"en","release_name":"Quota.2024.1080p.WEB-DL.m3","url":"https://wyzie.mock/m3.srt"},
+                    {"lang":"en","release_name":"Quota.2024.1080p.WEB-DL.m4","url":"https://wyzie.mock/m4.srt"},
+                    {"lang":"en","release_name":"Quota.2024.480p.HDRip.u3","url":"https://wyzie.mock/u3.srt"}
+                  ]
+                }
+            """.trimIndent()
+            val urduWyzieJson = buildString {
+                append("[")
+                for (i in 1..5) {
+                    if (i > 1) append(",")
+                    append("""{"url":"https://wyzie.mock/m$i.srt","language":"en","release":"Quota.2024.1080p.WEB-DL.m$i"}""")
+                }
+                append("]")
+            }
+            val urduSubDlJson = """
+                {
+                  "status": true,
+                  "subtitles": [
+                    {"lang":"en","release_name":"Quota.2024.1080p.WEB-DL.m6","url":"https://wyzie.mock/m6.srt"},
+                    {"lang":"en","release_name":"Quota.2024.720p.WEB-DL.u1","url":"https://wyzie.mock/u1.srt"},
+                    {"lang":"en","release_name":"Quota.2024.480p.HDRip.u2","url":"https://wyzie.mock/u2.srt"},
+                    {"lang":"en","release_name":"Quota.2024.480p.HDRip.u3","url":"https://wyzie.mock/u3.srt"}
+                  ]
+                }
+            """.trimIndent()
+            val transport = CatalogHttpTransport.fromGet { url, _ ->
+                fetchedUrls.add(url)
+                when {
+                    url.contains("subdl.com/api/v1/subtitles") && url.contains("tt9300001") -> {
+                        delay(120L)
+                        CatalogHttpResponse(200, progSubDlJson.toByteArray(), url)
+                    }
+                    url.contains("subdl.com/api/v1/subtitles") && url.contains("tt9300002") ->
+                        CatalogHttpResponse(200, urduSubDlJson.toByteArray(), url)
+                    url.contains("/search?") && url.contains("language=en") && url.contains("tt9300001") ->
+                        CatalogHttpResponse(200, progWyzieJson.toByteArray(), url)
+                    url.contains("/search?") && url.contains("language=en") && url.contains("tt9300002") ->
+                        CatalogHttpResponse(200, urduWyzieJson.toByteArray(), url)
+                    url.contains("/search?") -> CatalogHttpResponse(200, "[]".toByteArray(), url)
+                    url.startsWith("https://wyzie.mock/m") -> CatalogHttpResponse(200, mirrorDialogue.toByteArray(), url)
+                    url == "https://wyzie.mock/u1.srt" -> CatalogHttpResponse(200, unique1.toByteArray(), url)
+                    url == "https://wyzie.mock/u2.srt" -> CatalogHttpResponse(200, unique2.toByteArray(), url)
+                    url == "https://wyzie.mock/u3.srt" -> CatalogHttpResponse(200, unique3.toByteArray(), url)
+                    else -> CatalogHttpResponse(404, ByteArray(0), url)
+                }
+            }
+            val sources = SubtitleCatalogSources(
+                transport = transport,
+                apiKeys = CatalogApiKeys(wyzieApiKey = "test-wyzie-key", subDlApiKey = "test-subdl-key"),
+            )
+
+            // Part A: Progressive BILINGUAL_DOWNLOAD with targetEnglishCatalogCount = 3 stops at 3 unique (1 mirror + u1 + u2), NOT fetching u3
+            val emittedProg = CopyOnWriteArrayList<SubtitleFile>()
+            val specProg = MediaLookupSpec.Movie(imdbId = "tt9300001", tmdbId = null, titles = listOf("Quota Prog"), releaseYear = 2024)
+            val progSession = EpisodeSubtitleSession(
+                lookupSpec = specProg,
+                mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+                casStore = casStore,
+                catalogSources = sources,
+                targetUrduDiversityCount = 0,
+                targetEnglishCatalogCount = 3,
+                progressiveBilingualMode = true,
+                subtitleCallback = { emittedProg.add(it) },
+            )
+            progSession.discoverAndIngestCatalog(enabledSources = setOf(CatalogueSourceKey.WYZIE, CatalogueSourceKey.SUBDL))
+            progSession.completeSession()
+            assertEquals("Expected exactly 3 unique English tracks", 3, emittedProg.count { it.lang.startsWith("English") })
+            assertFalse("u3 should not be fetched after reaching 3 unique English tracks", "https://wyzie.mock/u3.srt" in fetchedUrls)
+
+            // Part B: Non-progressive URDU mode caps distinct non-fallback catalogue donors at 2 without stacking mirror duplicates
+            fetchedUrls.clear()
+            val emittedUrdu = CopyOnWriteArrayList<SubtitleFile>()
+            val specUrdu = MediaLookupSpec.Movie(imdbId = "tt9300002", tmdbId = null, titles = listOf("Quota Urdu"), releaseYear = 2024)
+            val urduSession = EpisodeSubtitleSession(
+                lookupSpec = specUrdu,
+                mode = SessionSubtitleMode.URDU,
+                casStore = casStore,
+                catalogSources = sources,
+                targetUrduDiversityCount = 1,
+                progressiveBilingualMode = false,
+                subtitleCallback = { emittedUrdu.add(it) },
+            )
+            urduSession.discoverAndIngestCatalog(enabledSources = setOf(CatalogueSourceKey.WYZIE, CatalogueSourceKey.SUBDL))
+            val donors = urduSession.rankedEnglishDonorsSnapshot()
+            assertEquals("Non-progressive URDU mode must cap catalogue donors at 2 distinct entries (got ${donors.size})", 2, donors.size)
+            assertFalse("u2 should not be fetched after 2 distinct donors (mirror group + u1)", "https://wyzie.mock/u2.srt" in fetchedUrls)
+            assertFalse("u3 should not be fetched in URDU mode", "https://wyzie.mock/u3.srt" in fetchedUrls)
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun evictedCatalogueDonorRejectsWindowZeroProgressiveEmission() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-w0-evict").toFile()
+        val prevProp = System.getProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT)
+        System.setProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT, "true")
+        try {
+            val emitted = CopyOnWriteArrayList<SubtitleFile>()
+            val inTranslate = CompletableDeferred<Unit>()
+            val allowFinish = CompletableDeferred<Unit>()
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(imdbId = "tt9400001", tmdbId = null, titles = listOf("W0 Evict"), releaseYear = 2024),
+                mode = SessionSubtitleMode.URDU,
+                casStore = UrduCasStore(tempRoot),
+                httpTransport = DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+                multiProviderVideoSession = false,
+                progressiveBilingualMode = true,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    inTranslate.complete(Unit)
+                    allowFinish.await()
+                    val m = window.targetCues.associate { it.id to BolChalCueOut(it.id, "یہ اردو ترجمہ ہے نمبر ${it.id.value}") }
+                    Result.success(m to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                },
+                subtitleCallback = { emitted.add(it) },
+            )
+
+            val enSrt = makeEnglishSrt(25, startSec = 10, stepSec = 4)
+            val catDonor = newSubtitleFile("English [Wyzie]", "https://example.invalid/cat_w0.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.WYZIE))
+            }
+            session.ingestRawSubtitle(catDonor, rawBytesOverride = enSrt.toByteArray())
+
+            val completeJob = async { session.completeSession() }
+            inTranslate.await()
+
+            // Evict the buffered CatalogueDonor via mismatched speech timeline BEFORE window-0 finishes
+            val farTimeline = SpeechActivityTimeline(
+                speechSpans = (0 until 10).map { i -> SpeechSpan(1_800_000L + i * 4_000L, 1_802_000L + i * 4_000L, 1.0f) },
+                observedWindows = listOf(ObservedWindow(1_790_000L, 1_900_000L)),
+                mediaDurationMs = 2_000_000L,
+            )
+            session.attachSpeechTimeline(farTimeline)
+            allowFinish.complete(Unit)
+
+            val report = withTimeout(5_000L) { completeJob.await() }
+            assertTrue("Evicted donor must NOT emit any window-0 or final Urdu callback", emitted.none { it.lang.startsWith("Urdu") })
+            assertTrue("Evicted donor must NOT admit any Urdu candidate", report.emittedUrduCandidates.isEmpty())
+        } finally {
+            if (prevProp == null) System.clearProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT)
+            else System.setProperty(SubtitleModeBridge.PROP_PROGRESSIVE_VTT, prevProp)
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun redirectStripsCredentialHeadersAcrossOriginsPreservesSameOrigin() = runBlocking {
+        val sameHostCaptured = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val crossOriginGetCaptured = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val crossOriginPostCaptured = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        val serverB = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+        serverB.createContext("/final-get") { ex ->
+            ex.requestHeaders.forEach { (k, v) -> crossOriginGetCaptured[k.lowercase()] = v.firstOrNull().orEmpty() }
+            val body = "cross-get-ok".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        serverB.createContext("/final-post") { ex ->
+            ex.requestHeaders.forEach { (k, v) -> crossOriginPostCaptured[k.lowercase()] = v.firstOrNull().orEmpty() }
+            val body = "cross-post-ok".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        serverB.start()
+
+        val serverA = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+        val portB = serverB.address.port
+        serverA.createContext("/same") { ex ->
+            val portA = serverA.address.port
+            ex.responseHeaders.add("Location", "http://127.0.0.1:$portA/same-final")
+            ex.sendResponseHeaders(302, -1)
+            ex.close()
+        }
+        serverA.createContext("/same-final") { ex ->
+            ex.requestHeaders.forEach { (k, v) -> sameHostCaptured[k.lowercase()] = v.firstOrNull().orEmpty() }
+            val body = "same-ok".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        serverA.createContext("/cross-get") { ex ->
+            ex.responseHeaders.add("Location", "http://127.0.0.1:$portB/final-get")
+            ex.sendResponseHeaders(302, -1)
+            ex.close()
+        }
+        serverA.createContext("/cross-post") { ex ->
+            ex.responseHeaders.add("Location", "http://127.0.0.1:$portB/final-post")
+            ex.sendResponseHeaders(302, -1)
+            ex.close()
+        }
+        serverA.start()
+
+        try {
+            val portA = serverA.address.port
+            val transport = DefaultCatalogHttpTransport(allowPrivateNetworks = true)
+            val headers = mapOf(
+                "X-API-Key" to "api-secret-1",
+                "api-key" to "api-secret-2",
+                "Authorization" to "Bearer secret-tok",
+                "Cookie" to "session=abc",
+                "User-Agent" to "Pr21RedirectTest/1.0",
+            )
+
+            val sameRes = transport.get("http://127.0.0.1:$portA/same", headers)
+            assertTrue(sameRes.isSuccess)
+            assertEquals("api-secret-1", sameHostCaptured["x-api-key"])
+            assertEquals("Bearer secret-tok", sameHostCaptured["authorization"])
+            assertEquals("session=abc", sameHostCaptured["cookie"])
+
+            val crossGetRes = transport.get("http://127.0.0.1:$portA/cross-get", headers)
+            assertTrue(crossGetRes.isSuccess)
+            assertNull("X-API-Key must be stripped on cross-origin GET redirect", crossOriginGetCaptured["x-api-key"])
+            assertNull("api-key must be stripped on cross-origin GET redirect", crossOriginGetCaptured["api-key"])
+            assertNull("Authorization must be stripped on cross-origin GET redirect", crossOriginGetCaptured["authorization"])
+            assertNull("Cookie must be stripped on cross-origin GET redirect", crossOriginGetCaptured["cookie"])
+            assertEquals("Pr21RedirectTest/1.0", crossOriginGetCaptured["user-agent"])
+
+            val crossPostRes = transport.postForm("http://127.0.0.1:$portA/cross-post", mapOf("k" to "v"), headers)
+            assertTrue(crossPostRes.isSuccess)
+            assertNull("X-API-Key must be stripped on cross-origin POST redirect", crossOriginPostCaptured["x-api-key"])
+            assertNull("api-key must be stripped on cross-origin POST redirect", crossOriginPostCaptured["api-key"])
+            assertNull("Authorization must be stripped on cross-origin POST redirect", crossOriginPostCaptured["authorization"])
+            assertNull("Cookie must be stripped on cross-origin POST redirect", crossOriginPostCaptured["cookie"])
+        } finally {
+            serverA.stop(0)
+            serverB.stop(0)
+        }
+    }
+
+    @Test
+    fun corruptSidecarReturnsArchiveDecodeFailedWhileBadSmtReturnsWrongScriptOrBrokenSmt() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-decode-class").toFile()
+        try {
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(imdbId = "tt9500001", tmdbId = null, titles = listOf("Decode Class"), releaseYear = 2024),
+                mode = SessionSubtitleMode.URDU,
+                casStore = UrduCasStore(tempRoot),
+                subtitleCallback = {},
+            )
+            val corruptZip = newSubtitleFile("English", "https://example.invalid/bad.zip")
+            val decodeOutcome = session.ingestRawSubtitle(corruptZip, rawBytesOverride = byteArrayOf(0x50, 0x4B, 0x03, 0x04, 1, 2, 3))
+            assertTrue(
+                "Corrupt archive must return Rejected.ArchiveDecodeFailed, got $decodeOutcome",
+                decodeOutcome is VerifiedSubtitleCandidate.Rejected.ArchiveDecodeFailed,
+            )
+
+            val brokenUrdu = newSubtitleFile("Urdu", "https://example.invalid/bad_ur.srt")
+            val validBytes = makeEnglishSrt(10, prefix = "Not Urdu at all").toByteArray()
+            val smtOutcome = session.ingestRawSubtitle(brokenUrdu, rawBytesOverride = validBytes)
+            assertTrue(
+                "Non-Urdu text under Urdu label must return Rejected.WrongScriptOrBrokenSmt, got $smtOutcome",
+                smtOutcome is VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt,
+            )
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun compactRewritePreservesFirstPersonPluralMeaning() {
+        val doc = CueDocument.fromCues(
+            SubtitleLanguage.ENGLISH,
+            listOf(CueEntry(CueId(1), CueSpan(10_000L, 12_500L), "We have to get out of here right now.")),
+        )
+        var captured = ""
+        runBlocking {
+            val localized = SceneBolChalLocalizer.localize(
+                englishDonorDoc = doc,
+                donorProvenance = DonorProvenance.CatalogueDonor(CatalogueSourceKey.WYZIE),
+                alignmentProof = AlignmentProof(SubtitleTimeWarp.Identity, AlignmentAnchorKind.UNANCHORED, 0.8, 0, 0, 0),
+                config = BolChalConfig(editionProfile = BolChalEditionProfile.COMPACT_FAST),
+                transport = { window, _ ->
+                    Result.success(
+                        window.targetCues.associate { it.id to BolChalCueOut(it.id, "ہمیں یہاں سے نکلنا ہو گا فوراً") } to
+                            LocalizationTierKey.KEYLESS_BOLCHAL_NMT
+                    )
+                },
+            ).getOrThrow()
+            captured = localized.document.cues.single().text
+        }
+        assertFalse("Compact lexical rewrite must not convert 1st-person plural into 2nd-person imperative: $captured", captured.contains("نکلو"))
+        assertTrue("Expected obligation rewrite 'یہاں سے نکلنا ہے' in: $captured", captured.contains("یہاں سے نکلنا ہے"))
+    }
 }
+

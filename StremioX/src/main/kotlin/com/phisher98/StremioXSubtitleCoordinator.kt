@@ -20,6 +20,7 @@ import com.phisher98.subtitles.SessionSubtitleMode
 import com.phisher98.subtitles.SubtitleCatalogSources
 import com.phisher98.subtitles.SubtitleModeBridge
 import com.phisher98.subtitles.UrduCasStore
+import com.phisher98.subtitles.VerifiedSubtitleCandidate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -107,14 +108,25 @@ internal object StremioXSubtitleCoordinator {
         isAnime: Boolean = false,
         seriesYear: Int? = null,
         mediaType: String? = null,
+        streamId: String? = null,
     ): MediaLookupSpec {
         val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
         val cleanTmdb = tmdbId?.takeIf { it > 0 }
         val titles = listOfNotNull(title?.trim()?.takeIf { it.isNotBlank() })
         val expectedDurationMs = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
 
-        val hasExplicitSeason = season != null && season >= 0
-        val hasEpisodeNumber = episode != null && episode > 0
+        val idParts = streamId?.trim()?.takeIf { it.isNotEmpty() }?.split(':')
+        val parsedSeasonFromId = if (idParts != null && idParts.size >= 3) idParts[idParts.size - 2].toIntOrNull() else null
+        val parsedEpisodeFromId = if (idParts != null && idParts.size >= 2) {
+            idParts.last().toIntOrNull()?.takeIf { it > 0 }
+        } else {
+            null
+        }
+        val effectiveSeason = season?.takeIf { it >= 0 } ?: parsedSeasonFromId?.takeIf { it >= 0 }
+        val effectiveEpisode = episode?.takeIf { it > 0 } ?: parsedEpisodeFromId
+
+        val hasExplicitSeason = effectiveSeason != null
+        val hasEpisodeNumber = effectiveEpisode != null
         val isTvType = mediaType.equals("series", ignoreCase = true) ||
             mediaType.equals("tv", ignoreCase = true) ||
             mediaType.equals("anime", ignoreCase = true)
@@ -131,18 +143,17 @@ internal object StremioXSubtitleCoordinator {
                 isAnime = isAnime,
             )
         } else {
-            val resolvedEpisode = (episode ?: 1).coerceAtLeast(1)
             val coordinate = when {
-                hasExplicitSeason -> EpisodeCoordinate.VerifiedSeasonEpisode(
-                    season = season!!,
-                    episode = resolvedEpisode,
+                hasExplicitSeason && hasEpisodeNumber -> EpisodeCoordinate.VerifiedSeasonEpisode(
+                    season = effectiveSeason,
+                    episode = effectiveEpisode,
                 )
                 isAnime -> EpisodeCoordinate.UnverifiedAnimeCour(
                     courTitles = titles.ifEmpty { listOf("Anime") },
-                    episodeInCour = resolvedEpisode,
+                    episodeInCour = effectiveEpisode ?: 1,
                 )
                 else -> EpisodeCoordinate.UnverifiedEpisodeOnly(
-                    episode = resolvedEpisode,
+                    episode = effectiveEpisode ?: 1,
                 )
             }
             MediaLookupSpec.Episode(
@@ -237,18 +248,24 @@ internal object StremioXSubtitleCoordinator {
         val playbackScope = openPlaybackScope(
             isDownloadRequest = sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD,
         )
-        val sidecarIngestCallback: (SubtitleFile) -> Unit = { rawSub ->
+        fun forwardSidecar(rawSub: SubtitleFile, sourceHint: String) {
             if (EpisodeSubtitleSession.classifySidecarLanguageOrNull(rawSub) == null) {
                 emitHostSubtitle(rawSub)
             } else {
                 val job = launchOn(playbackScope) {
-                    session.ingestRawSubtitle(
+                    val outcome = session.ingestRawSubtitle(
                         sub = rawSub,
-                        rawSourceHint = CatalogueSourceKey.STREMIO.wireId,
+                        rawSourceHint = sourceHint,
                     )
+                    if (outcome == null || outcome is VerifiedSubtitleCandidate.Rejected.ArchiveDecodeFailed) {
+                        emitHostSubtitle(rawSub)
+                    }
                 }
                 sidecarIngestJobs.add(job)
             }
+        }
+        val sidecarIngestCallback: (SubtitleFile) -> Unit = { rawSub ->
+            forwardSidecar(rawSub, CatalogueSourceKey.STREMIO.wireId)
         }
 
         launchOn(playbackScope) {
@@ -257,32 +274,12 @@ internal object StremioXSubtitleCoordinator {
             }
             val watchSoMuchJob = launchOn(playbackScope) {
                 invokeWatchsomuch(imdbId, season, episode) { rawSub ->
-                    if (EpisodeSubtitleSession.classifySidecarLanguageOrNull(rawSub) == null) {
-                        emitHostSubtitle(rawSub)
-                    } else {
-                        val job = launchOn(playbackScope) {
-                            session.ingestRawSubtitle(
-                                sub = rawSub,
-                                rawSourceHint = CatalogueSourceKey.WATCHSOMUCH.wireId,
-                            )
-                        }
-                        sidecarIngestJobs.add(job)
-                    }
+                    forwardSidecar(rawSub, CatalogueSourceKey.WATCHSOMUCH.wireId)
                 }
             }
             val openSubsJob = launchOn(playbackScope) {
                 invokeOpenSubs(imdbId, season, episode) { rawSub ->
-                    if (EpisodeSubtitleSession.classifySidecarLanguageOrNull(rawSub) == null) {
-                        emitHostSubtitle(rawSub)
-                    } else {
-                        val job = launchOn(playbackScope) {
-                            session.ingestRawSubtitle(
-                                sub = rawSub,
-                                rawSourceHint = CatalogueSourceKey.OPENSUBTITLES.wireId,
-                            )
-                        }
-                        sidecarIngestJobs.add(job)
-                    }
+                    forwardSidecar(rawSub, CatalogueSourceKey.OPENSUBTITLES.wireId)
                 }
             }
 
@@ -303,6 +300,8 @@ internal object StremioXSubtitleCoordinator {
                 throw e
             } catch (_: Throwable) {
             }
+        }.invokeOnCompletion {
+            cancelPlayback(playbackScope)
         }
 
         return sidecarIngestCallback

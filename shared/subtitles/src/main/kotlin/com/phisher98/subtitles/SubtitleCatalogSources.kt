@@ -218,6 +218,22 @@ class DefaultCatalogHttpTransport(
         return validateDestinationUrl(next)
     }
 
+    private fun headersForRedirect(
+        currentUrl: String,
+        nextUrl: String,
+        currentHeaders: Map<String, String>,
+    ): Map<String, String> {
+        val cur = URI(currentUrl)
+        val nxt = URI(nextUrl)
+        val curPort = if (cur.port != -1) cur.port else if (cur.scheme.equals("https", true)) 443 else 80
+        val nxtPort = if (nxt.port != -1) nxt.port else if (nxt.scheme.equals("https", true)) 443 else 80
+        val sameOrigin = cur.scheme.equals(nxt.scheme, ignoreCase = true) &&
+            cur.host.equals(nxt.host, ignoreCase = true) &&
+            curPort == nxtPort
+        if (sameOrigin) return currentHeaders
+        return currentHeaders.filterKeys { k -> k.lowercase(Locale.ROOT) !in CREDENTIAL_HEADER_NAMES }
+    }
+
     override suspend fun get(
         url: String,
         headers: Map<String, String>,
@@ -245,6 +261,7 @@ class DefaultCatalogHttpTransport(
             val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
                 try {
                     var currentUrl = initialUrl
+                    var hopHeaders: Map<String, String> = reqHeaders
                     var hops = 0
                     var finalNice: CatalogHttpResponse? = null
                     while (true) {
@@ -253,7 +270,7 @@ class DefaultCatalogHttpTransport(
                         val timeoutSec = ((remainingMs + 999L) / 1_000L).coerceAtLeast(1L)
                         val resp = app.get(
                             currentUrl,
-                            headers = reqHeaders,
+                            headers = hopHeaders,
                             timeout = timeoutSec,
                             allowRedirects = false,
                         )
@@ -263,7 +280,9 @@ class DefaultCatalogHttpTransport(
                                 finalNice = CatalogHttpResponse(resp.code, ByteArray(0), currentUrl)
                                 break
                             }
-                            currentUrl = resolveRedirectUrl(currentUrl, loc)
+                            val nextUrl = resolveRedirectUrl(currentUrl, loc)
+                            hopHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
+                            currentUrl = nextUrl
                             hops++
                             continue
                         }
@@ -298,6 +317,7 @@ class DefaultCatalogHttpTransport(
             }
 
             var currentUrl = initialUrl
+            var hopHeaders: Map<String, String> = reqHeaders
             var hops = 0
             while (true) {
                 val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
@@ -312,7 +332,7 @@ class DefaultCatalogHttpTransport(
                     instanceFollowRedirects = false
                     connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
                     readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                    reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+                    hopHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
                 }
                 try {
                     val code = conn.responseCode
@@ -323,7 +343,9 @@ class DefaultCatalogHttpTransport(
                                 IllegalStateException("Too many or empty redirects ($code) for $currentUrl")
                             )
                         }
-                        currentUrl = resolveRedirectUrl(currentUrl, loc)
+                        val nextUrl = resolveRedirectUrl(currentUrl, loc)
+                        hopHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
+                        currentUrl = nextUrl
                         hops++
                         continue
                     }
@@ -389,7 +411,8 @@ class DefaultCatalogHttpTransport(
                             return@withTimeoutOrNull CatalogHttpResponse(resp.code, ByteArray(0), cleanUrl)
                         }
                         val nextUrl = resolveRedirectUrl(cleanUrl, loc)
-                        val redir = app.get(nextUrl, headers = reqHeaders, timeout = timeoutSec, allowRedirects = false)
+                        val redirHeaders = headersForRedirect(cleanUrl, nextUrl, reqHeaders)
+                        val redir = app.get(nextUrl, headers = redirHeaders, timeout = timeoutSec, allowRedirects = false)
                         val bytes = redir.body.byteStream().use { readBoundedStream(it, deadlineNs) }
                         return@withTimeoutOrNull CatalogHttpResponse(redir.code, bytes, redir.url)
                     }
@@ -437,6 +460,15 @@ class DefaultCatalogHttpTransport(
             try {
                 conn.outputStream.use { it.write(formBody) }
                 val code = conn.responseCode
+                if (code in REDIRECT_STATUS_CODES) {
+                    val loc = conn.getHeaderField("Location")
+                    if (loc.isNullOrBlank()) {
+                        return@withContext Result.failure(IllegalStateException("HTTP $code POST $cleanUrl"))
+                    }
+                    val nextUrl = resolveRedirectUrl(cleanUrl, loc)
+                    val redirHeaders = headersForRedirect(cleanUrl, nextUrl, reqHeaders)
+                    return@withContext get(nextUrl, redirHeaders, ((deadlineNs - System.nanoTime()) / 1_000_000L).coerceAtLeast(250L))
+                }
                 val bytes = (if (code in 200..299) conn.inputStream else conn.errorStream)
                     ?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
                 if (code !in 200..299 || bytes.isEmpty()) {
@@ -576,6 +608,7 @@ class DefaultCatalogHttpTransport(
         const val DEFAULT_BROWSER_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         private val REDIRECT_STATUS_CODES = setOf(301, 302, 303, 307, 308)
+        private val CREDENTIAL_HEADER_NAMES = setOf("x-api-key", "api-key", "authorization", "proxy-authorization", "cookie")
         private const val MAX_REDIRECTS = 5
     }
 }

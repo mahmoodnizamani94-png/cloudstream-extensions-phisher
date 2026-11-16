@@ -369,7 +369,7 @@ object BolChalPurifier {
         Regex("""میں\s+(?:تمہیں|آپ\s+کو)\s+بتا\s+رہ[اےی]\s+ہوں\s+کہ\s*""") to "",
         Regex("""کیا\s+تم\s+جانتے\s+ہو\s+کہ\s*""") to "پتہ ہے ",
         Regex("""اس\s+وقت\s+""") to "ابھی ",
-        Regex("""ہمیں\s+یہاں\s+سے\s+نکلنا\s+ہو\s*گا""") to "یہاں سے نکلو",
+        Regex("""ہمیں\s+یہاں\s+سے\s+نکلنا\s+ہو\s*گا""") to "یہاں سے نکلنا ہے",
         Regex("""کوئی\s+بات\s+نہیں\s+ہے""") to "خیر ہے",
         Regex("""ٹھیک\s+ہے\s*[،,]\s*""") to "چلو، ",
         Regex("""میں\s+سمجھ\s+گیا\s+ہوں""") to "سمجھ گیا",
@@ -1597,6 +1597,28 @@ object SceneBolChalLocalizer {
             val code = ch.code
             code in 0x0600..0x06FF || code in 0x0750..0x077F || code in 0xFB50..0xFDFF || code in 0xFE70..0xFEFF
         }
+    }
+
+    suspend fun prewarmWindowZero(
+        englishDonorDoc: CueDocument,
+        config: BolChalConfig = BolChalConfig(),
+        transport: BolChalTranslationTransport = DefaultBolChalTranslationTransport(),
+        initialSpeakerCard: SpeakerContextCard = SpeakerContextCard(),
+    ): Boolean {
+        val sourceCues = normalizeDonorCues(englishDonorDoc)
+        if (sourceCues.isEmpty()) return false
+        val effectiveInitialCard = if (config.editionProfile == BolChalEditionProfile.ADABI_FORMAL) {
+            initialSpeakerCard.copy(dominantSceneRegister = AddressRegister.AAP)
+        } else {
+            initialSpeakerCard
+        }
+        val firstWindow = buildSceneWindows(
+            sourceCues = sourceCues,
+            useLlmWindowSizes = config.hasByokLlm,
+            sceneGapSplitMs = config.sceneGapSplitMs,
+            initialCard = effectiveInitialCard,
+        ).firstOrNull() ?: return false
+        return transport.translateWindow(firstWindow, config).isSuccess
     }
 
     suspend fun localize(

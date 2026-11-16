@@ -556,6 +556,8 @@ object UrduSubtitleEngine {
                 throw e
             } catch (_: Throwable) {
             }
+        }.invokeOnCompletion {
+            cancelPlayback(scope)
         }
     }
 

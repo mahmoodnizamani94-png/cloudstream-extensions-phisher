@@ -1134,6 +1134,7 @@ sealed interface VerifiedSubtitleCandidate {
         data class MtDump(val audit: MtAuditResult, val uploader: String? = null) : Rejected
         data class HearingImpaired(val matchedMarker: String) : Rejected
         data class WrongScriptOrBrokenSmt(val reason: String) : Rejected
+        data class ArchiveDecodeFailed(val reason: String) : Rejected
         data class BannedSourceOrUploader(val identifier: String) : Rejected
         data class EpisodeOrYearMismatch(val expected: String, val actualRelease: String) : Rejected
         data class SyncMismatch(val bestScore: Double, val residualMs: Int) : Rejected

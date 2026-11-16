@@ -389,10 +389,13 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                 emitHostSubtitle(rawSub)
             } else {
                 val job = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                    session.ingestRawSubtitle(
+                    val outcome = session.ingestRawSubtitle(
                         sub = rawSub,
                         rawSourceHint = sourceHint,
                     )
+                    if (outcome == null || outcome is com.phisher98.subtitles.VerifiedSubtitleCandidate.Rejected.ArchiveDecodeFailed) {
+                        emitHostSubtitle(rawSub)
+                    }
                 }
                 sidecarIngestJobs.add(job)
             }
@@ -464,6 +467,8 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                 throw e
             } catch (_: Throwable) {
             }
+        }.invokeOnCompletion {
+            StremioSubtitleCoordinator.cancelPlayback(playbackScope)
         }
 
         try {
