@@ -1,9 +1,14 @@
+@file:Suppress("UnstableApiUsage")
+
 import org.jetbrains.kotlin.konan.properties.Properties
 
 // use an integer for version numbers
 version = 26
 
 android {
+    sourceSets.named("main") {
+        kotlin.directories.add(rootProject.file("shared/subtitles/src/main/kotlin").path)
+    }
     buildFeatures {
         buildConfig = true
         viewBinding = true

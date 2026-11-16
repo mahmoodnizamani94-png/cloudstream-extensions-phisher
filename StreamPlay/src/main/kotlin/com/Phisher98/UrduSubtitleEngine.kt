@@ -29,15 +29,20 @@ import com.phisher98.subtitles.UrduCasStore
 import com.phisher98.subtitles.UrduOrthographyGate
 import com.phisher98.subtitles.UrduQualityGate
 import com.phisher98.subtitles.VerifiedSubtitleCandidate
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 object UrduSubtitleEngine {
 
@@ -49,7 +54,7 @@ object UrduSubtitleEngine {
     const val SUBTITLE_MODE_SYS_PROP = SubtitleModeBridge.PROP_SUBTITLE_MODE
     const val MODE_DEFAULT = "default"
     const val MODE_URDU = "urdu"
-    const val TARGET_URDU_SUBTITLE_SOURCES = 2
+    const val TARGET_URDU_SUBTITLE_SOURCES = 6
     const val TOTAL_URDU_SOTA_SOURCES = 8
 
     private const val PREWARM_COOLDOWN_MS = 10L * 60L * 1000L
@@ -108,6 +113,9 @@ object UrduSubtitleEngine {
 
     private val prewarmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val prewarmHistory = ConcurrentHashMap<String, Long>()
+    private val playbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val playbackJobLock = Any()
+    private var activePlaybackJob: Job? = null
 
     val httpTransport: CatalogHttpTransport by lazy {
         DefaultCatalogHttpTransport()
@@ -467,6 +475,9 @@ object UrduSubtitleEngine {
         sharedPref: android.content.SharedPreferences? = null,
         casFormat: CasSubtitleFormat = CasSubtitleFormat.WEBVTT,
         multiProviderVideoSession: Boolean = true,
+        targetUrduDiversityCount: Int = TARGET_URDU_SUBTITLE_SOURCES,
+        targetEnglishCatalogCount: Int = 6,
+        progressiveBilingualMode: Boolean = true,
         callbackIdentityToken: Any? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ): EpisodeSubtitleSession = EpisodeSubtitleSession(
@@ -478,11 +489,84 @@ object UrduSubtitleEngine {
         bolChalConfig = resolveBolChalConfig(context, sharedPref),
         bolChalTransport = bolChalTransport,
         casFormat = casFormat,
-        targetUrduDiversityCount = TARGET_URDU_SUBTITLE_SOURCES,
+        targetUrduDiversityCount = targetUrduDiversityCount,
+        targetEnglishCatalogCount = targetEnglishCatalogCount,
         multiProviderVideoSession = multiProviderVideoSession,
+        progressiveBilingualMode = progressiveBilingualMode,
         callbackIdentityToken = callbackIdentityToken ?: subtitleCallback,
         subtitleCallback = subtitleCallback,
     )
+
+    fun openPlaybackScope(): CoroutineScope {
+        val job = SupervisorJob(playbackScope.coroutineContext[Job])
+        val scope = CoroutineScope(playbackScope.coroutineContext + job)
+        synchronized(playbackJobLock) {
+            activePlaybackJob?.cancel()
+            activePlaybackJob = job
+        }
+        return scope
+    }
+
+    fun cancelPlayback() {
+        synchronized(playbackJobLock) {
+            activePlaybackJob?.cancel()
+            activePlaybackJob = null
+        }
+    }
+
+    fun launchCatalogThenComplete(
+        scope: CoroutineScope,
+        session: EpisodeSubtitleSession,
+        videoExtractionDone: CompletableDeferred<Unit>,
+        sidecarJobs: ConcurrentLinkedQueue<Job>,
+        extraJobs: ConcurrentLinkedQueue<Job> = ConcurrentLinkedQueue(),
+    ) {
+        val catalogJob = scope.launch {
+            try {
+                session.discoverAndIngestCatalog()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+        scope.launch {
+            try {
+                videoExtractionDone.await()
+                extraJobs.toList().forEach { it.join() }
+                var guard = 0
+                while (guard < 12) {
+                    val pending = sidecarJobs.filter { !it.isCompleted }
+                    if (pending.isEmpty()) break
+                    pending.joinAll()
+                    guard++
+                }
+                catalogJob.join()
+                session.completeSession()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    fun enqueueRawSubtitleIngest(
+        scope: CoroutineScope,
+        session: EpisodeSubtitleSession,
+        subtitle: SubtitleFile,
+        rawSourceHint: String? = null,
+        sidecarJobs: ConcurrentLinkedQueue<Job>,
+    ): Job {
+        val job = scope.launch {
+            try {
+                session.ingestRawSubtitle(subtitle, rawSourceHint = rawSourceHint)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+        sidecarJobs.add(job)
+        return job
+    }
 
     fun prewarmMetadataAsync(
         lookupSpec: MediaLookupSpec,
@@ -502,6 +586,40 @@ object UrduSubtitleEngine {
                 withTimeoutOrNull(8_000L) {
                     casStore.prewarmMetadataAsync(lookupSpec, catalogSources)
                 }
+            }
+        }
+    }
+
+    fun prewarmSubtitlesAsync(
+        lookupSpec: MediaLookupSpec,
+        context: android.content.Context? = null,
+        sharedPref: android.content.SharedPreferences? = null,
+    ) {
+        val hasIdentity = !lookupSpec.imdbId.isNullOrBlank() ||
+            (lookupSpec.tmdbId ?: 0) > 0 ||
+            lookupSpec.titles.any { it.isNotBlank() }
+        if (!hasIdentity) return
+        val key = buildPrewarmDedupKey(lookupSpec)
+        val now = System.currentTimeMillis()
+        val lastRun = prewarmHistory[key]
+        if (lastRun != null && (now - lastRun) < PREWARM_COOLDOWN_MS) return
+        prewarmHistory[key] = now
+
+        val catalogSources = createCatalogSources(context, sharedPref)
+        val bolChalConfig = resolveBolChalConfig(context, sharedPref)
+        prewarmScope.launch {
+            try {
+                withTimeoutOrNull(25_000L) {
+                    casStore.prewarmSubtitlesAsync(
+                        spec = lookupSpec,
+                        catalogSources = catalogSources,
+                        bolChalConfig = bolChalConfig,
+                        bolChalTransport = bolChalTransport,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
             }
         }
     }
@@ -546,7 +664,7 @@ object UrduSubtitleEngine {
                 seasonAirYear = year,
             )
         }
-        prewarmMetadataAsync(lookupSpec = spec, sharedPref = sharedPref)
+        prewarmSubtitlesAsync(lookupSpec = spec, sharedPref = sharedPref)
     }
 
     fun normalizeUrduTypography(input: String): String =

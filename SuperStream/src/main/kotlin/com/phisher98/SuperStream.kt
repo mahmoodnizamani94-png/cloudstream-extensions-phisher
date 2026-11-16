@@ -425,14 +425,14 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 res.videos?.results?.map { "https://www.youtube.com/watch?v=${it.key}" } ?: emptyList()
             }
 
-        if (isUrduSubtitleMode(sharedPref)) {
+        if (type == TvType.Movie) {
             SuperStreamExtractor.prewarmSuperStreamUrduSubtitlesAsync(
-                imdbId = res.external_ids?.imdb_id,
+                imdbId = res.external_ids?.imdb_id ?: res.imdbId,
                 tmdbId = data.id,
                 title = title,
                 year = year,
-                season = if (type == TvType.Movie) null else 1,
-                episode = if (type == TvType.Movie) null else 1,
+                season = null,
+                episode = null,
                 runtimeMinutes = res.runtime,
                 sharedPref = sharedPref,
             )
@@ -623,7 +623,6 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             subtitleCallback = subtitleCallback,
             sharedPref = effectivePref,
         )
-        val urduMode = sessionMode != com.phisher98.subtitles.SessionSubtitleMode.DEFAULT
 
         val earlySatisfactionConfig = EarlySatisfactionConfig(
             minVerifiedLinks = 2,
@@ -724,21 +723,32 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     subtitleCallback(sessionSub)
                 }
                 personalSession.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
-                val rawTracks = CopyOnWriteArrayList<SubtitleFile>()
-                SuperStreamExtractor.extractSuperStreamHtmlSidecars(
-                    htmlContent = source,
-                    extraHeaders = emptyMap(),
-                    subtitleCallback = { rawTracks.add(it) },
-                )
-                for (rawSub in rawTracks) {
-                    personalSession.ingestRawSubtitle(
-                        sub = rawSub,
-                        rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
+                val personalPlayback = SuperStreamExtractor.openPlaybackScope()
+                SuperStreamExtractor.launchOn(personalPlayback) {
+                    val rawTracks = CopyOnWriteArrayList<SubtitleFile>()
+                    SuperStreamExtractor.extractSuperStreamHtmlSidecars(
+                        htmlContent = source,
+                        extraHeaders = emptyMap(),
+                        subtitleCallback = { rawTracks.add(it) },
                     )
+                    val ingestJobs = rawTracks.map { rawSub ->
+                        SuperStreamExtractor.launchOn(personalPlayback) {
+                            personalSession.ingestRawSubtitle(
+                                sub = rawSub,
+                                rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
+                            )
+                        }
+                    }
+                    ingestJobs.forEach { it.join() }
+                    try {
+                        personalSession.completeSession()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                    }
                 }
-                withTimeoutOrNull(20_000L) {
-                    personalSession.completeSession()
-                }
+            } else {
+                SuperStreamExtractor.cancelActivePlaybackJob()
             }
         } else {
             val res = parseJson<LinkData>(data)
@@ -753,14 +763,10 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             val expectedRuntimeMs = res.runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
 
             val liveReleaseHints = CopyOnWriteArrayList<String>()
-            val firstReleaseHintSignal = CompletableDeferred<Unit>()
             val onReleaseHint: (String) -> Unit = { rawHint ->
                 val trimmed = rawHint.trim()
-                if (trimmed.isNotEmpty()) {
-                    if (!liveReleaseHints.contains(trimmed)) {
-                        liveReleaseHints.add(trimmed)
-                    }
-                    firstReleaseHintSignal.complete(Unit)
+                if (trimmed.isNotEmpty() && !liveReleaseHints.contains(trimmed)) {
+                    liveReleaseHints.add(trimmed)
                 }
             }
 
@@ -801,9 +807,6 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
 
             val emittedDedupeKeys: MutableSet<String> =
                 java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
-            val urduEmittedCount = java.util.concurrent.atomic.AtomicInteger(0)
-            val englishEmittedCount = java.util.concurrent.atomic.AtomicInteger(0)
-            val englishFallbackBuffer = CopyOnWriteArrayList<SubtitleFile>()
             val sidecarIngestJobs = java.util.concurrent.ConcurrentLinkedQueue<Job>()
 
             val session = SuperStreamExtractor.createEpisodeSession(
@@ -816,31 +819,19 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 if (cleanUrl.isNotEmpty() &&
                     emittedDedupeKeys.add("${sessionSub.lang.trim().lowercase()}|$cleanUrl")
                 ) {
-                    if (isUrduSubtitleCode(sessionSub.lang)) {
-                        urduEmittedCount.incrementAndGet()
-                    } else if (isEnglishSubtitleCode(sessionSub.lang)) {
-                        englishEmittedCount.incrementAndGet()
-                    }
                     earlyController.onSubtitleEmitted(sessionSub)
                     subtitleCallback(sessionSub)
                 }
             }
             session.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
+            val playbackScope = SuperStreamExtractor.openPlaybackScope()
 
             val sidecarIngestCallback: (SubtitleFile) -> Unit = { rawSub ->
-                if (isEnglishSubtitleCode(rawSub.lang)) {
-                    englishFallbackBuffer.add(rawSub)
-                }
-                val job = launch(Dispatchers.IO) {
-                    try {
-                        session.ingestRawSubtitle(
-                            sub = rawSub,
-                            rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
-                        )
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (_: Throwable) {
-                    }
+                val job = SuperStreamExtractor.launchOn(playbackScope) {
+                    session.ingestRawSubtitle(
+                        sub = rawSub,
+                        rawSourceHint = com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK.wireId,
+                    )
                 }
                 sidecarIngestJobs.add(job)
             }
@@ -886,65 +877,43 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 }
             }
 
-            val catalogJob = if (urduMode) {
-                async(Dispatchers.IO) {
+            val videoExtractionDone = CompletableDeferred<Unit>()
+            SuperStreamExtractor.launchOn(playbackScope) {
+                val catalogJob = SuperStreamExtractor.launchOn(playbackScope) {
                     try {
-                        if (tasks.isNotEmpty()) {
-                            withTimeoutOrNull(1_500L) {
-                                firstReleaseHintSignal.await()
-                            }
-                        }
                         session.discoverAndIngestCatalog()
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (_: Throwable) {
                     }
                 }
-            } else {
-                null
-            }
-
-            if (tasks.isNotEmpty()) {
-                SpeculativePipeliner.executePipelined(
-                    tasks = tasks,
-                    config = earlySatisfactionConfig,
-                    controller = earlyController,
-                )
-            }
-
-            val sidecarSnapshot = sidecarIngestJobs.toList()
-            val sidecarsJoined = withTimeoutOrNull(6_000L) {
-                sidecarSnapshot.joinAll()
-            }
-            if (sidecarsJoined == null) {
-                sidecarSnapshot.forEach { it.cancel() }
-            }
-            if (catalogJob != null) {
-                val catalogJoined = withTimeoutOrNull(15_000L) {
-                    catalogJob.await()
-                }
-                if (catalogJoined == null) {
-                    catalogJob.cancel()
-                }
-            } else if (!urduMode && englishEmittedCount.get() == 0) {
-                withTimeoutOrNull(8_000L) {
-                    runCatching { session.discoverAndIngestCatalog() }
-                }
-            }
-            withTimeoutOrNull(20_000L) {
-                session.completeSession()
-            }
-
-            if (urduMode && urduEmittedCount.get() == 0) {
-                for (donor in englishFallbackBuffer.take(2)) {
-                    val cleanUrl = donor.url.trim()
-                    if (cleanUrl.isNotEmpty() &&
-                        emittedDedupeKeys.add("${donor.lang.trim().lowercase()}|$cleanUrl")
-                    ) {
-                        earlyController.onSubtitleEmitted(donor)
-                        subtitleCallback(donor)
+                try {
+                    videoExtractionDone.await()
+                    var guard = 0
+                    while (guard < 12) {
+                        val pending = sidecarIngestJobs.filter { !it.isCompleted }
+                        if (pending.isEmpty()) break
+                        pending.joinAll()
+                        guard++
                     }
+                    catalogJob.join()
+                    session.completeSession()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
                 }
+            }
+
+            try {
+                if (tasks.isNotEmpty()) {
+                    SpeculativePipeliner.executePipelined(
+                        tasks = tasks,
+                        config = earlySatisfactionConfig,
+                        controller = earlyController,
+                    )
+                }
+            } finally {
+                videoExtractionDone.complete(Unit)
             }
         }
         ProviderTelemetryManager.scheduleSave(sharedPref)

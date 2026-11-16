@@ -1549,8 +1549,20 @@ class StreamPlayCuratedRegistryV26Test {
         deliver("https://urducdn.example/1.srt#extra", "Urdu", "addic7ed", "addic7ed")
         assertEquals("Fragment-spoofed duplicate must not inflate Urdu diversity", minOf(2, urduTarget), ledger.urduSubtitleSources.size)
 
-        // Extra distinct Urdu provenances keep recording (bonus diversity) without breaking the verdict.
-        deliver("https://urducdn.example/3.srt", "اردو", "subtitlecat", "subtitlecat")
+        // Distinct Urdu provenances keep recording until the configured target is met.
+        var extraOrdinal = 3
+        var guard = 0
+        while (ledger.urduSubtitleSources.size < urduTarget - 1 && guard < 12) {
+            deliver(
+                "https://urducdn.example/$extraOrdinal.srt",
+                "Urdu",
+                "extra$extraOrdinal",
+                "extra$extraOrdinal",
+            )
+            extraOrdinal++
+            guard++
+        }
+        deliver("https://urducdn.example/$extraOrdinal.srt", "اردو", "subtitlecat", "subtitlecat")
         assertFalse("Urdu target stays satisfied once met", ledger.needsUrduCompletion())
         assertTrue(
             "A provider that delivered Urdu is suppressed from Urdu re-querying",

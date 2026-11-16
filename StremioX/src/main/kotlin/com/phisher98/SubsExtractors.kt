@@ -16,13 +16,11 @@ object SubsExtractors {
         episode: Int? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
-        if (imdbId.isNullOrBlank()) {
-            return
-        }
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) } ?: return
         val slug = if(season == null) {
-            "movie/$imdbId"
+            "movie/$cleanImdb"
         } else {
-            "series/$imdbId:$season:$episode"
+            "series/$cleanImdb:$season:$episode"
         }
 
         app.get("${openSubAPI}/subtitles/$slug.json", timeout = 120L).parsedSafe<OsResult>()?.subtitles?.map { sub ->
@@ -42,10 +40,8 @@ object SubsExtractors {
         episode: Int? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ) {
-        if (imdbId?.startsWith("tt") != true) {
-            return
-        }
-        val id = imdbId.removePrefix("tt")
+        val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) } ?: return
+        val id = cleanImdb.substring(2)
         val epsId = app.post(
             "${watchSomuchAPI}/Watch/ajMovieTorrents.aspx", data = mapOf(
                 "index" to "0",

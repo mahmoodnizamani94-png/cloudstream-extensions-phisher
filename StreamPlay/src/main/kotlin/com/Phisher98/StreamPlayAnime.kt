@@ -48,8 +48,12 @@ import com.phisher98.StreamPlayExtractor.invokeMegaPlay
 import com.phisher98.StreamPlayExtractor.invokeVidlink
 import com.phisher98.StreamPlayExtractor.resolveTmdbIdByTitle
 import com.phisher98.StreamPlayExtractor.resolveTmdbIdFromImdb
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentLinkedQueue
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Calendar
@@ -369,43 +373,22 @@ class StreamPlayAnime : MainAPI() {
                 !hasReleasedYear &&
                 animeMetaData?.episodes.isNullOrEmpty()
 
-            if (urduMode) {
+            if (isMovie) {
                 val prewarmTitles = (listOfNotNull(anititle.ifBlank { fallbackTitle }, jpTitle) + cleanSubtitleTitles)
                     .map { it.trim() }
                     .filter { it.isNotBlank() }
                     .distinctBy { it.lowercase() }
                     .ifEmpty { listOf("Anime") }
                 val prewarmDurationMs = firstRuntimeMinutes?.takeIf { it > 0 }?.times(60_000L)
-                val prewarmSpec = if (isMovie) {
-                    com.phisher98.subtitles.MediaLookupSpec.Movie(
+                UrduSubtitleEngine.prewarmSubtitlesAsync(
+                    lookupSpec = com.phisher98.subtitles.MediaLookupSpec.Movie(
                         imdbId = imdbid,
                         tmdbId = tmdbid,
                         titles = prewarmTitles,
                         releaseYear = aniyear,
                         expectedDurationMs = prewarmDurationMs,
                         isAnime = true,
-                    )
-                } else {
-                    val prewarmCoord = firstVerifiedTmdb
-                        ?.takeIf { it.first >= 0 && it.second > 0 }
-                        ?.let { com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(it.first, it.second) }
-                        ?: com.phisher98.subtitles.EpisodeCoordinate.UnverifiedAnimeCour(
-                            courTitles = prewarmTitles,
-                            episodeInCour = 1,
-                        )
-                    com.phisher98.subtitles.MediaLookupSpec.Episode(
-                        imdbId = imdbid,
-                        tmdbId = tmdbid,
-                        titles = prewarmTitles,
-                        seriesPremiereYear = aniyear,
-                        seasonAirYear = aniyear,
-                        expectedDurationMs = prewarmDurationMs,
-                        coordinate = prewarmCoord,
-                        isAnime = true,
-                    )
-                }
-                UrduSubtitleEngine.prewarmMetadataAsync(
-                    lookupSpec = prewarmSpec,
+                    ),
                     sharedPref = StreamPlay.companionSharedPref,
                 )
             }
@@ -466,6 +449,7 @@ class StreamPlayAnime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
+        val playback = UrduSubtitleEngine.openPlaybackScope()
         val mediaData = AppUtils.parseJson<LinkData>(data)
         val malId = mediaData.malId
         val episode = mediaData.episode
@@ -528,10 +512,6 @@ class StreamPlayAnime : MainAPI() {
             targetEnglishSources = ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES,
             targetUrduSources = UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES,
         )
-        val englishSubtitleCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val englishDonorSubs = java.util.concurrent.CopyOnWriteArrayList<SubtitleFile>()
-        val rawSubtitleIngestJobs = java.util.concurrent.ConcurrentLinkedQueue<kotlinx.coroutines.Job>()
-
         val dubStatus: String =
             if (isMovie) "Movie"
             else if (mediaData.isDub) "DUB"
@@ -542,13 +522,9 @@ class StreamPlayAnime : MainAPI() {
             minQualityStreams = 4,
             qualityThreshold = Qualities.P720.value,
             highBitrateThresholdKbps = 2500,
-            minSubtitles = if (urduMode) {
-                UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES
-            } else {
-                ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES
-            },
+            minSubtitles = 0,
             satisfyWithOneLinkIfSubsFound = false,
-            requireSubtitles = true,
+            requireSubtitles = false,
             requireDualQualities = false,
             require720p = false,
             adaptiveTierEscalation = true,
@@ -590,36 +566,39 @@ class StreamPlayAnime : MainAPI() {
                 headers = sessionSub.headers
             }
             subtitleLedger.recordSubtitleFile(outSub)
-            if (isEnglishSubtitleLabel(outSub.lang) && !subtitleLedger.isProviderAnchor(outSub.headers)) {
-                englishSubtitleCount.incrementAndGet()
-            }
             earlyController.onSubtitleEmitted(outSub)
             subtitleCallback(outSub)
             dispatcher.onSubtitleReceived()
             return true
         }
 
-        val episodeSubtitleSession = if (urduMode) {
-            UrduSubtitleEngine.createEpisodeSession(
-                lookupSpec = buildAnimeMediaLookupSpec(
-                    mediaData = mediaData,
-                    effectiveTmdbId = effectiveTmdbId,
-                    animeImdbId = animeImdbId,
-                    animeTitleQueries = animeTitleQueries,
-                    tmdbSeason = tmdbSeason,
-                    tmdbEpisode = tmdbEpisode,
-                    canUseTmdbProviders = canUseTmdbProviders,
-                ),
-                mode = sessionMode,
-                sharedPref = StreamPlay.companionSharedPref,
-                callbackIdentityToken = subtitleCallback,
-            ) { sessionSub ->
-                emitSessionSubtitle(sessionSub)
-            }
-        } else {
-            null
+        val lookupSpec = buildAnimeMediaLookupSpec(
+            mediaData = mediaData,
+            effectiveTmdbId = effectiveTmdbId,
+            animeImdbId = animeImdbId,
+            animeTitleQueries = animeTitleQueries,
+            tmdbSeason = tmdbSeason,
+            tmdbEpisode = tmdbEpisode,
+            canUseTmdbProviders = canUseTmdbProviders,
+        )
+        val episodeSubtitleSession = UrduSubtitleEngine.createEpisodeSession(
+            lookupSpec = lookupSpec,
+            mode = sessionMode,
+            sharedPref = StreamPlay.companionSharedPref,
+            callbackIdentityToken = subtitleCallback,
+        ) { sessionSub ->
+            emitSessionSubtitle(sessionSub)
         }
-        val catalogSessionRan = java.util.concurrent.atomic.AtomicBoolean(false)
+        val videoExtractionDone = CompletableDeferred<Unit>()
+        val sidecarJobs = ConcurrentLinkedQueue<Job>()
+        val extraJobs = ConcurrentLinkedQueue<Job>()
+        UrduSubtitleEngine.launchCatalogThenComplete(
+            scope = playback,
+            session = episodeSubtitleSession,
+            videoExtractionDone = videoExtractionDone,
+            sidecarJobs = sidecarJobs,
+            extraJobs = extraJobs,
+        )
 
         val animeLinksFound = java.util.concurrent.atomic.AtomicInteger(0)
         fun emitSingleOptimized(link: ExtractorLink) {
@@ -687,47 +666,22 @@ class StreamPlayAnime : MainAPI() {
                 ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
                 ?.value?.trim()?.takeIf { it.isNotBlank() }
             val provenance = explicitProvenance ?: sourceKey.ifBlank { StreamPlayShield.hostOf(normalizedUrl) }
-
-            if (urduMode && episodeSubtitleSession != null) {
-                val isUrdu = isUrduSubtitleLabel(cleanedLang)
-                val isEnglish = isEnglishSubtitleLabel(cleanedLang)
-                if (!isUrdu && !isEnglish) return@sink
-                val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = normalizedUrl).apply {
-                    headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
-                }
-                if (isEnglish) {
-                    if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
-                        emitSessionSubtitle(shieldedSubtitle)
-                    } else if (englishDonorSubs.size < 4) {
-                        val wasEmpty = englishDonorSubs.isEmpty()
-                        englishDonorSubs.add(shieldedSubtitle)
-                        if (wasEmpty && !subtitleLedger.hasAnyEmittedSubtitle()) {
-                            earlyController.onSubtitleEmitted(shieldedSubtitle)
-                        }
-                    }
-                }
-                val job = launch(kotlinx.coroutines.Dispatchers.IO) {
-                    runCatching {
-                        episodeSubtitleSession.ingestRawSubtitle(shieldedSubtitle, rawSourceHint = provenance)
-                    }
-                }
-                rawSubtitleIngestJobs.add(job)
+            val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = normalizedUrl).apply {
+                headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
+            }
+            val isUrdu = isUrduSubtitleLabel(cleanedLang)
+            val isEnglish = isEnglishSubtitleLabel(cleanedLang)
+            if (isUrdu || isEnglish) {
+                UrduSubtitleEngine.enqueueRawSubtitleIngest(
+                    scope = playback,
+                    session = episodeSubtitleSession,
+                    subtitle = shieldedSubtitle,
+                    rawSourceHint = provenance,
+                    sidecarJobs = sidecarJobs,
+                )
                 return@sink
             }
-
-            if (subtitleLedger.markEmitted(cleanedLang, normalizedUrl, sub.headers)) {
-                if (isEnglishSubtitleLabel(cleanedLang)) {
-                    englishSubtitleCount.incrementAndGet()
-                    subtitleLedger.recordEnglishDelivery(provenance, sourceKey)
-                }
-                val shieldedSubtitle = SubtitleFile(lang = cleanedLang, url = normalizedUrl).apply {
-                    headers = (sub.headers ?: emptyMap()) +
-                        ("X-StreamPlay-Source" to provenance)
-                }
-                earlyController.onSubtitleEmitted(shieldedSubtitle)
-                subtitleCallback(shieldedSubtitle)
-                dispatcher.onSubtitleReceived()
-            }
+            emitSessionSubtitle(shieldedSubtitle)
         }
 
         data class AnimeSource(
@@ -823,34 +777,27 @@ class StreamPlayAnime : MainAPI() {
             }
         )
 
-        val subtitleOnlySources = buildList {
-            if (animeTitleQueries.isNotEmpty()) {
-                add(
-                    AnimeSource("kickassanime", 90f) { onSubtitle, _ ->
-                        StreamPlayExtractor.invokeKickAssAnime(
-                            titles = animeTitleQueries,
-                            year = year,
-                            episode = episode,
-                            isMovie = isMovie,
-                            dubtype = dubStatus,
-                            subtitleCallback = { sub ->
-                                val taggedSub = SubtitleFile(lang = sub.lang, url = sub.url).apply {
-                                    headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Foreign-Sidecar" to "true")
-                                }
-                                onSubtitle(taggedSub)
+        if (animeTitleQueries.isNotEmpty()) {
+            extraJobs.add(playback.launch {
+                try {
+                    StreamPlayExtractor.invokeKickAssAnime(
+                        titles = animeTitleQueries,
+                        year = year,
+                        episode = episode,
+                        isMovie = isMovie,
+                        dubtype = dubStatus,
+                        subtitleCallback = { sub ->
+                            val taggedSub = SubtitleFile(lang = sub.lang, url = sub.url).apply {
+                                headers = (sub.headers ?: emptyMap()) + ("X-StreamPlay-Foreign-Sidecar" to "true")
                             }
-                        )
-                    }
-                )
-            }
-            if (urduMode && episodeSubtitleSession != null) {
-                add(
-                    AnimeSource("urdu-catalog-session", 99f) { _, _ ->
-                        episodeSubtitleSession.discoverAndIngestCatalog()
-                        catalogSessionRan.set(true)
-                    }
-                )
-            }
+                            subtitleSinkFor("kickassanime")(taggedSub)
+                        }
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                }
+            })
         }
 
         fun taskFor(source: AnimeSource) = PipelinedTask(
@@ -870,7 +817,7 @@ class StreamPlayAnime : MainAPI() {
             }
         }
 
-        val tasks = (videoSources + subtitleOnlySources).map { taskFor(it) }
+        val tasks = videoSources.map { taskFor(it) }
 
         try {
             SpeculativePipeliner.executePipelined(
@@ -878,83 +825,8 @@ class StreamPlayAnime : MainAPI() {
                 config = earlySatisfactionConfig,
                 controller = earlyController
             )
-
-            if (!urduMode && subtitleLedger.needsEnglishCompletion()) {
-                val completionSources = (videoSources + subtitleOnlySources)
-                    .filter { source ->
-                        !subtitleLedger.isEnglishSource(source.id) && !subtitleLedger.isEnglishProviderCompleted(source.id)
-                    }
-                    .take(MAX_SUBTITLE_COMPLETION_PROVIDERS)
-
-                if (completionSources.isNotEmpty()) {
-                    Log.d(
-                        "StreamPlayAnime",
-                        "📝 Anime subtitle completion: ${subtitleLedger.englishSubtitleSources.size}/$ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES " +
-                            "English sources; querying ${completionSources.size} more " +
-                            "(${completionSources.joinToString { it.id }})"
-                    )
-
-                    val completionConfig = EarlySatisfactionConfig(
-                        minVerifiedLinks = Int.MAX_VALUE,
-                        minQualityStreams = Int.MAX_VALUE,
-                        minSubtitles = 1,
-                        requireSubtitles = false,
-                        require720p = false,
-                        requireDualQualities = false,
-                        satisfyWithOneLinkIfSubsFound = false,
-                        tier1DelayMs = 0L,
-                        tier2DelayMs = 150L,
-                        tier3DelayMs = 500L,
-                        adaptiveTierEscalation = false,
-                        maxPipelineTimeoutMs = SUBTITLE_COMPLETION_TIMEOUT_MS,
-                        postSatisfactionGraceMs = 0L
-                    )
-                    val completionController = EarlySatisfactionController(
-                        completionConfig,
-                        extraCondition = { subtitleLedger.englishSubtitleSources.size >= ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES }
-                    )
-
-                    SpeculativePipeliner.executePipelined(
-                        tasks = completionSources.map { taskFor(it) },
-                        config = completionConfig,
-                        controller = completionController
-                    )
-
-                    Log.d(
-                        "StreamPlayAnime",
-                        "📝 Anime subtitle completion finished: ${englishSubtitleCount.get()} English " +
-                            "subtitles from ${subtitleLedger.englishSubtitleSources.size} sources"
-                    )
-                }
-            }
-
-            if (urduMode && episodeSubtitleSession != null) {
-                if (!catalogSessionRan.get() && subtitleLedger.nativeOrHumanUrduSourceCount() < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
-                    kotlinx.coroutines.withTimeoutOrNull(8_000L) {
-                        episodeSubtitleSession.discoverAndIngestCatalog()
-                    }
-                }
-                val jobsSnapshot = rawSubtitleIngestJobs.toList()
-                val joined = kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                    kotlinx.coroutines.joinAll(*jobsSnapshot.toTypedArray())
-                }
-                if (joined == null) {
-                    jobsSnapshot.forEach { it.cancel() }
-                }
-                kotlinx.coroutines.withTimeoutOrNull(20_000L) {
-                    episodeSubtitleSession.completeSession()
-                }
-                if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.URDU &&
-                    subtitleLedger.urduSourceCount() == 0 &&
-                    englishDonorSubs.isNotEmpty()
-                ) {
-                    for (donor in englishDonorSubs.take(2)) {
-                        emitSessionSubtitle(donor)
-                    }
-                }
-            }
         } finally {
-            englishDonorSubs.clear()
+            videoExtractionDone.complete(Unit)
             dispatcher.flush()
         }
         animeLinksFound.get() > 0 || subtitleLedger.hasAnyEmittedSubtitle()

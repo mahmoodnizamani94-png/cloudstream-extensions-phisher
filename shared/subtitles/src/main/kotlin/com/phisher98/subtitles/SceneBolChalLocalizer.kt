@@ -4,11 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -18,6 +21,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -76,6 +80,15 @@ data class BolChalCueOut(
     val tierOrigin: LocalizationTierKey? = null,
 )
 
+enum class BolChalEditionProfile(
+    val editionTag: String?,
+    val defaultComfortCps: Double,
+) {
+    CONVERSATIONAL(editionTag = null, defaultComfortCps = 17.0),
+    ADABI_FORMAL(editionTag = "adabi", defaultComfortCps = 16.5),
+    COMPACT_FAST(editionTag = "compact", defaultComfortCps = 12.2),
+}
+
 data class BolChalConfig(
     val maxComfortCps: Double = 17.0,
     val minCueDurationMs: Long = 833L,
@@ -85,17 +98,18 @@ data class BolChalConfig(
     val maxLeadingSilenceExtendMs: Long = 200L,
     val sceneGapSplitMs: Long = 2_500L,
     val minRequiredCueCoverage: Double = 0.98,
-    val maxConcurrentWindows: Int = 6,
+    val maxConcurrentWindows: Int = 10,
     val llmEndpointUrl: String? = null,
     val llmApiKey: String? = null,
     val llmModelId: String? = null,
+    val editionProfile: BolChalEditionProfile = BolChalEditionProfile.CONVERSATIONAL,
 ) {
     val hasByokLlm: Boolean
         get() = !llmEndpointUrl.isNullOrBlank() && !llmApiKey.isNullOrBlank() && !llmModelId.isNullOrBlank()
 
     val configHash: String
         get() = ContentSha256.sha256Hex(
-            "cps=$maxComfortCps|llm=${llmEndpointUrl?.trim().orEmpty()}|model=${llmModelId?.trim().orEmpty()}"
+            "cps=$maxComfortCps|ed=${editionProfile.name}|llm=${llmEndpointUrl?.trim().orEmpty()}|model=${llmModelId?.trim().orEmpty()}"
         ).take(16)
 
     override fun toString(): String {
@@ -104,7 +118,7 @@ data class BolChalConfig(
             "minSplittableCueDurationMs=$minSplittableCueDurationMs, interCueBlinkGapMs=$interCueBlinkGapMs, " +
             "maxTrailingSilenceExtendMs=$maxTrailingSilenceExtendMs, maxLeadingSilenceExtendMs=$maxLeadingSilenceExtendMs, " +
             "sceneGapSplitMs=$sceneGapSplitMs, minRequiredCueCoverage=$minRequiredCueCoverage, " +
-            "maxConcurrentWindows=$maxConcurrentWindows, " +
+            "maxConcurrentWindows=$maxConcurrentWindows, editionProfile=$editionProfile, " +
             "llmEndpointUrl=$llmEndpointUrl, llmApiKey=$redactedKey, llmModelId=$llmModelId)"
     }
 }
@@ -330,18 +344,50 @@ object BolChalPurifier {
         Regex("""(?<=^|\s|[،,])میں$POSTPOSITION_GUARD$INTRA_CLAUSE_SPAN\s+آئی\s+ہوں(?=[۔؟!،\s]|$)""") to "میں$1 آیا ہوں",
     )
 
+    private val ADABI_LEXICAL_REWRITES: List<Pair<Regex, String>> = listOf(
+        Regex("""(?<=^|\s|[،,])تھینکس(?=\s|[۔؟!،]|$)""") to "شکریہ",
+        Regex("""(?<=^|\s|[،,])سوری(?=\s|[۔؟!،]|$)""") to "معذرت",
+        Regex("""(?<=^|\s|[،,])پلیز(?=\s|[۔؟!،]|$)""") to "براہ کرم",
+        Regex("""(?<=^|\s|[،,])اوکے(?=\s|[۔؟!،]|$)""") to "بہتر",
+        Regex("""(?<=^|\s|[،,])پرابلم(?=\s|[۔؟!،]|$)""") to "مسئلہ",
+        Regex("""(?<=^|\s|[،,])پلان(?=\s|[۔؟!،]|$)""") to "منصوبہ",
+        Regex("""(?<=^|\s|[،,])آفس(?=\s|[۔؟!،]|$)""") to "دفتر",
+        Regex("""(?<=^|\s|[،,])چیک(?=\s|[۔؟!،]|$)""") to "تصدیق",
+        Regex("""(?<=^|\s|[،,])ویٹ(?=\s|[۔؟!،]|$)""") to "انتظار",
+        Regex("""(?<=^|\s|[،,])بتاؤ(?=\s|[۔؟!،]|$)""") to "بتائیے",
+        Regex("""(?<=^|\s|[،,])سنو(?=\s|[۔؟!،]|$)""") to "سنیے",
+        Regex("""(?<=^|\s|[،,])دیکھو(?=\s|[۔؟!،]|$)""") to "دیکھیے",
+        Regex("""(?<=^|\s|[،,])بیٹھو(?=\s|[۔؟!،]|$)""") to "تشریف رکھیے",
+        Regex("""(?<=^|\s|[،,])آؤ(?=\s|[۔؟!،]|$)""") to "تشریف لائیے",
+        Regex("""(?<=^|\s|[،,])جاؤ(?=\s|[۔؟!،]|$)""") to "تشریف لے جائیے",
+    )
+
+    private val COMPACT_LEXICAL_REWRITES: List<Pair<Regex, String>> = listOf(
+        Regex("""مجھے\s+(?:ایسا\s+)?لگتا\s+ہے\s+کہ\s*""") to "لگتا ہے ",
+        Regex("""میں\s+(?:تمہیں|آپ\s+کو)\s+بتا\s+رہ[اےی]\s+ہوں\s+کہ\s*""") to "",
+        Regex("""کیا\s+تم\s+جانتے\s+ہو\s+کہ\s*""") to "پتہ ہے ",
+        Regex("""اس\s+وقت\s+""") to "ابھی ",
+        Regex("""ہمیں\s+یہاں\s+سے\s+نکلنا\s+ہو\s*گا""") to "یہاں سے نکلو",
+        Regex("""کوئی\s+بات\s+نہیں\s+ہے""") to "خیر ہے",
+        Regex("""ٹھیک\s+ہے\s*[،,]\s*""") to "چلو، ",
+        Regex("""میں\s+سمجھ\s+گیا\s+ہوں""") to "سمجھ گیا",
+        Regex("""میں\s+نہیں\s+جانت[اےی]\s+کہ\s*""") to "پتہ نہیں ",
+    )
+
     fun purify(
         rawUrdu: String,
         sourceEnglish: LatinEnglishText? = null,
         speakerCard: SpeakerContextCard? = null,
         allowRegexGenderRewrite: Boolean = true,
-    ): String = purifyDetailed(rawUrdu, sourceEnglish, speakerCard, allowRegexGenderRewrite).text
+        editionProfile: BolChalEditionProfile = BolChalEditionProfile.CONVERSATIONAL,
+    ): String = purifyDetailed(rawUrdu, sourceEnglish, speakerCard, allowRegexGenderRewrite, editionProfile).text
 
     fun purifyDetailed(
         rawUrdu: String,
         sourceEnglish: LatinEnglishText? = null,
         speakerCard: SpeakerContextCard? = null,
         allowRegexGenderRewrite: Boolean = true,
+        editionProfile: BolChalEditionProfile = BolChalEditionProfile.CONVERSATIONAL,
     ): PurifiedCueResult {
         var text = UrduOrthographyGate.normalizeUrduTypography(
             rawUrdu.replace("\u200F", "").replace("\u200E", "")
@@ -383,15 +429,21 @@ object BolChalPurifier {
         }
 
         var registerRewritten = false
-        if (speakerCard != null) {
+        val effectiveCard = if (editionProfile == BolChalEditionProfile.ADABI_FORMAL) {
+            (speakerCard ?: SpeakerContextCard()).copy(dominantSceneRegister = AddressRegister.AAP)
+        } else {
+            speakerCard
+        }
+        if (effectiveCard != null) {
             val hasFormalOverride = en.isNotEmpty() && CUE_FORMAL_OVERRIDE_REGEX.containsMatchIn(en)
             val hasInformalOverride = en.isNotEmpty() && CUE_INFORMAL_OVERRIDE_REGEX.containsMatchIn(en)
             val hasTuOverride = !hasFormalOverride && en.isNotEmpty() && CUE_TU_OVERRIDE_REGEX.containsMatchIn(en)
             val effectiveRegister = when {
+                editionProfile == BolChalEditionProfile.ADABI_FORMAL && !hasTuOverride -> AddressRegister.AAP
                 hasFormalOverride -> AddressRegister.AAP
                 hasTuOverride -> AddressRegister.TU
-                speakerCard.dominantSceneRegister == AddressRegister.AAP && hasInformalOverride -> AddressRegister.TUM
-                else -> speakerCard.dominantSceneRegister
+                effectiveCard.dominantSceneRegister == AddressRegister.AAP && hasInformalOverride -> AddressRegister.TUM
+                else -> effectiveCard.dominantSceneRegister
             }
             val beforeRegister = text
             val table = when (effectiveRegister) {
@@ -405,6 +457,20 @@ object BolChalPurifier {
             if (text != beforeRegister) {
                 registerRewritten = true
             }
+        }
+
+        when (editionProfile) {
+            BolChalEditionProfile.ADABI_FORMAL -> {
+                for ((pat, rep) in ADABI_LEXICAL_REWRITES) {
+                    text = pat.replace(text, rep)
+                }
+            }
+            BolChalEditionProfile.COMPACT_FAST -> {
+                for ((pat, rep) in COMPACT_LEXICAL_REWRITES) {
+                    text = pat.replace(text, rep)
+                }
+            }
+            BolChalEditionProfile.CONVERSATIONAL -> Unit
         }
 
         if (allowRegexGenderRewrite && en.isNotEmpty() && ENGLISH_FIRST_PERSON_SUBJECT_REGEX.containsMatchIn(en)) {
@@ -757,9 +823,78 @@ object UrduCpsRefiner {
     }
 }
 
+object BolChalWindowCache {
+    private const val MAX_CACHED_WINDOWS = 512
+
+    private val lru = object : LinkedHashMap<String, Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>(128, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>?,
+        ): Boolean = size > MAX_CACHED_WINDOWS
+    }
+    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>>>()
+
+    fun buildWindowKey(window: SceneWindow, config: BolChalConfig): String {
+        val sb = StringBuilder(window.targetCues.size * 40 + 64)
+        if (config.hasByokLlm) {
+            sb.append("llm:").append(config.llmEndpointUrl?.trim().orEmpty())
+                .append('|').append(config.llmModelId?.trim().orEmpty())
+                .append('|').append(window.speakerCard.dominantSceneRegister.name)
+                .append('|').append(window.speakerCard.speakerGenderHint.name)
+                .append('\n')
+        } else {
+            sb.append("nmt:v1\n")
+        }
+        for (p in window.contextPrev) sb.append("P:").append(p.text.text).append('\n')
+        for (t in window.targetCues) sb.append("T:").append(t.id.value).append(':').append(t.text.text).append('\n')
+        for (n in window.contextNext) sb.append("N:").append(n.text.text).append('\n')
+        return ContentSha256.sha256Hex(sb.toString())
+    }
+
+    fun peek(key: String): Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>? =
+        synchronized(lru) { lru[key] }
+
+    fun clearForTesting() {
+        synchronized(lru) { lru.clear() }
+        inFlight.clear()
+    }
+
+    suspend fun getOrTranslateSingleFlight(
+        key: String,
+        compute: suspend () -> Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>,
+    ): Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>> {
+        synchronized(lru) { lru[key] }?.let { return Result.success(it) }
+
+        val created = CompletableDeferred<Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>>()
+        val existing = inFlight.putIfAbsent(key, created)
+        if (existing != null) {
+            return existing.await()
+        }
+        return try {
+            val res = compute()
+            res.getOrNull()?.let { value ->
+                if (value.first.isNotEmpty()) {
+                    synchronized(lru) { lru[key] = value }
+                }
+            }
+            created.complete(res)
+            res
+        } catch (ce: CancellationException) {
+            created.cancel(ce)
+            throw ce
+        } catch (t: Throwable) {
+            val failure = Result.failure<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>(t)
+            created.complete(failure)
+            failure
+        } finally {
+            inFlight.remove(key, created)
+        }
+    }
+}
+
 class DefaultBolChalTranslationTransport(
     private val httpGetOverride: (suspend (url: String, params: Map<String, String>, headers: Map<String, String>) -> String)? = null,
     private val httpPostJsonOverride: (suspend (url: String, jsonBody: String, headers: Map<String, String>) -> String)? = null,
+    private val useSharedWindowCache: Boolean = (httpGetOverride == null && httpPostJsonOverride == null),
 ) : BolChalTranslationTransport {
 
     private val mapper = ObjectMapper()
@@ -771,7 +906,19 @@ class DefaultBolChalTranslationTransport(
         if (window.targetCues.isEmpty()) {
             return Result.success(emptyMap<CueId, BolChalCueOut>() to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
         }
+        if (useSharedWindowCache) {
+            val cacheKey = BolChalWindowCache.buildWindowKey(window, config)
+            return BolChalWindowCache.getOrTranslateSingleFlight(cacheKey) {
+                translateWindowUncached(window, config)
+            }
+        }
+        return translateWindowUncached(window, config)
+    }
 
+    private suspend fun translateWindowUncached(
+        window: SceneWindow,
+        config: BolChalConfig,
+    ): Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>> {
         if (config.hasByokLlm) {
             val llmAttempt = catchNonCancellation { translateViaOpenAiCompatibleLlm(window, config) }
             llmAttempt.exceptionOrNull()?.let { err ->
@@ -1428,31 +1575,42 @@ object SceneBolChalLocalizer {
         videoDurationMs: Long? = null,
         initialSpeakerCard: SpeakerContextCard = SpeakerContextCard(),
         onWindowZeroReady: (suspend (CueDocument) -> Unit)? = null,
+        onWindowProgress: (suspend (completedWindows: Int, totalWindows: Int, partialDoc: CueDocument) -> Unit)? = null,
     ): Result<VerifiedSubtitleCandidate.BolChalLocalized> {
         val sourceCues = normalizeDonorCues(englishDonorDoc)
         if (sourceCues.isEmpty()) {
             return Result.failure(IllegalArgumentException("English donor contained 0 translatable dialogue cues"))
         }
 
+        val effectiveInitialCard = if (config.editionProfile == BolChalEditionProfile.ADABI_FORMAL) {
+            initialSpeakerCard.copy(dominantSceneRegister = AddressRegister.AAP)
+        } else {
+            initialSpeakerCard
+        }
+
         val windows = buildSceneWindows(
             sourceCues = sourceCues,
             useLlmWindowSizes = config.hasByokLlm,
             sceneGapSplitMs = config.sceneGapSplitMs,
-            initialCard = initialSpeakerCard,
+            initialCard = effectiveInitialCard,
         )
 
+        val stateMutex = Mutex()
         val translatedById = LinkedHashMap<CueId, String>(sourceCues.size)
         val regexOnlyRegisterCueIds = HashSet<CueId>()
         var effectiveTier = LocalizationTierKey.KEYLESS_BOLCHAL_NMT
         var mergedAnyWindow = false
+        var completedWindows = 0
         var firstWindowError: Throwable? = null
+        var fatalSecurityError: SecurityException? = null
         val sourceById = sourceCues.associateBy { it.id }
 
-        fun mergeWindowResult(window: SceneWindow, windowMap: Map<CueId, BolChalCueOut>, tier: LocalizationTierKey) {
+        fun mergeWindowResultLocked(window: SceneWindow, windowMap: Map<CueId, BolChalCueOut>, tier: LocalizationTierKey) {
             if (!mergedAnyWindow || tier.tierRank > effectiveTier.tierRank) {
                 effectiveTier = tier
             }
             mergedAnyWindow = true
+            completedWindows++
             for ((cueId, outCue) in windowMap) {
                 val srcCue = sourceById[cueId] ?: continue
                 val cueTier = outCue.tierOrigin ?: tier
@@ -1462,6 +1620,7 @@ object SceneBolChalLocalizer {
                     sourceEnglish = srcCue.text,
                     speakerCard = window.speakerCard,
                     allowRegexGenderRewrite = allowRegexGender,
+                    editionProfile = config.editionProfile,
                 )
                 if (isAcceptablePurifiedUrduCue(detailed.text, srcCue)) {
                     translatedById[cueId] = detailed.text
@@ -1474,76 +1633,98 @@ object SceneBolChalLocalizer {
             }
         }
 
-        fun recordWindowFailure(err: Throwable): Throwable? {
+        fun buildPartialSnapshotLocked(): Pair<Int, CueDocument?> {
+            val done = completedWindows
+            if (translatedById.isEmpty()) return done to null
+            val partialEntries = sourceCues.mapNotNull { sc ->
+                translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
+            }
+            if (partialEntries.isEmpty()) return done to null
+            val refined = UrduCpsRefiner.refineDocument(partialEntries, config, videoDurationMs)
+            val doc = if (refined.isNotEmpty()) CueDocument.fromCues(SubtitleLanguage.URDU, refined) else null
+            return done to doc
+        }
+
+        fun recordWindowFailureLocked(err: Throwable) {
             if (err is CancellationException) throw err
-            if (err is SecurityException) return err
+            if (err is SecurityException && fatalSecurityError == null) {
+                fatalSecurityError = err
+            }
             if (firstWindowError == null) firstWindowError = err
-            return null
         }
 
         val concurrency = config.maxConcurrentWindows.coerceIn(1, 16)
-        if (onWindowZeroReady != null && windows.isNotEmpty()) {
-            val win0 = windows[0]
-            transport.translateWindow(win0, config).fold(
-                onSuccess = { (win0Map, win0Tier) ->
-                    mergeWindowResult(win0, win0Map, win0Tier)
-                    if (translatedById.isNotEmpty()) {
-                        val win0Entries = win0.targetCues.mapNotNull { sc ->
-                            translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
-                        }
-                        val refinedWin0 = UrduCpsRefiner.refineDocument(win0Entries, config, videoDurationMs)
-                        if (refinedWin0.isNotEmpty()) {
-                            onWindowZeroReady(CueDocument.fromCues(SubtitleLanguage.URDU, refinedWin0))
-                        }
-                    }
-                },
-                onFailure = { err ->
-                    recordWindowFailure(err)?.let { return Result.failure(it) }
-                },
-            )
-            if (windows.size > 1) {
-                val tailWindows = windows.subList(1, windows.size)
-                val sem = Semaphore(concurrency)
-                val tailResults = coroutineScope {
-                    tailWindows.map { win ->
-                        async {
-                            sem.withPermit {
-                                win to transport.translateWindow(win, config)
-                            }
-                        }
-                    }.awaitAll()
-                }
-                for ((win, res) in tailResults) {
+        if (windows.size == 1 || concurrency == 1) {
+            for (window in windows) {
+                val res = transport.translateWindow(window, config)
+                var win0Doc: CueDocument? = null
+                var progressSnapshot: Pair<Int, CueDocument?>? = null
+                stateMutex.withLock {
                     res.fold(
-                        onSuccess = { (winMap, tier) -> mergeWindowResult(win, winMap, tier) },
-                        onFailure = { err -> recordWindowFailure(err)?.let { return Result.failure(it) } },
+                        onSuccess = { (windowMap, tier) ->
+                            mergeWindowResultLocked(window, windowMap, tier)
+                            if (window.windowIndex == 0 && onWindowZeroReady != null && translatedById.isNotEmpty()) {
+                                val win0Entries = window.targetCues.mapNotNull { sc ->
+                                    translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
+                                }
+                                val refinedWin0 = UrduCpsRefiner.refineDocument(win0Entries, config, videoDurationMs)
+                                if (refinedWin0.isNotEmpty()) {
+                                    win0Doc = CueDocument.fromCues(SubtitleLanguage.URDU, refinedWin0)
+                                }
+                            }
+                            if (onWindowProgress != null) {
+                                progressSnapshot = buildPartialSnapshotLocked()
+                            }
+                        },
+                        onFailure = { err -> recordWindowFailureLocked(err) },
                     )
                 }
-            }
-        } else if (windows.size == 1 || concurrency == 1) {
-            for (window in windows) {
-                transport.translateWindow(window, config).fold(
-                    onSuccess = { (windowMap, tier) -> mergeWindowResult(window, windowMap, tier) },
-                    onFailure = { err -> recordWindowFailure(err)?.let { return Result.failure(it) } },
-                )
+                fatalSecurityError?.let { return Result.failure(it) }
+                win0Doc?.let { onWindowZeroReady?.invoke(it) }
+                progressSnapshot?.let { (done, doc) ->
+                    if (doc != null) onWindowProgress?.invoke(done, windows.size, doc)
+                }
             }
         } else {
             val sem = Semaphore(concurrency)
-            val allResults = coroutineScope {
+            coroutineScope {
                 windows.map { win ->
                     async {
-                        sem.withPermit {
-                            win to transport.translateWindow(win, config)
+                        val res = sem.withPermit {
+                            transport.translateWindow(win, config)
+                        }
+                        var win0Doc: CueDocument? = null
+                        var progressSnapshot: Pair<Int, CueDocument?>? = null
+                        stateMutex.withLock {
+                            res.fold(
+                                onSuccess = { (winMap, tier) ->
+                                    mergeWindowResultLocked(win, winMap, tier)
+                                    if (win.windowIndex == 0 && onWindowZeroReady != null) {
+                                        val win0Entries = win.targetCues.mapNotNull { sc ->
+                                            translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
+                                        }
+                                        if (win0Entries.isNotEmpty()) {
+                                            val refinedWin0 = UrduCpsRefiner.refineDocument(win0Entries, config, videoDurationMs)
+                                            if (refinedWin0.isNotEmpty()) {
+                                                win0Doc = CueDocument.fromCues(SubtitleLanguage.URDU, refinedWin0)
+                                            }
+                                        }
+                                    }
+                                    if (onWindowProgress != null) {
+                                        progressSnapshot = buildPartialSnapshotLocked()
+                                    }
+                                },
+                                onFailure = { err -> recordWindowFailureLocked(err) },
+                            )
+                        }
+                        win0Doc?.let { onWindowZeroReady?.invoke(it) }
+                        progressSnapshot?.let { (done, doc) ->
+                            if (doc != null) onWindowProgress?.invoke(done, windows.size, doc)
                         }
                     }
                 }.awaitAll()
             }
-            for ((win, res) in allResults) {
-                res.fold(
-                    onSuccess = { (winMap, tier) -> mergeWindowResult(win, winMap, tier) },
-                    onFailure = { err -> recordWindowFailure(err)?.let { return Result.failure(it) } },
-                )
-            }
+            fatalSecurityError?.let { return Result.failure(it) }
         }
 
         val fatalErr = firstWindowError
@@ -1620,6 +1801,7 @@ object SceneBolChalLocalizer {
                 qualityReport = report,
                 document = finalDoc,
                 alignment = alignmentProof,
+                editionTag = config.editionProfile.editionTag,
             )
         )
     }

@@ -98,11 +98,46 @@ internal val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX: Regex
 
 object SuperStreamExtractor : SuperStream() {
 
-    const val TARGET_URDU_SUBTITLE_SOURCES = 2
+    const val TARGET_URDU_SUBTITLE_SOURCES = 6
+    const val TARGET_ENGLISH_SUBTITLE_SOURCES = 6
     private const val PREWARM_COOLDOWN_MS = 10L * 60L * 1000L
+    private const val PREWARM_TIMEOUT_MS = 25_000L
 
     private val prewarmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val prewarmHistory = ConcurrentHashMap<String, Long>()
+    private val subtitlePlaybackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val playbackJobLock = Any()
+    private var activePlaybackJob: kotlinx.coroutines.Job? = null
+
+    internal fun cancelActivePlaybackJob() {
+        synchronized(playbackJobLock) {
+            activePlaybackJob?.cancel()
+            activePlaybackJob = null
+        }
+    }
+
+    internal fun openPlaybackScope(): CoroutineScope {
+        synchronized(playbackJobLock) {
+            activePlaybackJob?.cancel()
+            val playbackJob = SupervisorJob(subtitlePlaybackScope.coroutineContext[kotlinx.coroutines.Job])
+            activePlaybackJob = playbackJob
+            return CoroutineScope(subtitlePlaybackScope.coroutineContext + playbackJob)
+        }
+    }
+
+    internal fun launchOn(
+        scope: CoroutineScope,
+        block: suspend CoroutineScope.() -> Unit,
+    ): kotlinx.coroutines.Job {
+        return scope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+    }
 
     val httpTransport: CatalogHttpTransport by lazy {
         DefaultCatalogHttpTransport()
@@ -243,6 +278,8 @@ object SuperStreamExtractor : SuperStream() {
         bolChalTransport = bolChalTransport,
         casFormat = casFormat,
         targetUrduDiversityCount = TARGET_URDU_SUBTITLE_SOURCES,
+        targetEnglishCatalogCount = TARGET_ENGLISH_SUBTITLE_SOURCES,
+        progressiveBilingualMode = true,
         callbackIdentityToken = callbackIdentityToken ?: subtitleCallback,
         subtitleCallback = subtitleCallback,
     )
@@ -252,7 +289,6 @@ object SuperStreamExtractor : SuperStream() {
         sharedPref: SharedPreferences? = null,
         context: Context? = null,
     ) {
-        if (!isUrduSubtitleMode(sharedPref, context)) return
         val key = buildPrewarmDedupKey(lookupSpec)
         val now = System.currentTimeMillis()
         val lastRun = prewarmHistory[key]
@@ -260,11 +296,20 @@ object SuperStreamExtractor : SuperStream() {
         prewarmHistory[key] = now
 
         val catalogSources = createCatalogSources(sharedPref, context)
+        val bolChalConfig = resolveSuperStreamBolChalConfig(sharedPref, context)
         prewarmScope.launch {
-            runCatching {
-                withTimeoutOrNull(8_000L) {
-                    casStore.prewarmMetadataAsync(lookupSpec, catalogSources)
+            try {
+                withTimeoutOrNull(PREWARM_TIMEOUT_MS) {
+                    casStore.prewarmSubtitlesAsync(
+                        spec = lookupSpec,
+                        catalogSources = catalogSources,
+                        bolChalConfig = bolChalConfig,
+                        bolChalTransport = bolChalTransport,
+                    )
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
             }
         }
     }

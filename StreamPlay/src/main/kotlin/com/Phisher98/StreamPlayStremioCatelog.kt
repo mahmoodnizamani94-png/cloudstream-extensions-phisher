@@ -32,13 +32,11 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.phisher98.StreamPlay.Companion.dahmerMoviesAPI
-import com.phisher98.StreamPlayExtractor.invokeSubtitleAPI
-import com.phisher98.StreamPlayExtractor.invokeWYZIESubs
 import com.phisher98.StreamPlayExtractor.token
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.joinAll
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentLinkedQueue
 import org.json.JSONObject
 
 
@@ -129,6 +127,7 @@ class StreamPlayStremioCatelog(
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
+        val playback = UrduSubtitleEngine.openPlaybackScope()
         val res = parseJson<LoadData>(data)
         val imdb = res.resolveImdbId()
         val cinemeta = imdb?.let {
@@ -169,9 +168,9 @@ class StreamPlayStremioCatelog(
             minQualityStreams = 2,
             qualityThreshold = Qualities.P720.value,
             highBitrateThresholdKbps = 2500,
-            minSubtitles = 1,
+            minSubtitles = 0,
             satisfyWithOneLinkIfSubsFound = false,
-            requireSubtitles = true,
+            requireSubtitles = false,
             requireDualQualities = false,
             require720p = true,
             adaptiveTierEscalation = true,
@@ -223,13 +222,10 @@ class StreamPlayStremioCatelog(
             subtitleCallback = subtitleCallback,
             sharedPref = effectiveSharedPref,
         )
-        val urduMode = sessionMode != com.phisher98.subtitles.SessionSubtitleMode.DEFAULT
         val subtitleLedger = SubtitleSourceLedger(
             targetEnglishSources = TARGET_ENGLISH_SUBTITLE_SOURCES,
             targetUrduSources = UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES,
         )
-        val englishDonorSubs = java.util.concurrent.CopyOnWriteArrayList<SubtitleFile>()
-        val rawSubtitleIngestJobs = java.util.concurrent.ConcurrentLinkedQueue<kotlinx.coroutines.Job>()
         val isMovieMedia = resolved.season == null || resolved.season < 0
 
         fun emitSessionSubtitle(sessionSub: SubtitleFile): Boolean {
@@ -290,19 +286,22 @@ class StreamPlayStremioCatelog(
             )
         }
 
-        val episodeSubtitleSession = if (urduMode) {
-            UrduSubtitleEngine.createEpisodeSession(
-                lookupSpec = lookupSpec,
-                mode = sessionMode,
-                sharedPref = effectiveSharedPref,
-                callbackIdentityToken = subtitleCallback,
-            ) { sessionSub ->
-                emitSessionSubtitle(sessionSub)
-            }.also { episodeSubtitleSessionRef = it }
-        } else {
-            null
-        }
-        val catalogSessionRan = java.util.concurrent.atomic.AtomicBoolean(false)
+        val episodeSubtitleSession = UrduSubtitleEngine.createEpisodeSession(
+            lookupSpec = lookupSpec,
+            mode = sessionMode,
+            sharedPref = effectiveSharedPref,
+            callbackIdentityToken = subtitleCallback,
+        ) { sessionSub ->
+            emitSessionSubtitle(sessionSub)
+        }.also { episodeSubtitleSessionRef = it }
+        val videoExtractionDone = CompletableDeferred<Unit>()
+        val sidecarJobs = ConcurrentLinkedQueue<Job>()
+        UrduSubtitleEngine.launchCatalogThenComplete(
+            scope = playback,
+            session = episodeSubtitleSession,
+            videoExtractionDone = videoExtractionDone,
+            sidecarJobs = sidecarJobs,
+        )
 
         fun trackedSubCallbackFor(sourceHint: String): (SubtitleFile) -> Unit = subCallback@{ rawSub ->
             val rawUrl = rawSub.url.trim()
@@ -321,49 +320,23 @@ class StreamPlayStremioCatelog(
                 return@subCallback
             }
             val cleanedLang = cleanSubtitleLabel(rawSub.lang)
+            val isUrdu = isUrduSubtitleLabel(cleanedLang)
+            val isEnglish = isEnglishSubtitleLabel(cleanedLang)
+            if (!isUrdu && !isEnglish) return@subCallback
             val explicitProvenance = rawSub.headers?.entries
                 ?.firstOrNull { it.key.equals("X-StreamPlay-Source", ignoreCase = true) }
                 ?.value?.trim()?.takeIf { it.isNotBlank() }
             val provenance = explicitProvenance ?: sourceHint.ifBlank { StreamPlayShield.hostOf(normalizedUrl) }
-
-            if (urduMode && episodeSubtitleSession != null) {
-                val isUrdu = isUrduSubtitleLabel(cleanedLang)
-                val isEnglish = isEnglishSubtitleLabel(cleanedLang)
-                if (!isUrdu && !isEnglish) return@subCallback
-                val shieldedSub = SubtitleFile(lang = cleanedLang, url = normalizedUrl).apply {
-                    headers = (rawSub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
-                }
-                if (isEnglish) {
-                    if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
-                        emitSessionSubtitle(shieldedSub)
-                    } else if (englishDonorSubs.size < 4) {
-                        val wasEmpty = englishDonorSubs.isEmpty()
-                        englishDonorSubs.add(shieldedSub)
-                        if (wasEmpty && catalogSubsFound.get() == 0) {
-                            earlyController.onSubtitleEmitted(shieldedSub)
-                        }
-                    }
-                }
-                val job = launch(kotlinx.coroutines.Dispatchers.IO) {
-                    runCatching {
-                        episodeSubtitleSession.ingestRawSubtitle(shieldedSub, rawSourceHint = provenance)
-                    }
-                }
-                rawSubtitleIngestJobs.add(job)
-                return@subCallback
+            val shieldedSub = SubtitleFile(lang = cleanedLang, url = normalizedUrl).apply {
+                headers = (rawSub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
             }
-
-            if (isEnglishSubtitleLabel(cleanedLang)) {
-                if (!subtitleLedger.markEmitted(cleanedLang, normalizedUrl, rawSub.headers)) return@subCallback
-                subtitleLedger.recordEnglishDelivery(provenance, sourceHint)
-                val normalizedSub = SubtitleFile(lang = cleanedLang, url = normalizedUrl).apply {
-                    headers = (rawSub.headers ?: emptyMap()) + ("X-StreamPlay-Source" to provenance)
-                }
-                catalogSubsFound.incrementAndGet()
-                earlyController.onSubtitleEmitted(normalizedSub)
-                subtitleCallback(normalizedSub)
-                dispatcher.onSubtitleReceived()
-            }
+            UrduSubtitleEngine.enqueueRawSubtitleIngest(
+                scope = playback,
+                session = episodeSubtitleSession,
+                subtitle = shieldedSub,
+                rawSourceHint = provenance,
+                sidecarJobs = sidecarJobs,
+            )
         }
 
         val stremioAddons = StreamPlayStremioAddonSettings.getDynamicStremioMap(
@@ -377,27 +350,6 @@ class StreamPlayStremioCatelog(
         val authToken = token
 
         val tasks = buildList {
-            if (urduMode && episodeSubtitleSession != null) {
-                add(
-                    PipelinedTask(
-                        providerId = "urdu-catalog-session",
-                        initialTier = LatencyTier.TIER_1,
-                        isVideo = false,
-                        taskTimeoutMs = 12_000L,
-                        priorityBoost = 99f
-                    ) {
-                        episodeSubtitleSession.discoverAndIngestCatalog()
-                        catalogSessionRan.set(true)
-                    }
-                )
-            } else {
-                add(PipelinedTask("subtitles", LatencyTier.TIER_1, isVideo = false) {
-                    invokeSubtitleAPI(imdb, resolved.season, resolved.episode, trackedSubCallbackFor("subtitleapi"))
-                })
-                add(PipelinedTask("wyziesub", LatencyTier.TIER_1, isVideo = false) {
-                    invokeWYZIESubs(imdb, res.season, res.episode, trackedSubCallbackFor("wyziesub"))
-                })
-            }
             providersList.forEach { provider ->
                 val boost = FAST_PROVIDER_BOOST[provider.id] ?: 0f
                 add(PipelinedTask(
@@ -443,34 +395,8 @@ class StreamPlayStremioCatelog(
                 config = earlySatisfactionConfig,
                 controller = earlyController
             )
-
-            if (urduMode && episodeSubtitleSession != null) {
-                if (!catalogSessionRan.get() && subtitleLedger.nativeOrHumanUrduSourceCount() < UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) {
-                    withTimeoutOrNull(8_000L) {
-                        episodeSubtitleSession.discoverAndIngestCatalog()
-                    }
-                }
-                val jobsSnapshot = rawSubtitleIngestJobs.toList()
-                val joined = withTimeoutOrNull(6_000L) {
-                    jobsSnapshot.joinAll()
-                }
-                if (joined == null) {
-                    jobsSnapshot.forEach { it.cancel() }
-                }
-                withTimeoutOrNull(20_000L) {
-                    episodeSubtitleSession.completeSession()
-                }
-                if (sessionMode == com.phisher98.subtitles.SessionSubtitleMode.URDU &&
-                    subtitleLedger.urduSourceCount() == 0 &&
-                    englishDonorSubs.isNotEmpty()
-                ) {
-                    for (donor in englishDonorSubs.take(2)) {
-                        emitSessionSubtitle(donor)
-                    }
-                }
-            }
         } finally {
-            englishDonorSubs.clear()
+            videoExtractionDone.complete(Unit)
             dispatcher.flush()
         }
 
@@ -586,40 +512,20 @@ class StreamPlayStremioCatelog(
         }
 
         suspend fun toLoadResponse(provider: StreamPlayStremioCatelog, imdbId: String?): LoadResponse {
-            val urduMode = UrduSubtitleEngine.isUrduMode(
-                context = null,
-                sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref
-            )
             val parsedYear = yearNum?.split("–", "-")?.firstOrNull()?.trim()?.toIntOrNull()
             val isMovieEntry = videos.isNullOrEmpty()
-            if (urduMode) {
+            if (isMovieEntry) {
                 val safeTitles = listOfNotNull(name.trim().takeIf { it.isNotBlank() }, imdbId)
                     .ifEmpty { listOf("Media") }
-                val prewarmSpec = if (isMovieEntry) {
-                    com.phisher98.subtitles.MediaLookupSpec.Movie(
+                UrduSubtitleEngine.prewarmSubtitlesAsync(
+                    lookupSpec = com.phisher98.subtitles.MediaLookupSpec.Movie(
                         imdbId = imdbId,
                         tmdbId = null,
                         titles = safeTitles,
                         releaseYear = parsedYear,
                         expectedDurationMs = null,
-                    )
-                } else {
-                    com.phisher98.subtitles.MediaLookupSpec.Episode(
-                        imdbId = imdbId,
-                        tmdbId = null,
-                        titles = safeTitles,
-                        seriesPremiereYear = parsedYear,
-                        seasonAirYear = parsedYear,
-                        expectedDurationMs = null,
-                        coordinate = com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
-                            season = 1,
-                            episode = 1,
-                        ),
-                    )
-                }
-                UrduSubtitleEngine.prewarmMetadataAsync(
-                    lookupSpec = prewarmSpec,
-                    sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref
+                    ),
+                    sharedPref = provider.sharedPref ?: StreamPlay.companionSharedPref,
                 )
             }
             val enrichedTags = (genre ?: genres)

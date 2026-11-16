@@ -2801,7 +2801,7 @@ object StreamPlayExtractor : StreamPlay() {
             var emittedUrdu = 0
             orderedSubs.forEach { (lan, subUrl) ->
                 if (isUrduSubtitleLabel(lan)) {
-                    if (emittedUrdu >= 2) return@forEach
+                    if (emittedUrdu >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) return@forEach
                     val materializedUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
                         url = subUrl,
                         headers = headers,
@@ -2983,7 +2983,7 @@ object StreamPlayExtractor : StreamPlay() {
                             }
                         )
                         emittedForUrl++
-                        if (emittedForUrl >= 2) break
+                        if (emittedForUrl >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) break
                     } else {
                         subtitleCallback.invoke(
                             newSubtitleFile(langName, subUrl) {
@@ -3202,7 +3202,7 @@ object StreamPlayExtractor : StreamPlay() {
                 val urData = urBody?.let { tryParseJson<Array<WYZIESubtitle>>(it) }
                 if (!urData.isNullOrEmpty()) {
                     for (sub in urData) {
-                        if (emittedUrdu >= 2) break
+                        if (emittedUrdu >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) break
                         val subUrl = sub.url.trim().takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
                         val materializedUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
                             url = subUrl,
@@ -3221,7 +3221,7 @@ object StreamPlayExtractor : StreamPlay() {
                 }
             }
 
-            if (urduMode && emittedUrdu >= 2) return
+            if (urduMode && emittedUrdu >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) return
             val queryPath = "/search?$baseParams$keySuffix"
             val body = cancellableGetText("$WYZIESubsAPI$queryPath", timeoutSec = 8L)
                 ?: cancellableGetText("https://sub.wyzie.ru$queryPath", timeoutSec = 8L)
@@ -3256,7 +3256,7 @@ object StreamPlayExtractor : StreamPlay() {
             )
             orderedSubs.forEach { (lan, suburl) ->
                 if (isUrduSubtitleLabel(lan)) {
-                    if (emittedUrdu >= 2) return@forEach
+                    if (emittedUrdu >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) return@forEach
                     val materializedUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
                         url = suburl,
                         headers = SUBTITLE_BROWSER_HEADERS,
@@ -3310,7 +3310,7 @@ object StreamPlayExtractor : StreamPlay() {
                 var emittedYts = 0
                 var emittedUrdu = 0
                 for (candidate in urRows) {
-                    if (emittedUrdu >= 2) break
+                    if (emittedUrdu >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) break
                     val dlHeaders = SUBTITLE_BROWSER_HEADERS + mapOf(
                         "Referer" to candidate.referer,
                         "X-StreamPlay-Source" to "yify",
@@ -3352,7 +3352,7 @@ object StreamPlayExtractor : StreamPlay() {
             if (urduMode) {
                 var emittedYifyUrdu = 0
                 for (candidate in parseYifySubtitleRowsForLanguage(yifyBody, "Urdu")) {
-                    if (emittedYifyUrdu >= 2) break
+                    if (emittedYifyUrdu >= UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES) break
                     val dlHeaders = SUBTITLE_BROWSER_HEADERS + mapOf(
                         "Referer" to candidate.referer,
                         "X-StreamPlay-Source" to "yify",
@@ -4570,7 +4570,6 @@ object StreamPlayExtractor : StreamPlay() {
 
                 // 1. Parse captions / subtitles across both standard and dash-hevc responses (deduplicated by URL)
                 var hasCaptions = false
-                var hasEnglishCaptions = false
                 val seenSubUrls = mutableSetOf<String>()
                 val allCaptions = buildList {
                     primaryStream.captions?.let { addAll(it) }
@@ -4589,9 +4588,6 @@ object StreamPlayExtractor : StreamPlay() {
                     if (!subUrl.isNullOrBlank() && seenSubUrls.add(subUrl)) {
                         hasCaptions = true
                         val lang = cleanSubtitleLabel(caption.language)
-                        if (isEnglishSubtitleLabel(lang)) {
-                            hasEnglishCaptions = true
-                        }
                         subtitleCallback?.invoke(
                             newSubtitleFile(lang, subUrl) {
                                 this.headers = vidlinkSubtitleHeaders
@@ -4933,20 +4929,6 @@ object StreamPlayExtractor : StreamPlay() {
                     }
                 }
 
-                // For non-anime Movie/TV streams without native English captions in Default mode,
-                // harvest English subtitles from WyZIESUB and SubtitleAPI. Never do this on anime or
-                // in Urdu mode (where Wyzie and SubtitleAPI already run as dedicated SOTA Urdu tasks
-                // and must not be disguised under `vidlink` provenance).
-                val urduMode = UrduSubtitleEngine.isUrduMode(sharedPref = sharedPref ?: companionSharedPref)
-                if (!hasEnglishCaptions && !isAnime && !urduMode && subtitleCallback != null) {
-                    val subLookupId = imdbId?.trim()?.takeIf { it.isNotBlank() } ?: effectiveTmdbId?.toString()
-                    if (!subLookupId.isNullOrBlank()) {
-                        invokeWYZIESubs(subLookupId, season, episode, subtitleCallback)
-                    }
-                    if (!imdbId.isNullOrBlank()) {
-                        invokeSubtitleAPI(imdbId.trim(), season, episode, subtitleCallback)
-                    }
-                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e

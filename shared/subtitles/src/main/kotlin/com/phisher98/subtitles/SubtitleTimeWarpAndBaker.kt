@@ -244,7 +244,51 @@ sealed interface SubtitleTimeWarp {
             val trimmed = spec?.trim()?.takeIf { it.isNotEmpty() } ?: return Identity
             return parse(trimmed).getOrElse { Identity }
         }
+
+        fun compose(inner: SubtitleTimeWarp, outer: SubtitleTimeWarp): SubtitleTimeWarp {
+            if (outer.isIdentity) return inner
+            if (inner.isIdentity) return outer
+            if (inner is Affine && outer is Affine) {
+                if (outer.fpsRatio == FpsRatio.UNITY) {
+                    return Affine(inner.fpsRatio, inner.offsetMs + outer.offsetMs).let {
+                        if (it.isIdentity) Identity else it
+                    }
+                }
+                if (inner.fpsRatio == FpsRatio.UNITY) {
+                    val scaledOffsetMs = (outer.fpsRatio.scaleUs(inner.offsetMs * 1_000L) + 500L).floorDiv(1_000L)
+                    return Affine(outer.fpsRatio, scaledOffsetMs + outer.offsetMs).let {
+                        if (it.isIdentity) Identity else it
+                    }
+                }
+            }
+            return ComposedWarp(inner, outer)
+        }
     }
+}
+
+private data class ComposedWarp(
+    val inner: SubtitleTimeWarp,
+    val outer: SubtitleTimeWarp,
+) : SubtitleTimeWarp {
+    override val isIdentity: Boolean get() = inner.isIdentity && outer.isIdentity
+    override fun forwardUs(subTimeUs: Long): Long = outer.forwardUs(inner.forwardUs(subTimeUs))
+    override fun inverseUs(mediaTimeUs: Long): Long = inner.inverseUs(outer.inverseUs(mediaTimeUs))
+    override fun withAdditionalOffsetMs(deltaMs: Long): SubtitleTimeWarp =
+        SubtitleTimeWarp.compose(inner, outer.withAdditionalOffsetMs(deltaMs))
+    override fun serialize(): String = outer.serialize().takeIf { inner.isIdentity } ?: inner.serialize()
+}
+
+fun CueDocument.warpedToMedia(warp: SubtitleTimeWarp): CueDocument {
+    if (warp.isIdentity || cues.isEmpty()) return this
+    val mapped = ArrayList<CueEntry>(cues.size)
+    for (cue in cues) {
+        val sMs = (warp.forwardUs(cue.span.startMs * 1_000L) + 500L).floorDiv(1_000L).coerceAtLeast(0L)
+        val eMs = (warp.forwardUs(cue.span.endMs * 1_000L) + 500L).floorDiv(1_000L)
+        if (eMs > sMs) {
+            mapped.add(CueEntry(cue.id, CueSpan(sMs, eMs), cue.text))
+        }
+    }
+    return if (mapped.isEmpty()) this else CueDocument.fromCues(language, mapped)
 }
 
 object SubtitleArchiveDecoder {
