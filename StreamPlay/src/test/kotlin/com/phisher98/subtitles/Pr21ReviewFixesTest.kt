@@ -1204,18 +1204,33 @@ class Pr21ReviewFixesTest {
         val tempRoot = Files.createTempDirectory("pr21-outside-diff-fixes").toFile()
         val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
         val enSrt = makeEnglishSrt(15, startSec = 10, stepSec = 4)
+        val urSrt = makeUrduSrt(15, startSec = 10, stepSec = 4)
         val enBytes = enSrt.toByteArray()
+        val urBytes = urSrt.toByteArray()
+        val wyzieUrduQueries = AtomicInteger(0)
+        val wyzieEnglishQueries = AtomicInteger(0)
         server.createContext("/en.srt") { ex ->
             ex.sendResponseHeaders(200, enBytes.size.toLong())
             ex.responseBody.use { it.write(enBytes) }
         }
+        server.createContext("/ur.srt") { ex ->
+            ex.sendResponseHeaders(200, urBytes.size.toLong())
+            ex.responseBody.use { it.write(urBytes) }
+        }
         server.createContext("/wyzie") { ex ->
             val q = ex.requestURI.rawQuery.orEmpty()
-            val url = "http://127.0.0.1:${server.address.port}/en.srt"
+            val enUrl = "http://127.0.0.1:${server.address.port}/en.srt"
+            val urUrl = "http://127.0.0.1:${server.address.port}/ur.srt"
             val json = if ("language=ur" in q) {
-                "[]"
+                wyzieUrduQueries.incrementAndGet()
+                if ("tt9700001" in q) {
+                    """[{"id":"ur-1","url":"$urUrl","language":"ur","display":"Urdu","format":"srt"}]"""
+                } else {
+                    "[]"
+                }
             } else {
-                """[{"id":"en-1","url":"$url","language":"en","display":"English","format":"srt"}]"""
+                wyzieEnglishQueries.incrementAndGet()
+                """[{"id":"en-1","url":"$enUrl","language":"en","display":"English","format":"srt"}]"""
             }
             val b = json.toByteArray()
             ex.sendResponseHeaders(200, b.size.toLong())
@@ -1284,9 +1299,23 @@ class Pr21ReviewFixesTest {
                 },
                 warmBolChalWindows = true,
             )
+            assertTrue("Expected Wyzie Urdu catalog query after bypassing ENGLISH-only cache", wyzieUrduQueries.get() >= 1)
+            assertTrue("Expected Wyzie English catalog query after bypassing ENGLISH-only cache", wyzieEnglishQueries.get() >= 1)
+            assertEquals(
+                setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH),
+                prewarmBundle.wantedLanguages,
+            )
+            val discoveredUrdu = prewarmBundle.discovery.candidatesFor(SubtitleLanguage.URDU)
+            val discoveredEnglish = prewarmBundle.discovery.candidatesFor(SubtitleLanguage.ENGLISH)
+            assertTrue("prewarmSubtitlesAsync must discover Urdu candidates", discoveredUrdu.isNotEmpty())
+            assertTrue("prewarmSubtitlesAsync must discover English candidates", discoveredEnglish.isNotEmpty())
             assertTrue(
-                "prewarmSubtitlesAsync must re-run discovery when cached bundle only wanted ENGLISH",
-                prewarmBundle.wantedLanguages.containsAll(setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH)),
+                "prewarmSubtitlesAsync must decode and cache Urdu payload",
+                discoveredUrdu.any { UrduCasStore.candidateCacheKey(it) in prewarmBundle.decodedPayloadsByUrlAndLang },
+            )
+            assertTrue(
+                "prewarmSubtitlesAsync must decode and cache English payload",
+                discoveredEnglish.any { UrduCasStore.candidateCacheKey(it) in prewarmBundle.decodedPayloadsByUrlAndLang },
             )
             assertTrue("Expected bolChalTransport warm call after cache bypass", prewarmCalls.get() >= 1)
 
