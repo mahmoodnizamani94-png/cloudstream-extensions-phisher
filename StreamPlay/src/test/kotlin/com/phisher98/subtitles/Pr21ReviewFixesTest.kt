@@ -1324,5 +1324,40 @@ class Pr21ReviewFixesTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun catalogHttpTransportCancelsInFlightRequestImmediatelyOnCoroutineCancellation() = runBlocking {
+        val requestStarted = CompletableDeferred<Unit>()
+        val releaseServer = java.util.concurrent.CountDownLatch(1)
+        val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+        val executor = java.util.concurrent.Executors.newCachedThreadPool()
+        server.executor = executor
+        server.createContext("/slow") { ex ->
+            requestStarted.complete(Unit)
+            releaseServer.await(20, java.util.concurrent.TimeUnit.SECONDS)
+            runCatching {
+                val b = "late".toByteArray()
+                ex.sendResponseHeaders(200, b.size.toLong())
+                ex.responseBody.use { it.write(b) }
+            }
+            runCatching { ex.close() }
+        }
+        server.start()
+        try {
+            val transport = DefaultCatalogHttpTransport(allowPrivateNetworks = true)
+            val job = async {
+                transport.get("http://127.0.0.1:${server.address.port}/slow", timeoutMs = 15_000L)
+            }
+            withTimeout(3_000L) { requestStarted.await() }
+            val t0 = System.nanoTime()
+            withTimeout(2_000L) { job.cancelAndJoin() }
+            val cancelMs = (System.nanoTime() - t0) / 1_000_000L
+            assertTrue("Expected immediate cancellation of in-flight HTTP request, took ${cancelMs}ms", cancelMs < 1_500L)
+        } finally {
+            releaseServer.countDown()
+            server.stop(0)
+            executor.shutdownNow()
+        }
+    }
 }
 

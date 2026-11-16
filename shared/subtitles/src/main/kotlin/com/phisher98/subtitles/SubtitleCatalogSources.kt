@@ -4,11 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.ConnectionPool
 import okhttp3.Dns
 import okhttp3.FormBody
@@ -17,8 +19,10 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.jsoup.Jsoup
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -32,7 +36,8 @@ import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 
 data class CatalogHttpResponse(
@@ -153,11 +158,18 @@ class DefaultCatalogHttpTransport(
 ) : CatalogHttpTransport {
     override val supportsExtendedLiveScrapers: Boolean = true
 
+    private class SsrfBlockedIOException(val securityException: SecurityException) :
+        IOException(securityException.message, securityException)
+
     private val ssrfGuardingDns = Dns { hostname ->
         if (allowPrivateNetworks) {
             dnsLookup(hostname)
         } else {
-            resolveAndValidateAddresses(hostname)
+            try {
+                resolveAndValidateAddresses(hostname)
+            } catch (se: SecurityException) {
+                throw SsrfBlockedIOException(se)
+            }
         }
     }
 
@@ -165,6 +177,7 @@ class DefaultCatalogHttpTransport(
         OkHttpClient.Builder()
             .followRedirects(false)
             .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
             .connectionPool(ConnectionPool(8, 30, TimeUnit.SECONDS))
             .dns(ssrfGuardingDns)
             .apply {
@@ -327,57 +340,33 @@ class DefaultCatalogHttpTransport(
                 reqBuilder.method(currentMethod, currentBody)
 
                 val call = hopClient.newCall(reqBuilder.build())
-                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
-                    if (cause != null) call.cancel()
-                }
-                try {
-                    call.execute().use { resp ->
-                        if (resp.code in REDIRECT_STATUS_CODES) {
-                            val loc = resp.header("Location")
-                            if (loc.isNullOrBlank() || hops >= MAX_REDIRECTS) {
-                                return@withContext Result.failure(
-                                    IllegalStateException("Too many or empty redirects (${resp.code}) for $currentUrl")
-                                )
-                            }
-                            val nextUrl = resolveRedirectUrl(currentUrl, loc)
-                            var nextHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
-                            if (resp.code == 301 || resp.code == 302 || resp.code == 303) {
-                                if (currentMethod != "GET") {
-                                    currentMethod = "GET"
-                                    currentBody = null
-                                    nextHeaders = nextHeaders.filterKeys {
-                                        !it.equals("Content-Type", ignoreCase = true) &&
-                                            !it.equals("Content-Length", ignoreCase = true)
-                                    }
+                when (val outcome = executeCallHop(call, currentUrl, deadlineNs)) {
+                    is HopOutcome.Redirect -> {
+                        val loc = outcome.location
+                        if (loc.isNullOrBlank() || hops >= MAX_REDIRECTS) {
+                            return@withContext Result.failure(
+                                IllegalStateException("Too many or empty redirects (${outcome.statusCode}) for $currentUrl")
+                            )
+                        }
+                        val nextUrl = resolveRedirectUrl(currentUrl, loc)
+                        var nextHeaders = headersForRedirect(currentUrl, nextUrl, hopHeaders)
+                        if (outcome.statusCode == 301 || outcome.statusCode == 302 || outcome.statusCode == 303) {
+                            if (currentMethod != "GET") {
+                                currentMethod = "GET"
+                                currentBody = null
+                                nextHeaders = nextHeaders.filterKeys {
+                                    !it.equals("Content-Type", ignoreCase = true) &&
+                                        !it.equals("Content-Length", ignoreCase = true)
                                 }
                             }
-                            hopHeaders = nextHeaders
-                            currentUrl = nextUrl
-                            hops++
-                            return@use
                         }
-
-                        val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
-                        if (resp.code !in 200..299 || bytes.isEmpty()) {
-                            return@withContext Result.failure(
-                                IllegalStateException("HTTP ${resp.code} for $currentUrl")
-                            )
-                        }
-                        val outHeaders = LinkedHashMap<String, String>()
-                        for (name in resp.headers.names()) {
-                            resp.headers[name]?.let { outHeaders[name] = it }
-                        }
-                        return@withContext Result.success(
-                            CatalogHttpResponse(
-                                statusCode = resp.code,
-                                bodyBytes = bytes,
-                                finalUrl = resp.request.url.toString(),
-                                headers = outHeaders,
-                            )
-                        )
+                        hopHeaders = nextHeaders
+                        currentUrl = nextUrl
+                        hops++
                     }
-                } finally {
-                    cancelHandle?.dispose()
+                    is HopOutcome.Complete -> {
+                        return@withContext outcome.result
+                    }
                 }
             }
             @Suppress("UNREACHABLE_CODE")
@@ -387,6 +376,76 @@ class DefaultCatalogHttpTransport(
         } catch (t: Throwable) {
             Result.failure(t)
         }
+    }
+
+    private sealed interface HopOutcome {
+        data class Redirect(val statusCode: Int, val location: String?) : HopOutcome
+        data class Complete(val result: Result<CatalogHttpResponse>) : HopOutcome
+    }
+
+    private suspend fun executeCallHop(
+        call: Call,
+        currentUrl: String,
+        deadlineNs: Long,
+    ): HopOutcome = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation {
+            call.cancel()
+        }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (!cont.isActive) return
+                val unwrapped = (e as? SsrfBlockedIOException)?.securityException
+                    ?: generateSequence<Throwable>(e) { it.cause }.firstOrNull { it is SecurityException }
+                    ?: e
+                cont.resumeWithException(unwrapped)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use { resp ->
+                    try {
+                        if (resp.code in REDIRECT_STATUS_CODES) {
+                            if (cont.isActive) {
+                                cont.resume(HopOutcome.Redirect(resp.code, resp.header("Location")))
+                            }
+                            return
+                        }
+                        val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
+                        if (resp.code !in 200..299 || bytes.isEmpty()) {
+                            if (cont.isActive) {
+                                cont.resume(
+                                    HopOutcome.Complete(
+                                        Result.failure(IllegalStateException("HTTP ${resp.code} for $currentUrl"))
+                                    )
+                                )
+                            }
+                            return
+                        }
+                        val outHeaders = LinkedHashMap<String, String>()
+                        for (name in resp.headers.names()) {
+                            resp.headers[name]?.let { outHeaders[name] = it }
+                        }
+                        if (cont.isActive) {
+                            cont.resume(
+                                HopOutcome.Complete(
+                                    Result.success(
+                                        CatalogHttpResponse(
+                                            statusCode = resp.code,
+                                            bodyBytes = bytes,
+                                            finalUrl = resp.request.url.toString(),
+                                            headers = outHeaders,
+                                        )
+                                    )
+                                )
+                            )
+                        }
+                    } catch (t: Throwable) {
+                        if (cont.isActive) {
+                            cont.resumeWithException(t)
+                        }
+                    }
+                }
+            }
+        })
     }
 
     override suspend fun get(
