@@ -1198,5 +1198,131 @@ class Pr21ReviewFixesTest {
             server.stop(0)
         }
     }
+
+    @Test
+    fun prewarmRequiresUrduAndEnglishAndTransientLocalizationFailureRetriesOnce() = runBlocking {
+        val tempRoot = Files.createTempDirectory("pr21-outside-diff-fixes").toFile()
+        val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+        val enSrt = makeEnglishSrt(15, startSec = 10, stepSec = 4)
+        val enBytes = enSrt.toByteArray()
+        server.createContext("/en.srt") { ex ->
+            ex.sendResponseHeaders(200, enBytes.size.toLong())
+            ex.responseBody.use { it.write(enBytes) }
+        }
+        server.createContext("/wyzie") { ex ->
+            val q = ex.requestURI.rawQuery.orEmpty()
+            val url = "http://127.0.0.1:${server.address.port}/en.srt"
+            val json = if ("language=ur" in q) {
+                "[]"
+            } else {
+                """[{"id":"en-1","url":"$url","language":"en","display":"English","format":"srt"}]"""
+            }
+            val b = json.toByteArray()
+            ex.sendResponseHeaders(200, b.size.toLong())
+            ex.responseBody.use { it.write(b) }
+        }
+        server.start()
+        try {
+            val casStore = UrduCasStore(tempRoot)
+            val spec = MediaLookupSpec.Movie(imdbId = "tt9700001", tmdbId = null, titles = listOf("Prewarm Langs"), releaseYear = 2024)
+            val endpoints = CatalogEndpoints(
+                subDlApiV1Url = "",
+                subDlAutoUrl = "",
+                subDlWebHost = "",
+                subDlDownloadHost = "",
+                openSubtitlesStremioHost = "",
+                subtitleApiHost = "",
+                openSubtitlesRestHost = "",
+                wyziePrimaryHost = "http://127.0.0.1:${server.address.port}/wyzie",
+                wyzieFallbackHost = "http://127.0.0.1:${server.address.port}/wyzie",
+                subSourceApiV1Host = "",
+                subSourceOriginHost = "",
+                subSourceWebHost = "",
+                subSenseBaseUrl = "",
+                subf2mHost = "",
+                ytsSubsHost = "",
+                ytsSubsZipHost = "",
+                yifyHost = "",
+                addic7edHost = "",
+                gestdownHost = "",
+                subtitleCatHost = "",
+            )
+            val transport = DefaultCatalogHttpTransport(allowPrivateNetworks = true)
+            val catalogSources = SubtitleCatalogSources(endpoints = endpoints, transport = transport)
+
+            // Seed an English-only playback discovery bundle
+            val seededCandidate = CatalogDiscoveredCandidate(
+                meta = CatalogueCandidateMeta(
+                    catalogue = CatalogueSourceKey.WYZIE,
+                    language = SubtitleLanguage.ENGLISH,
+                    titleOrReleaseText = "English",
+                ),
+                downloadUrl = "http://127.0.0.1:${server.address.port}/en.srt",
+                preDownloadScore = 100,
+            )
+            casStore.rememberPlaybackDiscovery(
+                spec = spec,
+                discovery = CatalogDiscoveryResult(
+                    admittedCandidates = listOf(seededCandidate),
+                    rejectedPreDownload = emptyList(),
+                ),
+                decodedPayloads = mapOf(UrduCasStore.candidateCacheKey(seededCandidate) to enSrt),
+                wantedLanguages = setOf(SubtitleLanguage.ENGLISH),
+            )
+
+            val prewarmCalls = AtomicInteger(0)
+            val prewarmBundle = casStore.prewarmSubtitlesAsync(
+                spec = spec,
+                catalogSources = catalogSources,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    prewarmCalls.incrementAndGet()
+                    Result.success(
+                        window.targetCues.associate { it.id to BolChalCueOut(it.id, "یہ ٹیسٹ ترجمہ ہے نمبر ${it.id.value}") } to
+                            LocalizationTierKey.KEYLESS_BOLCHAL_NMT
+                    )
+                },
+                warmBolChalWindows = true,
+            )
+            assertTrue(
+                "prewarmSubtitlesAsync must re-run discovery when cached bundle only wanted ENGLISH",
+                prewarmBundle.wantedLanguages.containsAll(setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH)),
+            )
+            assertTrue("Expected bolChalTransport warm call after cache bypass", prewarmCalls.get() >= 1)
+
+            // Transient failure during streaming localization must retry once in completeSession (and cap at 2 attempts)
+            val emitted = CopyOnWriteArrayList<SubtitleFile>()
+            val streamingAttempts = AtomicInteger(0)
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(imdbId = "tt9700002", tmdbId = null, titles = listOf("Retry Cap"), releaseYear = 2024),
+                mode = SessionSubtitleMode.URDU,
+                casStore = casStore,
+                httpTransport = transport,
+                catalogSources = catalogSources,
+                targetUrduDiversityCount = 1,
+                progressiveBilingualMode = true,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    val n = streamingAttempts.incrementAndGet()
+                    if (n == 1) {
+                        Result.failure(RuntimeException("transient_network_error"))
+                    } else {
+                        Result.success(
+                            window.targetCues.associate { it.id to BolChalCueOut(it.id, "دوسری کوشش میں ترجمہ نمبر ${it.id.value}") } to
+                                LocalizationTierKey.KEYLESS_BOLCHAL_NMT
+                        )
+                    }
+                },
+                subtitleCallback = { emitted.add(it) },
+            )
+            session.discoverAndIngestCatalog(enabledSources = setOf(CatalogueSourceKey.WYZIE))
+            val report = session.completeSession()
+            assertEquals("Transient failure during streaming must recover cleanly in completeSession", 1, report.emittedUrduCandidates.size)
+            assertEquals("Retry cap should allow exactly 2 attempts (1 streaming + 1 Pass 1 recovery)", 2, streamingAttempts.get())
+        } finally {
+            server.stop(0)
+            tempRoot.deleteRecursively()
+        }
+    }
 }
 

@@ -251,7 +251,11 @@ class UrduCasStore(
             synchronized(sharedState.lock) {
                 pruneExpiredPrewarmsLocked(nowMs)
                 val cached = sharedState.prewarmBundleLru[key]
-                if (cached != null && cached.isFullPayloadPrewarm && nowMs - cached.createdAtMs <= PREWARM_BUNDLE_TTL_MS) {
+                if (cached != null &&
+                    cached.isFullPayloadPrewarm &&
+                    cached.wantedLanguages.containsAll(PREWARM_LANGUAGES) &&
+                    nowMs - cached.createdAtMs <= PREWARM_BUNDLE_TTL_MS
+                ) {
                     return cached
                 }
                 val inFlight = sharedState.inFlightPrewarms[key]
@@ -285,7 +289,7 @@ class UrduCasStore(
                         val downloadJobs = ConcurrentHashMap.newKeySet<kotlinx.coroutines.Job>()
                         val disc = catalogSources.discoverCandidatesStreaming(
                             spec = spec,
-                            languages = setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH),
+                            languages = PREWARM_LANGUAGES,
                             onBatchDiscovered = { _, batch ->
                                 for (cand in batch) {
                                     val shouldFetch = when (cand.language) {
@@ -352,7 +356,7 @@ class UrduCasStore(
                         decodedPayloadsByUrlAndLang = decodedMap.toMap(),
                         prewarmedWindowCount = warmedWindows,
                         isFullPayloadPrewarm = true,
-                        wantedLanguages = setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH),
+                        wantedLanguages = PREWARM_LANGUAGES,
                     )
                 }
                 synchronized(sharedState.lock) {
@@ -580,6 +584,7 @@ class UrduCasStore(
         const val DEFAULT_PIN_LEASE_TTL_MS = 6L * 3_600_000L
         const val PREWARM_BUNDLE_TTL_MS = 30L * 60_000L
         const val DEFAULT_MAX_PREWARM_TOTAL_CHARS = 12 * 1024 * 1024
+        internal val PREWARM_LANGUAGES = setOf(SubtitleLanguage.URDU, SubtitleLanguage.ENGLISH)
         private val SHARED_ROOT_STATES = ConcurrentHashMap<String, SharedRootState>()
 
         internal fun candidateCacheKey(cand: CatalogDiscoveredCandidate): String =
@@ -587,6 +592,7 @@ class UrduCasStore(
     }
 }
 
+private const val MAX_DONOR_EDITION_ATTEMPTS = 2
 private val NEXT_BUFFERED_DONOR_ENTRY_ID = AtomicLong(0L)
 
 data class BufferedEnglishDonor(
@@ -648,6 +654,7 @@ class EpisodeSubtitleSession(
     private val usedHumanCatalogueVariants = HashMap<CatalogueSourceKey, MutableSet<String>>()
     private val usedEnglishCatalogueCounts = HashMap<CatalogueSourceKey, Int>()
     private val inFlightOrCompletedDonorEditions = HashSet<Pair<ContentSha256, BolChalEditionProfile>>()
+    private val donorEditionAttempts = HashMap<Pair<ContentSha256, BolChalEditionProfile>, Int>()
     private val seenEnglishCatalogSources = HashSet<CatalogueSourceKey>()
     private val seenEnglishCatalogContent = HashSet<ContentSha256>()
     private val seenEnglishDialogueFingerprints = HashSet<ContentSha256>()
@@ -938,9 +945,13 @@ class EpisodeSubtitleSession(
                         }
                         val nextDonor = rankedEnglishDonorsSnapshot().firstOrNull { donor ->
                             !donor.isSubtitleCatOrigFallback &&
-                                (donor.document.dialogueFingerprint to BolChalEditionProfile.CONVERSATIONAL) !in inFlightOrCompletedDonorEditions
+                                canReserveDonorEditionLocked(
+                                    donor.document.dialogueFingerprint to BolChalEditionProfile.CONVERSATIONAL
+                                )
                         } ?: return@withLock null
-                        inFlightOrCompletedDonorEditions.add(nextDonor.document.dialogueFingerprint to BolChalEditionProfile.CONVERSATIONAL)
+                        tryReserveDonorEditionLocked(
+                            nextDonor.document.dialogueFingerprint to BolChalEditionProfile.CONVERSATIONAL
+                        )
                         val exactDur = speechTimeline?.mediaDurationMs?.takeIf { it > 0L }
                         nextDonor to exactDur
                     } ?: return@launch
@@ -1200,6 +1211,18 @@ class EpisodeSubtitleSession(
         }
     }
 
+    private fun canReserveDonorEditionLocked(key: Pair<ContentSha256, BolChalEditionProfile>): Boolean =
+        key !in inFlightOrCompletedDonorEditions &&
+            (donorEditionAttempts[key] ?: 0) < MAX_DONOR_EDITION_ATTEMPTS
+
+    private fun tryReserveDonorEditionLocked(key: Pair<ContentSha256, BolChalEditionProfile>): Boolean {
+        val attempts = donorEditionAttempts[key] ?: 0
+        if (attempts >= MAX_DONOR_EDITION_ATTEMPTS) return false
+        if (!inFlightOrCompletedDonorEditions.add(key)) return false
+        donorEditionAttempts[key] = attempts + 1
+        return true
+    }
+
     private suspend fun localizeAndCommitDonorEdition(
         donorEntry: BufferedEnglishDonor,
         edition: BolChalEditionProfile,
@@ -1250,6 +1273,11 @@ class EpisodeSubtitleSession(
             localizedResult.fold(
                 onFailure = { err ->
                     if (err is CancellationException) throw err
+                    if (err !is CandidateGateRejectedException) {
+                        inFlightOrCompletedDonorEditions.remove(
+                            donorEntry.document.dialogueFingerprint to edition
+                        )
+                    }
                     val rejection = (err as? CandidateGateRejectedException)?.rejection
                         ?: VerifiedSubtitleCandidate.Rejected.WrongScriptOrBrokenSmt(
                             err.message ?: "bolchal_localization_failed"
@@ -1323,7 +1351,7 @@ class EpisodeSubtitleSession(
                             if (!seenDonorFingerprints.add(d.document.dialogueFingerprint)) continue
                             if (!seenDonorIds.add(d.donor.wireDonorId)) continue
                             val key = d.document.dialogueFingerprint to BolChalEditionProfile.CONVERSATIONAL
-                            if (inFlightOrCompletedDonorEditions.add(key)) {
+                            if (tryReserveDonorEditionLocked(key)) {
                                 distinctDonors.add(d)
                             }
                         }
@@ -1362,7 +1390,7 @@ class EpisodeSubtitleSession(
                             for (donor in ranked.take(2)) {
                                 if (plans.size >= remaining) break
                                 val key = donor.document.dialogueFingerprint to edition
-                                if (inFlightOrCompletedDonorEditions.add(key)) {
+                                if (tryReserveDonorEditionLocked(key)) {
                                     plans.add(Triple(donor, edition, exactDur))
                                 }
                             }

@@ -1656,6 +1656,7 @@ object SceneBolChalLocalizer {
         var effectiveTier = LocalizationTierKey.KEYLESS_BOLCHAL_NMT
         var mergedAnyWindow = false
         var completedWindows = 0
+        var lastProgressSnapshotWindows = 0
         var firstWindowError: Throwable? = null
         var fatalSecurityError: SecurityException? = null
         val sourceById = sourceCues.associateBy { it.id }
@@ -1690,6 +1691,7 @@ object SceneBolChalLocalizer {
 
         fun buildPartialSnapshotLocked(): Pair<Int, CueDocument?> {
             val done = completedWindows
+            if (done >= windows.size || done - lastProgressSnapshotWindows < 2) return done to null
             if (translatedById.isEmpty()) return done to null
             val partialEntries = sourceCues.mapNotNull { sc ->
                 translatedById[sc.id]?.let { ur -> CueEntry(sc.id, sc.span, ur) }
@@ -1697,6 +1699,9 @@ object SceneBolChalLocalizer {
             if (partialEntries.isEmpty()) return done to null
             val refined = UrduCpsRefiner.refineDocument(partialEntries, config, videoDurationMs)
             val doc = if (refined.isNotEmpty()) CueDocument.fromCues(SubtitleLanguage.URDU, refined) else null
+            if (doc != null) {
+                lastProgressSnapshotWindows = done
+            }
             return done to doc
         }
 
