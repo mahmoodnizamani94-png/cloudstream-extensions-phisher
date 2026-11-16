@@ -276,7 +276,10 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             val cleanImdb = res.imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
             val cleanTmdb = res.id?.takeIf { it > 0 }
             val expectedDurationMs = res.runtimeMinutes?.takeIf { it > 0 }?.times(60_000L)
-            return if (res.isMovie == true || res.season == null || res.season < 0) {
+            val isMovie = res.isMovie == true
+            val hasExplicitSeason = res.season != null && res.season >= 0
+            val hasEpisode = res.episode != null && res.episode > 0
+            return if (isMovie || (!hasExplicitSeason && !hasEpisode)) {
                 MediaLookupSpec.Movie(
                     imdbId = cleanImdb,
                     tmdbId = cleanTmdb,
@@ -286,16 +289,29 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
                     isAnime = res.isAnime,
                 )
             } else {
+                val resolvedEpisode = (res.episode ?: 1).coerceAtLeast(1)
+                val coordinate = if (hasExplicitSeason) {
+                    EpisodeCoordinate.VerifiedSeasonEpisode(
+                        season = res.season!!,
+                        episode = resolvedEpisode,
+                    )
+                } else if (res.isAnime) {
+                    EpisodeCoordinate.UnverifiedAnimeCour(
+                        courTitles = titles.ifEmpty { listOf("Anime") },
+                        episodeInCour = resolvedEpisode,
+                    )
+                } else {
+                    EpisodeCoordinate.UnverifiedEpisodeOnly(
+                        episode = resolvedEpisode,
+                    )
+                }
                 MediaLookupSpec.Episode(
                     imdbId = cleanImdb,
                     tmdbId = cleanTmdb,
                     titles = titles,
-                    coordinate = EpisodeCoordinate.VerifiedSeasonEpisode(
-                        season = res.season,
-                        episode = res.episode?.takeIf { it > 0 } ?: 1,
-                    ),
+                    coordinate = coordinate,
                     seriesPremiereYear = res.airedYear ?: res.year,
-                    seasonAirYear = res.year,
+                    seasonAirYear = res.year ?: res.airedYear,
                     expectedDurationMs = expectedDurationMs,
                     isAnime = res.isAnime,
                 )
@@ -1010,8 +1026,14 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        val playback = UrduSubtitleEngine.openPlaybackScope()
         val res = parseJson<LinkData>(data)
+        val sessionMode = UrduSubtitleEngine.resolveSessionMode(
+            subtitleCallback = subtitleCallback,
+            sharedPref = sharedPref ?: companionSharedPref,
+        )
+        val playback = UrduSubtitleEngine.openPlaybackScope(
+            isDownloadRequest = sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+        )
 
         val allProviders = buildProviders()
         val disabledProviderIds = getOrInitializeDisabledProviders(sharedPref)
@@ -1089,10 +1111,6 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             isAnime = res.isAnime
         )
 
-        val sessionMode = UrduSubtitleEngine.resolveSessionMode(
-            subtitleCallback = subtitleCallback,
-            sharedPref = sharedPref ?: companionSharedPref,
-        )
         val urduMode = sessionMode != SessionSubtitleMode.DEFAULT
 
         val subtitleLedger = SubtitleSourceLedger(
@@ -1286,7 +1304,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         if (prioritizedPrimary.isEmpty() && stremioAddons.isEmpty() && fallbackProviders.isEmpty()) {
             Log.w(TAG, "No StreamPlay sources enabled or applicable for this title")
             videoExtractionDone.complete(Unit)
-            UrduSubtitleEngine.cancelPlayback()
+            UrduSubtitleEngine.cancelPlayback(playback)
             return@coroutineScope false
         }
 

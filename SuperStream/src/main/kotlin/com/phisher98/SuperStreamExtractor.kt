@@ -110,19 +110,34 @@ object SuperStreamExtractor : SuperStream() {
     private var activePlaybackJob: kotlinx.coroutines.Job? = null
 
     internal fun cancelActivePlaybackJob() {
+        cancelPlayback(null)
+    }
+
+    internal fun cancelPlayback(scope: CoroutineScope? = null) {
+        val owner = scope?.coroutineContext?.get(kotlinx.coroutines.Job)
         synchronized(playbackJobLock) {
-            activePlaybackJob?.cancel()
-            activePlaybackJob = null
+            if (owner == null) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = null
+            } else {
+                owner.cancel()
+                if (activePlaybackJob === owner) {
+                    activePlaybackJob = null
+                }
+            }
         }
     }
 
-    internal fun openPlaybackScope(): CoroutineScope {
-        synchronized(playbackJobLock) {
-            activePlaybackJob?.cancel()
-            val playbackJob = SupervisorJob(subtitlePlaybackScope.coroutineContext[kotlinx.coroutines.Job])
-            activePlaybackJob = playbackJob
-            return CoroutineScope(subtitlePlaybackScope.coroutineContext + playbackJob)
+    internal fun openPlaybackScope(isDownloadRequest: Boolean = false): CoroutineScope {
+        val playbackJob = SupervisorJob(subtitlePlaybackScope.coroutineContext[kotlinx.coroutines.Job])
+        val scope = CoroutineScope(subtitlePlaybackScope.coroutineContext + playbackJob)
+        if (!isDownloadRequest) {
+            synchronized(playbackJobLock) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = playbackJob
+            }
         }
+        return scope
     }
 
     internal fun launchOn(
@@ -819,14 +834,18 @@ object SuperStreamExtractor : SuperStream() {
     }
 
     private fun buildPrewarmDedupKey(spec: MediaLookupSpec): String = when (spec) {
-        is MediaLookupSpec.Movie ->
-            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|${spec.titles.firstOrNull().orEmpty()}|${spec.releaseYear ?: 0}"
+        is MediaLookupSpec.Movie -> {
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|${spec.releaseYear ?: 0}"
+        }
         is MediaLookupSpec.Episode -> {
             val coordPart = when (val c = spec.coordinate) {
                 is EpisodeCoordinate.VerifiedSeasonEpisode -> "S${c.season}E${c.episode}"
-                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty()}:E${c.episodeInCour}"
+                is EpisodeCoordinate.UnverifiedEpisodeOnly -> "E${c.episode}"
+                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)}:E${c.episodeInCour}"
             }
-            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$coordPart|${spec.seriesPremiereYear ?: 0}"
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|$coordPart|${spec.seriesPremiereYear ?: 0}"
         }
     }
 

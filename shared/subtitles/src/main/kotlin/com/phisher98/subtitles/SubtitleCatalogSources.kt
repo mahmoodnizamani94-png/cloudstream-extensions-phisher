@@ -14,6 +14,9 @@ import org.jsoup.Jsoup
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URL
@@ -134,22 +137,98 @@ interface CatalogHttpTransport {
     }
 }
 
-class DefaultCatalogHttpTransport : CatalogHttpTransport {
+class DefaultCatalogHttpTransport(
+    val allowPrivateNetworks: Boolean = false,
+) : CatalogHttpTransport {
     override val supportsExtendedLiveScrapers: Boolean = true
     private val jsonMapper = ObjectMapper()
+
+    internal fun validateDestinationUrl(rawUrl: String): String {
+        val cleanUrl = rawUrl.trim()
+        val uri = try {
+            URI(cleanUrl)
+        } catch (t: Throwable) {
+            throw IllegalArgumentException("Invalid catalog HTTP URL: $cleanUrl", t)
+        }
+        val scheme = uri.scheme?.lowercase(Locale.ROOT).orEmpty()
+        if (scheme != "http" && scheme != "https") {
+            throw IllegalArgumentException("Unsupported catalog HTTP URL scheme: $cleanUrl")
+        }
+        val host = uri.host?.trim()?.removeSurrounding("[", "]")
+            ?.takeIf { it.isNotEmpty() }
+            ?: throw IllegalArgumentException("Missing host in catalog HTTP URL: $cleanUrl")
+
+        if (!allowPrivateNetworks) {
+            if (host.equals("localhost", ignoreCase = true) ||
+                host.endsWith(".localhost", ignoreCase = true) ||
+                host.endsWith(".local", ignoreCase = true) ||
+                host.endsWith(".internal", ignoreCase = true)
+            ) {
+                throw SecurityException("Refusing private/local catalog host: $host")
+            }
+            val resolved = InetAddress.getAllByName(host)
+            if (resolved.isEmpty()) {
+                throw SecurityException("DNS resolved 0 addresses for host: $host")
+            }
+            for (addr in resolved) {
+                if (isBlockedAddress(addr)) {
+                    throw SecurityException("Refusing non-public catalog destination IP for host: $host")
+                }
+            }
+        }
+        return cleanUrl
+    }
+
+    private fun isBlockedAddress(addr: InetAddress): Boolean {
+        if (addr.isAnyLocalAddress ||
+            addr.isLoopbackAddress ||
+            addr.isLinkLocalAddress ||
+            addr.isSiteLocalAddress ||
+            addr.isMulticastAddress
+        ) {
+            return true
+        }
+        val raw = addr.address
+        if (addr is Inet4Address && raw.size == 4) {
+            val b0 = raw[0].toInt() and 0xFF
+            val b1 = raw[1].toInt() and 0xFF
+            if (b0 == 0 || b0 == 127 || b0 == 10) return true
+            if (b0 == 169 && b1 == 254) return true
+            if (b0 == 172 && b1 in 16..31) return true
+            if (b0 == 192 && b1 == 168) return true
+            if (b0 == 100 && (b1 and 0xC0) == 64) return true
+        }
+        if (addr is Inet6Address && raw.size == 16) {
+            val b0 = raw[0].toInt() and 0xFF
+            if ((b0 and 0xFE) == 0xFC) return true // fc00::/7 ULA
+            // IPv4-mapped IPv6 (::ffff:a.b.c.d)
+            val isMappedV4 = (0..9).all { raw[it].toInt() == 0 } &&
+                (raw[10].toInt() and 0xFF) == 0xFF &&
+                (raw[11].toInt() and 0xFF) == 0xFF
+            if (isMappedV4) {
+                val v4Bytes = raw.copyOfRange(12, 16)
+                return isBlockedAddress(InetAddress.getByAddress(v4Bytes))
+            }
+        }
+        return false
+    }
+
+    private fun resolveRedirectUrl(baseUrl: String, locationHeader: String): String {
+        val next = URI(baseUrl).resolve(locationHeader.trim()).toString()
+        return validateDestinationUrl(next)
+    }
 
     override suspend fun get(
         url: String,
         headers: Map<String, String>,
         timeoutMs: Long,
     ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        val cleanUrl = url.trim()
-        if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
-            !cleanUrl.startsWith("http://", ignoreCase = true)
-        ) {
-            return@withContext Result.failure(
-                IllegalArgumentException("Unsupported catalog HTTP URL scheme: $cleanUrl")
-            )
+        val initialUrl = try {
+            validateDestinationUrl(url)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            return@withContext Result.failure(t)
         }
 
         val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
@@ -165,21 +244,47 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         try {
             val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
                 try {
-                    val timeoutSec = ((effectiveBudgetMs + 999L) / 1_000L).coerceAtLeast(1L)
-                    val resp = app.get(cleanUrl, headers = reqHeaders, timeout = timeoutSec)
-                    val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
-                    val outHeaders = LinkedHashMap<String, String>()
-                    for (name in resp.headers.names()) {
-                        resp.headers[name]?.let { outHeaders[name] = it }
+                    var currentUrl = initialUrl
+                    var hops = 0
+                    var finalNice: CatalogHttpResponse? = null
+                    while (true) {
+                        val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+                        if (remainingMs < 200L) break
+                        val timeoutSec = ((remainingMs + 999L) / 1_000L).coerceAtLeast(1L)
+                        val resp = app.get(
+                            currentUrl,
+                            headers = reqHeaders,
+                            timeout = timeoutSec,
+                            allowRedirects = false,
+                        )
+                        if (resp.code in REDIRECT_STATUS_CODES) {
+                            val loc = resp.headers["location"] ?: resp.headers["Location"]
+                            if (loc.isNullOrBlank() || hops >= MAX_REDIRECTS) {
+                                finalNice = CatalogHttpResponse(resp.code, ByteArray(0), currentUrl)
+                                break
+                            }
+                            currentUrl = resolveRedirectUrl(currentUrl, loc)
+                            hops++
+                            continue
+                        }
+                        val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
+                        val outHeaders = LinkedHashMap<String, String>()
+                        for (name in resp.headers.names()) {
+                            resp.headers[name]?.let { outHeaders[name] = it }
+                        }
+                        finalNice = CatalogHttpResponse(
+                            statusCode = resp.code,
+                            bodyBytes = bytes,
+                            finalUrl = resp.url,
+                            headers = outHeaders,
+                        )
+                        break
                     }
-                    CatalogHttpResponse(
-                        statusCode = resp.code,
-                        bodyBytes = bytes,
-                        finalUrl = resp.url,
-                        headers = outHeaders,
-                    )
+                    finalNice
                 } catch (ce: CancellationException) {
                     throw ce
+                } catch (se: SecurityException) {
+                    throw se
                 } catch (_: Throwable) {
                     null
                 }
@@ -188,36 +293,55 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
                 return@withContext if (niceResp.isSuccess) {
                     Result.success(niceResp)
                 } else {
-                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} for $cleanUrl"))
+                    Result.failure(IllegalStateException("HTTP ${niceResp.statusCode} for $initialUrl"))
                 }
             }
 
-            val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
-            if (remainingMs < 400L) {
-                return@withContext Result.failure(
-                    SocketTimeoutException("Catalog GET budget exhausted (${effectiveBudgetMs}ms) for $cleanUrl")
-                )
-            }
-
-            val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                instanceFollowRedirects = true
-                connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
-                reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
-            }
-            try {
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val bytes = stream?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
-                val resolvedUrl = conn.url?.toString() ?: cleanUrl
-                if (code !in 200..299 || bytes.isEmpty()) {
-                    return@withContext Result.failure(IllegalStateException("HTTP $code for $cleanUrl"))
+            var currentUrl = initialUrl
+            var hops = 0
+            while (true) {
+                val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+                if (remainingMs < 400L) {
+                    return@withContext Result.failure(
+                        SocketTimeoutException("Catalog GET budget exhausted (${effectiveBudgetMs}ms) for $currentUrl")
+                    )
                 }
-                Result.success(CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = resolvedUrl))
-            } finally {
-                conn.disconnect()
+
+                val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    instanceFollowRedirects = false
+                    connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
+                    readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
+                    reqHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+                }
+                try {
+                    val code = conn.responseCode
+                    if (code in REDIRECT_STATUS_CODES) {
+                        val loc = conn.getHeaderField("Location")
+                        if (loc.isNullOrBlank() || hops >= MAX_REDIRECTS) {
+                            return@withContext Result.failure(
+                                IllegalStateException("Too many or empty redirects ($code) for $currentUrl")
+                            )
+                        }
+                        currentUrl = resolveRedirectUrl(currentUrl, loc)
+                        hops++
+                        continue
+                    }
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val bytes = stream?.use { readBoundedStream(it, deadlineNs) } ?: ByteArray(0)
+                    val resolvedUrl = conn.url?.toString() ?: currentUrl
+                    if (code !in 200..299 || bytes.isEmpty()) {
+                        return@withContext Result.failure(IllegalStateException("HTTP $code for $currentUrl"))
+                    }
+                    return@withContext Result.success(
+                        CatalogHttpResponse(statusCode = code, bodyBytes = bytes, finalUrl = resolvedUrl)
+                    )
+                } finally {
+                    conn.disconnect()
+                }
             }
+            @Suppress("UNREACHABLE_CODE")
+            Result.failure(IllegalStateException("Unreachable"))
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -231,13 +355,12 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         headers: Map<String, String>,
         timeoutMs: Long,
     ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        val cleanUrl = url.trim()
-        if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
-            !cleanUrl.startsWith("http://", ignoreCase = true)
-        ) {
-            return@withContext Result.failure(
-                IllegalArgumentException("Unsupported catalog POST URL scheme: $cleanUrl")
-            )
+        val cleanUrl = try {
+            validateDestinationUrl(url)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            return@withContext Result.failure(t)
         }
 
         val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
@@ -253,7 +376,23 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
             val niceResp = withTimeoutOrNull(effectiveBudgetMs) {
                 try {
                     val timeoutSec = ((effectiveBudgetMs + 999L) / 1_000L).coerceAtLeast(1L)
-                    val resp = app.post(cleanUrl, headers = reqHeaders, data = formFields, timeout = timeoutSec)
+                    val resp = app.post(
+                        cleanUrl,
+                        headers = reqHeaders,
+                        data = formFields,
+                        timeout = timeoutSec,
+                        allowRedirects = false,
+                    )
+                    if (resp.code in REDIRECT_STATUS_CODES) {
+                        val loc = resp.headers["location"] ?: resp.headers["Location"]
+                        if (loc.isNullOrBlank()) {
+                            return@withTimeoutOrNull CatalogHttpResponse(resp.code, ByteArray(0), cleanUrl)
+                        }
+                        val nextUrl = resolveRedirectUrl(cleanUrl, loc)
+                        val redir = app.get(nextUrl, headers = reqHeaders, timeout = timeoutSec, allowRedirects = false)
+                        val bytes = redir.body.byteStream().use { readBoundedStream(it, deadlineNs) }
+                        return@withTimeoutOrNull CatalogHttpResponse(redir.code, bytes, redir.url)
+                    }
                     val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
                     CatalogHttpResponse(
                         statusCode = resp.code,
@@ -262,6 +401,8 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
                     )
                 } catch (ce: CancellationException) {
                     throw ce
+                } catch (se: SecurityException) {
+                    throw se
                 } catch (_: Throwable) {
                     null
                 }
@@ -286,6 +427,7 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
             }.toByteArray(StandardCharsets.UTF_8)
             val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
+                instanceFollowRedirects = false
                 doOutput = true
                 connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
                 readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
@@ -317,13 +459,12 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
         headers: Map<String, String>,
         timeoutMs: Long,
     ): Result<CatalogHttpResponse> = withContext(Dispatchers.IO) {
-        val cleanUrl = url.trim()
-        if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
-            !cleanUrl.startsWith("http://", ignoreCase = true)
-        ) {
-            return@withContext Result.failure(
-                IllegalArgumentException("Unsupported catalog POST JSON URL scheme: $cleanUrl")
-            )
+        val cleanUrl = try {
+            validateDestinationUrl(url)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            return@withContext Result.failure(t)
         }
 
         val effectiveBudgetMs = timeoutMs.coerceIn(250L, 20_000L)
@@ -348,7 +489,13 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
                         jsonBody,
                         object : com.fasterxml.jackson.core.type.TypeReference<Map<String, Any?>>() {},
                     )
-                    val resp = app.post(cleanUrl, headers = reqHeaders, json = bodyMap, timeout = timeoutSec)
+                    val resp = app.post(
+                        cleanUrl,
+                        headers = reqHeaders,
+                        json = bodyMap,
+                        timeout = timeoutSec,
+                        allowRedirects = false,
+                    )
                     val bytes = resp.body.byteStream().use { readBoundedStream(it, deadlineNs) }
                     CatalogHttpResponse(
                         statusCode = resp.code,
@@ -357,6 +504,8 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
                     )
                 } catch (ce: CancellationException) {
                     throw ce
+                } catch (se: SecurityException) {
+                    throw se
                 } catch (_: Throwable) {
                     null
                 }
@@ -379,6 +528,7 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
             val payload = jsonBody.toByteArray(StandardCharsets.UTF_8)
             val conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
+                instanceFollowRedirects = false
                 doOutput = true
                 connectTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
                 readTimeout = remainingMs.coerceIn(400L, 15_000L).toInt()
@@ -425,6 +575,8 @@ class DefaultCatalogHttpTransport : CatalogHttpTransport {
     companion object {
         const val DEFAULT_BROWSER_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        private val REDIRECT_STATUS_CODES = setOf(301, 302, 303, 307, 308)
+        private const val MAX_REDIRECTS = 5
     }
 }
 
@@ -2609,13 +2761,13 @@ class SubtitleCatalogSources(
         if (spec.tvdbId != null && spec.tvdbId > 0) {
             val tvdbResp = transport.get("$gestBase/shows/external/tvdb/${spec.tvdbId}", headers).getOrNull()
             if (tvdbResp != null) {
-                showId = parseGestdownShowId(tvdbResp.textUtf8, title)
+                showId = parseGestdownShowId(tvdbResp.textUtf8, title, allowUnmatchedFallback = true)
             }
         }
         if (showId == null) {
             val encodedTitle = urlEncode(title).replace("+", "%20")
             val searchResp = transport.get("$gestBase/shows/search/$encodedTitle", headers).getOrNull() ?: return 0
-            showId = parseGestdownShowId(searchResp.textUtf8, title) ?: return 0
+            showId = parseGestdownShowId(searchResp.textUtf8, title, allowUnmatchedFallback = false) ?: return 0
         }
 
         val subsResp = transport.get(
@@ -2662,7 +2814,11 @@ class SubtitleCatalogSources(
         return count
     }
 
-    internal fun parseGestdownShowId(jsonBody: String, expectedTitle: String): String? {
+    internal fun parseGestdownShowId(
+        jsonBody: String,
+        expectedTitle: String,
+        allowUnmatchedFallback: Boolean = false,
+    ): String? {
         val root = runCatching { mapper.readTree(jsonBody) }.getOrNull() ?: return null
         val shows = when {
             root.path("shows").isArray -> root.path("shows")
@@ -2681,7 +2837,7 @@ class SubtitleCatalogSources(
                 return id
             }
         }
-        return firstId
+        return if (allowUnmatchedFallback) firstId else null
     }
 
 
@@ -2902,6 +3058,32 @@ class SubtitleCatalogSources(
                                     season = null,
                                     episode = coord.episodeInCour,
                                     alternateEpisode = coord.absoluteEpisode,
+                                )
+                            )
+                        }
+                        plans.distinctBy { it.query.lowercase(Locale.ROOT) }.take(3)
+                    }
+                    is EpisodeCoordinate.UnverifiedEpisodeOnly -> {
+                        val cleanTitles = spec.titles.asSequence()
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .distinctBy { it.lowercase(Locale.ROOT) }
+                            .take(2)
+                            .toList()
+                        val plans = ArrayList<SubtitleCatQueryPlan>(4)
+                        for (t in cleanTitles) {
+                            plans.add(
+                                SubtitleCatQueryPlan(
+                                    query = "$t E%02d".format(Locale.ROOT, coord.episode),
+                                    season = null,
+                                    episode = coord.episode,
+                                )
+                            )
+                            plans.add(
+                                SubtitleCatQueryPlan(
+                                    query = "$t %02d".format(Locale.ROOT, coord.episode),
+                                    season = null,
+                                    episode = coord.episode,
                                 )
                             )
                         }

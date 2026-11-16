@@ -127,7 +127,14 @@ class StreamPlayStremioCatelog(
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        val playback = UrduSubtitleEngine.openPlaybackScope()
+        val effectiveSharedPref = sharedPref ?: StreamPlay.companionSharedPref
+        val sessionMode = UrduSubtitleEngine.resolveSessionMode(
+            subtitleCallback = subtitleCallback,
+            sharedPref = effectiveSharedPref,
+        )
+        val playback = UrduSubtitleEngine.openPlaybackScope(
+            isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+        )
         val res = parseJson<LoadData>(data)
         val imdb = res.resolveImdbId()
         val cinemeta = imdb?.let {
@@ -217,16 +224,17 @@ class StreamPlayStremioCatelog(
             }
         }
 
-        val effectiveSharedPref = sharedPref ?: StreamPlay.companionSharedPref
-        val sessionMode = UrduSubtitleEngine.resolveSessionMode(
-            subtitleCallback = subtitleCallback,
-            sharedPref = effectiveSharedPref,
-        )
         val subtitleLedger = SubtitleSourceLedger(
             targetEnglishSources = TARGET_ENGLISH_SUBTITLE_SOURCES,
             targetUrduSources = UrduSubtitleEngine.TARGET_URDU_SUBTITLE_SOURCES,
         )
-        val isMovieMedia = resolved.season == null || resolved.season < 0
+        val hasExplicitSeason = resolved.season != null && resolved.season >= 0
+        val hasEpisodeNumber = resolved.episode != null && resolved.episode > 0
+        val isTvMedia = !resolved.type.equals("movie", ignoreCase = true) &&
+            (hasExplicitSeason || hasEpisodeNumber ||
+                resolved.type.equals("series", ignoreCase = true) ||
+                resolved.type.equals("tv", ignoreCase = true) ||
+                resolved.type.equals("anime", ignoreCase = true))
 
         fun emitSessionSubtitle(sessionSub: SubtitleFile): Boolean {
             val rawUrl = sessionSub.url.trim()
@@ -263,7 +271,7 @@ class StreamPlayStremioCatelog(
             .filter { it.isNotBlank() }
             .distinctBy { it.lowercase() }
             .ifEmpty { listOfNotNull(imdb).ifEmpty { listOf("Media") } }
-        val lookupSpec = if (isMovieMedia) {
+        val lookupSpec = if (!isTvMedia) {
             com.phisher98.subtitles.MediaLookupSpec.Movie(
                 imdbId = imdb,
                 tmdbId = cinemeta?.tmdbId,
@@ -272,6 +280,17 @@ class StreamPlayStremioCatelog(
                 expectedDurationMs = null,
             )
         } else {
+            val resolvedEpisode = (resolved.episode ?: 1).coerceAtLeast(1)
+            val coordinate = if (hasExplicitSeason) {
+                com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
+                    season = resolved.season!!,
+                    episode = resolvedEpisode,
+                )
+            } else {
+                com.phisher98.subtitles.EpisodeCoordinate.UnverifiedEpisodeOnly(
+                    episode = resolvedEpisode,
+                )
+            }
             com.phisher98.subtitles.MediaLookupSpec.Episode(
                 imdbId = imdb,
                 tmdbId = cinemeta?.tmdbId,
@@ -279,10 +298,7 @@ class StreamPlayStremioCatelog(
                 seriesPremiereYear = resolved.year,
                 seasonAirYear = resolved.year,
                 expectedDurationMs = null,
-                coordinate = com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
-                    season = resolved.season,
-                    episode = resolved.episode?.takeIf { it > 0 } ?: 1,
-                ),
+                coordinate = coordinate,
             )
         }
 
@@ -387,6 +403,12 @@ class StreamPlayStremioCatelog(
                     addon()
                 })
             }
+        }
+
+        if (tasks.isEmpty()) {
+            videoExtractionDone.complete(Unit)
+            UrduSubtitleEngine.cancelPlayback(playback)
+            return@coroutineScope false
         }
 
         try {

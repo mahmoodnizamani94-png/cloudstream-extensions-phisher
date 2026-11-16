@@ -449,7 +449,13 @@ class StreamPlayAnime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        val playback = UrduSubtitleEngine.openPlaybackScope()
+        val sessionMode = UrduSubtitleEngine.resolveSessionMode(
+            subtitleCallback = subtitleCallback,
+            sharedPref = StreamPlay.companionSharedPref,
+        )
+        val playback = UrduSubtitleEngine.openPlaybackScope(
+            isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+        )
         val mediaData = AppUtils.parseJson<LinkData>(data)
         val malId = mediaData.malId
         val episode = mediaData.episode
@@ -503,10 +509,6 @@ class StreamPlayAnime : MainAPI() {
         )
         val topTierDualGuardedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-        val sessionMode = UrduSubtitleEngine.resolveSessionMode(
-            subtitleCallback = subtitleCallback,
-            sharedPref = StreamPlay.companionSharedPref,
-        )
         val urduMode = sessionMode != com.phisher98.subtitles.SessionSubtitleMode.DEFAULT
         val subtitleLedger = SubtitleSourceLedger(
             targetEnglishSources = ANIME_TARGET_ENGLISH_SUBTITLE_SOURCES,

@@ -43,6 +43,8 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.SubsExtractors.invokeOpenSubs
 import com.phisher98.SubsExtractors.invokeWatchsomuch
 import com.phisher98.subtitles.CatalogueSourceKey
+import com.phisher98.subtitles.EpisodeSubtitleSession
+import com.phisher98.subtitles.SessionSubtitleMode
 import java.util.Calendar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -229,6 +231,9 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                             title = title,
                             year = episodeYear,
                             tmdbId = resolvedTmdbId,
+                            seriesYear = year,
+                            isAnime = isAnime,
+                            mediaType = if (isAnime) "anime" else "series",
                         ).toJson())
                         {
                             this.name = eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
@@ -269,6 +274,9 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                     title = title,
                     year = year,
                     tmdbId = resolvedTmdbId,
+                    seriesYear = year,
+                    isAnime = isAnime,
+                    mediaType = "movie",
                 ).toJson()
             ) {
                 this.posterUrl = poster
@@ -296,6 +304,19 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val res = parseJson<LoadData>(data)
+        val addonList = buildList {
+            var index = 0
+            while (true) {
+                val key = if (index == 0) "stremio_addon" else "stremio_addon${index + 1}"
+                if (!sharedPref.contains(key)) break
+                add(key)
+                index++
+            }
+        }
+        if (addonList.isEmpty()) {
+            return false
+        }
+
         val lookupSpec = StremioSubtitleCoordinator.buildLookupSpec(
             imdbId = res.imdbId,
             tmdbId = res.tmdbId,
@@ -303,6 +324,9 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
             year = res.year,
             season = res.season,
             episode = res.episode,
+            isAnime = res.isAnime,
+            seriesYear = res.seriesYear,
+            mediaType = res.mediaType,
         )
         val sessionMode = StremioSubtitleCoordinator.resolveSessionMode(subtitleCallback, sharedPref)
 
@@ -338,40 +362,43 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
             java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
         val sidecarIngestJobs = java.util.concurrent.ConcurrentLinkedQueue<Job>()
 
+        val emitHostSubtitle: (SubtitleFile) -> Unit = { sub ->
+            val cleanUrl = sub.url.trim()
+            if (cleanUrl.isNotEmpty() &&
+                emittedDedupeKeys.add("${sub.lang.trim().lowercase()}|$cleanUrl")
+            ) {
+                earlyController.onSubtitleEmitted(sub)
+                subtitleCallback(sub)
+            }
+        }
+
         val session = StremioSubtitleCoordinator.createEpisodeSession(
             lookupSpec = lookupSpec,
             mode = sessionMode,
             sharedPref = sharedPref,
             callbackIdentityToken = subtitleCallback,
         ) { sessionSub ->
-            val cleanUrl = sessionSub.url.trim()
-            if (cleanUrl.isNotEmpty() &&
-                emittedDedupeKeys.add("${sessionSub.lang.trim().lowercase()}|$cleanUrl")
-            ) {
-                earlyController.onSubtitleEmitted(sessionSub)
-                subtitleCallback(sessionSub)
-            }
+            emitHostSubtitle(sessionSub)
         }
 
-        val playbackScope = StremioSubtitleCoordinator.openPlaybackScope()
+        val playbackScope = StremioSubtitleCoordinator.openPlaybackScope(
+            isDownloadRequest = sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+        )
+        val forwardSidecar: (SubtitleFile, String) -> Unit = { rawSub, sourceHint ->
+            if (EpisodeSubtitleSession.classifySidecarLanguageOrNull(rawSub) == null) {
+                emitHostSubtitle(rawSub)
+            } else {
+                val job = StremioSubtitleCoordinator.launchOn(playbackScope) {
+                    session.ingestRawSubtitle(
+                        sub = rawSub,
+                        rawSourceHint = sourceHint,
+                    )
+                }
+                sidecarIngestJobs.add(job)
+            }
+        }
         val addonSidecarCallback: (SubtitleFile) -> Unit = { rawSub ->
-            val job = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                session.ingestRawSubtitle(
-                    sub = rawSub,
-                    rawSourceHint = CatalogueSourceKey.STREMIO.wireId,
-                )
-            }
-            sidecarIngestJobs.add(job)
-        }
-
-        val addonList = buildList {
-            var index = 0
-            while (true) {
-                val key = if (index == 0) "stremio_addon" else "stremio_addon${index + 1}"
-                if (!sharedPref.contains(key)) break
-                add(key)
-                index++
-            }
+            forwardSidecar(rawSub, CatalogueSourceKey.STREMIO.wireId)
         }
 
         val tasks = buildList {
@@ -407,53 +434,16 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
         val videoExtractionDone = CompletableDeferred<Unit>()
         StremioSubtitleCoordinator.launchOn(playbackScope) {
             val catalogJob = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                try {
-                    session.discoverAndIngestCatalog()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
-                }
+                session.discoverAndIngestCatalog()
             }
             val watchSoMuchJob = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                try {
-                    invokeWatchsomuch(res.imdbId, res.season, res.episode) { rawSub ->
-                        val job = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                            try {
-                                session.ingestRawSubtitle(
-                                    sub = rawSub,
-                                    rawSourceHint = CatalogueSourceKey.WATCHSOMUCH.wireId,
-                                )
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (_: Throwable) {
-                            }
-                        }
-                        sidecarIngestJobs.add(job)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
+                invokeWatchsomuch(res.imdbId, res.season, res.episode) { rawSub ->
+                    forwardSidecar(rawSub, CatalogueSourceKey.WATCHSOMUCH.wireId)
                 }
             }
             val openSubsJob = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                try {
-                    invokeOpenSubs(res.imdbId, res.season, res.episode) { rawSub ->
-                        val job = StremioSubtitleCoordinator.launchOn(playbackScope) {
-                            try {
-                                session.ingestRawSubtitle(
-                                    sub = rawSub,
-                                    rawSourceHint = CatalogueSourceKey.OPENSUBTITLES.wireId,
-                                )
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (_: Throwable) {
-                            }
-                        }
-                        sidecarIngestJobs.add(job)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
+                invokeOpenSubs(res.imdbId, res.season, res.episode) { rawSub ->
+                    forwardSidecar(rawSub, CatalogueSourceKey.OPENSUBTITLES.wireId)
                 }
             }
 
@@ -477,13 +467,11 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
 
         try {
-            if (tasks.isNotEmpty()) {
-                SpeculativePipeliner.executePipelined(
-                    tasks = tasks,
-                    config = earlySatisfactionConfig,
-                    controller = earlyController
-                )
-            }
+            SpeculativePipeliner.executePipelined(
+                tasks = tasks,
+                config = earlySatisfactionConfig,
+                controller = earlyController
+            )
         } finally {
             videoExtractionDone.complete(Unit)
         }
@@ -594,6 +582,9 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
         val title: String? = null,
         val year: Int? = null,
         val tmdbId: Int? = null,
+        val seriesYear: Int? = null,
+        val isAnime: Boolean = false,
+        val mediaType: String? = null,
     )
 
     data class Data(

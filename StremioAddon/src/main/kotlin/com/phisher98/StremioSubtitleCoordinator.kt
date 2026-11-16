@@ -90,12 +90,30 @@ internal object StremioSubtitleCoordinator {
         }
     }
 
-    fun openPlaybackScope(): CoroutineScope {
+    fun openPlaybackScope(isDownloadRequest: Boolean = false): CoroutineScope {
+        val playbackJob = SupervisorJob(subtitlePlaybackScope.coroutineContext[Job])
+        val scope = CoroutineScope(subtitlePlaybackScope.coroutineContext + playbackJob)
+        if (!isDownloadRequest) {
+            synchronized(playbackJobLock) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = playbackJob
+            }
+        }
+        return scope
+    }
+
+    fun cancelPlayback(scope: CoroutineScope? = null) {
+        val owner = scope?.coroutineContext?.get(Job)
         synchronized(playbackJobLock) {
-            activePlaybackJob?.cancel()
-            val playbackJob = SupervisorJob(subtitlePlaybackScope.coroutineContext[Job])
-            activePlaybackJob = playbackJob
-            return CoroutineScope(subtitlePlaybackScope.coroutineContext + playbackJob)
+            if (owner == null) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = null
+            } else {
+                owner.cancel()
+                if (activePlaybackJob === owner) {
+                    activePlaybackJob = null
+                }
+            }
         }
     }
 
@@ -123,32 +141,45 @@ internal object StremioSubtitleCoordinator {
         runtimeMinutes: Int? = null,
         releaseHints: List<String> = emptyList(),
         isAnime: Boolean = false,
+        seriesYear: Int? = null,
+        mediaType: String? = null,
     ): MediaLookupSpec {
         val cleanImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
         val cleanTmdb = tmdbId?.takeIf { it > 0 }
         val titles = listOfNotNull(title?.trim()?.takeIf { it.isNotBlank() })
         val expectedDurationMs = runtimeMinutes?.takeIf { it > 0 }?.let { it * 60_000L }
 
-        return if (season == null || season < 0) {
+        val hasExplicitSeason = season != null && season >= 0
+        val hasEpisodeNumber = episode != null && episode > 0
+        val isTvType = mediaType.equals("series", ignoreCase = true) ||
+            mediaType.equals("tv", ignoreCase = true) ||
+            mediaType.equals("anime", ignoreCase = true)
+        val isEpisode = !mediaType.equals("movie", ignoreCase = true) &&
+            (hasExplicitSeason || hasEpisodeNumber || isTvType)
+
+        return if (!isEpisode) {
             MediaLookupSpec.Movie(
                 imdbId = cleanImdb,
                 tmdbId = cleanTmdb,
                 titles = titles,
-                releaseYear = year,
+                releaseYear = year ?: seriesYear,
                 expectedDurationMs = expectedDurationMs,
                 releaseHints = releaseHints,
                 isAnime = isAnime,
             )
         } else {
-            val coordinate = if (isAnime && cleanImdb == null && cleanTmdb == null) {
-                EpisodeCoordinate.UnverifiedAnimeCour(
-                    courTitles = titles.ifEmpty { listOf("Anime") },
-                    episodeInCour = (episode ?: 1).coerceAtLeast(1),
+            val resolvedEpisode = (episode ?: 1).coerceAtLeast(1)
+            val coordinate = when {
+                hasExplicitSeason -> EpisodeCoordinate.VerifiedSeasonEpisode(
+                    season = season!!,
+                    episode = resolvedEpisode,
                 )
-            } else {
-                EpisodeCoordinate.VerifiedSeasonEpisode(
-                    season = season,
-                    episode = (episode ?: 1).coerceAtLeast(1),
+                isAnime -> EpisodeCoordinate.UnverifiedAnimeCour(
+                    courTitles = titles.ifEmpty { listOf("Anime") },
+                    episodeInCour = resolvedEpisode,
+                )
+                else -> EpisodeCoordinate.UnverifiedEpisodeOnly(
+                    episode = resolvedEpisode,
                 )
             }
             MediaLookupSpec.Episode(
@@ -156,8 +187,8 @@ internal object StremioSubtitleCoordinator {
                 tmdbId = cleanTmdb,
                 titles = titles,
                 coordinate = coordinate,
-                seriesPremiereYear = year,
-                seasonAirYear = year,
+                seriesPremiereYear = seriesYear ?: year,
+                seasonAirYear = year ?: seriesYear,
                 expectedDurationMs = expectedDurationMs,
                 releaseHints = releaseHints,
                 isAnime = isAnime,
@@ -338,14 +369,18 @@ internal object StremioSubtitleCoordinator {
     }
 
     private fun buildPrewarmDedupKey(spec: MediaLookupSpec): String = when (spec) {
-        is MediaLookupSpec.Movie ->
-            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|${spec.titles.firstOrNull().orEmpty()}|${spec.releaseYear ?: 0}"
+        is MediaLookupSpec.Movie -> {
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|${spec.releaseYear ?: 0}"
+        }
         is MediaLookupSpec.Episode -> {
             val coordPart = when (val c = spec.coordinate) {
                 is EpisodeCoordinate.VerifiedSeasonEpisode -> "S${c.season}E${c.episode}"
-                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty()}:E${c.episodeInCour}"
+                is EpisodeCoordinate.UnverifiedEpisodeOnly -> "E${c.episode}"
+                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)}:E${c.episodeInCour}"
             }
-            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$coordPart|${spec.seriesPremiereYear ?: 0}"
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|$coordPart|${spec.seriesPremiereYear ?: 0}"
         }
     }
 }

@@ -562,7 +562,7 @@ class SuperStreamUrduSubtitleTest {
                 lookupSpec = lookupSpec,
                 mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
                 casStore = casStore,
-                httpTransport = SuperStreamExtractor.httpTransport,
+                httpTransport = com.phisher98.subtitles.DefaultCatalogHttpTransport(allowPrivateNetworks = true),
                 catalogSources = emptyCatalog,
                 bolChalConfig = BolChalConfig(),
                 bolChalTransport = { window, _ ->

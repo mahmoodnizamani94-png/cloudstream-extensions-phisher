@@ -243,6 +243,9 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
             year = loadData.year,
             season = loadData.season,
             episode = loadData.episode,
+            isAnime = loadData.isAnime,
+            seriesYear = loadData.seriesYear,
+            mediaType = loadData.type,
         )
         val videoExtractionDone = CompletableDeferred<Unit>()
         val sidecarIngestCallback = StremioXSubtitleCoordinator.startPlaybackSession(
@@ -317,6 +320,8 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
         val year: Int? = null,
         val title: String? = null,
         val tmdbId: Int? = null,
+        val seriesYear: Int? = null,
+        val isAnime: Boolean = false,
     )
 
     data class CustomSite(
@@ -509,12 +514,16 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
             val isMovieEntry = videos.isNullOrEmpty()
 
             if (isMovieEntry) {
+                val isAnimeEntry = type.equals("anime", ignoreCase = true)
                 StremioXSubtitleCoordinator.prewarmAsync(
                     StremioXSubtitleCoordinator.buildLookupSpec(
                         imdbId = finalImdbId,
                         tmdbId = parsedTmdbId,
                         title = name,
                         year = parsedYear,
+                        isAnime = isAnimeEntry,
+                        seriesYear = parsedYear,
+                        mediaType = type,
                     )
                 )
                 return provider.newMovieLoadResponse(
@@ -528,6 +537,8 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
                         year = parsedYear,
                         title = name,
                         tmdbId = parsedTmdbId,
+                        seriesYear = parsedYear,
+                        isAnime = isAnimeEntry,
                     )
                 ) {
                     posterUrl = poster
@@ -617,6 +628,8 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
                     year = seriesYear,
                     title = seriesTitle,
                     tmdbId = tmdbId,
+                    seriesYear = seriesYear,
+                    isAnime = type.equals("anime", ignoreCase = true),
                 )
             ) {
                 this.name = this@Video.name ?: title

@@ -237,6 +237,34 @@ sealed interface SubtitleTimeWarp {
                 }
                 return PiecewiseLinear.createValidated(ratio, knots)
             }
+            if (lower.startsWith("cmp(") && clean.endsWith(")")) {
+                val body = clean.substring(4, clean.length - 1)
+                var depth = 0
+                var splitIdx = -1
+                for (i in body.indices) {
+                    when (body[i]) {
+                        '(' -> depth++
+                        ')' -> {
+                            depth--
+                            if (depth < 0) {
+                                return Result.failure(IllegalArgumentException("Unbalanced parenthesis in composed warp: $spec"))
+                            }
+                        }
+                        ';' -> if (depth == 0) {
+                            if (splitIdx >= 0) {
+                                return Result.failure(IllegalArgumentException("Multiple top-level separators in composed warp: $spec"))
+                            }
+                            splitIdx = i
+                        }
+                    }
+                }
+                if (depth != 0 || splitIdx <= 0 || splitIdx >= body.length - 1) {
+                    return Result.failure(IllegalArgumentException("Malformed composed warp: $spec"))
+                }
+                val innerWarp = parse(body.substring(0, splitIdx)).getOrElse { return Result.failure(it) }
+                val outerWarp = parse(body.substring(splitIdx + 1)).getOrElse { return Result.failure(it) }
+                return Result.success(compose(innerWarp, outerWarp))
+            }
             return Result.failure(IllegalArgumentException("Unrecognized SubtitleTimeWarp spec: $spec"))
         }
 
@@ -275,7 +303,11 @@ private data class ComposedWarp(
     override fun inverseUs(mediaTimeUs: Long): Long = inner.inverseUs(outer.inverseUs(mediaTimeUs))
     override fun withAdditionalOffsetMs(deltaMs: Long): SubtitleTimeWarp =
         SubtitleTimeWarp.compose(inner, outer.withAdditionalOffsetMs(deltaMs))
-    override fun serialize(): String = outer.serialize().takeIf { inner.isIdentity } ?: inner.serialize()
+    override fun serialize(): String = when {
+        inner.isIdentity -> outer.serialize()
+        outer.isIdentity -> inner.serialize()
+        else -> "cmp(${inner.serialize()};${outer.serialize()})"
+    }
 }
 
 fun CueDocument.warpedToMedia(warp: SubtitleTimeWarp): CueDocument {
@@ -288,7 +320,7 @@ fun CueDocument.warpedToMedia(warp: SubtitleTimeWarp): CueDocument {
             mapped.add(CueEntry(cue.id, CueSpan(sMs, eMs), cue.text))
         }
     }
-    return if (mapped.isEmpty()) this else CueDocument.fromCues(language, mapped)
+    return CueDocument.fromCues(language, mapped)
 }
 
 object SubtitleArchiveDecoder {
@@ -461,6 +493,27 @@ object SubtitleArchiveDecoder {
                             e == coord.episodeInCour -> 500
                             coord.absoluteEpisode != null && e == coord.absoluteEpisode -> 450
                             else -> return null
+                        }
+                    }
+                }
+                is EpisodeCoordinate.UnverifiedEpisodeOnly -> {
+                    val sMatch = SXX_EXX_REGEX.find(lower) ?: NX_NN_REGEX.find(lower)
+                    if (sMatch != null) {
+                        val e = sMatch.groupValues[2].toIntOrNull()
+                        if (e == coord.episode) {
+                            score += 400
+                        } else {
+                            return null
+                        }
+                    } else {
+                        val epMatch = EP_ONLY_REGEX.find(lower) ?: ANIME_DASH_EP_REGEX.find(lower)
+                        if (epMatch != null) {
+                            val e = epMatch.groupValues[1].toIntOrNull()
+                            if (e == coord.episode) {
+                                score += 350
+                            } else {
+                                return null
+                            }
                         }
                     }
                 }

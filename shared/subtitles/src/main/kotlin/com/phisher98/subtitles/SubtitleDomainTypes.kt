@@ -663,6 +663,14 @@ sealed interface EpisodeCoordinate {
             }
         }
     }
+
+    data class UnverifiedEpisodeOnly(
+        val episode: Int,
+    ) : EpisodeCoordinate {
+        init {
+            require(episode >= 1) { "UnverifiedEpisodeOnly requires episode >= 1" }
+        }
+    }
 }
 
 sealed interface MediaLookupSpec {
@@ -747,7 +755,8 @@ data class CueDocument(
             if (cues.isEmpty()) return fallbackSha
             val sb = StringBuilder(cues.size * 32)
             for (cue in cues) {
-                for (ch in cue.text) {
+                val plain = XML_TAG_REGEX.replace(ASS_OVERRIDE_REGEX.replace(cue.text, ""), "")
+                for (ch in plain) {
                     val mapped = when (ch) {
                         '\u0643' -> '\u06A9'
                         '\u064A', '\u0649' -> '\u06CC'

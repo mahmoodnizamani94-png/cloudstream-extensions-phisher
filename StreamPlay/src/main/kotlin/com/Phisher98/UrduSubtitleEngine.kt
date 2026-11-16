@@ -497,20 +497,30 @@ object UrduSubtitleEngine {
         subtitleCallback = subtitleCallback,
     )
 
-    fun openPlaybackScope(): CoroutineScope {
+    fun openPlaybackScope(isDownloadRequest: Boolean = false): CoroutineScope {
         val job = SupervisorJob(playbackScope.coroutineContext[Job])
         val scope = CoroutineScope(playbackScope.coroutineContext + job)
-        synchronized(playbackJobLock) {
-            activePlaybackJob?.cancel()
-            activePlaybackJob = job
+        if (!isDownloadRequest) {
+            synchronized(playbackJobLock) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = job
+            }
         }
         return scope
     }
 
-    fun cancelPlayback() {
+    fun cancelPlayback(scope: CoroutineScope? = null) {
+        val owner = scope?.coroutineContext?.get(Job)
         synchronized(playbackJobLock) {
-            activePlaybackJob?.cancel()
-            activePlaybackJob = null
+            if (owner == null) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = null
+            } else {
+                owner.cancel()
+                if (activePlaybackJob === owner) {
+                    activePlaybackJob = null
+                }
+            }
         }
     }
 
@@ -705,12 +715,14 @@ object UrduSubtitleEngine {
         season: Int? = null,
         episode: Int? = null,
         sourceTag: String = "subdl",
+        transport: CatalogHttpTransport = httpTransport,
     ): String? = materializeNormalizedUrduSubtitle(
         url = url,
         headers = headers,
         season = season,
         episode = episode,
         sourceTag = sourceTag,
+        transport = transport,
     )
 
     suspend fun materializeNormalizedUrduSubtitle(
@@ -719,13 +731,14 @@ object UrduSubtitleEngine {
         season: Int? = null,
         episode: Int? = null,
         sourceTag: String = "subdl",
+        transport: CatalogHttpTransport = httpTransport,
     ): String? = withContext(Dispatchers.IO) {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()) return@withContext null
         val rawBytes = if (cleanUrl.startsWith("file:", ignoreCase = true)) {
             casStore.readOwnedCasFileBytesOrNull(cleanUrl)
         } else {
-            httpTransport.get(cleanUrl, headers).getOrNull()?.bodyBytes
+            transport.get(cleanUrl, headers).getOrNull()?.bodyBytes
         } ?: return@withContext null
         val lookupSpec = if (season != null && season >= 0 && episode != null && episode > 0) {
             MediaLookupSpec.Episode(
@@ -777,14 +790,18 @@ object UrduSubtitleEngine {
     }
 
     private fun buildPrewarmDedupKey(spec: MediaLookupSpec): String = when (spec) {
-        is MediaLookupSpec.Movie ->
-            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|${spec.titles.firstOrNull().orEmpty()}|${spec.releaseYear ?: 0}"
+        is MediaLookupSpec.Movie -> {
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|${spec.releaseYear ?: 0}"
+        }
         is MediaLookupSpec.Episode -> {
             val coordPart = when (val c = spec.coordinate) {
                 is EpisodeCoordinate.VerifiedSeasonEpisode -> "S${c.season}E${c.episode}"
-                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty()}:E${c.episodeInCour}"
+                is EpisodeCoordinate.UnverifiedEpisodeOnly -> "E${c.episode}"
+                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)}:E${c.episodeInCour}"
             }
-            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$coordPart|${spec.seriesPremiereYear ?: 0}"
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|$coordPart|${spec.seriesPremiereYear ?: 0}"
         }
     }
 

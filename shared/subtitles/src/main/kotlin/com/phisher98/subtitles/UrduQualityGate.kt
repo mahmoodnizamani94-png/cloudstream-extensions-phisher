@@ -216,6 +216,18 @@ object CatalogueCandidateGate {
                             }
                         }
                     }
+                    is EpisodeCoordinate.UnverifiedEpisodeOnly -> {
+                        val m = SXX_EXX_REGEX.find(releaseText) ?: NX_NN_REGEX.find(releaseText)
+                        if (m != null) {
+                            val e = m.groupValues[2].toIntOrNull()
+                            if (e != coord.episode) {
+                                return VerifiedSubtitleCandidate.Rejected.EpisodeOrYearMismatch(
+                                    expected = "E%02d".format(Locale.ROOT, coord.episode),
+                                    actualRelease = releaseText,
+                                )
+                            }
+                        }
+                    }
                 }
                 val allowedYears = listOfNotNull(spec.seriesPremiereYear, spec.seasonAirYear)
                 if (allowedYears.isNotEmpty()) {

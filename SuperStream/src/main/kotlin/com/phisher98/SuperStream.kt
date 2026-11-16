@@ -723,7 +723,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     subtitleCallback(sessionSub)
                 }
                 personalSession.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
-                val personalPlayback = SuperStreamExtractor.openPlaybackScope()
+                val personalPlayback = SuperStreamExtractor.openPlaybackScope(
+                    isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+                )
                 SuperStreamExtractor.launchOn(personalPlayback) {
                     val rawTracks = CopyOnWriteArrayList<SubtitleFile>()
                     SuperStreamExtractor.extractSuperStreamHtmlSidecars(
@@ -747,7 +749,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     } catch (_: Throwable) {
                     }
                 }
-            } else {
+            } else if (sessionMode != com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD) {
                 SuperStreamExtractor.cancelActivePlaybackJob()
             }
         } else {
@@ -770,7 +772,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 }
             }
 
-            val lookupSpec = if (res.season == null || res.season < 0) {
+            val hasExplicitSeason = res.season != null && res.season >= 0
+            val hasEpisode = res.episode != null && res.episode > 0
+            val lookupSpec = if (!hasExplicitSeason && !hasEpisode) {
                 com.phisher98.subtitles.MediaLookupSpec.Movie(
                     imdbId = cleanImdb,
                     tmdbId = res.id?.takeIf { it > 0 },
@@ -781,16 +785,27 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     isAnime = res.isAnime,
                 )
             } else {
-                val coordinate = if (res.isAnime && cleanImdb == null && (res.id == null || res.id <= 0)) {
-                    com.phisher98.subtitles.EpisodeCoordinate.UnverifiedAnimeCour(
-                        courTitles = candidateTitles.ifEmpty { listOf("Anime") },
-                        episodeInCour = (res.episode ?: 1).coerceAtLeast(1),
-                    )
-                } else {
-                    com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
-                        season = res.season,
-                        episode = (res.episode ?: 1).coerceAtLeast(1),
-                    )
+                val resolvedEpisode = (res.episode ?: 1).coerceAtLeast(1)
+                val coordinate = when {
+                    hasExplicitSeason && res.isAnime && cleanImdb == null && (res.id == null || res.id <= 0) ->
+                        com.phisher98.subtitles.EpisodeCoordinate.UnverifiedAnimeCour(
+                            courTitles = candidateTitles.ifEmpty { listOf("Anime") },
+                            episodeInCour = resolvedEpisode,
+                        )
+                    hasExplicitSeason ->
+                        com.phisher98.subtitles.EpisodeCoordinate.VerifiedSeasonEpisode(
+                            season = res.season!!,
+                            episode = resolvedEpisode,
+                        )
+                    res.isAnime ->
+                        com.phisher98.subtitles.EpisodeCoordinate.UnverifiedAnimeCour(
+                            courTitles = candidateTitles.ifEmpty { listOf("Anime") },
+                            episodeInCour = resolvedEpisode,
+                        )
+                    else ->
+                        com.phisher98.subtitles.EpisodeCoordinate.UnverifiedEpisodeOnly(
+                            episode = resolvedEpisode,
+                        )
                 }
                 com.phisher98.subtitles.MediaLookupSpec.Episode(
                     imdbId = cleanImdb,
@@ -803,6 +818,10 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     releaseHints = liveReleaseHints,
                     isAnime = res.isAnime,
                 )
+            }
+
+            if (res.imdbId == null && res.id == null) {
+                return@coroutineScope false
             }
 
             val emittedDedupeKeys: MutableSet<String> =
@@ -824,7 +843,9 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 }
             }
             session.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
-            val playbackScope = SuperStreamExtractor.openPlaybackScope()
+            val playbackScope = SuperStreamExtractor.openPlaybackScope(
+                isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            )
 
             val sidecarIngestCallback: (SubtitleFile) -> Unit = { rawSub ->
                 val job = SuperStreamExtractor.launchOn(playbackScope) {
@@ -877,6 +898,11 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 }
             }
 
+            if (tasks.isEmpty()) {
+                SuperStreamExtractor.cancelPlayback(playbackScope)
+                return@coroutineScope false
+            }
+
             val videoExtractionDone = CompletableDeferred<Unit>()
             SuperStreamExtractor.launchOn(playbackScope) {
                 val catalogJob = SuperStreamExtractor.launchOn(playbackScope) {
@@ -905,13 +931,11 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             }
 
             try {
-                if (tasks.isNotEmpty()) {
-                    SpeculativePipeliner.executePipelined(
-                        tasks = tasks,
-                        config = earlySatisfactionConfig,
-                        controller = earlyController,
-                    )
-                }
+                SpeculativePipeliner.executePipelined(
+                    tasks = tasks,
+                    config = earlySatisfactionConfig,
+                    controller = earlyController,
+                )
             } finally {
                 videoExtractionDone.complete(Unit)
             }

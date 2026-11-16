@@ -226,6 +226,9 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                             title = title,
                             year = episodeYear,
                             tmdbId = resolvedTmdbId,
+                            seriesYear = year,
+                            isAnime = isAnime,
+                            mediaType = "series",
                         ).toJson())
                         {
                             this.name = eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
@@ -255,8 +258,11 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                             season = video.season,
                             episode = video.episode,
                             title = title,
-                            year = videoYear,
+                            year = videoYear.takeIf { it > 0 } ?: year,
                             tmdbId = resolvedTmdbId,
+                            seriesYear = year,
+                            isAnime = true,
+                            mediaType = "anime",
                         ).toJson()
                     ) {
                         this.name = video.title + if (isUpcoming(video.released)) " • [UPCOMING]" else ""
@@ -284,7 +290,7 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                     addTrailer(trailer)
                     try { addKitsuId(kitsuid) } catch(_:Throwable){}
                     this.contentRating = cineRes?.meta?.appExtras?.certification
-                    addImdbId(imdbId)
+                    addImdbId(resolvedImdbId)
                 }
             }
 
@@ -317,6 +323,9 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                     title = title,
                     year = year,
                     tmdbId = resolvedTmdbId,
+                    seriesYear = year,
+                    isAnime = isAnime,
+                    mediaType = "movie",
                 ).toJson()
             ) {
                 this.posterUrl = poster
@@ -354,6 +363,9 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
             year = res.year,
             season = res.season,
             episode = res.episode,
+            isAnime = res.isAnime,
+            seriesYear = res.seriesYear,
+            mediaType = res.mediaType,
         )
         val videoExtractionDone = CompletableDeferred<Unit>()
         val sidecarIngestCallback = StremioXSubtitleCoordinator.startPlaybackSession(
@@ -501,6 +513,9 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
         val year: Int? = null,
         val tmdbId: Int? = null,
         val id: Int? = null,
+        val seriesYear: Int? = null,
+        val isAnime: Boolean = false,
+        val mediaType: String? = null,
     )
 
     data class Data(

@@ -8,6 +8,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -826,6 +828,8 @@ object UrduCpsRefiner {
 object BolChalWindowCache {
     private const val MAX_CACHED_WINDOWS = 512
 
+    private class OwnerCancelledException : RuntimeException("Single-flight window owner cancelled")
+
     private val lru = object : LinkedHashMap<String, Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>(128, 0.75f, true) {
         override fun removeEldestEntry(
             eldest: MutableMap.MutableEntry<String, Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>?,
@@ -834,18 +838,33 @@ object BolChalWindowCache {
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>>>()
 
     fun buildWindowKey(window: SceneWindow, config: BolChalConfig): String {
-        val sb = StringBuilder(window.targetCues.size * 40 + 64)
+        val sb = StringBuilder(window.targetCues.size * 48 + 96)
         if (config.hasByokLlm) {
             sb.append("llm:").append(config.llmEndpointUrl?.trim().orEmpty())
                 .append('|').append(config.llmModelId?.trim().orEmpty())
                 .append('|').append(window.speakerCard.dominantSceneRegister.name)
                 .append('|').append(window.speakerCard.speakerGenderHint.name)
+                .append('|').append(window.speakerCard.genreToneHint?.trim().orEmpty())
                 .append('\n')
+            val chars = window.speakerCard.characters.entries.sortedBy { it.key }
+            for ((name, prof) in chars) {
+                sb.append("C:").append(name)
+                    .append('|').append(prof.urduTransliteration)
+                    .append('|').append(prof.gender.name)
+                    .append('|').append(prof.defaultRegisterToPeers.name)
+                    .append('\n')
+            }
         } else {
             sb.append("nmt:v1\n")
         }
         for (p in window.contextPrev) sb.append("P:").append(p.text.text).append('\n')
-        for (t in window.targetCues) sb.append("T:").append(t.id.value).append(':').append(t.text.text).append('\n')
+        for (t in window.targetCues) {
+            sb.append("T:").append(t.id.value)
+            if (config.hasByokLlm) {
+                sb.append('@').append(t.maxVisibleChars)
+            }
+            sb.append(':').append(t.text.text).append('\n')
+        }
         for (n in window.contextNext) sb.append("N:").append(n.text.text).append('\n')
         return ContentSha256.sha256Hex(sb.toString())
     }
@@ -860,33 +879,46 @@ object BolChalWindowCache {
 
     suspend fun getOrTranslateSingleFlight(
         key: String,
+        expectedCueIds: Set<CueId> = emptySet(),
         compute: suspend () -> Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>,
     ): Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>> {
-        synchronized(lru) { lru[key] }?.let { return Result.success(it) }
+        while (true) {
+            synchronized(lru) { lru[key] }?.let { return Result.success(it) }
 
-        val created = CompletableDeferred<Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>>()
-        val existing = inFlight.putIfAbsent(key, created)
-        if (existing != null) {
-            return existing.await()
-        }
-        return try {
-            val res = compute()
-            res.getOrNull()?.let { value ->
-                if (value.first.isNotEmpty()) {
-                    synchronized(lru) { lru[key] = value }
+            val created = CompletableDeferred<Result<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>>()
+            val existing = inFlight.putIfAbsent(key, created)
+            if (existing != null) {
+                val awaited = existing.await()
+                if (awaited.exceptionOrNull() is OwnerCancelledException) {
+                    currentCoroutineContext().ensureActive()
+                    continue
                 }
+                return awaited
             }
-            created.complete(res)
-            res
-        } catch (ce: CancellationException) {
-            created.cancel(ce)
-            throw ce
-        } catch (t: Throwable) {
-            val failure = Result.failure<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>(t)
-            created.complete(failure)
-            failure
-        } finally {
-            inFlight.remove(key, created)
+            return try {
+                val res = compute()
+                inFlight.remove(key, created)
+                res.getOrNull()?.let { value ->
+                    val isComplete = value.first.isNotEmpty() &&
+                        (expectedCueIds.isEmpty() || expectedCueIds.all { it in value.first })
+                    if (isComplete) {
+                        synchronized(lru) { lru[key] = value }
+                    }
+                }
+                created.complete(res)
+                res
+            } catch (ce: CancellationException) {
+                inFlight.remove(key, created)
+                created.complete(Result.failure(OwnerCancelledException()))
+                throw ce
+            } catch (t: Throwable) {
+                inFlight.remove(key, created)
+                val failure = Result.failure<Pair<Map<CueId, BolChalCueOut>, LocalizationTierKey>>(t)
+                created.complete(failure)
+                failure
+            } finally {
+                inFlight.remove(key, created)
+            }
         }
     }
 }
@@ -908,7 +940,8 @@ class DefaultBolChalTranslationTransport(
         }
         if (useSharedWindowCache) {
             val cacheKey = BolChalWindowCache.buildWindowKey(window, config)
-            return BolChalWindowCache.getOrTranslateSingleFlight(cacheKey) {
+            val expectedIds = window.targetCues.mapTo(HashSet(window.targetCues.size * 2)) { it.id }
+            return BolChalWindowCache.getOrTranslateSingleFlight(cacheKey, expectedIds) {
                 translateWindowUncached(window, config)
             }
         }
