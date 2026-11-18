@@ -255,6 +255,20 @@ internal object StremioXSubtitleCoordinator {
         )
     }
 
+    data class PlaybackSessionHandle(
+        val sidecarIngestCallback: (SubtitleFile) -> Unit,
+        val completionJob: Job,
+        val isDownloadRequest: Boolean,
+    ) {
+        suspend fun awaitIfDownload(timeoutMs: Long = 25_000L) {
+            if (isDownloadRequest) {
+                withTimeoutOrNull(timeoutMs) {
+                    completionJob.join()
+                }
+            }
+        }
+    }
+
     fun startPlaybackSession(
         lookupSpec: MediaLookupSpec,
         imdbId: String?,
@@ -262,7 +276,7 @@ internal object StremioXSubtitleCoordinator {
         episode: Int?,
         videoExtractionDone: CompletableDeferred<Unit>,
         subtitleCallback: (SubtitleFile) -> Unit,
-    ): (SubtitleFile) -> Unit {
+    ): PlaybackSessionHandle {
         val emittedDedupeKeys: MutableSet<String> =
             java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
         val sidecarIngestJobs = ConcurrentLinkedQueue<Job>()
@@ -277,6 +291,7 @@ internal object StremioXSubtitleCoordinator {
         }
 
         val sessionMode = resolveSessionMode(subtitleCallback, pluginPrefsRef)
+        val isDownloadRequest = SubtitleModeBridge.isOfflineDownloadCallback(subtitleCallback)
         val session = EpisodeSubtitleSession(
             lookupSpec = lookupSpec,
             mode = sessionMode,
@@ -295,7 +310,7 @@ internal object StremioXSubtitleCoordinator {
         }
 
         val playbackScope = openPlaybackScope(
-            isDownloadRequest = sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            isDownloadRequest = isDownloadRequest,
         )
         fun forwardSidecar(rawSub: SubtitleFile, sourceHint: String) {
             if (EpisodeSubtitleSession.classifySidecarLanguageOrNull(rawSub) == null) {
@@ -324,7 +339,7 @@ internal object StremioXSubtitleCoordinator {
             episode = episode,
         )
 
-        launchOn(playbackScope) {
+        val completionJob = launchOn(playbackScope) {
             val catalogJob = launchOn(playbackScope) {
                 session.discoverAndIngestCatalog()
             }
@@ -364,11 +379,17 @@ internal object StremioXSubtitleCoordinator {
                 throw e
             } catch (_: Throwable) {
             }
-        }.invokeOnCompletion {
-            cancelPlayback(playbackScope)
+        }.also { job ->
+            job.invokeOnCompletion {
+                cancelPlayback(playbackScope)
+            }
         }
 
-        return sidecarIngestCallback
+        return PlaybackSessionHandle(
+            sidecarIngestCallback = sidecarIngestCallback,
+            completionJob = completionJob,
+            isDownloadRequest = isDownloadRequest,
+        )
     }
 
     fun openPlaybackScope(isDownloadRequest: Boolean = false): CoroutineScope {

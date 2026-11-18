@@ -1478,5 +1478,178 @@ class Pr21ReviewFixesTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun progressiveCasFilesArePinnedWhileActiveAndUnpinnedWhenSupersededByWaveOrFinalBake() = runBlocking {
+        BolChalWindowCache.clearForTesting()
+        val tempRoot = Files.createTempDirectory("pr21-progressive-pin").toFile()
+        val emitted = CopyOnWriteArrayList<SubtitleFile>()
+        try {
+            val casStore = UrduCasStore(tempRoot, maxActiveSlots = 1)
+            val windowZeroPinnedDuringWaveOne = CompletableDeferred<Boolean>()
+            val windowIndexSeen = AtomicInteger(0)
+
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(
+                    imdbId = "tt9800091",
+                    tmdbId = null,
+                    titles = listOf("Progressive Pinning"),
+                    releaseYear = 2025,
+                ),
+                mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+                casStore = casStore,
+                httpTransport = DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+                targetUrduDiversityCount = 1,
+                progressiveBilingualMode = true,
+                callbackIdentityToken = object {
+                    override fun toString(): String = "cloudstream.bilingual_download_subtitles=true;context=streaming"
+                },
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    val idx = windowIndexSeen.incrementAndGet()
+                    if (idx == 2) {
+                        val w0 = emitted.firstOrNull {
+                            it.headers?.get(ProvenanceCodec.HEADER_PROGRESSIVE) == "window0"
+                        }
+                        val w0Name = w0?.url?.substringAfterLast('/')
+                        windowZeroPinnedDuringWaveOne.complete(w0Name != null && casStore.isPinned(w0Name))
+                    }
+                    val translated = window.targetCues.associate { cue ->
+                        cue.id to BolChalCueOut(cue.id, "یہ منظر نمبر ${cue.id.value} کا اردو مکالمہ ہے۔")
+                    }
+                    Result.success(translated to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                },
+                subtitleCallback = { emitted.add(it) },
+            )
+
+            // 80 cues -> ~5 windows of ~16-18 cues -> emits window0, partial:2/N, partial:4/N, and final
+            val sb = StringBuilder()
+            for (i in 1..80) {
+                val sMs = (10 + i * 4) * 1000L
+                val eMs = sMs + 2200L
+                sb.append("$i\n${formatSrtTime(sMs)} --> ${formatSrtTime(eMs)}\nLine number $i here.\n\n")
+            }
+            val catalogue = newSubtitleFile("English [SubDL]", "https://example.invalid/prog-pin-en.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(
+                    ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.SUBDL),
+                )
+            }
+            session.ingestRawSubtitle(catalogue, rawBytesOverride = sb.toString().toByteArray())
+            val report = withTimeout(10_000L) { session.completeSession() }
+            assertEquals(1, report.emittedUrduCandidates.size)
+
+            assertTrue(
+                "window0 CAS file must remain actively pinned while subsequent windows are translating",
+                windowZeroPinnedDuringWaveOne.await(),
+            )
+
+            val progSubs = emitted.filter { it.headers?.get(ProvenanceCodec.HEADER_PROGRESSIVE) != null }
+            val finalSub = emitted.last {
+                it.lang.startsWith("Urdu", ignoreCase = true) &&
+                    it.headers?.get(ProvenanceCodec.HEADER_PROGRESSIVE) == null
+            }
+            assertTrue("Expected window0 + at least one partial wave, got ${progSubs.map { it.lang }}", progSubs.size >= 2)
+
+            val finalFileName = finalSub.url.substringAfterLast('/')
+            assertTrue("Final baked Urdu CAS file must remain pinned", casStore.isPinned(finalFileName))
+            for (prog in progSubs) {
+                val progFileName = prog.url.substringAfterLast('/')
+                if (progFileName != finalFileName) {
+                    assertFalse(
+                        "Superseded progressive CAS file $progFileName must be unpinned once final track is baked",
+                        casStore.isPinned(progFileName),
+                    )
+                }
+            }
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun offlineDownloadCallbackSuppressesPartialStubsWhileStreamingCallbackCancelsStaleScope() = runBlocking {
+        BolChalWindowCache.clearForTesting()
+        val streamingCallback = object : (SubtitleFile) -> Unit {
+            override fun invoke(p1: SubtitleFile) = Unit
+            override fun toString(): String = "cloudstream.bilingual_download_subtitles=true;context=streaming"
+        }
+        val offlineDownloadCallback = object : (SubtitleFile) -> Unit {
+            override fun invoke(p1: SubtitleFile) = Unit
+            override fun toString(): String = "cloudstream.bilingual_download_subtitles=true"
+        }
+
+        assertTrue(SubtitleModeBridge.isBilingualDownloadCallback(streamingCallback))
+        assertFalse(SubtitleModeBridge.isOfflineDownloadCallback(streamingCallback))
+        assertTrue(SubtitleModeBridge.isBilingualDownloadCallback(offlineDownloadCallback))
+        assertTrue(SubtitleModeBridge.isOfflineDownloadCallback(offlineDownloadCallback))
+
+        // Streaming scope cancels prior active playback scope; offline download scope does NOT cancel active streaming scope
+        val streamScope1 = UrduSubtitleEngine.openPlaybackScope(
+            isDownloadRequest = SubtitleModeBridge.isOfflineDownloadCallback(streamingCallback),
+        )
+        val dlScope = UrduSubtitleEngine.openPlaybackScope(
+            isDownloadRequest = SubtitleModeBridge.isOfflineDownloadCallback(offlineDownloadCallback),
+        )
+        assertTrue("Offline download must not cancel active streaming scope", streamScope1.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+        assertTrue(dlScope.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+
+        val streamScope2 = UrduSubtitleEngine.openPlaybackScope(
+            isDownloadRequest = SubtitleModeBridge.isOfflineDownloadCallback(streamingCallback),
+        )
+        assertFalse("Episode switch in streaming mode must cancel prior streaming scope", streamScope1.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+        assertTrue("Episode switch in streaming mode must not cancel concurrent offline download scope", dlScope.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+        UrduSubtitleEngine.cancelPlayback(dlScope)
+        UrduSubtitleEngine.cancelPlayback(streamScope2)
+
+        // Offline download session must suppress progressive window0/partial stubs and emit only complete tracks
+        val tempRoot = Files.createTempDirectory("pr21-offline-dl").toFile()
+        val offlineEmitted = CopyOnWriteArrayList<SubtitleFile>()
+        try {
+            val session = EpisodeSubtitleSession(
+                lookupSpec = MediaLookupSpec.Movie(
+                    imdbId = "tt9800092",
+                    tmdbId = null,
+                    titles = listOf("Offline Download Cleanliness"),
+                    releaseYear = 2025,
+                ),
+                mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+                casStore = UrduCasStore(tempRoot),
+                httpTransport = DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+                targetUrduDiversityCount = 1,
+                progressiveBilingualMode = true,
+                callbackIdentityToken = offlineDownloadCallback,
+                bolChalConfig = BolChalConfig(maxConcurrentWindows = 1),
+                bolChalTransport = { window, _ ->
+                    val translated = window.targetCues.associate { cue ->
+                        cue.id to BolChalCueOut(cue.id, "یہ مکمل ڈاؤن لوڈ سب ٹائٹل سطر نمبر ${cue.id.value} ہے۔")
+                    }
+                    Result.success(translated to LocalizationTierKey.KEYLESS_BOLCHAL_NMT)
+                },
+                subtitleCallback = { offlineEmitted.add(it) },
+            )
+            val sb = StringBuilder()
+            for (i in 1..45) {
+                val sMs = (10 + i * 4) * 1000L
+                sb.append("$i\n${formatSrtTime(sMs)} --> ${formatSrtTime(sMs + 2200L)}\nDialogue cue $i.\n\n")
+            }
+            val catalogue = newSubtitleFile("English [SubSource]", "https://example.invalid/dl-en.srt") {
+                this.headers = ProvenanceCodec.encodeHeaders(
+                    ProvenanceIdentity.HumanCatalogue(CatalogueSourceKey.SUBSOURCE),
+                )
+            }
+            session.ingestRawSubtitle(catalogue, rawBytesOverride = sb.toString().toByteArray())
+            val report = withTimeout(10_000L) { session.completeSession() }
+            assertEquals(1, report.emittedUrduCandidates.size)
+            assertTrue(
+                "Offline download must never receive partial X-StreamPlay-Progressive stubs, got ${offlineEmitted.map { it.lang to it.headers }}",
+                offlineEmitted.none { it.headers?.get(ProvenanceCodec.HEADER_PROGRESSIVE) != null },
+            )
+            assertTrue(offlineEmitted.any { it.lang.startsWith("English", ignoreCase = true) })
+            assertTrue(offlineEmitted.any { it.lang.startsWith("Urdu", ignoreCase = true) })
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
 }
+
 

@@ -368,7 +368,7 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
             mediaType = res.mediaType,
         )
         val videoExtractionDone = CompletableDeferred<Unit>()
-        val sidecarIngestCallback = StremioXSubtitleCoordinator.startPlaybackSession(
+        val playbackHandle = StremioXSubtitleCoordinator.startPlaybackSession(
             lookupSpec = lookupSpec,
             imdbId = cleanImdb,
             season = res.season,
@@ -378,10 +378,11 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
         )
         try {
             Log.d("Phisher", cleanImdb.toString())
-            invokeMainSource(cleanImdb, res.season, res.episode, sidecarIngestCallback, callback)
+            invokeMainSource(cleanImdb, res.season, res.episode, playbackHandle.sidecarIngestCallback, callback)
         } finally {
             videoExtractionDone.complete(Unit)
         }
+        playbackHandle.awaitIfDownload()
 
         return true
     }

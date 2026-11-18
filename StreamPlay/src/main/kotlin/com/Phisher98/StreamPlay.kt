@@ -1031,8 +1031,9 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             subtitleCallback = subtitleCallback,
             sharedPref = sharedPref ?: companionSharedPref,
         )
+        val isDownloadRequest = com.phisher98.subtitles.SubtitleModeBridge.isOfflineDownloadCallback(subtitleCallback)
         val playback = UrduSubtitleEngine.openPlaybackScope(
-            isDownloadRequest = sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            isDownloadRequest = isDownloadRequest,
         )
 
         val allProviders = buildProviders()
@@ -1188,7 +1189,7 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
         val videoExtractionDone = CompletableDeferred<Unit>()
         val sidecarJobs = ConcurrentLinkedQueue<Job>()
         val extraJobs = ConcurrentLinkedQueue<Job>()
-        UrduSubtitleEngine.launchCatalogThenComplete(
+        val subtitleCompletionJob = UrduSubtitleEngine.launchCatalogThenComplete(
             scope = playback,
             session = episodeSubtitleSession,
             videoExtractionDone = videoExtractionDone,
@@ -1425,6 +1426,11 @@ open class StreamPlay(val sharedPref: SharedPreferences? = null) : MainAPI() {
             videoExtractionDone.complete(Unit)
             dispatcher.flush()
             ProviderTelemetryManager.scheduleSave(sharedPref ?: companionSharedPref)
+        }
+        if (isDownloadRequest) {
+            withTimeoutOrNull(UrduSubtitleEngine.OFFLINE_DOWNLOAD_SUBTITLE_WAIT_MS) {
+                subtitleCompletionJob.join()
+            }
         }
 
         val foundAnyResults = totalResultsFound() > 0

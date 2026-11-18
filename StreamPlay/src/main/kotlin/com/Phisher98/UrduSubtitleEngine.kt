@@ -524,13 +524,15 @@ object UrduSubtitleEngine {
         }
     }
 
+    const val OFFLINE_DOWNLOAD_SUBTITLE_WAIT_MS = 25_000L
+
     fun launchCatalogThenComplete(
         scope: CoroutineScope,
         session: EpisodeSubtitleSession,
         videoExtractionDone: CompletableDeferred<Unit>,
         sidecarJobs: ConcurrentLinkedQueue<Job>,
         extraJobs: ConcurrentLinkedQueue<Job> = ConcurrentLinkedQueue(),
-    ) {
+    ): Job {
         val catalogJob = scope.launch {
             try {
                 session.discoverAndIngestCatalog()
@@ -539,7 +541,7 @@ object UrduSubtitleEngine {
             } catch (_: Throwable) {
             }
         }
-        scope.launch {
+        return scope.launch {
             try {
                 videoExtractionDone.await()
                 extraJobs.toList().forEach { it.join() }
@@ -556,8 +558,10 @@ object UrduSubtitleEngine {
                 throw e
             } catch (_: Throwable) {
             }
-        }.invokeOnCompletion {
-            cancelPlayback(scope)
+        }.also { completionJob ->
+            completionJob.invokeOnCompletion {
+                cancelPlayback(scope)
+            }
         }
     }
 

@@ -623,6 +623,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             subtitleCallback = subtitleCallback,
             sharedPref = effectivePref,
         )
+        val isDownloadRequest = com.phisher98.subtitles.SubtitleModeBridge.isOfflineDownloadCallback(subtitleCallback)
 
         val earlySatisfactionConfig = EarlySatisfactionConfig(
             minVerifiedLinks = 2,
@@ -656,9 +657,10 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
 
         if (data.startsWith(febbox)) {
             val personalPlayback = SuperStreamExtractor.openPlaybackScope(
-                isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+                isDownloadRequest = isDownloadRequest,
             )
             var keepPlaybackAlive = false
+            var personalSubtitleJob: Job? = null
             try {
                 val fid = data.substringAfterLast("|")
                 val postdata = mapOf(
@@ -756,11 +758,17 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     ingestSupervisorJob.invokeOnCompletion {
                         SuperStreamExtractor.cancelPlayback(personalPlayback)
                     }
+                    personalSubtitleJob = ingestSupervisorJob
                     keepPlaybackAlive = true
                 }
             } finally {
                 if (!keepPlaybackAlive) {
                     SuperStreamExtractor.cancelPlayback(personalPlayback)
+                }
+            }
+            if (isDownloadRequest) {
+                kotlinx.coroutines.withTimeoutOrNull(25_000L) {
+                    personalSubtitleJob?.join()
                 }
             }
         } else {
@@ -855,7 +863,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             }
             session.registerActiveVideoProvider(com.phisher98.subtitles.StreamProviderKey.FEBBOX_PACK)
             val playbackScope = SuperStreamExtractor.openPlaybackScope(
-                isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+                isDownloadRequest = isDownloadRequest,
             )
 
             val sidecarIngestCallback: (SubtitleFile) -> Unit = { rawSub ->
@@ -915,7 +923,7 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
             }
 
             val videoExtractionDone = CompletableDeferred<Unit>()
-            SuperStreamExtractor.launchOn(playbackScope) {
+            val subtitleCompletionJob = SuperStreamExtractor.launchOn(playbackScope) {
                 val catalogJob = SuperStreamExtractor.launchOn(playbackScope) {
                     try {
                         session.discoverAndIngestCatalog()
@@ -939,8 +947,10 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                     throw e
                 } catch (_: Throwable) {
                 }
-            }.invokeOnCompletion {
-                SuperStreamExtractor.cancelPlayback(playbackScope)
+            }.also { job ->
+                job.invokeOnCompletion {
+                    SuperStreamExtractor.cancelPlayback(playbackScope)
+                }
             }
 
             try {
@@ -951,6 +961,11 @@ open class SuperStream(val sharedPref: SharedPreferences? = null) : TmdbProvider
                 )
             } finally {
                 videoExtractionDone.complete(Unit)
+            }
+            if (isDownloadRequest) {
+                kotlinx.coroutines.withTimeoutOrNull(25_000L) {
+                    subtitleCompletionJob.join()
+                }
             }
         }
         ProviderTelemetryManager.scheduleSave(sharedPref)

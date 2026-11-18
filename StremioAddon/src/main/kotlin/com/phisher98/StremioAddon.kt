@@ -381,8 +381,9 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
             emitHostSubtitle(sessionSub)
         }
 
+        val isDownloadRequest = com.phisher98.subtitles.SubtitleModeBridge.isOfflineDownloadCallback(subtitleCallback)
         val playbackScope = StremioSubtitleCoordinator.openPlaybackScope(
-            isDownloadRequest = sessionMode == SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            isDownloadRequest = isDownloadRequest,
         )
         val forwardSidecar: (SubtitleFile, String) -> Unit = { rawSub, sourceHint ->
             if (EpisodeSubtitleSession.classifySidecarLanguageOrNull(rawSub) == null) {
@@ -435,7 +436,7 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
 
         val videoExtractionDone = CompletableDeferred<Unit>()
-        StremioSubtitleCoordinator.launchOn(playbackScope) {
+        val subtitleCompletionJob = StremioSubtitleCoordinator.launchOn(playbackScope) {
             val catalogJob = StremioSubtitleCoordinator.launchOn(playbackScope) {
                 session.discoverAndIngestCatalog()
             }
@@ -467,8 +468,10 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
                 throw e
             } catch (_: Throwable) {
             }
-        }.invokeOnCompletion {
-            StremioSubtitleCoordinator.cancelPlayback(playbackScope)
+        }.also { job ->
+            job.invokeOnCompletion {
+                StremioSubtitleCoordinator.cancelPlayback(playbackScope)
+            }
         }
 
         try {
@@ -479,6 +482,11 @@ class StremioAddon(private val sharedPref: SharedPreferences) : TmdbProvider() {
             )
         } finally {
             videoExtractionDone.complete(Unit)
+        }
+        if (isDownloadRequest) {
+            kotlinx.coroutines.withTimeoutOrNull(25_000L) {
+                subtitleCompletionJob.join()
+            }
         }
 
         ProviderTelemetryManager.scheduleSave(sharedPref)

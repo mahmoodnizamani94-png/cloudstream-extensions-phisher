@@ -1165,6 +1165,7 @@ data class ByokLlmConfig(
 
 object SubtitleModeBridge {
     const val BILINGUAL_CALLBACK_TOKEN = "cloudstream.bilingual_download_subtitles=true"
+    const val STREAMING_CALLBACK_TOKEN = "context=streaming"
     const val PROP_VAULT_V2 = "cloudstream.subtitle.vault_v2"
     const val PROP_PROGRESSIVE_VTT = "cloudstream.subtitle.progressive_vtt"
     const val PROP_SUBTITLE_MODE = "cloudstream.subtitle.mode"
@@ -1176,6 +1177,11 @@ object SubtitleModeBridge {
 
     fun isBilingualDownloadCallback(subtitleCallback: Any?): Boolean =
         subtitleCallback?.toString()?.contains(BILINGUAL_CALLBACK_TOKEN) == true
+
+    fun isOfflineDownloadCallback(subtitleCallback: Any?): Boolean {
+        val raw = subtitleCallback?.toString() ?: return false
+        return raw.contains(BILINGUAL_CALLBACK_TOKEN) && !raw.contains(STREAMING_CALLBACK_TOKEN)
+    }
 
     fun isVaultV2Enabled(): Boolean =
         System.getProperty(PROP_VAULT_V2)?.trim()?.equals("true", ignoreCase = true) == true

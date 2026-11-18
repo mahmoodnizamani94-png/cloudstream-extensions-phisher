@@ -453,8 +453,9 @@ class StreamPlayAnime : MainAPI() {
             subtitleCallback = subtitleCallback,
             sharedPref = StreamPlay.companionSharedPref,
         )
+        val isDownloadRequest = com.phisher98.subtitles.SubtitleModeBridge.isOfflineDownloadCallback(subtitleCallback)
         val playback = UrduSubtitleEngine.openPlaybackScope(
-            isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            isDownloadRequest = isDownloadRequest,
         )
         val mediaData = AppUtils.parseJson<LinkData>(data)
         val malId = mediaData.malId
@@ -594,7 +595,7 @@ class StreamPlayAnime : MainAPI() {
         val videoExtractionDone = CompletableDeferred<Unit>()
         val sidecarJobs = ConcurrentLinkedQueue<Job>()
         val extraJobs = ConcurrentLinkedQueue<Job>()
-        UrduSubtitleEngine.launchCatalogThenComplete(
+        val subtitleCompletionJob = UrduSubtitleEngine.launchCatalogThenComplete(
             scope = playback,
             session = episodeSubtitleSession,
             videoExtractionDone = videoExtractionDone,
@@ -830,6 +831,11 @@ class StreamPlayAnime : MainAPI() {
         } finally {
             videoExtractionDone.complete(Unit)
             dispatcher.flush()
+        }
+        if (isDownloadRequest) {
+            kotlinx.coroutines.withTimeoutOrNull(UrduSubtitleEngine.OFFLINE_DOWNLOAD_SUBTITLE_WAIT_MS) {
+                subtitleCompletionJob.join()
+            }
         }
         animeLinksFound.get() > 0 || subtitleLedger.hasAnyEmittedSubtitle()
     }

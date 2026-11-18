@@ -249,7 +249,7 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
             streamId = loadData.id,
         )
         val videoExtractionDone = CompletableDeferred<Unit>()
-        val sidecarIngestCallback = StremioXSubtitleCoordinator.startPlaybackSession(
+        val playbackHandle = StremioXSubtitleCoordinator.startPlaybackSession(
             lookupSpec = lookupSpec,
             imdbId = loadData.imdbId,
             season = loadData.season,
@@ -268,12 +268,12 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
 
             if (!res?.streams.isNullOrEmpty()) {
                 res.streams.forEach { stream ->
-                    stream.runCallback(sidecarIngestCallback, callback)
+                    stream.runCallback(playbackHandle.sidecarIngestCallback, callback)
                 }
             } else {
                 runAllAsync(
                     {
-                        invokeStremioX(loadData.type, loadData.id, sidecarIngestCallback, callback)
+                        invokeStremioX(loadData.type, loadData.id, playbackHandle.sidecarIngestCallback, callback)
                     },
                     {
                         invokeTorrentio(loadData.imdbId, loadData.season, loadData.episode, callback)
@@ -289,6 +289,7 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
         } finally {
             videoExtractionDone.complete(Unit)
         }
+        playbackHandle.awaitIfDownload()
 
         return true
     }

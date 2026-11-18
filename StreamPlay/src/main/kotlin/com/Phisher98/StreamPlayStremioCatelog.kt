@@ -132,8 +132,9 @@ class StreamPlayStremioCatelog(
             subtitleCallback = subtitleCallback,
             sharedPref = effectiveSharedPref,
         )
+        val isDownloadRequest = com.phisher98.subtitles.SubtitleModeBridge.isOfflineDownloadCallback(subtitleCallback)
         val playback = UrduSubtitleEngine.openPlaybackScope(
-            isDownloadRequest = sessionMode == com.phisher98.subtitles.SessionSubtitleMode.BILINGUAL_DOWNLOAD,
+            isDownloadRequest = isDownloadRequest,
         )
         val res = parseJson<LoadData>(data)
         val imdb = res.resolveImdbId()
@@ -312,7 +313,7 @@ class StreamPlayStremioCatelog(
         }.also { episodeSubtitleSessionRef = it }
         val videoExtractionDone = CompletableDeferred<Unit>()
         val sidecarJobs = ConcurrentLinkedQueue<Job>()
-        UrduSubtitleEngine.launchCatalogThenComplete(
+        val subtitleCompletionJob = UrduSubtitleEngine.launchCatalogThenComplete(
             scope = playback,
             session = episodeSubtitleSession,
             videoExtractionDone = videoExtractionDone,
@@ -420,6 +421,11 @@ class StreamPlayStremioCatelog(
         } finally {
             videoExtractionDone.complete(Unit)
             dispatcher.flush()
+        }
+        if (isDownloadRequest) {
+            kotlinx.coroutines.withTimeoutOrNull(UrduSubtitleEngine.OFFLINE_DOWNLOAD_SUBTITLE_WAIT_MS) {
+                subtitleCompletionJob.join()
+            }
         }
 
         return@coroutineScope catalogLinksFound.get() > 0 || catalogSubsFound.get() > 0

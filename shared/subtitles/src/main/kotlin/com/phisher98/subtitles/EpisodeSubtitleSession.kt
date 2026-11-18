@@ -153,6 +153,11 @@ class UrduCasStore(
         }
     }
 
+    internal fun isPinned(fileName: String): Boolean = synchronized(sharedState.lock) {
+        val expiry = sharedState.pinExpiryMsByName[fileName] ?: return@synchronized false
+        expiry > System.currentTimeMillis()
+    }
+
     fun readOwnedCasFileBytesOrNull(fileUrl: String): ByteArray? {
         if (!fileUrl.startsWith("file:", ignoreCase = true)) return null
         val candidate = runCatching { File(URI(fileUrl.trim())) }.getOrElse {
@@ -662,6 +667,10 @@ class EpisodeSubtitleSession(
     private val storedCasOutputs = ArrayList<CasStoredSubtitle>()
     private val activeVideoProviders = LinkedHashSet<StreamProviderKey>()
     private val nonForeignStreamProviders = LinkedHashSet<StreamProviderKey>()
+    private val isOfflineDownloadSession: Boolean
+        get() = SubtitleModeBridge.isOfflineDownloadCallback(callbackIdentityToken)
+
+    private val activeProgressiveCasFileNames = ArrayList<String>(4)
     private val emittedProgressiveWindowZero = AtomicBoolean(false)
     private val lastProgressiveWindowCount = AtomicInteger(0)
     private val progressiveOwnerDonorId = AtomicLong(-1L)
@@ -1108,6 +1117,20 @@ class EpisodeSubtitleSession(
                 admittedDistinctUrduDiversityCountLocked() < targetUrduDiversityCount)
     }
 
+    private fun replacePinnedProgressiveCasFileLocked(newFileName: String) {
+        val iterator = activeProgressiveCasFileNames.iterator()
+        while (iterator.hasNext()) {
+            val prevName = iterator.next()
+            if (prevName != newFileName) {
+                casStore.unpin(prevName)
+                iterator.remove()
+            }
+        }
+        if (!activeProgressiveCasFileNames.contains(newFileName)) {
+            activeProgressiveCasFileNames.add(newFileName)
+        }
+    }
+
     private suspend fun maybeEmitProgressiveWindowZero(
         donorBufferId: Long,
         partialDoc: CueDocument,
@@ -1115,6 +1138,7 @@ class EpisodeSubtitleSession(
         @Suppress("UNUSED_PARAMETER") alignment: AlignmentProof,
         edition: BolChalEditionProfile,
     ) {
+        if (isOfflineDownloadSession && !SubtitleModeBridge.isProgressiveVttEnabled()) return
         if (!SubtitleModeBridge.isProgressiveVttEnabled() && !progressiveBilingualMode) return
         if (edition != BolChalEditionProfile.CONVERSATIONAL) return
         sessionMutex.withLock {
@@ -1130,8 +1154,9 @@ class EpisodeSubtitleSession(
                 warp = currentAlignment.warp,
                 videoDurationMs = exactStreamDurationMs,
                 format = casFormat,
-                pinActive = false,
+                pinActive = true,
             )
+            replacePinnedProgressiveCasFileLocked(stored.file.name)
             storedCasOutputs.add(stored)
             val prov = ProvenanceIdentity.BolChalTranslated(
                 donor = effectiveDonor,
@@ -1163,6 +1188,7 @@ class EpisodeSubtitleSession(
         @Suppress("UNUSED_PARAMETER") alignment: AlignmentProof,
         edition: BolChalEditionProfile,
     ) {
+        if (isOfflineDownloadSession && !SubtitleModeBridge.isProgressiveVttEnabled()) return
         if (!SubtitleModeBridge.isProgressiveVttEnabled() && !progressiveBilingualMode) return
         if (edition != BolChalEditionProfile.CONVERSATIONAL) return
         if (completedWindows >= totalWindows) return
@@ -1184,8 +1210,9 @@ class EpisodeSubtitleSession(
                 warp = currentAlignment.warp,
                 videoDurationMs = exactStreamDurationMs,
                 format = casFormat,
-                pinActive = false,
+                pinActive = true,
             )
+            replacePinnedProgressiveCasFileLocked(stored.file.name)
             storedCasOutputs.add(stored)
             val prov = ProvenanceIdentity.BolChalTranslated(
                 donor = effectiveDonor,
@@ -2297,6 +2324,12 @@ class EpisodeSubtitleSession(
         if (admitted is VerifiedSubtitleCandidate.BolChalLocalized && !seenBakedUrduHashes.add(stored.contentSha256)) {
             return false
         }
+        for (progName in activeProgressiveCasFileNames) {
+            if (progName != stored.file.name) {
+                casStore.unpin(progName)
+            }
+        }
+        activeProgressiveCasFileNames.clear()
         storedCasOutputs.add(stored)
 
         val effectiveSyncProof = admitted.alignment.takeIf { it.anchorKind != AlignmentAnchorKind.UNANCHORED }
