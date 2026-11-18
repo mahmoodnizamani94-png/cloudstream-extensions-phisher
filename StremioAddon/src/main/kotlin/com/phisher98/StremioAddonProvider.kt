@@ -12,6 +12,7 @@ class StremioAddonProvider: Plugin() {
         NetworkOptimizer.initialize(context)
         DeviceProfiler.initialize(context)
         val sharedPref = context.getSharedPreferences("StremioAddon", Context.MODE_PRIVATE)
+        StremioSubtitleCoordinator.initialize(context, sharedPref)
         try {
             ProviderTelemetryManager.loadPersistedStats(sharedPref)
         } catch (_: Exception) {}

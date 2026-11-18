@@ -396,17 +396,41 @@ sealed interface ProvenanceIdentity {
         override val sidecarFileBadge: String get() = provider.displayBadge
     }
 
-    data class HumanCatalogue(val catalogue: CatalogueSourceKey) : ProvenanceIdentity {
-        override val diversityKey: String get() = "cat:${catalogue.wireId}"
-        override val sidecarFileBadge: String get() = catalogue.displayBadge
+    data class HumanCatalogue(
+        val catalogue: CatalogueSourceKey,
+        val variantTag: String? = null,
+    ) : ProvenanceIdentity {
+        override val diversityKey: String
+            get() = if (variantTag.isNullOrBlank()) {
+                "cat:${catalogue.wireId}"
+            } else {
+                "cat:${catalogue.wireId}:${variantTag.lowercase(Locale.ROOT)}"
+            }
+        override val sidecarFileBadge: String
+            get() = if (variantTag.isNullOrBlank()) {
+                catalogue.displayBadge
+            } else {
+                "${catalogue.displayBadge} · $variantTag"
+            }
     }
 
     data class BolChalTranslated(
         val donor: DonorProvenance,
         val engine: LocalizationTierKey = LocalizationTierKey.KEYLESS_BOLCHAL_NMT,
+        val editionTag: String? = null,
     ) : ProvenanceIdentity {
-        override val diversityKey: String get() = "bolchal:${donor.wireDonorId}"
-        override val sidecarFileBadge: String get() = "UrduAI ${donor.displayBadge}"
+        override val diversityKey: String
+            get() = if (editionTag.isNullOrBlank()) {
+                "bolchal:${donor.wireDonorId}"
+            } else {
+                "bolchal:${donor.wireDonorId}:${editionTag.lowercase(Locale.ROOT)}"
+            }
+        override val sidecarFileBadge: String
+            get() = if (editionTag.isNullOrBlank()) {
+                "UrduAI ${donor.displayBadge}"
+            } else {
+                "UrduAI ${donor.displayBadge} · $editionTag"
+            }
     }
 
     data class UnknownExternal(val registrableHost: String) : ProvenanceIdentity {
@@ -420,13 +444,17 @@ object ProvenanceCodec {
     const val HEADER_ORIGIN = "X-StreamPlay-Origin"
     const val HEADER_DONOR = "X-StreamPlay-Donor"
     const val HEADER_ENGINE = "X-StreamPlay-Engine"
+    const val HEADER_EDITION = "X-StreamPlay-Edition"
+    const val HEADER_VARIANT = "X-StreamPlay-Variant"
     const val HEADER_SYNC_ROLE = "X-StreamPlay-Sync-Role"
     const val HEADER_FOREIGN_SIDECAR = "X-StreamPlay-Foreign-Sidecar"
     const val HEADER_SYNC = "X-StreamPlay-Sync"
     const val HEADER_SYNC_CERT = HEADER_SYNC
+    const val HEADER_PROGRESSIVE = "X-StreamPlay-Progressive"
 
     const val SOURCE_URDU_TRANSLATED = "urdu-neural-fallback"
     const val ORIGIN_STREAM = "stream"
+    const val ORIGIN_NATIVE_ALIAS = "native"
     const val ORIGIN_CATALOGUE = "catalogue"
     const val ORIGIN_BOLCHAL = "bolchal"
     const val SYNC_ROLE_PROVIDER_ANCHOR = "provider-anchor"
@@ -488,7 +516,7 @@ object ProvenanceCodec {
         syncProof: AlignmentProof? = null,
         syncRole: String? = null,
     ): Map<String, String> {
-        val out = LinkedHashMap<String, String>(6)
+        val out = LinkedHashMap<String, String>(8)
         when (provenance) {
             is ProvenanceIdentity.StreamProvider -> {
                 out[HEADER_SOURCE] = provenance.provider.wireId
@@ -497,12 +525,18 @@ object ProvenanceCodec {
             is ProvenanceIdentity.HumanCatalogue -> {
                 out[HEADER_SOURCE] = provenance.catalogue.wireId
                 out[HEADER_ORIGIN] = ORIGIN_CATALOGUE
+                if (!provenance.variantTag.isNullOrBlank()) {
+                    out[HEADER_VARIANT] = provenance.variantTag
+                }
             }
             is ProvenanceIdentity.BolChalTranslated -> {
                 out[HEADER_SOURCE] = SOURCE_URDU_TRANSLATED
                 out[HEADER_ORIGIN] = ORIGIN_BOLCHAL
                 out[HEADER_DONOR] = provenance.donor.wireDonorId
                 out[HEADER_ENGINE] = provenance.engine.wireId
+                if (!provenance.editionTag.isNullOrBlank()) {
+                    out[HEADER_EDITION] = provenance.editionTag
+                }
             }
             is ProvenanceIdentity.UnknownExternal -> {
                 out[HEADER_SOURCE] = provenance.registrableHost.ifBlank { "external" }
@@ -555,6 +589,8 @@ object ProvenanceCodec {
         val sourceHeader = headers.headerIgnoreCase(HEADER_SOURCE)?.trim()?.lowercase(Locale.ROOT)
         val donorHeader = headers.headerIgnoreCase(HEADER_DONOR)?.trim()
         val engineHeader = headers.headerIgnoreCase(HEADER_ENGINE)?.trim()
+        val editionHeader = headers.headerIgnoreCase(HEADER_EDITION)?.trim()?.takeIf { it.isNotEmpty() }
+        val variantHeader = headers.headerIgnoreCase(HEADER_VARIANT)?.trim()?.takeIf { it.isNotEmpty() }
         val combinedText = "$displayName $urlOrFileName".trim()
 
         val isTranslated = originHeader == ORIGIN_BOLCHAL ||
@@ -567,23 +603,31 @@ object ProvenanceCodec {
             val tier = LocalizationTierKey.fromWireOrText(engineHeader)
                 ?: LocalizationTierKey.fromWireOrText(combinedText)
                 ?: LocalizationTierKey.KEYLESS_BOLCHAL_NMT
-            return ProvenanceIdentity.BolChalTranslated(donor = donor, engine = tier)
+            return ProvenanceIdentity.BolChalTranslated(donor = donor, engine = tier, editionTag = editionHeader)
         }
 
-        if (originHeader == ORIGIN_STREAM) {
+        if (originHeader == ORIGIN_STREAM || originHeader == ORIGIN_NATIVE_ALIAS) {
             StreamProviderKey.fromTextOrHost(sourceHeader)?.let { return ProvenanceIdentity.StreamProvider(it) }
         }
         if (originHeader == ORIGIN_CATALOGUE) {
-            CatalogueSourceKey.fromTextOrHost(sourceHeader)?.let { return ProvenanceIdentity.HumanCatalogue(it) }
+            CatalogueSourceKey.fromTextOrHost(sourceHeader)?.let {
+                return ProvenanceIdentity.HumanCatalogue(it, variantTag = variantHeader)
+            }
         }
         if (!sourceHeader.isNullOrBlank()) {
             StreamProviderKey.fromWireId(sourceHeader)?.let { return ProvenanceIdentity.StreamProvider(it) }
-            CatalogueSourceKey.fromWireId(sourceHeader)?.let { return ProvenanceIdentity.HumanCatalogue(it) }
+            CatalogueSourceKey.fromWireId(sourceHeader)?.let {
+                return ProvenanceIdentity.HumanCatalogue(it, variantTag = variantHeader)
+            }
         }
 
-        CatalogueSourceKey.fromTextOrHost(displayName)?.let { return ProvenanceIdentity.HumanCatalogue(it) }
+        CatalogueSourceKey.fromTextOrHost(displayName)?.let {
+            return ProvenanceIdentity.HumanCatalogue(it, variantTag = variantHeader)
+        }
         StreamProviderKey.fromTextOrHost(displayName)?.let { return ProvenanceIdentity.StreamProvider(it) }
-        CatalogueSourceKey.fromTextOrHost(urlOrFileName)?.let { return ProvenanceIdentity.HumanCatalogue(it) }
+        CatalogueSourceKey.fromTextOrHost(urlOrFileName)?.let {
+            return ProvenanceIdentity.HumanCatalogue(it, variantTag = variantHeader)
+        }
         StreamProviderKey.fromTextOrHost(urlOrFileName)?.let { return ProvenanceIdentity.StreamProvider(it) }
 
         return ProvenanceIdentity.UnknownExternal(extractRegistrableHost(urlOrFileName, displayName))
@@ -619,6 +663,14 @@ sealed interface EpisodeCoordinate {
             }
         }
     }
+
+    data class UnverifiedEpisodeOnly(
+        val episode: Int,
+    ) : EpisodeCoordinate {
+        init {
+            require(episode >= 1) { "UnverifiedEpisodeOnly requires episode >= 1" }
+        }
+    }
 }
 
 sealed interface MediaLookupSpec {
@@ -642,6 +694,7 @@ sealed interface MediaLookupSpec {
     data class Episode(
         override val imdbId: String?,
         override val tmdbId: Int?,
+        val tvdbId: Int? = null,
         override val titles: List<String>,
         val seriesPremiereYear: Int?,
         val seasonAirYear: Int?,
@@ -671,6 +724,7 @@ data class CueDocument(
     val cues: List<CueEntry>,
     val timingSha256: ContentSha256,
     val contentSha256: ContentSha256,
+    val dialogueFingerprint: ContentSha256 = computeDialogueFingerprint(cues, contentSha256),
 ) {
     companion object {
         private val SRT_VTT_ARROW_REGEX = Regex(
@@ -688,10 +742,41 @@ data class CueDocument(
         private val TTML_OFFSET_REGEX = Regex("""^(\d+(?:\.\d+)?)(h|m|s|ms|f|t)$""", RegexOption.IGNORE_CASE)
         private val XML_BR_REGEX = Regex("""(?i)<br\s*/?>""")
         private val XML_TAG_REGEX = Regex("""<[^>]+>""")
+        private val PROMO_WATERMARK_CUE_REGEX = Regex(
+            """(?is)(?:you'?re\s+on\s+the\s+free\s+plan|sub\.wyzie\.(?:io|ru)|wyzie\.(?:io|ru)/\S*|advertise\s+your\s+product\s+or\s+brand|support\s+us\s+and\s+become\s+vip\s+member|(?:subtitles?\s+(?:by|downloaded\s+from)|sync(?:ed)?\s*(?:and|&)\s*corrected\s+by)\b[^\n]*(?:opensubtitles|addic7ed|subscene|yifysubtitles|subdl|subf2m)|^\s*(?:https?://)?(?:www\.)?(?:opensubtitles\.(?:org|com)|yifysubtitles\.(?:ch|org|com)|yts\.(?:mx|lt|am)|subdl\.com|subf2m\.co)\s*$)"""
+        )
+
+        fun isPromotionalWatermarkCue(text: String): Boolean {
+            val cleaned = XML_TAG_REGEX.replace(ASS_OVERRIDE_REGEX.replace(text, ""), "").trim()
+            return cleaned.isNotEmpty() && PROMO_WATERMARK_CUE_REGEX.containsMatchIn(cleaned)
+        }
+
+        fun computeDialogueFingerprint(cues: List<CueEntry>, fallbackSha: ContentSha256): ContentSha256 {
+            if (cues.isEmpty()) return fallbackSha
+            val sb = StringBuilder(cues.size * 32)
+            for (cue in cues) {
+                val plain = XML_TAG_REGEX.replace(ASS_OVERRIDE_REGEX.replace(cue.text, ""), "")
+                for (ch in plain) {
+                    val mapped = when (ch) {
+                        '\u0643' -> '\u06A9'
+                        '\u064A', '\u0649' -> '\u06CC'
+                        '\u0647', '\u0629', '\u06D5' -> '\u06C1'
+                        '\u06C0' -> '\u06C2'
+                        '\u06D3' -> '\u06D2'
+                        in 'A'..'Z' -> (ch.code + 32).toChar()
+                        else -> ch
+                    }
+                    if (mapped.isLetterOrDigit()) {
+                        sb.append(mapped)
+                    }
+                }
+            }
+            return if (sb.isEmpty()) fallbackSha else ContentSha256.ofUtf8(sb.toString())
+        }
 
         fun fromCues(language: SubtitleLanguage, rawCues: List<CueEntry>): CueDocument {
             val sorted = rawCues
-                .filter { it.span.durationMs > 0L && it.text.isNotBlank() }
+                .filter { it.span.durationMs > 0L && it.text.isNotBlank() && !isPromotionalWatermarkCue(it.text) }
                 .sortedWith(compareBy<CueEntry> { it.span.startMs }.thenBy { it.span.endMs }.thenBy { it.id.value })
             val timingBuilder = StringBuilder(sorted.size * 20)
             val contentBuilder = StringBuilder(sorted.size * 64)
@@ -700,11 +785,13 @@ data class CueDocument(
                 contentBuilder.append(cue.span.startMs).append(':').append(cue.span.endMs)
                     .append(':').append(cue.text).append('\n')
             }
+            val contentSha = ContentSha256.ofUtf8(contentBuilder.toString())
             return CueDocument(
                 language = language,
                 cues = sorted,
                 timingSha256 = ContentSha256.ofUtf8(timingBuilder.toString()),
-                contentSha256 = ContentSha256.ofUtf8(contentBuilder.toString()),
+                contentSha256 = contentSha,
+                dialogueFingerprint = computeDialogueFingerprint(sorted, contentSha),
             )
         }
 
@@ -1024,8 +1111,10 @@ sealed interface VerifiedSubtitleCandidate {
         val releaseAffinityScore: Int,
         override val document: CueDocument,
         override val alignment: AlignmentProof,
+        val variantTag: String? = null,
     ) : Admitted {
-        override val provenance: ProvenanceIdentity get() = ProvenanceIdentity.HumanCatalogue(catalogue)
+        override val provenance: ProvenanceIdentity
+            get() = ProvenanceIdentity.HumanCatalogue(catalogue, variantTag)
     }
 
     data class BolChalLocalized(
@@ -1034,16 +1123,18 @@ sealed interface VerifiedSubtitleCandidate {
         val qualityReport: BolChalQualityReport,
         override val document: CueDocument,
         override val alignment: AlignmentProof,
+        val editionTag: String? = null,
     ) : Admitted {
         override val language: SubtitleLanguage get() = SubtitleLanguage.URDU
         override val provenance: ProvenanceIdentity
-            get() = ProvenanceIdentity.BolChalTranslated(donor, tier)
+            get() = ProvenanceIdentity.BolChalTranslated(donor, tier, editionTag)
     }
 
     sealed interface Rejected : VerifiedSubtitleCandidate {
         data class MtDump(val audit: MtAuditResult, val uploader: String? = null) : Rejected
         data class HearingImpaired(val matchedMarker: String) : Rejected
         data class WrongScriptOrBrokenSmt(val reason: String) : Rejected
+        data class ArchiveDecodeFailed(val reason: String) : Rejected
         data class BannedSourceOrUploader(val identifier: String) : Rejected
         data class EpisodeOrYearMismatch(val expected: String, val actualRelease: String) : Rejected
         data class SyncMismatch(val bestScore: Double, val residualMs: Int) : Rejected
@@ -1074,7 +1165,9 @@ data class ByokLlmConfig(
 
 object SubtitleModeBridge {
     const val BILINGUAL_CALLBACK_TOKEN = "cloudstream.bilingual_download_subtitles=true"
+    const val STREAMING_CALLBACK_TOKEN = "context=streaming"
     const val PROP_VAULT_V2 = "cloudstream.subtitle.vault_v2"
+    const val PROP_PROGRESSIVE_VTT = "cloudstream.subtitle.progressive_vtt"
     const val PROP_SUBTITLE_MODE = "cloudstream.subtitle.mode"
     const val PREFS_URDU_BOLCHAL = "cloudstream_urdu_bolchal"
     const val PREFS_LEGACY_MODE = "cloudstream_subtitle_mode_prefs"
@@ -1085,8 +1178,16 @@ object SubtitleModeBridge {
     fun isBilingualDownloadCallback(subtitleCallback: Any?): Boolean =
         subtitleCallback?.toString()?.contains(BILINGUAL_CALLBACK_TOKEN) == true
 
+    fun isOfflineDownloadCallback(subtitleCallback: Any?): Boolean {
+        val raw = subtitleCallback?.toString() ?: return false
+        return raw.contains(BILINGUAL_CALLBACK_TOKEN) && !raw.contains(STREAMING_CALLBACK_TOKEN)
+    }
+
     fun isVaultV2Enabled(): Boolean =
         System.getProperty(PROP_VAULT_V2)?.trim()?.equals("true", ignoreCase = true) == true
+
+    fun isProgressiveVttEnabled(): Boolean =
+        System.getProperty(PROP_PROGRESSIVE_VTT)?.trim()?.equals("true", ignoreCase = true) == true
 
     fun shouldEmitProviderAnchor(mode: SessionSubtitleMode, subtitleCallback: Any? = null): Boolean =
         isBilingualDownloadCallback(subtitleCallback) || (mode == SessionSubtitleMode.URDU && isVaultV2Enabled())

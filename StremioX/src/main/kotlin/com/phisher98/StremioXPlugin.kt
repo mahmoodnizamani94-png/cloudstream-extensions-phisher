@@ -17,6 +17,10 @@ class StremioXPlugin : Plugin() {
 
     override fun load(context: Context) {
         NetworkOptimizer.initialize()
+        StremioXSubtitleCoordinator.initialize(
+            context = context,
+            sharedPref = context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE),
+        )
         try {
             registerMainAPI(StremioX("", "StremioX"))
         } catch (_: Throwable) {}

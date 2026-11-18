@@ -767,7 +767,11 @@ class UrduSubtitleSotaTest {
             server.start()
             try {
                 val url = "http://127.0.0.1:${server.address.port}/probe.srt?probe=$probeIdx&run=${System.nanoTime()}"
-                val result = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "subdl")
+                val result = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
+                    url = url,
+                    sourceTag = "subdl",
+                    transport = com.phisher98.subtitles.DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+                )
                 assertNull("Pipeline probe #$probeIdx must be REJECTED through materialize", result)
             } finally {
                 server.stop(0)
@@ -789,7 +793,11 @@ class UrduSubtitleSotaTest {
         goodServer.start()
         try {
             val url = "http://127.0.0.1:${goodServer.address.port}/valid.srt?run=${System.nanoTime()}"
-            val resultUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(url = url, sourceTag = "subdl")
+            val resultUri = UrduSubtitleEngine.materializeNormalizedUrduSubtitle(
+                url = url,
+                sourceTag = "subdl",
+                transport = com.phisher98.subtitles.DefaultCatalogHttpTransport(allowPrivateNetworks = true),
+            )
             assertNotNull("Valid multi-cue Urdu SRT must materialize into UrduCasStore", resultUri)
             assertTrue("Expected file: URI, got: $resultUri", resultUri!!.startsWith("file:/"))
             val outFile = java.io.File(java.net.URI(resultUri))

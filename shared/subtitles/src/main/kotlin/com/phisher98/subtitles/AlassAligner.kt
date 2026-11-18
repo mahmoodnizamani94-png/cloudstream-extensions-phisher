@@ -258,6 +258,24 @@ data class NoSplitFpsResult(
     val penalizedNormalizedScore: Double,
 )
 
+data class AlignmentReferenceAnchor(
+    val document: CueDocument,
+    val warpToMedia: SubtitleTimeWarp = SubtitleTimeWarp.Identity,
+    val anchorKind: AlignmentAnchorKind = AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR,
+    val priorityBonus: Double = defaultAnchorPriorityBonus(anchorKind),
+) {
+    companion object {
+        fun defaultAnchorPriorityBonus(kind: AlignmentAnchorKind): Double = when (kind) {
+            AlignmentAnchorKind.NATIVE_STREAM_PACK -> 0.025
+            AlignmentAnchorKind.LIVE_AUDIO_SINK_VAD -> 0.022
+            AlignmentAnchorKind.SPARSE_AUDIO_VAD -> 0.020
+            AlignmentAnchorKind.MATCHED_PROVIDER_SIDECAR -> 0.014
+            AlignmentAnchorKind.CROSS_PROVIDER_SIDECAR -> 0.004
+            AlignmentAnchorKind.UNANCHORED -> 0.0
+        }
+    }
+}
+
 object AlassAligner {
     private const val FP_UNIT: Double = 1_048_576.0
     private const val DP_TICK_STRIDE: Int = 10
@@ -370,6 +388,80 @@ object AlassAligner {
             overlapModeInDp = false,
             config = config,
         )
+    }
+
+    fun alignToBestAnchor(
+        candidate: CueDocument,
+        anchors: List<AlignmentReferenceAnchor>,
+        speechTimeline: SpeechActivityTimeline? = null,
+        videoDurationMs: Long? = null,
+        config: AlassConfig = AlassConfig(),
+    ): AlignmentOutcome {
+        if (candidate.cues.isEmpty()) {
+            return AlignmentOutcome.RejectedMismatch(0.0, Int.MAX_VALUE)
+        }
+        var bestAligned: AlignmentOutcome.Aligned? = null
+        var bestRankScore = Double.NEGATIVE_INFINITY
+        var bestReject: AlignmentOutcome.RejectedMismatch? = null
+
+        fun considerOutcome(outcome: AlignmentOutcome, bonus: Double) {
+            when (outcome) {
+                is AlignmentOutcome.Aligned -> {
+                    val residualPenalty = (outcome.proof.p95OnsetResidualMs.coerceIn(0, 600) * 0.00008)
+                    val splitPenalty = (outcome.proof.splitCount.coerceAtMost(6) * 0.004)
+                    val rank = outcome.proof.syncConfidence + bonus - residualPenalty - splitPenalty
+                    if (bestAligned == null || rank > bestRankScore) {
+                        bestAligned = outcome
+                        bestRankScore = rank
+                    }
+                }
+                is AlignmentOutcome.RejectedMismatch -> {
+                    if (bestReject == null || outcome.bestScore > bestReject!!.bestScore) {
+                        bestReject = outcome
+                    }
+                }
+            }
+        }
+
+        val seenTimingShas = HashSet<ContentSha256>(anchors.size)
+        for (anchor in anchors) {
+            if (anchor.document.cues.isEmpty()) continue
+            val mediaSyncedDoc = anchor.document.warpedToMedia(anchor.warpToMedia)
+            if (!seenTimingShas.add(mediaSyncedDoc.timingSha256)) continue
+            val outcome = alignToAnchorCues(
+                candidate = candidate,
+                anchor = mediaSyncedDoc,
+                anchorKind = anchor.anchorKind,
+                videoDurationMs = videoDurationMs,
+                config = config,
+            )
+            considerOutcome(outcome, anchor.priorityBonus)
+            if (outcome is AlignmentOutcome.Aligned &&
+                outcome.proof.syncConfidence >= 0.94 &&
+                outcome.proof.p95OnsetResidualMs <= 35 &&
+                anchor.anchorKind == AlignmentAnchorKind.NATIVE_STREAM_PACK
+            ) {
+                return outcome
+            }
+        }
+
+        if (speechTimeline != null &&
+            speechTimeline.observedWindows.isNotEmpty() &&
+            speechTimeline.speechSpans.isNotEmpty()
+        ) {
+            val speechOutcome = alignToSparseSpeech(
+                candidate = candidate,
+                timeline = speechTimeline,
+                anchorKind = AlignmentAnchorKind.SPARSE_AUDIO_VAD,
+                config = config,
+            )
+            considerOutcome(
+                speechOutcome,
+                AlignmentReferenceAnchor.defaultAnchorPriorityBonus(AlignmentAnchorKind.SPARSE_AUDIO_VAD),
+            )
+        }
+
+        return bestAligned ?: bestReject ?: AlignmentOutcome.RejectedMismatch(0.0, Int.MAX_VALUE)
     }
 
     fun alignToSparseSpeech(

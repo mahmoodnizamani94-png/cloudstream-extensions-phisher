@@ -29,15 +29,20 @@ import com.phisher98.subtitles.UrduCasStore
 import com.phisher98.subtitles.UrduOrthographyGate
 import com.phisher98.subtitles.UrduQualityGate
 import com.phisher98.subtitles.VerifiedSubtitleCandidate
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 object UrduSubtitleEngine {
 
@@ -49,7 +54,7 @@ object UrduSubtitleEngine {
     const val SUBTITLE_MODE_SYS_PROP = SubtitleModeBridge.PROP_SUBTITLE_MODE
     const val MODE_DEFAULT = "default"
     const val MODE_URDU = "urdu"
-    const val TARGET_URDU_SUBTITLE_SOURCES = 2
+    const val TARGET_URDU_SUBTITLE_SOURCES = 6
     const val TOTAL_URDU_SOTA_SOURCES = 8
 
     private const val PREWARM_COOLDOWN_MS = 10L * 60L * 1000L
@@ -108,6 +113,9 @@ object UrduSubtitleEngine {
 
     private val prewarmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val prewarmHistory = ConcurrentHashMap<String, Long>()
+    private val playbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val playbackJobLock = Any()
+    private var activePlaybackJob: Job? = null
 
     val httpTransport: CatalogHttpTransport by lazy {
         DefaultCatalogHttpTransport()
@@ -467,6 +475,9 @@ object UrduSubtitleEngine {
         sharedPref: android.content.SharedPreferences? = null,
         casFormat: CasSubtitleFormat = CasSubtitleFormat.WEBVTT,
         multiProviderVideoSession: Boolean = true,
+        targetUrduDiversityCount: Int = TARGET_URDU_SUBTITLE_SOURCES,
+        targetEnglishCatalogCount: Int = 6,
+        progressiveBilingualMode: Boolean = true,
         callbackIdentityToken: Any? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
     ): EpisodeSubtitleSession = EpisodeSubtitleSession(
@@ -478,11 +489,100 @@ object UrduSubtitleEngine {
         bolChalConfig = resolveBolChalConfig(context, sharedPref),
         bolChalTransport = bolChalTransport,
         casFormat = casFormat,
-        targetUrduDiversityCount = TARGET_URDU_SUBTITLE_SOURCES,
+        targetUrduDiversityCount = targetUrduDiversityCount,
+        targetEnglishCatalogCount = targetEnglishCatalogCount,
         multiProviderVideoSession = multiProviderVideoSession,
+        progressiveBilingualMode = progressiveBilingualMode,
         callbackIdentityToken = callbackIdentityToken ?: subtitleCallback,
         subtitleCallback = subtitleCallback,
     )
+
+    fun openPlaybackScope(isDownloadRequest: Boolean = false): CoroutineScope {
+        val job = SupervisorJob(playbackScope.coroutineContext[Job])
+        val scope = CoroutineScope(playbackScope.coroutineContext + job)
+        if (!isDownloadRequest) {
+            synchronized(playbackJobLock) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = job
+            }
+        }
+        return scope
+    }
+
+    fun cancelPlayback(scope: CoroutineScope? = null) {
+        val owner = scope?.coroutineContext?.get(Job)
+        synchronized(playbackJobLock) {
+            if (owner == null) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = null
+            } else {
+                owner.cancel()
+                if (activePlaybackJob === owner) {
+                    activePlaybackJob = null
+                }
+            }
+        }
+    }
+
+    const val OFFLINE_DOWNLOAD_SUBTITLE_WAIT_MS = 25_000L
+
+    fun launchCatalogThenComplete(
+        scope: CoroutineScope,
+        session: EpisodeSubtitleSession,
+        videoExtractionDone: CompletableDeferred<Unit>,
+        sidecarJobs: ConcurrentLinkedQueue<Job>,
+        extraJobs: ConcurrentLinkedQueue<Job> = ConcurrentLinkedQueue(),
+    ): Job {
+        val catalogJob = scope.launch {
+            try {
+                session.discoverAndIngestCatalog()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+        return scope.launch {
+            try {
+                videoExtractionDone.await()
+                extraJobs.toList().forEach { it.join() }
+                var guard = 0
+                while (guard < 12) {
+                    val pending = sidecarJobs.filter { !it.isCompleted }
+                    if (pending.isEmpty()) break
+                    pending.joinAll()
+                    guard++
+                }
+                catalogJob.join()
+                session.completeSession()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }.also { completionJob ->
+            completionJob.invokeOnCompletion {
+                cancelPlayback(scope)
+            }
+        }
+    }
+
+    fun enqueueRawSubtitleIngest(
+        scope: CoroutineScope,
+        session: EpisodeSubtitleSession,
+        subtitle: SubtitleFile,
+        rawSourceHint: String? = null,
+        sidecarJobs: ConcurrentLinkedQueue<Job>,
+    ): Job {
+        val job = scope.launch {
+            try {
+                session.ingestRawSubtitle(subtitle, rawSourceHint = rawSourceHint)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+        sidecarJobs.add(job)
+        return job
+    }
 
     fun prewarmMetadataAsync(
         lookupSpec: MediaLookupSpec,
@@ -502,6 +602,40 @@ object UrduSubtitleEngine {
                 withTimeoutOrNull(8_000L) {
                     casStore.prewarmMetadataAsync(lookupSpec, catalogSources)
                 }
+            }
+        }
+    }
+
+    fun prewarmSubtitlesAsync(
+        lookupSpec: MediaLookupSpec,
+        context: android.content.Context? = null,
+        sharedPref: android.content.SharedPreferences? = null,
+    ) {
+        val hasIdentity = !lookupSpec.imdbId.isNullOrBlank() ||
+            (lookupSpec.tmdbId ?: 0) > 0 ||
+            lookupSpec.titles.any { it.isNotBlank() }
+        if (!hasIdentity) return
+        val key = buildPrewarmDedupKey(lookupSpec)
+        val now = System.currentTimeMillis()
+        val lastRun = prewarmHistory[key]
+        if (lastRun != null && (now - lastRun) < PREWARM_COOLDOWN_MS) return
+        prewarmHistory[key] = now
+
+        val catalogSources = createCatalogSources(context, sharedPref)
+        val bolChalConfig = resolveBolChalConfig(context, sharedPref)
+        prewarmScope.launch {
+            try {
+                withTimeoutOrNull(25_000L) {
+                    casStore.prewarmSubtitlesAsync(
+                        spec = lookupSpec,
+                        catalogSources = catalogSources,
+                        bolChalConfig = bolChalConfig,
+                        bolChalTransport = bolChalTransport,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
             }
         }
     }
@@ -546,7 +680,7 @@ object UrduSubtitleEngine {
                 seasonAirYear = year,
             )
         }
-        prewarmMetadataAsync(lookupSpec = spec, sharedPref = sharedPref)
+        prewarmSubtitlesAsync(lookupSpec = spec, sharedPref = sharedPref)
     }
 
     fun normalizeUrduTypography(input: String): String =
@@ -587,12 +721,14 @@ object UrduSubtitleEngine {
         season: Int? = null,
         episode: Int? = null,
         sourceTag: String = "subdl",
+        transport: CatalogHttpTransport = httpTransport,
     ): String? = materializeNormalizedUrduSubtitle(
         url = url,
         headers = headers,
         season = season,
         episode = episode,
         sourceTag = sourceTag,
+        transport = transport,
     )
 
     suspend fun materializeNormalizedUrduSubtitle(
@@ -601,13 +737,14 @@ object UrduSubtitleEngine {
         season: Int? = null,
         episode: Int? = null,
         sourceTag: String = "subdl",
+        transport: CatalogHttpTransport = httpTransport,
     ): String? = withContext(Dispatchers.IO) {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()) return@withContext null
         val rawBytes = if (cleanUrl.startsWith("file:", ignoreCase = true)) {
             casStore.readOwnedCasFileBytesOrNull(cleanUrl)
         } else {
-            httpTransport.get(cleanUrl, headers).getOrNull()?.bodyBytes
+            transport.get(cleanUrl, headers).getOrNull()?.bodyBytes
         } ?: return@withContext null
         val lookupSpec = if (season != null && season >= 0 && episode != null && episode > 0) {
             MediaLookupSpec.Episode(
@@ -659,14 +796,18 @@ object UrduSubtitleEngine {
     }
 
     private fun buildPrewarmDedupKey(spec: MediaLookupSpec): String = when (spec) {
-        is MediaLookupSpec.Movie ->
-            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|${spec.titles.firstOrNull().orEmpty()}|${spec.releaseYear ?: 0}"
+        is MediaLookupSpec.Movie -> {
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|${spec.releaseYear ?: 0}"
+        }
         is MediaLookupSpec.Episode -> {
             val coordPart = when (val c = spec.coordinate) {
                 is EpisodeCoordinate.VerifiedSeasonEpisode -> "S${c.season}E${c.episode}"
-                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty()}:E${c.episodeInCour}"
+                is EpisodeCoordinate.UnverifiedEpisodeOnly -> "E${c.episode}"
+                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)}:E${c.episodeInCour}"
             }
-            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$coordPart|${spec.seriesPremiereYear ?: 0}"
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|$coordPart|${spec.seriesPremiereYear ?: 0}"
         }
     }
 

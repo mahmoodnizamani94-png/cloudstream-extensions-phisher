@@ -41,9 +41,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.phisher98.SubsExtractors.invokeOpenSubs
-import com.phisher98.SubsExtractors.invokeWatchsomuch
 import com.lagradost.cloudstream3.amap
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
@@ -200,14 +199,36 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
             Triple(logoDeferred.await(), cineDeferred.await(), syncDeferred?.await())
         }
 
+        val resolvedImdbId = res.external_ids?.imdb_id ?: res.imdbId ?: imdbId.takeIf { it.isNotBlank() }
+        val resolvedTmdbId = data.id ?: res.id
+        if (type == TvType.Movie) {
+            StremioXSubtitleCoordinator.prewarmAsync(
+                lookupSpec = StremioXSubtitleCoordinator.buildLookupSpec(
+                    imdbId = resolvedImdbId,
+                    tmdbId = resolvedTmdbId,
+                    title = title,
+                    year = year,
+                    runtimeMinutes = res.runtime,
+                    isAnime = isAnime,
+                ),
+            )
+        }
+
         return if (type == TvType.TvSeries) {
             val episodes = res.seasons?.amap { season ->
                 app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
                     .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
+                        val episodeYear = eps.airDate?.split("-")?.firstOrNull()?.toIntOrNull() ?: year
                         newEpisode(LoadData(
-                            res.external_ids?.imdb_id,
-                            eps.seasonNumber,
-                            eps.episodeNumber
+                            imdbId = resolvedImdbId,
+                            season = eps.seasonNumber,
+                            episode = eps.episodeNumber,
+                            title = title,
+                            year = episodeYear,
+                            tmdbId = resolvedTmdbId,
+                            seriesYear = year,
+                            isAnime = isAnime,
+                            mediaType = "series",
                         ).toJson())
                         {
                             this.name = eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
@@ -232,28 +253,16 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                         ?: cineRes?.meta?.year?.toIntOrNull() ?: 0
 
                     newEpisode(
-                        LinkData(
-                            id = data.id,
-                            imdbId = imdbId,
-                            tvdbId = res.external_ids?.tvdb_id,
-                            type = data.type,
+                        LoadData(
+                            imdbId = resolvedImdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) },
                             season = video.season,
                             episode = video.episode,
                             title = title,
-                            year = videoYear,
-                            orgTitle = "",
+                            year = videoYear.takeIf { it > 0 } ?: year,
+                            tmdbId = resolvedTmdbId,
+                            seriesYear = year,
                             isAnime = true,
-                            airedYear = year,
-                            epsTitle = video.title,
-                            jpTitle = jpTitle,
-                            date = video.released,
-                            airedDate = res.releaseDate ?: res.firstAirDate,
-                            isAsian = isAsian,
-                            isBollywood = isBollywood,
-                            isCartoon = isCartoon,
-                            alttitle = res.title,
-                            nametitle = res.name,
-                            isDub = isDub
+                            mediaType = "anime",
                         ).toJson()
                     ) {
                         this.name = video.title + if (isUpcoming(video.released)) " • [UPCOMING]" else ""
@@ -281,7 +290,7 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                     addTrailer(trailer)
                     try { addKitsuId(kitsuid) } catch(_:Throwable){}
                     this.contentRating = cineRes?.meta?.appExtras?.certification
-                    addImdbId(imdbId)
+                    addImdbId(resolvedImdbId)
                 }
             }
 
@@ -302,14 +311,22 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                 //this.contentRating = fetchContentRating(data.id, "US")
                 addTrailer(trailer)
                 addTMDbId(data.id.toString())
-                addImdbId(res.external_ids?.imdb_id)
+                addImdbId(resolvedImdbId)
             }
         } else {
             newMovieLoadResponse(
                 title,
                 url,
                 TvType.Movie,
-                LoadData(res.external_ids?.imdb_id).toJson()
+                LoadData(
+                    imdbId = resolvedImdbId,
+                    title = title,
+                    year = year,
+                    tmdbId = resolvedTmdbId,
+                    seriesYear = year,
+                    isAnime = isAnime,
+                    mediaType = "movie",
+                ).toJson()
             ) {
                 this.posterUrl = poster
                 this.comingSoon = isUpcoming(releaseDate)
@@ -325,7 +342,7 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                 //this.contentRating = fetchContentRating(data.id, "US")
                 addTrailer(trailer)
                 addTMDbId(data.id.toString())
-                addImdbId(res.external_ids?.imdb_id)
+                addImdbId(resolvedImdbId)
             }
         }
     }
@@ -337,19 +354,35 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val res = parseJson<LoadData>(data)
-        runAllAsync(
-            {
-                Log.d("Phisher",res.imdbId.toString())
-
-                invokeMainSource(res.imdbId, res.season, res.episode, subtitleCallback, callback)
-            },
-            {
-                invokeWatchsomuch(res.imdbId, res.season, res.episode, subtitleCallback)
-            },
-            {
-                invokeOpenSubs(res.imdbId, res.season, res.episode, subtitleCallback)
-            },
+        val cleanImdb = res.imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+        val resolvedTmdbId = res.tmdbId ?: res.id
+        val lookupSpec = StremioXSubtitleCoordinator.buildLookupSpec(
+            imdbId = cleanImdb,
+            tmdbId = resolvedTmdbId,
+            title = res.title,
+            year = res.year,
+            season = res.season,
+            episode = res.episode,
+            isAnime = res.isAnime,
+            seriesYear = res.seriesYear,
+            mediaType = res.mediaType,
         )
+        val videoExtractionDone = CompletableDeferred<Unit>()
+        val playbackHandle = StremioXSubtitleCoordinator.startPlaybackSession(
+            lookupSpec = lookupSpec,
+            imdbId = cleanImdb,
+            season = res.season,
+            episode = res.episode,
+            videoExtractionDone = videoExtractionDone,
+            subtitleCallback = subtitleCallback,
+        )
+        try {
+            Log.d("Phisher", cleanImdb.toString())
+            invokeMainSource(cleanImdb, res.season, res.episode, playbackHandle.sidecarIngestCallback, callback)
+        } finally {
+            videoExtractionDone.complete(Unit)
+        }
+        playbackHandle.awaitIfDownload()
 
         return true
     }
@@ -361,11 +394,12 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val cleanImdb = imdbId?.trim()?.takeIf { it.isNotBlank() } ?: return
         val fixMainUrl = (mainUrl.takeIf { it.isNotBlank() } ?: "https://torrentio.strem.fun/manifest.json").fixSourceUrl()
         val url = if (season == null) {
-            "$fixMainUrl/stream/movie/$imdbId.json"
+            "$fixMainUrl/stream/movie/$cleanImdb.json"
         } else {
-            "$fixMainUrl/stream/series/$imdbId:$season:$episode.json"
+            "$fixMainUrl/stream/series/$cleanImdb:$season:$episode.json"
         }
         val res = app.get(url, timeout = 120L).parsedSafe<StreamsResponse>()
         res?.streams?.amap { stream ->
@@ -401,10 +435,24 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
         val sources: List<String> = emptyList(),
         val subtitles: List<Subtitle> = emptyList()
     ) {
+        private suspend fun emitSubtitles(subtitleCallback: (SubtitleFile) -> Unit) {
+            subtitles.forEach { sub ->
+                val subUrl = sub.url ?: return@forEach
+                subtitleCallback.invoke(
+                    newSubtitleFile(
+                        SubtitleHelper.fromTagToEnglishLanguageName(sub.lang ?: "") ?: sub.lang
+                        ?: "",
+                        subUrl
+                    )
+                )
+            }
+        }
+
         suspend fun runCallback(
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
         ) {
+            var subtitlesEmitted = false
             if (url != null) {
                 callback.invoke(
                     newExtractorLink(
@@ -418,15 +466,8 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                         this.headers=behaviorHints?.proxyHeaders?.request ?: behaviorHints?.headers ?: mapOf()
                     }
                 )
-                subtitles.amap { sub ->
-                    subtitleCallback.invoke(
-                        newSubtitleFile(
-                            SubtitleHelper.fromTagToEnglishLanguageName(sub.lang ?: "") ?: sub.lang
-                            ?: "",
-                            sub.url ?: return@amap
-                        )
-                    )
-                }
+                subtitlesEmitted = true
+                emitSubtitles(subtitleCallback)
             }
             if (ytId != null) {
                 loadExtractor("https://www.youtube.com/watch?v=$ytId", subtitleCallback, callback)
@@ -457,6 +498,10 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
                         this.quality=Qualities.Unknown.value
                     }
                 )
+                if (!subtitlesEmitted) {
+                    subtitlesEmitted = true
+                    emitSubtitles(subtitleCallback)
+                }
             }
         }
     }
@@ -465,6 +510,13 @@ class StremioX(override var mainUrl: String, override var name: String) : TmdbPr
         val imdbId: String? = null,
         val season: Int? = null,
         val episode: Int? = null,
+        val title: String? = null,
+        val year: Int? = null,
+        val tmdbId: Int? = null,
+        val id: Int? = null,
+        val seriesYear: Int? = null,
+        val isAnime: Boolean = false,
+        val mediaType: String? = null,
     )
 
     data class Data(

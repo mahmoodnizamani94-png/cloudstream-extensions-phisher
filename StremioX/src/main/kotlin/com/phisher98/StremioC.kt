@@ -38,8 +38,7 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.phisher98.StremioC.Companion.TRACKER_LIST_URLS
-import com.phisher98.SubsExtractors.invokeOpenSubs
-import com.phisher98.SubsExtractors.invokeWatchsomuch
+import kotlinx.coroutines.CompletableDeferred
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.Locale
@@ -237,48 +236,60 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val loadData = parseJson<LoadData>(data)
-        val normalizedId = normalizeId(loadData.id)
-        val request = app.get(buildUrl("/stream/${loadData.type}/$normalizedId.json"), timeout = 120L)
+        val lookupSpec = StremioXSubtitleCoordinator.buildLookupSpec(
+            imdbId = loadData.imdbId,
+            tmdbId = loadData.tmdbId,
+            title = loadData.title,
+            year = loadData.year,
+            season = loadData.season,
+            episode = loadData.episode,
+            isAnime = loadData.isAnime,
+            seriesYear = loadData.seriesYear,
+            mediaType = loadData.lookupMediaType ?: loadData.type,
+            streamId = loadData.id,
+        )
+        val videoExtractionDone = CompletableDeferred<Unit>()
+        val playbackHandle = StremioXSubtitleCoordinator.startPlaybackSession(
+            lookupSpec = lookupSpec,
+            imdbId = loadData.imdbId,
+            season = loadData.season,
+            episode = loadData.episode,
+            videoExtractionDone = videoExtractionDone,
+            subtitleCallback = subtitleCallback,
+        )
 
-        val res = if (request.isSuccessful)
-            request.parsedSafe<StreamsResponse>()
-        else null
+        try {
+            val normalizedId = normalizeId(loadData.id)
+            val request = app.get(buildUrl("/stream/${loadData.type}/$normalizedId.json"), timeout = 120L)
 
-        if (!res?.streams.isNullOrEmpty()) {
-            res.streams.forEach { stream ->
-                stream.runCallback(subtitleCallback, callback)
-            }
-        } else {
-            runAllAsync(
+            val res = if (request.isSuccessful)
+                request.parsedSafe<StreamsResponse>()
+            else null
+
+            if (!res?.streams.isNullOrEmpty()) {
+                res.streams.forEach { stream ->
+                    stream.runCallback(playbackHandle.sidecarIngestCallback, callback)
+                }
+            } else {
+                runAllAsync(
                     {
-                        invokeStremioX(loadData.type, loadData.id, subtitleCallback, callback)
-                    },{
+                        invokeStremioX(loadData.type, loadData.id, playbackHandle.sidecarIngestCallback, callback)
+                    },
+                    {
                         invokeTorrentio(loadData.imdbId, loadData.season, loadData.episode, callback)
                     },
                     {
-                        invokeKnaben(loadData.imdbId, loadData.year,loadData.season, loadData.episode, callback)
+                        invokeKnaben(loadData.imdbId, loadData.year, loadData.season, loadData.episode, callback)
                     },
                     {
-                        invokeUindex(loadData.imdbId, loadData.year,loadData.season, loadData.episode, callback)
+                        invokeUindex(loadData.imdbId, loadData.year, loadData.season, loadData.episode, callback)
                     },
-                    {
-                        invokeWatchsomuch(
-                            loadData.imdbId,
-                            loadData.season,
-                            loadData.episode,
-                            subtitleCallback
-                        )
-                    }
-            )
+                )
+            }
+        } finally {
+            videoExtractionDone.complete(Unit)
         }
-
-
-        invokeOpenSubs(
-            loadData.imdbId,
-            loadData.season,
-            loadData.episode,
-            subtitleCallback
-        )
+        playbackHandle.awaitIfDownload()
 
         return true
     }
@@ -308,7 +319,12 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
         val season: Int? = null,
         val episode: Int? = null,
         val imdbId: String? = null,
-        val year: Int? = null
+        val year: Int? = null,
+        val title: String? = null,
+        val tmdbId: Int? = null,
+        val seriesYear: Int? = null,
+        val isAnime: Boolean = false,
+        val lookupMediaType: String? = null,
     )
 
     data class CustomSite(
@@ -496,18 +512,45 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
             } catch (_: Exception) {
             }
 
-            if (videos.isNullOrEmpty()) {
+            val parsedYear = yearNum?.toIntOrNull()
+            val parsedTmdbId = tmdbIdStr?.toIntOrNull()
+            val isMovieEntry = videos.isNullOrEmpty()
+
+            if (isMovieEntry) {
+                val isAnimeEntry = type.equals("anime", ignoreCase = true)
+                val lookupType = "movie"
+                StremioXSubtitleCoordinator.prewarmAsync(
+                    StremioXSubtitleCoordinator.buildLookupSpec(
+                        imdbId = finalImdbId,
+                        tmdbId = parsedTmdbId,
+                        title = name,
+                        year = parsedYear,
+                        isAnime = isAnimeEntry,
+                        seriesYear = parsedYear,
+                        mediaType = lookupType,
+                    )
+                )
                 return provider.newMovieLoadResponse(
                     name,
                     "${provider.mainUrl}/meta/${type}/${id}.json",
                     TvType.Movie,
-                    LoadData(type, id, imdbId = finalImdbId, year = yearNum?.toIntOrNull())
+                    LoadData(
+                        type = type,
+                        id = id,
+                        imdbId = finalImdbId,
+                        year = parsedYear,
+                        title = name,
+                        tmdbId = parsedTmdbId,
+                        seriesYear = parsedYear,
+                        isAnime = isAnimeEntry,
+                        lookupMediaType = lookupType,
+                    )
                 ) {
                     posterUrl = poster
                     backgroundPosterUrl = background
                     score = Score.from10(imdbRating)
                     plot = description
-                    year = yearNum?.toIntOrNull()
+                    year = parsedYear
                     tags = genre ?: genres
                     addActors(cast)
                     addTrailer(allTrailers)                    
@@ -531,14 +574,14 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
                     "${provider.mainUrl}/meta/${type}/${id}.json",
                     TvType.TvSeries,
                     videos.map {
-                        it.toEpisode(provider, type, finalImdbId)
+                        it.toEpisode(provider, type, finalImdbId, name, parsedYear, parsedTmdbId)
                     }
                 ) {
                     posterUrl = poster
                     backgroundPosterUrl = background
                     score = Score.from10(imdbRating)
                     plot = description
-                    year = yearNum?.toIntOrNull()
+                    year = parsedYear
                     tags = genre ?: genres
                     addActors(cast)
                     addTrailer(allTrailers.randomOrNull())
@@ -572,9 +615,28 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
         @param:JsonProperty("overview") val overview: String? = null,
         @param:JsonProperty("description") val description: String? = null,
     ) {
-        fun toEpisode(provider: StremioC, type: String?, imdbId: String?): Episode {
+        fun toEpisode(
+            provider: StremioC,
+            type: String?,
+            imdbId: String?,
+            seriesTitle: String? = null,
+            seriesYear: Int? = null,
+            tmdbId: Int? = null,
+        ): Episode {
             return provider.newEpisode(
-                LoadData(type, id, seasonNumber, episode ?: number, imdbId)
+                LoadData(
+                    type = type,
+                    id = id,
+                    season = seasonNumber,
+                    episode = episode ?: number,
+                    imdbId = imdbId,
+                    year = seriesYear,
+                    title = seriesTitle,
+                    tmdbId = tmdbId,
+                    seriesYear = seriesYear,
+                    isAnime = type.equals("anime", ignoreCase = true),
+                    lookupMediaType = type,
+                )
             ) {
                 this.name = this@Video.name ?: title
                 this.posterUrl = thumbnail
@@ -613,10 +675,24 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
         val sources: List<String> = emptyList(),
         val subtitles: List<Subtitle> = emptyList()
     ) {
+        private suspend fun emitSubtitles(subtitleCallback: (SubtitleFile) -> Unit) {
+            subtitles.forEach { sub ->
+                val subUrl = sub.url ?: return@forEach
+                subtitleCallback.invoke(
+                    newSubtitleFile(
+                        SubtitleHelper.fromTagToEnglishLanguageName(sub.lang ?: "") ?: sub.lang
+                        ?: "",
+                        subUrl
+                    )
+                )
+            }
+        }
+
         suspend fun runCallback(
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
         ) {
+            var subtitlesEmitted = false
             if (url != null) {
                 callback.invoke(
                     newExtractorLink(
@@ -630,15 +706,8 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
                         this.headers=behaviorHints?.proxyHeaders?.request ?: behaviorHints?.headers ?: mapOf()
                     }
                 )
-                subtitles.forEach { sub ->
-                    subtitleCallback.invoke(
-                        newSubtitleFile(
-                            SubtitleHelper.fromTagToEnglishLanguageName(sub.lang ?: "") ?: sub.lang
-                            ?: "",
-                            sub.url ?: return@forEach
-                        )
-                    )
-                }
+                subtitlesEmitted = true
+                emitSubtitles(subtitleCallback)
             }
             if (ytId != null) {
                 loadExtractor("https://www.youtube.com/watch?v=$ytId", subtitleCallback, callback)
@@ -669,6 +738,10 @@ class StremioC(override var mainUrl: String, override var name: String) : MainAP
                         this.quality=Qualities.Unknown.value
                     }
                 )
+                if (!subtitlesEmitted) {
+                    subtitlesEmitted = true
+                    emitSubtitles(subtitleCallback)
+                }
             }
         }
     }
@@ -1009,12 +1082,16 @@ suspend fun invokeTorrentio(
     episode: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
-    val url = if (id?.startsWith("kitsu:") == true) {
-        "https://torrentio.strem.fun/stream/series/$id:${episode ?: 1}.json"
-    } else if (season == null) {
-        "https://torrentio.strem.fun/stream/movie/$id.json"
-    } else {
-        "https://torrentio.strem.fun/stream/series/$id:$season:$episode.json"
+    val cleanId = id?.trim().orEmpty()
+    if (cleanId.isEmpty()) return
+    val url = when {
+        cleanId.startsWith("kitsu:", ignoreCase = true) ->
+            "https://torrentio.strem.fun/stream/series/$cleanId:${episode ?: 1}.json"
+        !cleanId.startsWith("tt", ignoreCase = true) -> return
+        season == null ->
+            "https://torrentio.strem.fun/stream/movie/$cleanId.json"
+        else ->
+            "https://torrentio.strem.fun/stream/series/$cleanId:$season:$episode.json"
     }
     
     val headers = mapOf(

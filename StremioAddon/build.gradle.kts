@@ -1,8 +1,13 @@
+@file:Suppress("UnstableApiUsage")
+
 import org.jetbrains.kotlin.konan.properties.Properties
 
-version = 16
+version = 18
 
 android {
+    sourceSets.named("main") {
+        kotlin.directories.add(rootProject.file("shared/subtitles/src/main/kotlin").path)
+    }
     buildFeatures {
         buildConfig = true
         viewBinding = true

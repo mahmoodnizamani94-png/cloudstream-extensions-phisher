@@ -216,6 +216,18 @@ object CatalogueCandidateGate {
                             }
                         }
                     }
+                    is EpisodeCoordinate.UnverifiedEpisodeOnly -> {
+                        val m = SXX_EXX_REGEX.find(releaseText) ?: NX_NN_REGEX.find(releaseText)
+                        if (m != null) {
+                            val e = m.groupValues[2].toIntOrNull()
+                            if (e != coord.episode) {
+                                return VerifiedSubtitleCandidate.Rejected.EpisodeOrYearMismatch(
+                                    expected = "E%02d".format(Locale.ROOT, coord.episode),
+                                    actualRelease = releaseText,
+                                )
+                            }
+                        }
+                    }
                 }
                 val allowedYears = listOfNotNull(spec.seriesPremiereYear, spec.seasonAirYear)
                 if (allowedYears.isNotEmpty()) {
@@ -282,9 +294,22 @@ object UrduOrthographyGate {
         RegexOption.IGNORE_CASE,
     )
     private val INLINE_MARKUP_REGEX = Regex("""(?:\{\\[^}]*\}|<[^>]*>)""")
-    private val BROKEN_SMT_EMBEDDED_ASCII_REGEX = Regex("""[\u0600-\u06FF]+\s+[a-z]{3,}\s+[\u0600-\u06FF]+""")
+    private val BROKEN_SMT_EMBEDDED_ASCII_REGEX = Regex("""[\u0600-\u06FF]+\s+([a-z]{3,})\s+[\u0600-\u06FF]+""")
     private val BROKEN_SMT_INLINE_ASCII_REGEX =
-        Regex("""(?:[\u0600-\u06FF]{2,}\s+[a-z]{3,}|[a-z]{3,}\s+[\u0600-\u06FF]{2,})""")
+        Regex("""(?:[\u0600-\u06FF]{2,}\s+([a-z]{3,})|([a-z]{3,})\s+[\u0600-\u06FF]{2,})""")
+    private val RECOGNIZED_URDU_ENGLISH_LOANWORDS: Set<String> = setOf(
+        "agent", "app", "apps", "atm", "boss", "camera", "cctv", "ceo", "cia", "club",
+        "code", "computer", "cpu", "data", "dea", "dna", "doctor", "email", "fbi", "file",
+        "files", "film", "gps", "hello", "hospital", "hotel", "icu", "internet", "interpol",
+        "isi", "laptop", "link", "live", "location", "login", "madam", "mam", "manager",
+        "message", "mi6", "miss", "mobile", "nasa", "nato", "network", "news", "number",
+        "office", "okay", "online", "otp", " officer", "officer", "park", "party", "password",
+        "pdf", "phone", "pin", "plan", "please", "police", "post", "radio", "raw", "report",
+        "rna", "school", "security", "server", "signal", "sim", "sir", "sms", "software",
+        "sorry", "station", "suv", "system", "target", "taxi", "team", "test", "ticket",
+        "train", "tv", "ufo", "unit", "url", "usb", "video", "vip", "virus", "visa", "vpn",
+        "ward", "web", "website", "whatsapp", "wifi", "youtube",
+    )
     private val BROKEN_SMT_TOKENS = listOf(
         "ہںس",
         "واپس سربراہ چاہئے",
@@ -295,6 +320,18 @@ object UrduOrthographyGate {
         "wildlings اس",
     )
     private val ARABIC_PRESENTATION_FORMS_REGEX = Regex("""[\uFB50-\uFDFF\uFE70-\uFEFF]+""")
+
+    private fun countUnexcusedEmbeddedAsciiSandwiches(text: String): Int =
+        BROKEN_SMT_EMBEDDED_ASCII_REGEX.findAll(text).count { m ->
+            val word = m.groupValues[1].lowercase(Locale.ROOT)
+            word !in RECOGNIZED_URDU_ENGLISH_LOANWORDS
+        }
+
+    private fun hasUnexcusedInlineAscii(text: String): Boolean =
+        BROKEN_SMT_INLINE_ASCII_REGEX.findAll(text).any { m ->
+            val word = (m.groupValues[1].ifEmpty { m.groupValues[2] }).lowercase(Locale.ROOT)
+            word.isNotEmpty() && word !in RECOGNIZED_URDU_ENGLISH_LOANWORDS
+        }
 
     private val ASS_DIALOGUE_DRAWING_REGEX = Regex("""\{\\[^}]*\\p[1-9][^}]*\}""")
     private val ASS_LINEBREAK_REGEX = Regex("""\\[Nn]""")
@@ -418,9 +455,9 @@ object UrduOrthographyGate {
             if (BROKEN_SMT_TOKENS.any { token -> text.contains(token, ignoreCase = true) }) {
                 explicitSmtCount++
             }
-            if (BROKEN_SMT_EMBEDDED_ASCII_REGEX.containsMatchIn(text)) {
+            if (countUnexcusedEmbeddedAsciiSandwiches(text) > 0) {
                 embeddedAsciiCount++
-            } else if (BROKEN_SMT_INLINE_ASCII_REGEX.containsMatchIn(text)) {
+            } else if (hasUnexcusedInlineAscii(text)) {
                 inlineAsciiCount++
             }
         }
@@ -431,7 +468,13 @@ object UrduOrthographyGate {
             return true
         }
         val totalCorrupted = embeddedAsciiCount + explicitSmtCount
-        return totalCorrupted >= 3 || (rawCueTexts.size >= 5 && totalCorrupted * 100 >= rawCueTexts.size * 4)
+        val corruptedFloor = if (explicitSmtCount == 0 && rawCueTexts.size >= 150) {
+            maxOf(3, (rawCueTexts.size * 2) / 100)
+        } else {
+            3
+        }
+        return totalCorrupted >= corruptedFloor ||
+            (rawCueTexts.size >= 5 && totalCorrupted * 100 >= rawCueTexts.size * 4)
     }
 
     fun containsVerifiedUrduCueTexts(rawCueTexts: List<String>): Boolean {
@@ -562,8 +605,9 @@ object UrduOrthographyGate {
             return Result.failure(IllegalArgumentException("Excessive embedded Latin script in Urdu candidate"))
         }
 
-        val smtSandwichHits = BROKEN_SMT_EMBEDDED_ASCII_REGEX.findAll(stripped).count()
-        if (smtSandwichHits >= 3 || isBrokenSmtCueTexts(cueTexts)) {
+        val smtSandwichHits = countUnexcusedEmbeddedAsciiSandwiches(stripped)
+        val sandwichFloor = if (cueTexts.size >= 150) maxOf(3, (cueTexts.size * 2) / 100) else 3
+        if (smtSandwichHits >= sandwichFloor || isBrokenSmtCueTexts(cueTexts)) {
             return Result.failure(IllegalArgumentException("Broken phrase-SMT Urdu with embedded English tokens ($smtSandwichHits)"))
         }
 
@@ -742,7 +786,11 @@ object UrduMtDumpDetector {
         }
         val passiveRate = passiveHits.toDouble() / n.toDouble()
         val copulaRate = copulaHits.toDouble() / n.toDouble()
-        val highPassive = (n >= 10 && passiveRate > 0.015) || passiveHits >= 2
+        val highPassive = if (n >= 30) {
+            passiveRate > 0.025
+        } else {
+            (n >= 10 && passiveRate > 0.015) || passiveHits >= 2
+        }
         val highCopula = (n >= 10 && copulaRate > 0.03) || (copulaHits >= 2 && copulaRate >= 0.08)
         if (highPassive || highCopula) {
             triggered.add(MtSignalFamily.NEWSROOM_PASSIVE_AND_COPULA)
@@ -754,14 +802,16 @@ object UrduMtDumpDetector {
         var registerFlips = 0
         var prevReg: AddressRegister? = null
         var prevEndMs = Long.MIN_VALUE
+        var prevEndedWithQuestion = false
         for (cue in cues) {
             val clean = cue.text.replace("\u200F", "").trim()
             val hasSpeakerTurnDash = clean.startsWith("-") || clean.startsWith("–") || clean.startsWith("—") ||
                 clean.contains("\n-")
             val curReg = detectCueAddressRegister(clean)
             val gapMs = cue.span.startMs - prevEndMs
+            val isLikelyTwoSpeakerQaReply = prevEndedWithQuestion && gapMs >= 300L
             if (curReg != null) {
-                if (!hasSpeakerTurnDash && prevReg != null && gapMs in 0L..1_800L) {
+                if (!hasSpeakerTurnDash && !isLikelyTwoSpeakerQaReply && prevReg != null && gapMs in 0L..1_800L) {
                     registerPairs++
                     if (curReg != prevReg) {
                         registerFlips++
@@ -772,6 +822,7 @@ object UrduMtDumpDetector {
                 prevReg = null
             }
             prevEndMs = cue.span.endMs
+            prevEndedWithQuestion = clean.endsWith("؟") || clean.endsWith("?")
         }
         val whiplashRate = if (registerPairs > 0) registerFlips.toDouble() / registerPairs.toDouble() else 0.0
         if (registerPairs >= 3 && whiplashRate > 0.28) {
@@ -1021,6 +1072,7 @@ object UrduQualityGate {
                     releaseAffinityScore = releaseAffinity,
                     document = normalizedDoc,
                     alignment = alignment,
+                    variantTag = provenance.variantTag,
                 )
             }
             is ProvenanceIdentity.BolChalTranslated -> VerifiedSubtitleCandidate.Rejected.BannedSourceOrUploader(

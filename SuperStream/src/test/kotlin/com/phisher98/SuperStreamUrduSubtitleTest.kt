@@ -562,7 +562,7 @@ class SuperStreamUrduSubtitleTest {
                 lookupSpec = lookupSpec,
                 mode = SessionSubtitleMode.BILINGUAL_DOWNLOAD,
                 casStore = casStore,
-                httpTransport = SuperStreamExtractor.httpTransport,
+                httpTransport = com.phisher98.subtitles.DefaultCatalogHttpTransport(allowPrivateNetworks = true),
                 catalogSources = emptyCatalog,
                 bolChalConfig = BolChalConfig(),
                 bolChalTransport = { window, _ ->
@@ -640,5 +640,26 @@ class SuperStreamUrduSubtitleTest {
         val s = (ms % 60_000L) / 1_000L
         val rem = ms % 1_000L
         return "%02d:%02d:%02d,%03d".format(h, m, s, rem)
+    }
+
+    @Test
+    fun `SuperStreamExtractor playback scope isolates downloads and stale cancellations`() {
+        val activePlayback = SuperStreamExtractor.openPlaybackScope(isDownloadRequest = false)
+        val downloadScope = SuperStreamExtractor.openPlaybackScope(isDownloadRequest = true)
+        assertTrue(activePlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+
+        val newerPlayback = SuperStreamExtractor.openPlaybackScope(isDownloadRequest = false)
+        assertFalse(activePlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+        assertTrue(newerPlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+
+        SuperStreamExtractor.cancelPlayback(activePlayback)
+        assertTrue("Cancelling stale scope must not cancel newer playback", newerPlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+
+        SuperStreamExtractor.cancelPlayback(downloadScope)
+        assertFalse(downloadScope.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+        assertTrue("Cancelling download scope must not cancel newer playback", newerPlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
+
+        SuperStreamExtractor.cancelPlayback(newerPlayback)
+        assertFalse(newerPlayback.coroutineContext[kotlinx.coroutines.Job]!!.isActive)
     }
 }

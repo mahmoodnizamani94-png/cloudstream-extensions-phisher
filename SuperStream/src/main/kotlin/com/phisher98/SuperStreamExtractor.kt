@@ -98,11 +98,61 @@ internal val SUPERSTREAM_PERSIAN_ARABIC_EXCLUSIVE_REGEX: Regex
 
 object SuperStreamExtractor : SuperStream() {
 
-    const val TARGET_URDU_SUBTITLE_SOURCES = 2
+    const val TARGET_URDU_SUBTITLE_SOURCES = 6
+    const val TARGET_ENGLISH_SUBTITLE_SOURCES = 6
     private const val PREWARM_COOLDOWN_MS = 10L * 60L * 1000L
+    private const val PREWARM_TIMEOUT_MS = 25_000L
 
     private val prewarmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val prewarmHistory = ConcurrentHashMap<String, Long>()
+    private val subtitlePlaybackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val playbackJobLock = Any()
+    private var activePlaybackJob: kotlinx.coroutines.Job? = null
+
+    internal fun cancelActivePlaybackJob() {
+        cancelPlayback(null)
+    }
+
+    internal fun cancelPlayback(scope: CoroutineScope? = null) {
+        val owner = scope?.coroutineContext?.get(kotlinx.coroutines.Job)
+        synchronized(playbackJobLock) {
+            if (owner == null) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = null
+            } else {
+                owner.cancel()
+                if (activePlaybackJob === owner) {
+                    activePlaybackJob = null
+                }
+            }
+        }
+    }
+
+    internal fun openPlaybackScope(isDownloadRequest: Boolean = false): CoroutineScope {
+        val playbackJob = SupervisorJob(subtitlePlaybackScope.coroutineContext[kotlinx.coroutines.Job])
+        val scope = CoroutineScope(subtitlePlaybackScope.coroutineContext + playbackJob)
+        if (!isDownloadRequest) {
+            synchronized(playbackJobLock) {
+                activePlaybackJob?.cancel()
+                activePlaybackJob = playbackJob
+            }
+        }
+        return scope
+    }
+
+    internal fun launchOn(
+        scope: CoroutineScope,
+        block: suspend CoroutineScope.() -> Unit,
+    ): kotlinx.coroutines.Job {
+        return scope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
+        }
+    }
 
     val httpTransport: CatalogHttpTransport by lazy {
         DefaultCatalogHttpTransport()
@@ -243,6 +293,8 @@ object SuperStreamExtractor : SuperStream() {
         bolChalTransport = bolChalTransport,
         casFormat = casFormat,
         targetUrduDiversityCount = TARGET_URDU_SUBTITLE_SOURCES,
+        targetEnglishCatalogCount = TARGET_ENGLISH_SUBTITLE_SOURCES,
+        progressiveBilingualMode = true,
         callbackIdentityToken = callbackIdentityToken ?: subtitleCallback,
         subtitleCallback = subtitleCallback,
     )
@@ -252,7 +304,6 @@ object SuperStreamExtractor : SuperStream() {
         sharedPref: SharedPreferences? = null,
         context: Context? = null,
     ) {
-        if (!isUrduSubtitleMode(sharedPref, context)) return
         val key = buildPrewarmDedupKey(lookupSpec)
         val now = System.currentTimeMillis()
         val lastRun = prewarmHistory[key]
@@ -260,11 +311,20 @@ object SuperStreamExtractor : SuperStream() {
         prewarmHistory[key] = now
 
         val catalogSources = createCatalogSources(sharedPref, context)
+        val bolChalConfig = resolveSuperStreamBolChalConfig(sharedPref, context)
         prewarmScope.launch {
-            runCatching {
-                withTimeoutOrNull(8_000L) {
-                    casStore.prewarmMetadataAsync(lookupSpec, catalogSources)
+            try {
+                withTimeoutOrNull(PREWARM_TIMEOUT_MS) {
+                    casStore.prewarmSubtitlesAsync(
+                        spec = lookupSpec,
+                        catalogSources = catalogSources,
+                        bolChalConfig = bolChalConfig,
+                        bolChalTransport = bolChalTransport,
+                    )
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
             }
         }
     }
@@ -774,14 +834,18 @@ object SuperStreamExtractor : SuperStream() {
     }
 
     private fun buildPrewarmDedupKey(spec: MediaLookupSpec): String = when (spec) {
-        is MediaLookupSpec.Movie ->
-            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|${spec.titles.firstOrNull().orEmpty()}|${spec.releaseYear ?: 0}"
+        is MediaLookupSpec.Movie -> {
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "M|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|${spec.releaseYear ?: 0}"
+        }
         is MediaLookupSpec.Episode -> {
             val coordPart = when (val c = spec.coordinate) {
                 is EpisodeCoordinate.VerifiedSeasonEpisode -> "S${c.season}E${c.episode}"
-                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty()}:E${c.episodeInCour}"
+                is EpisodeCoordinate.UnverifiedEpisodeOnly -> "E${c.episode}"
+                is EpisodeCoordinate.UnverifiedAnimeCour -> "C:${c.courTitles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)}:E${c.episodeInCour}"
             }
-            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$coordPart|${spec.seriesPremiereYear ?: 0}"
+            val normTitle = spec.titles.firstOrNull().orEmpty().trim().lowercase(Locale.ROOT)
+            "E|${spec.imdbId.orEmpty()}|${spec.tmdbId ?: 0}|$normTitle|$coordPart|${spec.seriesPremiereYear ?: 0}"
         }
     }
 
